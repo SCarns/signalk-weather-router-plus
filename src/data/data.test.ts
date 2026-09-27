@@ -110,3 +110,97 @@ test('ForecastStore blends steps in time and reports wind FROM direction', () =>
   assert.ok(back.coversBBox({ west: 0, south: 0, east: 1, north: 1 }));
   assert.ok(!back.coversBBox({ west: 0, south: 0, east: 5, north: 1 }));
 });
+
+import * as os from 'node:os';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { EcmwfClient, latestExpectedCycle, parseRetryAfterMs } from './ecmwf';
+import { resolveCycle } from './loader';
+
+test('latestExpectedCycle applies the 400-minute lag and skips short cycles for long horizons', () => {
+  // 20:00Z minus 400 min = 13:20Z → 12z cycle.
+  const c = latestExpectedCycle(new Date('2026-09-27T20:00:00Z'), 72);
+  assert.equal(c.yyyymmdd + c.hh, '2026092712');
+  // 12:00Z minus 400 min = 05:20Z → 00z cycle.
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T12:00:00Z'), 72).hh, '00');
+  // 14:00Z minus 400 min = 07:20Z → 06z (scda) is fine for 72 h but not for 120 h → falls back to 00z.
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 72).hh, '06');
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 120).hh, '00');
+});
+
+test('parseRetryAfterMs handles seconds and HTTP dates', () => {
+  assert.equal(parseRetryAfterMs('30'), 30_000);
+  const now = Date.parse('2026-09-27T20:00:00Z');
+  assert.equal(parseRetryAfterMs('Sun, 27 Sep 2026 20:00:45 GMT', now), 45_000);
+  assert.equal(parseRetryAfterMs(null), null);
+  assert.equal(parseRetryAfterMs('garbage'), null);
+});
+
+function tmpDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-test-'));
+}
+
+test('EcmwfClient retries 429 with backoff, honours Retry-After, then falls back to the next mirror', async () => {
+  const calls: string[] = [];
+  const sleeps: number[] = [];
+  let n = 0;
+  const fetchImpl = (async (url: string | URL | Request) => {
+    const u = String(url);
+    calls.push(u);
+    n++;
+    if (u.startsWith('https://primary')) {
+      return new Response('', { status: 429, headers: { 'retry-after': '5' } });
+    }
+    return new Response('{"param":"10u","step":"0","levtype":"sfc","_offset":0,"_length":4}\n', { status: 200 });
+  }) as unknown as typeof fetch;
+  const client = new EcmwfClient({
+    baseUrl: 'https://primary', fallbackUrls: ['https://secondary'], cacheDir: tmpDir(), retries: 3,
+    fetchImpl, sleepImpl: async (ms) => { sleeps.push(ms); },
+  });
+  const cycle = latestExpectedCycle(new Date('2026-09-27T20:00:00Z'), 24);
+  const idx = await client.fetchIndex(cycle, 'oper', 0);
+  assert.equal(idx.length, 1);
+  assert.equal(calls.filter((c) => c.startsWith('https://primary')).length, 3); // exhausted
+  assert.equal(calls.filter((c) => c.startsWith('https://secondary')).length, 1);
+  assert.equal(sleeps.length, 2); // two backoffs on the primary
+  assert.ok(sleeps[0] >= 5000 && sleeps[0] < 5600, `first backoff ${sleeps[0]} should honour Retry-After 5 s`);
+  assert.equal(client.baseUrl, 'https://secondary'); // sticks for the session
+});
+
+test('EcmwfClient does not retry 404 and reports it', async () => {
+  let n = 0;
+  const fetchImpl = (async () => { n++; return new Response('', { status: 404 }); }) as unknown as typeof fetch;
+  const client = new EcmwfClient({ baseUrl: 'https://x', fallbackUrls: [], cacheDir: tmpDir(), fetchImpl, sleepImpl: async () => undefined });
+  const cycle = latestExpectedCycle(new Date('2026-09-27T20:00:00Z'), 24);
+  assert.equal(await client.stepPublished(cycle, 'oper', 0), false);
+  assert.equal(n, 1);
+});
+
+test('resolveCycle uses a fully cached expected cycle without any network call', async () => {
+  const dir = tmpDir();
+  let n = 0;
+  const fetchImpl = (async () => { n++; throw new Error('network must not be used'); }) as unknown as typeof fetch;
+  const client = new EcmwfClient({ baseUrl: 'https://x', fallbackUrls: [], cacheDir: dir, fetchImpl, sleepImpl: async () => undefined });
+  const now = new Date('2026-09-27T20:00:00Z');
+  const expected = latestExpectedCycle(now, 6);
+  // Fake a complete cache for +0/+3/+6 h: 3 atm params + 3 wave params per step.
+  for (const step of [0, 3, 6]) {
+    for (const [stream, params] of [[expected.atmStream, ['10u', '10v', 'msl']], [expected.waveStream, ['swh', 'mwp', 'mwd']]] as const) {
+      for (const p of params) {
+        const f = client.cachePath(expected, stream, step, p);
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        fs.writeFileSync(f, Buffer.from('GRIB....'));
+      }
+    }
+  }
+  const r = await resolveCycle(client, 6, { now });
+  assert.equal(r.fromCache, true);
+  assert.equal(r.cycle.yyyymmdd + r.cycle.hh, expected.yyyymmdd + expected.hh);
+  assert.equal(n, 0);
+  // With the network down and only an older cached cycle, that cycle is used.
+  const later = new Date(now.getTime() + 6 * 3600_000);
+  const r2 = await resolveCycle(client, 6, { now: later });
+  assert.equal(r2.fromCache, true);
+  assert.ok(r2.fallback && r2.fallback.includes('using cached cycle'));
+  assert.equal(r2.cycle.yyyymmdd + r2.cycle.hh, expected.yyyymmdd + expected.hh);
+});

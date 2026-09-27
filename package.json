@@ -16,7 +16,10 @@
     "signalk-node-server-plugin",
     "signalk-webapp",
     "signalk-category-weather",
-    "signalk-category-route-planning"
+    "signalk-category-route-planning",
+    "weather-routing",
+    "ecmwf",
+    "isochrone"
   ],
   "author": "",
   "license": "MIT",
@@ -39,5 +42,11 @@
   ],
   "bin": {
     "wrp-route": "dist/cli.js"
+  },
+  "signalk": {
+    "appSupport": "webapp",
+    "compatibility": ">=2.13.0",
+    "displayName": "Weather Router Plus",
+    "appIcon": "icon.svg"
   }
 }

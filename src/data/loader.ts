@@ -1,12 +1,15 @@
 /**
  * Fetch, decode and crop the forecast fields a route needs into a
- * ForecastStore. Fetching goes through the disk cache in EcmwfClient,
- * so repeated loads for the same cycle only decode.
+ * ForecastStore, and decide which cycle to use without touching the
+ * network when fresh data is already on disk.
  */
 
 import type { BBox } from '../geo/geodesy';
 import { parseGrib2Message } from '../grib/grib2';
-import { ATM_PARAMS, WAVE_PARAMS, availableSteps, type Cycle, type EcmwfClient } from './ecmwf';
+import {
+  ATM_PARAMS, WAVE_PARAMS, availableSteps, latestExpectedCycle,
+  type Cycle, type EcmwfClient, type IndexRecord,
+} from './ecmwf';
 import { buildStep, ForecastStore, type ForecastStep } from './forecast';
 
 export interface LoadOptions {
@@ -23,20 +26,66 @@ export interface LoadOptions {
   waveFillCells?: number;
 }
 
+export interface ResolvedCycle {
+  cycle: Cycle;
+  /** True when every needed message is already on disk (no network needed). */
+  fromCache: boolean;
+  /** Set when the network was unavailable and an older cached cycle was chosen. */
+  fallback?: string;
+}
+
+/**
+ * Choose the cycle to load, planner-style:
+ *  1. the wall-clock expected cycle when it is fully cached → no network;
+ *  2. otherwise ask the server for the newest complete cycle;
+ *  3. if that fails, the newest fully cached cycle, if any.
+ */
+export async function resolveCycle(
+  client: EcmwfClient, horizonHours: number,
+  opts: { now?: Date; includeWaves?: boolean; extraAtmParams?: string[]; log?: (m: string) => void } = {},
+): Promise<ResolvedCycle> {
+  const log = opts.log ?? (() => undefined);
+  const atm = [...ATM_PARAMS, ...(opts.extraAtmParams ?? [])];
+  const wave = opts.includeWaves === false ? [] : [...WAVE_PARAMS];
+  const expected = latestExpectedCycle(opts.now ?? new Date(), horizonHours);
+  if (client.cycleFullyCached(expected, horizonHours, atm, wave)) {
+    log(`expected cycle ${expected.yyyymmdd} ${expected.hh}z is fully cached; no download needed`);
+    return { cycle: expected, fromCache: true };
+  }
+  try {
+    const cycle = await client.findLatestCycle(horizonHours, { now: opts.now });
+    return { cycle, fromCache: client.cycleFullyCached(cycle, horizonHours, atm, wave) };
+  } catch (err) {
+    const cached = client.cachedCycles().find((c) => client.cycleFullyCached(c, horizonHours, atm, wave));
+    if (cached) {
+      const msg = `ECMWF unreachable (${(err as Error).message}); using cached cycle ${cached.yyyymmdd} ${cached.hh}z`;
+      log(msg);
+      return { cycle: cached, fromCache: true, fallback: msg };
+    }
+    throw err;
+  }
+}
+
 export async function loadForecastForBBox(client: EcmwfClient, bbox: BBox, opts: LoadOptions): Promise<ForecastStore> {
   const log = opts.log ?? (() => undefined);
-  const cycle = opts.cycle ?? (await client.findLatestCycle(opts.horizonHours));
   const includeWaves = opts.includeWaves ?? true;
   const atmParams = [...ATM_PARAMS, ...(opts.extraAtmParams ?? [])];
+  const cycle = opts.cycle ?? (await resolveCycle(client, opts.horizonHours, { includeWaves, extraAtmParams: opts.extraAtmParams, log })).cycle;
   const steps = availableSteps(cycle.atmStream, opts.horizonHours);
   const waveSteps = new Set(availableSteps(cycle.waveStream, opts.horizonHours));
   const built: ForecastStep[] = [];
   let done = 0;
+  let downloaded = 0;
   for (const step of steps) {
     if (opts.shouldCancel?.()) throw new Error('forecast load cancelled');
     const named: { param: string; message: ReturnType<typeof parseGrib2Message> }[] = [];
-    const atmIndex = await client.fetchIndex(cycle, cycle.atmStream, step);
+    // The index is only needed for fields not already on disk.
+    let atmIndex: IndexRecord[] | undefined;
     for (const p of atmParams) {
+      if (!client.hasCached(cycle, cycle.atmStream, step, p)) {
+        atmIndex = atmIndex ?? (await client.fetchIndex(cycle, cycle.atmStream, step));
+        downloaded++;
+      }
       const msg = await client.fetchField(cycle, cycle.atmStream, step, p, atmIndex);
       if (!msg) {
         if (p === '10u' || p === '10v') throw new Error(`cycle ${cycle.yyyymmdd}${cycle.hh} step +${step}h has no ${p}`);
@@ -46,8 +95,12 @@ export async function loadForecastForBBox(client: EcmwfClient, bbox: BBox, opts:
       named.push({ param: p, message: parseGrib2Message(msg) });
     }
     if (includeWaves && waveSteps.has(step)) {
-      const waveIndex = await client.fetchIndex(cycle, cycle.waveStream, step);
+      let waveIndex: IndexRecord[] | undefined;
       for (const p of WAVE_PARAMS) {
+        if (!client.hasCached(cycle, cycle.waveStream, step, p)) {
+          waveIndex = waveIndex ?? (await client.fetchIndex(cycle, cycle.waveStream, step));
+          downloaded++;
+        }
         const msg = await client.fetchField(cycle, cycle.waveStream, step, p, waveIndex);
         if (!msg) {
           log(`step +${step}h: wave ${p} not in index, skipped`);
@@ -62,7 +115,7 @@ export async function loadForecastForBBox(client: EcmwfClient, bbox: BBox, opts:
     // Yield to the event loop between steps so a host process stays responsive.
     await new Promise((r) => setImmediate(r));
   }
-  log(`loaded ${built.length} steps for cycle ${cycle.yyyymmdd} ${cycle.hh}z`);
+  log(`loaded ${built.length} steps for cycle ${cycle.yyyymmdd} ${cycle.hh}z (${downloaded} fields downloaded, rest from cache)`);
   return new ForecastStore(built, {
     cycleTime: cycle.time, bbox, steps, params: [...atmParams, ...(includeWaves ? WAVE_PARAMS : [])], loadedAt: new Date(),
   });

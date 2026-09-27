@@ -16,7 +16,7 @@ positions and treats the coastline as the only obstacle.
 
 | Surface | Path |
 |---|---|
-| Test page (map, compute, watch progress) | `/plugins/signalk-weather-router-plus/ui` |
+| Webapp (map, compute, watch progress) | listed in the Admin UI's Webapps page as **Weather Router Plus**; served at `/signalk-weather-router-plus/` (also `/plugins/signalk-weather-router-plus/ui`) |
 | Route job API (REST + Server-Sent Events) | `/plugins/signalk-weather-router-plus/api/…` |
 | OpenAPI | `/plugins/signalk-weather-router-plus/api/openapi.json` |
 | Finished routes | saved to `/signalk/v2/api/resources/routes/{jobId}` (needs a routes provider, e.g. `resources-provider`) |
@@ -81,7 +81,10 @@ npm link signalk-weather-router-plus
 ```
 
 Restart Signal K, enable the plugin, and configure at least the coastline
-shapefile path. A polar file (`.csv` or `.pol`, knots) enables sailing;
+shapefile path. The package carries the `signalk-webapp` keyword and a
+`public/` folder, so after the restart the webapp appears on the Admin UI's
+Webapps page. Writes (computing, cancelling, publishing) need a `readwrite`
+login; the page redirects to the server login when it gets a 401. A polar file (`.csv` or `.pol`, knots) enables sailing;
 without one every route is motor-only.
 
 ## Configuration

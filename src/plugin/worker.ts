@@ -8,9 +8,9 @@
 
 import { parentPort, workerData } from 'node:worker_threads';
 import * as path from 'node:path';
-import { EcmwfClient, ECMWF_MIRRORS, type Cycle } from '../data/ecmwf';
+import { EcmwfClient, ECMWF_MIRRORS, availableSteps, latestExpectedCycle, type Cycle } from '../data/ecmwf';
 import { ForecastStore } from '../data/forecast';
-import { loadForecastForBBox } from '../data/loader';
+import { loadForecastForBBox, resolveCycle, type ResolvedCycle } from '../data/loader';
 import { bboxFromLonLat, bboxWidth, bboxHeight, type BBox } from '../geo/geodesy';
 import { LandMask } from '../geo/landmask';
 import { NoWind } from '../engine/environment';
@@ -58,24 +58,41 @@ async function refresh(region: BBox | null, force: boolean): Promise<void> {
     send({ type: 'refresh-error', message: 'no forecast region available yet (no vessel position and no explicit region configured)' });
     return;
   }
-  let cycle: Cycle;
+  const horizon = cfg.forecast.horizonHours;
+  const sameRegion = !!regionBBox && Math.abs(regionBBox.west - bbox.west) < 1e-9 && Math.abs(regionBBox.east - bbox.east) < 1e-9
+    && Math.abs(regionBBox.south - bbox.south) < 1e-9 && Math.abs(regionBBox.north - bbox.north) < 1e-9;
+  const residentSteps = availableSteps(regionStore ? cycleFromTime(regionStore.meta.cycleTime).atmStream : 'oper', horizon).length;
+  const residentCurrent = (c: Cycle): boolean =>
+    !!regionStore && sameRegion && regionStore.meta.cycleTime.getTime() >= c.time.getTime() && regionStore.steps.length >= residentSteps;
+
+  // 1. Wall-clock rule (as the planner): if the resident forecast is
+  //    already from the cycle that should be the newest published one,
+  //    do nothing and make no request.
+  const expected = latestExpectedCycle(new Date(), horizon);
+  if (!force && residentCurrent(expected)) {
+    send({ type: 'forecast-unchanged', cycleTimeMs: regionStore!.meta.cycleTime.getTime() });
+    return;
+  }
+
+  // 2. Pick the cycle: fully cached expected cycle → no network; else ask
+  //    the server; else the newest fully cached cycle.
+  let resolved: ResolvedCycle;
   try {
-    cycle = await cl.findLatestCycle(cfg.forecast.horizonHours);
+    resolved = await resolveCycle(cl, horizon, { log: (m) => log('info', `forecast: ${m}`) });
   } catch (err) {
     send({ type: 'refresh-error', message: (err as Error).message });
     return;
   }
-  const sameRegion = regionBBox && Math.abs(regionBBox.west - bbox.west) < 1e-9 && Math.abs(regionBBox.east - bbox.east) < 1e-9
-    && Math.abs(regionBBox.south - bbox.south) < 1e-9 && Math.abs(regionBBox.north - bbox.north) < 1e-9;
-  if (!force && regionStore && sameRegion && regionStore.meta.cycleTime.getTime() === cycle.time.getTime()
-    && regionStore.steps.length >= (cfg.forecast.horizonHours / 3) - 1) {
-    send({ type: 'forecast-unchanged', cycleTimeMs: cycle.time.getTime() });
+  const cycle = resolved.cycle;
+  if (!force && residentCurrent(cycle)) {
+    send({ type: 'forecast-unchanged', cycleTimeMs: regionStore!.meta.cycleTime.getTime() });
     return;
   }
+
   const t = Date.now();
   try {
     const store = await loadForecastForBBox(cl, bbox, {
-      horizonHours: cfg.forecast.horizonHours,
+      horizonHours: horizon,
       cycle,
       log: (m) => log('debug', `forecast: ${m}`),
       onStep: (done, total) => {
@@ -84,7 +101,7 @@ async function refresh(region: BBox | null, force: boolean): Promise<void> {
     });
     regionStore = store;
     regionBBox = bbox;
-    log('info', `forecast region ${bbox.west.toFixed(1)}..${bbox.east.toFixed(1)} × ${bbox.south.toFixed(1)}..${bbox.north.toFixed(1)}: cycle ${cycle.yyyymmdd} ${cycle.hh}z, ${store.steps.length} steps, ${(store.bytes() / 1024).toFixed(0)} kB resident, ${((Date.now() - t) / 1000).toFixed(1)} s`);
+    log('info', `forecast region ${bbox.west.toFixed(1)}..${bbox.east.toFixed(1)} × ${bbox.south.toFixed(1)}..${bbox.north.toFixed(1)}: cycle ${cycle.yyyymmdd} ${cycle.hh}z${resolved.fromCache ? ' (from disk cache)' : ''}, ${store.steps.length} steps, ${(store.bytes() / 1024).toFixed(0)} kB resident, ${((Date.now() - t) / 1000).toFixed(1)} s`);
     send({ type: 'forecast', forecast: store.serialize() });
     try {
       cl.pruneCache(keepCycles(cycle, cfg.forecast.keepCycles));
@@ -162,7 +179,7 @@ async function route(id: string, request: RouteRequest, region: BBox | null): Pr
         progress(0, 0, 'route extends beyond the resident forecast region; decoding a route-specific forecast crop');
         const cycle = regionStore
           ? cycleFromTime(regionStore.meta.cycleTime)
-          : await cl.findLatestCycle(cfg.forecast.horizonHours);
+          : (await resolveCycle(cl, cfg.forecast.horizonHours, { log: (m) => log('info', `job ${id} forecast: ${m}`) })).cycle;
         wind = await loadForecastForBBox(cl, bbox, {
           horizonHours: cfg.forecast.horizonHours,
           cycle,

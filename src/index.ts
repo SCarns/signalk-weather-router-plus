@@ -58,6 +58,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let forecastError: string | null = null;
   let refreshTimer: NodeJS.Timeout | null = null;
   let regionRetryTimer: NodeJS.Timeout | null = null;
+  let failedRefreshTimer: NodeJS.Timeout | null = null;
   let weatherRegistered = false;
   let stopped = true;
   const pendingRefresh = { requested: false, force: false };
@@ -179,6 +180,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'forecast':
         forecast = ForecastStore.deserialize(msg.forecast);
         forecastError = null;
+        if (failedRefreshTimer) {
+          clearTimeout(failedRefreshTimer);
+          failedRefreshTimer = null;
+        }
         registerWeather();
         updateStatus();
         return;
@@ -187,7 +192,15 @@ export = function plugin(app: SkApp): SignalKPlugin {
         return;
       case 'refresh-error':
         forecastError = msg.message;
-        app.error(`forecast refresh failed: ${msg.message}`);
+        app.error(`forecast refresh failed: ${msg.message}${forecast ? ' (keeping the resident forecast)' : ''}`);
+        // Planner cadence: re-check in 10 minutes rather than waiting for
+        // the hourly timer.
+        if (!failedRefreshTimer) {
+          failedRefreshTimer = setTimeout(() => {
+            failedRefreshTimer = null;
+            if (!stopped) requestRefresh(false);
+          }, 10 * 60_000);
+        }
         updateStatus();
         return;
       case 'progress':
@@ -297,6 +310,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
     if (regionRetryTimer) {
       clearTimeout(regionRetryTimer);
       regionRetryTimer = null;
+    }
+    if (failedRefreshTimer) {
+      clearTimeout(failedRefreshTimer);
+      failedRefreshTimer = null;
     }
     if (worker) {
       post({ type: 'shutdown' });

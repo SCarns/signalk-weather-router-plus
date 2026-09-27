@@ -21,7 +21,6 @@
  * servers every route is admin-only, which is the server's default.
  */
 
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { IRouter, Request, Response } from 'express';
 import type { JobManager } from './jobs';
@@ -51,20 +50,23 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     res.status(code).json(body);
   };
 
-  // Signal K reserves GET /plugins/<id> for plugin metadata, so the test
-  // page lives at /ui.
-  router.get(['/ui', '/ui/'], (_req: Request, res: Response) => {
-    const file = path.join(deps.publicDir, 'index.html');
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  // The page is a Signal K webapp: the server mounts `public/` at
+  // /<package-name>/ (keyword `signalk-webapp`). /ui is kept as a
+  // convenience alias that serves the same files from the plugin router
+  // (Signal K reserves GET /plugins/<id> itself).
+  const servePublic = (rel: string, req: Request, res: Response): void => {
+    const file = path.join(deps.publicDir, rel);
+    if (!file.startsWith(deps.publicDir)) {
+      res.status(404).end();
+      return;
+    }
     res.setHeader('Cache-Control', 'no-cache');
-    fs.readFile(file, 'utf8', (err, html) => {
-      if (err) {
-        res.status(500).send(`test page missing: ${err.message}`);
-        return;
-      }
-      res.send(html.replace(/__BASE_PATH__/g, deps.basePath));
+    res.sendFile(file, (err?: Error) => {
+      if (err && !res.headersSent) res.status(404).send(`not found: ${req.path}`);
     });
-  });
+  };
+  router.get(['/ui', '/ui/'], (req: Request, res: Response) => servePublic('index.html', req, res));
+  router.get('/ui/:file', (req: Request, res: Response) => servePublic(path.basename(req.params.file), req, res));
 
   ro.get('/api/status', (_req: Request, res: Response) => json(res, 200, deps.status()));
 

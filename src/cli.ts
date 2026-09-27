@@ -12,8 +12,8 @@
  */
 
 import * as fs from 'node:fs';
-import { loadForecastForBBox } from './data/loader';
-import { EcmwfClient } from './data/ecmwf';
+import { loadForecastForBBox, resolveCycle } from './data/loader';
+import { EcmwfClient, ECMWF_MIRRORS } from './data/ecmwf';
 import { bboxFromLonLat } from './geo/geodesy';
 import { LandMask } from './geo/landmask';
 import { OceanPropagator } from './engine/propagator';
@@ -79,8 +79,9 @@ async function main(): Promise<void> {
   let wind;
   if (!flag('no-forecast')) {
     t = Date.now();
-    const client = new EcmwfClient({ cacheDir, log: (m) => log(`  ecmwf: ${m}`) });
-    wind = await loadForecastForBBox(client, bbox, { horizonHours: hours, log: (m) => log(`  forecast: ${m}`) });
+    const client = new EcmwfClient({ cacheDir, baseUrl: arg('mirror') ? ECMWF_MIRRORS[arg('mirror')!] ?? arg('mirror') : undefined, log: (m) => log(`  ecmwf: ${m}`) });
+    const resolved = await resolveCycle(client, hours, { log: (m) => log(`  forecast: ${m}`) });
+    wind = await loadForecastForBBox(client, bbox, { horizonHours: hours, cycle: resolved.cycle, log: (m) => log(`  forecast: ${m}`) });
     log(`forecast: ${wind.steps.length} steps, ${(wind.bytes() / 1024).toFixed(0)} kB resident, ${Date.now() - t} ms`);
   }
 
@@ -90,6 +91,15 @@ async function main(): Promise<void> {
     start, end, departureTime: departure, vessel, polar, wind, modePolicy: mode, vias,
     onProgress: (s, K, msg) => log(`  [${s}/${K}] ${msg}`),
   });
+  if (wind) {
+    route.forecastCycle = wind.meta.cycleTime.toISOString();
+    const lastValid = wind.validRange[1].getTime();
+    const arrival = route.waypoints[route.waypoints.length - 1].time.getTime();
+    if (arrival > lastValid) {
+      route.forecastHorizonExceededS = (arrival - lastValid) / 1000;
+      log(`WARNING: arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`);
+    }
+  }
   log(`route: ${route.waypoints.length} waypoints, ${(route.totalDistanceM / 1852).toFixed(1)} nm, ${(route.totalTimeS / 3600).toFixed(1)} h (sail ${(route.sailingTimeS / 3600).toFixed(1)} h, motor ${(route.motoringTimeS / 3600).toFixed(1)} h), warnings ${route.warnings?.length ?? 0}, ${Date.now() - t} ms`);
   fs.writeFileSync(out, JSON.stringify(routeToGeoJSON(route), null, 1));
   log(`wrote ${out}`);
