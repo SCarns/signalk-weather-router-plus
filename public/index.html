@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weather Router Plus</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+<style>
+  :root { color-scheme: light dark; --bg:#0f1418; --panel:#171f26; --fg:#e6edf3; --muted:#8b98a5; --accent:#2f81f7; --ok:#3fb950; --warn:#d29922; --err:#f85149; --border:#2b3640; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 14px/1.4 -apple-system, system-ui, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); display:flex; height:100vh; }
+  #side { width: 380px; min-width: 300px; padding: 14px; overflow-y: auto; background: var(--panel); border-right: 1px solid var(--border); }
+  #map { flex: 1; }
+  h1 { font-size: 16px; margin: 0 0 8px; }
+  .muted { color: var(--muted); font-size: 12px; }
+  label { display:block; margin-top: 10px; font-size: 12px; color: var(--muted); }
+  input, select, button { width: 100%; padding: 6px 8px; margin-top: 3px; background: #0d1117; color: var(--fg); border: 1px solid var(--border); border-radius: 6px; font: inherit; }
+  button { background: var(--accent); border-color: var(--accent); cursor: pointer; font-weight: 600; margin-top: 12px; }
+  button.secondary { background: transparent; color: var(--fg); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 8px; } .row > * { flex: 1; }
+  #log { margin-top: 12px; font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; background: #0d1117; border: 1px solid var(--border); border-radius: 6px; padding: 8px; max-height: 260px; overflow-y: auto; }
+  #summary { margin-top: 10px; font-size: 13px; }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; } td { padding: 2px 4px; border-bottom: 1px solid var(--border); } td:first-child { color: var(--muted); }
+  .leaflet-container { background: #0b1a26; }
+</style>
+</head>
+<body>
+<div id="side">
+  <h1>Weather Router Plus</h1>
+  <div class="muted" id="status">loading status…</div>
+  <div class="muted" style="margin-top:6px">Click the map to set <b>start</b>, then <b>end</b>. Shift-click adds a via point. Positions are lat, lon.</div>
+  <div class="row">
+    <div><label>Start (lat, lon)<input id="start" placeholder="41.44, -71.36"></label></div>
+    <div><label>End (lat, lon)<input id="end" placeholder="41.25, -69.95"></label></div>
+  </div>
+  <label>Via points (lat, lon [@radius m]; one per line)<textarea id="vias" rows="2" style="width:100%;margin-top:3px;background:#0d1117;color:var(--fg);border:1px solid var(--border);border-radius:6px;font:inherit;padding:6px 8px"></textarea></label>
+  <div class="row">
+    <div><label>Mode<select id="mode"><option value="sail_max">sail_max</option><option value="fastest">fastest</option><option value="motor">motor</option></select></label></div>
+    <div><label>Departure (UTC, blank = now)<input id="departure" placeholder="2026-09-28T12:00:00Z"></label></div>
+  </div>
+  <div class="row">
+    <div><label>Route name<input id="name" placeholder="optional"></label></div>
+    <div><label>Publish to Resources<select id="publish"><option value="">plugin default</option><option value="true">yes</option><option value="false">no</option></select></label></div>
+  </div>
+  <div class="row">
+    <button id="compute">Compute route</button>
+    <button id="cancel" class="secondary" disabled>Cancel</button>
+  </div>
+  <div class="row">
+    <button id="clear" class="secondary">Clear</button>
+    <button id="refresh" class="secondary" title="Check ECMWF for a newer cycle">Refresh forecast</button>
+  </div>
+  <div id="summary"></div>
+  <div id="log"></div>
+  <div class="muted" style="margin-top:10px">API: <a href="__BASE_PATH__/api/openapi.json" style="color:var(--accent)">openapi.json</a> · <a href="__BASE_PATH__/api/status" style="color:var(--accent)">status</a> · <a href="__BASE_PATH__/api/routes" style="color:var(--accent)">jobs</a></div>
+</div>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script>
+(function () {
+  const BASE = '__BASE_PATH__';
+  const $ = (id) => document.getElementById(id);
+  const log = (m, cls) => { const el = $('log'); const line = document.createElement('div'); if (cls) line.className = cls; line.textContent = new Date().toISOString().slice(11, 19) + ' ' + m; el.appendChild(line); el.scrollTop = el.scrollHeight; };
+  const map = L.map('map').setView([41.3, -70.8], 8);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(map);
+  let startM = null, endM = null, viaMs = [], routeLayer = null, es = null, currentJob = null;
+  const fmt = (ll) => ll.lat.toFixed(4) + ', ' + ll.lng.toFixed(4);
+  const parseLL = (s) => { const m = s.split(/[,\s]+/).filter(Boolean).map(Number); return (m.length >= 2 && m.every(isFinite)) ? { lat: m[0], lon: m[1] } : null; };
+  map.on('click', (e) => {
+    if (e.originalEvent.shiftKey) { const m = L.marker(e.latlng, { draggable: true }).addTo(map).bindTooltip('via'); viaMs.push(m); m.on('dragend', syncVias); syncVias(); return; }
+    if (!startM) { startM = L.marker(e.latlng, { draggable: true }).addTo(map).bindTooltip('start'); startM.on('dragend', () => { $('start').value = fmt(startM.getLatLng()); }); $('start').value = fmt(e.latlng); }
+    else if (!endM) { endM = L.marker(e.latlng, { draggable: true }).addTo(map).bindTooltip('end'); endM.on('dragend', () => { $('end').value = fmt(endM.getLatLng()); }); $('end').value = fmt(e.latlng); }
+  });
+  function syncVias() { $('vias').value = viaMs.map((m) => fmt(m.getLatLng()) + ' @500').join('\n'); }
+  $('clear').onclick = () => { [startM, endM, ...viaMs].forEach((m) => m && map.removeLayer(m)); startM = endM = null; viaMs = []; if (routeLayer) map.removeLayer(routeLayer); routeLayer = null; $('start').value = $('end').value = $('vias').value = ''; $('summary').innerHTML = ''; };
+  async function status() {
+    try {
+      const r = await fetch(BASE + '/api/status'); const s = await r.json();
+      const f = s.forecast;
+      $('status').innerHTML = f
+        ? `<span class="ok">forecast</span> cycle ${f.cycle.slice(0, 13)}Z, ${f.steps} steps to ${f.valid_to.slice(0, 13)}Z, region ${f.region.west}…${f.region.east} × ${f.region.south}…${f.region.north}${f.has_waves ? ', waves' : ''}; jobs: ${s.jobs ? s.jobs.running ? 'running' : 'idle' : '–'}, ${s.jobs ? s.jobs.queued : 0} queued`
+        : `<span class="warn">no forecast loaded</span>${s.forecast_error ? ': ' + s.forecast_error : ' (loading)'}`;
+      if (s.vessel) $('status').innerHTML += `<br>vessel ${s.vessel.name}, motor ${(s.vessel.motorSpeedMs * 3600 / 1852).toFixed(1)} kt${s.polar ? ', polar ' + s.polar.split('/').pop() : ', no polar (motor only)'}`;
+    } catch (e) { $('status').textContent = 'status unavailable: ' + e.message; }
+  }
+  $('refresh').onclick = async () => { await fetch(BASE + '/api/forecast/refresh', { method: 'POST' }); log('forecast refresh requested'); setTimeout(status, 3000); };
+  function drawRoute(gj) {
+    if (routeLayer) map.removeLayer(routeLayer);
+    routeLayer = L.geoJSON(gj, {
+      style: (f) => ({ color: f.properties.has_land_crossing ? '#f85149' : '#3fb950', weight: 3 }),
+      pointToLayer: (f, ll) => L.circleMarker(ll, { radius: 4, color: f.properties.mode === 'sailing' ? '#3fb950' : '#d29922', fillOpacity: .9 }),
+      onEachFeature: (f, layer) => {
+        const p = f.properties;
+        if (f.geometry.type === 'Point') {
+          layer.bindPopup(`<b>${p.time}</b><br>${p.mode} · SOG ${(p.sog_ms * 1.94384).toFixed(1)} kt · COG ${p.cog_deg}°` +
+            (p.wind_ms !== undefined ? `<br>wind ${(p.wind_ms * 1.94384).toFixed(1)} kt from ${p.wind_dir_deg}°` + (p.twa_deg !== undefined ? ` (TWA ${p.twa_deg}°)` : '') : '') +
+            (p.swh_m !== undefined ? `<br>waves ${p.swh_m} m, ${p.mwp_s} s from ${p.mwd_deg}°` : '') +
+            (p.leg_distance_m !== undefined ? `<br>next leg ${(p.leg_distance_m / 1852).toFixed(1)} nm, ${(p.leg_time_s / 3600).toFixed(1)} h` : '') +
+            (p.role ? `<br><b>${p.role}</b>` : ''));
+        }
+      },
+    }).addTo(map);
+    map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
+    const p = gj.features[0].properties;
+    $('summary').innerHTML = `<table>
+      <tr><td>distance</td><td>${(p.total_distance_m / 1852).toFixed(1)} nm</td></tr>
+      <tr><td>time</td><td>${(p.total_time_s / 3600).toFixed(1)} h (sail ${(p.sailing_time_s / 3600).toFixed(1)} h, motor ${(p.motoring_time_s / 3600).toFixed(1)} h)</td></tr>
+      <tr><td>departure</td><td>${p.departure}</td></tr><tr><td>arrival</td><td>${p.arrival}</td></tr>
+      <tr><td>waypoints</td><td>${p.waypoint_count}</td></tr>
+      ${p.max_swh_m !== undefined ? `<tr><td>waves</td><td>max ${p.max_swh_m} m, avg ${p.avg_swh_m} m</td></tr>` : ''}
+      ${p.forecast_cycle ? `<tr><td>forecast</td><td>${p.forecast_cycle}</td></tr>` : ''}
+      ${p.forecast_horizon_exceeded_s ? `<tr><td class="warn">note</td><td class="warn">arrival ${(p.forecast_horizon_exceeded_s / 3600).toFixed(1)} h past the last forecast step</td></tr>` : ''}
+      ${p.has_land_crossing ? `<tr><td class="err">land</td><td class="err">${p.land_crossings} leg(s) cross land</td></tr>` : ''}
+    </table>`;
+  }
+  $('compute').onclick = async () => {
+    const start = parseLL($('start').value), end = parseLL($('end').value);
+    if (!start || !end) { log('set start and end first', 'err'); return; }
+    const waypoints = $('vias').value.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => { const [ll, r] = l.split('@'); const p = parseLL(ll); return p ? { lat: p.lat, lon: p.lon, radius_m: r ? Number(r) : 500 } : null; }).filter(Boolean);
+    const body = { start, end, waypoints, mode: $('mode').value, departure: $('departure').value.trim() || undefined, name: $('name').value.trim() || undefined };
+    if ($('publish').value) body.publish = $('publish').value === 'true';
+    $('compute').disabled = true; $('cancel').disabled = false; $('log').innerHTML = ''; $('summary').innerHTML = '';
+    const r = await fetch(BASE + '/api/routes', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok) { log('submit failed: ' + (j.error || r.status), 'err'); $('compute').disabled = false; $('cancel').disabled = true; return; }
+    currentJob = j.id; log('job ' + j.id + ' ' + j.status);
+    es = new EventSource(BASE + '/api/routes/' + j.id + '/events');
+    es.addEventListener('status', (e) => log('status: ' + JSON.parse(e.data).status));
+    es.addEventListener('progress', (e) => { const p = JSON.parse(e.data); log((p.total ? `[${p.stage}/${p.total}] ` : '') + p.message, p.message.startsWith('WARNING') ? 'warn' : ''); });
+    es.addEventListener('route', (e) => drawRoute(JSON.parse(e.data)));
+    es.addEventListener('done', (e) => { log('done', 'ok'); finish(); });
+    es.addEventListener('error', (e) => { if (e.data) log('error: ' + JSON.parse(e.data).message, 'err'); finish(); });
+  };
+  function finish() { if (es) es.close(); es = null; $('compute').disabled = false; $('cancel').disabled = true; status(); }
+  $('cancel').onclick = async () => { if (currentJob) await fetch(BASE + '/api/routes/' + currentJob + '/cancel', { method: 'POST' }); };
+  status(); setInterval(status, 30000);
+})();
+</script>
+</body>
+</html>
