@@ -1,10 +1,18 @@
 /**
- * Signal K Weather API provider backed by the resident forecast region.
+ * Signal K Weather API provider backed by the resident global forecast.
  * Point forecasts only (one WeatherData per forecast step); daily
  * summaries, observations and warnings are not provided.
+ *
+ * Every value is in the Signal K unit for its field: m/s, rad, Pa, K,
+ * m, s, and relative humidity as a ratio. The extra fields (temperature,
+ * dew point, humidity, water temperature) appear only when the plugin is
+ * configured to fetch them. Precipitation volume is not provided: the
+ * store holds only ECMWF's instantaneous `tprate`, not an accumulated
+ * field or an interval-mean rate, so no interval depth can be derived.
  */
 
 import type { ForecastStore } from '../data/forecast';
+import { relativeHumidity } from '../engine/conditions';
 
 export interface SkPosition {
   latitude: number;
@@ -21,8 +29,16 @@ export interface WeatherData {
   description?: string;
   date: string;
   type: 'point' | 'daily' | 'observation';
-  outside?: { pressure?: number; temperature?: number; precipitationVolume?: number };
-  water?: { waveSignificantHeight?: number; wavePeriod?: number; waveDirection?: number };
+  outside?: {
+    pressure?: number;
+    temperature?: number;
+    dewPointTemperature?: number;
+    /** Ratio 0..1. */
+    relativeHumidity?: number;
+    /** Depth in m accumulated over the interval ending at `date`. */
+    precipitationVolume?: number;
+  };
+  water?: { temperature?: number; waveSignificantHeight?: number; wavePeriod?: number; waveDirection?: number };
   wind?: { speedTrue?: number; directionTrue?: number };
 }
 
@@ -43,15 +59,20 @@ export function makeWeatherProvider(getStore: () => ForecastStore | null, plugin
     const lon = position.longitude;
     const lat = position.latitude;
     if (!store.covers(lon, lat)) {
-      throw new Error(`position ${lat.toFixed(3)}, ${lon.toFixed(3)} is outside the resident forecast region`);
+      throw new Error(`position ${lat.toFixed(3)}, ${lon.toFixed(3)} is outside the resident forecast`);
     }
     let fromMs = Date.now();
     if (options?.startDate) {
       const d = Date.parse(options.startDate);
       if (!Number.isNaN(d)) fromMs = d;
     }
+    const finiteOr = (v: number): number | undefined => (Number.isFinite(v) ? v : undefined);
+    const has2t = store.has('2t');
+    const hasD2m = store.has('2d');
+    const hasSkt = store.has('skt');
     const out: WeatherData[] = [];
-    for (const step of store.steps) {
+    for (let i = 0; i < store.steps.length; i++) {
+      const step = store.steps[i];
       if (step.validMs + 3 * 3600_000 <= fromMs) continue; // step already fully in the past
       const t = new Date(step.validMs);
       const [ws, wd] = store.at(lon, lat, t);
@@ -63,10 +84,24 @@ export function makeWeatherProvider(getStore: () => ForecastStore | null, plugin
         type: 'point',
         wind: { speedTrue: ws, directionTrue: (wd * Math.PI) / 180 },
       };
-      if (Number.isFinite(msl)) item.outside = { pressure: msl };
+      const outside: NonNullable<WeatherData['outside']> = {};
+      if (Number.isFinite(msl)) outside.pressure = msl;
+      const t2m = has2t ? finiteOr(store.paramAt('2t', lon, lat, t)) : undefined;
+      const d2m = hasD2m ? finiteOr(store.paramAt('2d', lon, lat, t)) : undefined;
+      if (t2m !== undefined) outside.temperature = t2m;
+      if (d2m !== undefined) outside.dewPointTemperature = d2m;
+      const rh = relativeHumidity(t2m ?? null, d2m ?? null);
+      if (rh !== null) outside.relativeHumidity = rh;
+      if (Object.keys(outside).length > 0) item.outside = outside;
+      const water: NonNullable<WeatherData['water']> = {};
+      const skt = hasSkt ? finiteOr(store.paramAt('skt', lon, lat, t)) : undefined;
+      if (skt !== undefined) water.temperature = skt;
       if (wave && Number.isFinite(wave.swh)) {
-        item.water = { waveSignificantHeight: wave.swh, wavePeriod: wave.mwp, waveDirection: (wave.mwd * Math.PI) / 180 };
+        water.waveSignificantHeight = wave.swh;
+        water.wavePeriod = wave.mwp;
+        water.waveDirection = (wave.mwd * Math.PI) / 180;
       }
+      if (Object.keys(water).length > 0) item.water = water;
       out.push(item);
       if (options?.maxCount && out.length >= options.maxCount) break;
     }

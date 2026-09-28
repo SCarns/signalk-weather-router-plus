@@ -153,6 +153,8 @@ export function aecDecode(
   p: AecParams,
   nSamples: number,
   stats?: AecStats,
+  /** Optional reusable output (length >= nSamples); every sample is overwritten. */
+  outBuf?: Uint32Array,
 ): Uint32Array {
   const { bitsPerSample: bps, blockSize, rsi, flags } = p;
 
@@ -191,7 +193,7 @@ export function aecDecode(
   let ref = pp ? 1 : 0;
   let ebs = blockSize - ref; // encoded block size
 
-  const out = new Uint32Array(nSamples);
+  const out = outBuf && outBuf.length >= nSamples ? outBuf.subarray(0, nSamples) : new Uint32Array(nSamples);
   let produced = 0; // samples flushed into `out`
 
   const reader = new BitReader(input);

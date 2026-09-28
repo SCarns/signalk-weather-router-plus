@@ -18,6 +18,12 @@ import type { BBox } from './geodesy';
 import { bboxHeight, bboxWidth, lonOffsetFromWest, slerpSamples, haversineDistanceM } from './geodesy';
 import { pointInShape, readShapefilePolygons, type ShapePolygon } from './shapefile';
 
+export interface SerializedLandRaster {
+  bbox: BBox;
+  resolutionDeg: number;
+  raster: Uint8Array;
+}
+
 export interface LandMaskOptions {
   /** Raster cell size in degrees. 0.002° ≈ 220 m at the equator. */
   resolutionDeg?: number;
@@ -34,7 +40,7 @@ export class LandMask {
   readonly raster: Uint8Array;
   readonly shapes: ShapePolygon[];
 
-  private constructor(shapes: ShapePolygon[], bbox: BBox, resolutionDeg: number) {
+  private constructor(shapes: ShapePolygon[], bbox: BBox, resolutionDeg: number, raster?: Uint8Array) {
     this.shapes = shapes;
     this.bbox = bbox;
     this.resolutionDeg = resolutionDeg;
@@ -47,8 +53,27 @@ export class LandMask {
         'use a coarser resolution or a smaller bbox',
       );
     }
-    this.raster = new Uint8Array(cells);
-    this.rasterize();
+    if (raster) {
+      if (raster.length !== cells) throw new Error(`LandMask raster has ${raster.length} cells, expected ${cells}`);
+      this.raster = raster;
+    } else {
+      this.raster = new Uint8Array(cells);
+      this.rasterize();
+    }
+  }
+
+  /** Structured-clone friendly raster form (no polygons; isLandExact is unavailable). */
+  serializeRaster(): SerializedLandRaster {
+    return { bbox: this.bbox, resolutionDeg: this.resolutionDeg, raster: this.raster };
+  }
+
+  static fromRaster(s: SerializedLandRaster): LandMask {
+    return new LandMask([], s.bbox, s.resolutionDeg, s.raster);
+  }
+
+  /** True when polygon geometry is available for exact tests. */
+  get hasPolygons(): boolean {
+    return this.shapes.length > 0;
   }
 
   /**
@@ -90,10 +115,27 @@ export class LandMask {
     return new LandMask(shapes, bbox, resolutionDeg);
   }
 
+  /**
+   * Raster-only mask fed one polygon at a time: `feed` calls `add` for
+   * each polygon, which is rasterised and can then be dropped, so memory
+   * is bounded by the largest single polygon rather than all of them.
+   * The raster equals fromPolygons(all, bbox, res).raster; no polygons
+   * are kept (isLandExact is unavailable).
+   */
+  static rasterStreamed(bbox: BBox, resolutionDeg: number, feed: (add: (s: ShapePolygon) => void) => void): LandMask {
+    const m = new LandMask([], bbox, resolutionDeg);
+    feed((s) => m.rasterizeShape(s));
+    return m;
+  }
+
   // -------------------------------------------------------------------
   // Rasterisation
 
   private rasterize(): void {
+    for (const shape of this.shapes) this.rasterizeShape(shape);
+  }
+
+  private rasterizeShape(shape: ShapePolygon): void {
     const { nx, ny, resolutionDeg: res, raster } = this;
     const width = bboxWidth(this.bbox);
     const south = this.bbox.south;
@@ -101,7 +143,7 @@ export class LandMask {
     // Row centre latitude and the row index range covering a lat span.
     const rowOfLat = (lat: number): number => Math.floor((lat - south) / res);
 
-    for (const shape of this.shapes) {
+    {
       // Longitudes are converted to the offset frame (degrees east of
       // bbox.west). Rings crossing the frame seam are unwrapped so
       // consecutive vertices differ by < 180°, then processed in up to
@@ -109,7 +151,7 @@ export class LandMask {
       // [0, width] gets filled.
       const rMinRow = Math.max(0, rowOfLat(shape.minLat));
       const rMaxRow = Math.min(ny - 1, rowOfLat(shape.maxLat));
-      if (rMinRow > rMaxRow) continue;
+      if (rMinRow > rMaxRow) return;
 
       const rings: Float64Array[] = [];
       for (const ring of shape.rings) {

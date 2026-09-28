@@ -1,0 +1,561 @@
+/**
+ * Data behind the overlay and conditions endpoints. Everything is SI
+ * and the browser renders it (heatmaps from JSON grids, arrows, barbs,
+ * isobars). Mirrors the routing server's field/vector/conditions
+ * endpoints in content, not in transport.
+ */
+
+import type { ForecastStore } from '../data/forecast';
+import type { CurrentStack } from '../currents/stack';
+import type { OverlayLand } from '../geo/landcache';
+import { bboxWidth, type BBox } from '../geo/geodesy';
+import {
+  beaufort, douglas, douglasLabel, feelsLike, heatIndexK, precipType, relativeHumidity, rnd,
+  seaStateBand, seaStateIndex, windChillK, roughnessIndex,
+} from '../engine/conditions';
+import { buildIsobarFeatures, type IsobarFeature } from '../engine/isobars';
+
+export type FieldLayer = 'wind' | 'waves' | 'msl' | 'temperature' | 'sst' | 'precip' | 'sea_state' | 'current';
+
+export interface FieldGridResponse {
+  layer: FieldLayer;
+  time: string;
+  bbox: [number, number, number, number];
+  res: number;
+  lons: number[];
+  lats: number[];
+  /** Named value grids, row-major from the south, null = no data. */
+  fields: Record<string, (number | null)[][]>;
+  /** 1 = land, per cell. */
+  land: number[][];
+  units: Record<string, string>;
+}
+
+/** Lattice covering the bbox at `res`, snapped to the global grid (like the server's global_grid_lonlats). */
+function lattice(bbox: BBox, res: number, maxCells: number): { lons: number[]; lats: number[]; res: number } {
+  let r = res;
+  const width = bboxWidth(bbox);
+  const height = bbox.north - bbox.south;
+  while ((Math.ceil(width / r) + 1) * (Math.ceil(height / r) + 1) > maxCells) r *= 2;
+  const lons: number[] = [];
+  const lats: number[] = [];
+  const lonStart = Math.ceil(bbox.west / r) * r;
+  for (let x = lonStart; x <= bbox.west + width + 1e-9; x += r) lons.push(Math.round((((x + 180) % 360 + 360) % 360 - 180) * 1e6) / 1e6);
+  const latStart = Math.ceil(bbox.south / r) * r;
+  for (let y = latStart; y <= bbox.north + 1e-9; y += r) lats.push(Math.round(y * 1e6) / 1e6);
+  return { lons, lats, res: r };
+}
+
+function nz(v: number): number | null {
+  return Number.isFinite(v) ? Math.round(v * 1e4) / 1e4 : null;
+}
+
+/**
+ * Significant-digit rounding for values far below 1e-4 in SI (the
+ * precipitation rate in m/s: 1 mm/h ≈ 2.8e-7 m/s), which nz() would
+ * round to 0.
+ */
+function nzSig(v: number): number | null {
+  return Number.isFinite(v) ? Number(v.toPrecision(5)) : null;
+}
+
+export interface OverlaySources {
+  forecast: ForecastStore | null;
+  currents: CurrentStack | null;
+  /** On-demand land: a raster per request bbox, exact point tests. */
+  land: OverlayLand | null;
+}
+
+export function fieldGrid(src: OverlaySources, layer: FieldLayer, bbox: BBox, time: Date, res: number): FieldGridResponse {
+  const { lons, lats, res: r } = lattice(bbox, res, 40_000);
+  const lm = src.land ? src.land.forBBox(bbox, r) : null;
+  const land = lats.map((lat) => lons.map((lon) => (lm && lm.isLand(lon, lat) ? 1 : 0)));
+  const fields: Record<string, (number | null)[][]> = {};
+  const units: Record<string, string> = {};
+  const f = src.forecast;
+  const need = (): ForecastStore => {
+    if (!f) throw new Error('no forecast loaded');
+    return f;
+  };
+  const rowsOf = (fn: (lon: number, lat: number) => number): (number | null)[][] => lats.map((lat) => lons.map((lon) => nz(fn(lon, lat))));
+  switch (layer) {
+    case 'wind': {
+      const s = need();
+      const speed: (number | null)[][] = [];
+      const dir: (number | null)[][] = [];
+      for (const lat of lats) {
+        const rs: (number | null)[] = [];
+        const rd: (number | null)[] = [];
+        for (const lon of lons) {
+          const [ws, wd] = s.at(lon, lat, time);
+          rs.push(nz(ws));
+          rd.push(nz(wd));
+        }
+        speed.push(rs);
+        dir.push(rd);
+      }
+      fields.speed_ms = speed;
+      fields.dir_from = dir;
+      units.speed_ms = 'm/s';
+      units.dir_from = 'deg';
+      break;
+    }
+    case 'waves': {
+      const s = need();
+      if (!s.hasWaves) throw new Error('no wave data in the forecast');
+      const swh: (number | null)[][] = [];
+      const mwp: (number | null)[][] = [];
+      const mwd: (number | null)[][] = [];
+      for (const lat of lats) {
+        const a: (number | null)[] = [];
+        const b: (number | null)[] = [];
+        const c: (number | null)[] = [];
+        for (const lon of lons) {
+          const w = s.wavesAt(lon, lat, time);
+          a.push(w ? nz(w.swh) : null);
+          b.push(w ? nz(w.mwp) : null);
+          c.push(w ? nz(w.mwd) : null);
+        }
+        swh.push(a);
+        mwp.push(b);
+        mwd.push(c);
+      }
+      fields.swh = swh;
+      fields.mwp = mwp;
+      fields.mwd = mwd;
+      units.swh = 'm';
+      units.mwp = 's';
+      units.mwd = 'deg';
+      break;
+    }
+    case 'msl': {
+      const s = need();
+      if (!s.has('msl')) throw new Error('msl not loaded');
+      fields.msl = rowsOf((lon, lat) => s.mslAt(lon, lat, time));
+      units.msl = 'Pa';
+      break;
+    }
+    case 'temperature': {
+      const s = need();
+      if (!s.has('2t')) throw new Error('2t not loaded (enable extra fields)');
+      fields.t2m = rowsOf((lon, lat) => s.paramAt('2t', lon, lat, time));
+      units.t2m = 'K';
+      break;
+    }
+    case 'sst': {
+      const s = need();
+      if (!s.has('skt')) throw new Error('skt not loaded (enable extra fields)');
+      fields.skt = rowsOf((lon, lat) => s.paramAt('skt', lon, lat, time));
+      units.skt = 'K';
+      break;
+    }
+    case 'precip': {
+      const s = need();
+      if (!s.has('tprate')) throw new Error('tprate not loaded (enable extra fields)');
+      // Already a depth rate in m/s: the store converts tprate at ingestion.
+      fields.rate = lats.map((lat) => lons.map((lon) => nzSig(s.paramAt('tprate', lon, lat, time))));
+      units.rate = 'm/s';
+      if (s.has('ptype')) {
+        fields.ptype = rowsOf((lon, lat) => s.paramAt('ptype', lon, lat, time));
+        units.ptype = 'code';
+      }
+      break;
+    }
+    case 'sea_state': {
+      const s = need();
+      const idx: (number | null)[][] = [];
+      const sig: (number | null)[][] = [];
+      for (const lat of lats) {
+        const a: (number | null)[] = [];
+        const b: (number | null)[] = [];
+        for (const lon of lons) {
+          const [ws, wd] = s.at(lon, lat, time);
+          const w = s.hasWaves ? s.wavesAt(lon, lat, time) : null;
+          let C = 0;
+          let cTo = 0;
+          if (src.currents) {
+            const [u, v] = src.currents.at(lon, lat, time);
+            C = Math.hypot(u, v);
+            cTo = ((Math.atan2(u, v) * 180) / Math.PI + 360) % 360;
+          }
+          const { idx: v, signal } = roughnessIndex(ws, C, wd, cTo, w ? w.swh : 0, w ? w.mwp : 5, w ? w.mwd : 0);
+          a.push(nz(v));
+          b.push(nz(signal));
+        }
+        idx.push(a);
+        sig.push(b);
+      }
+      fields.index = idx;
+      fields.signal = sig;
+      units.index = '';
+      units.signal = '';
+      break;
+    }
+    case 'current': {
+      if (!src.currents || src.currents.isEmpty) throw new Error('no current sources loaded');
+      const st = src.currents;
+      const speed: (number | null)[][] = [];
+      const dir: (number | null)[][] = [];
+      for (const lat of lats) {
+        const a: (number | null)[] = [];
+        const b: (number | null)[] = [];
+        for (const lon of lons) {
+          const [u, v] = st.at(lon, lat, time);
+          if (u === 0 && v === 0) {
+            a.push(null);
+            b.push(null);
+          } else {
+            a.push(nz(Math.hypot(u, v)));
+            b.push(nz(((Math.atan2(u, v) * 180) / Math.PI + 360) % 360));
+          }
+        }
+        speed.push(a);
+        dir.push(b);
+      }
+      fields.speed_ms = speed;
+      fields.dir_to = dir;
+      units.speed_ms = 'm/s';
+      units.dir_to = 'deg';
+      break;
+    }
+  }
+  // A cropped store (not the resident global one) clamps to its edge
+  // outside its box; those values are not forecast, so every
+  // forecast-derived layer reports no data there. The global store
+  // covers everywhere. Currents carry their own coverage (zero = none).
+  if (layer !== 'current' && f) {
+    for (let r = 0; r < lats.length; r++) {
+      for (let c = 0; c < lons.length; c++) {
+        if (f.covers(lons[c], lats[r])) continue;
+        for (const grid of Object.values(fields)) grid[r][c] = null;
+      }
+    }
+  }
+  return { layer, time: time.toISOString(), bbox: [bbox.west, bbox.south, bbox.east, bbox.north], res: r, lons, lats, fields, land, units };
+}
+
+export interface CurrentPoint {
+  lon: number;
+  lat: number;
+  u_ms: number;
+  v_ms: number;
+  speed_ms: number;
+  /** Direction the current flows TO, degrees true. */
+  dir_deg: number;
+}
+
+/** Current arrows on a lattice; land and near-slack points dropped. */
+export function currentPoints(src: OverlaySources, bbox: BBox, time: Date, res: number): CurrentPoint[] {
+  if (!src.currents || src.currents.isEmpty) return [];
+  const { lons, lats, res: r } = lattice(bbox, res, 20_000);
+  const lm = src.land ? src.land.forBBox(bbox, r) : null;
+  const out: CurrentPoint[] = [];
+  for (const lat of lats) {
+    for (const lon of lons) {
+      if (lm && lm.isLand(lon, lat)) continue;
+      const [u, v] = src.currents.at(lon, lat, time);
+      const sp = Math.hypot(u, v);
+      if (sp < 0.005) continue;
+      out.push({
+        lon: Math.round(lon * 1e6) / 1e6, lat: Math.round(lat * 1e6) / 1e6,
+        u_ms: Math.round(u * 1e4) / 1e4, v_ms: Math.round(v * 1e4) / 1e4,
+        speed_ms: Math.round(sp * 1e4) / 1e4, dir_deg: Math.round((((Math.atan2(u, v) * 180) / Math.PI + 360) % 360) * 10) / 10,
+      });
+    }
+  }
+  return out;
+}
+
+export interface WindPoint {
+  lon: number;
+  lat: number;
+  speed_ms: number;
+  /** FROM, degrees true. */
+  dir_deg: number;
+}
+
+export function windPoints(src: OverlaySources, bbox: BBox, time: Date, res: number): WindPoint[] {
+  if (!src.forecast) throw new Error('no forecast loaded');
+  const { lons, lats } = lattice(bbox, res, 20_000);
+  const out: WindPoint[] = [];
+  for (const lat of lats) {
+    for (const lon of lons) {
+      if (!src.forecast.covers(lon, lat)) continue;
+      const [ws, wd] = src.forecast.at(lon, lat, time);
+      if (!Number.isFinite(ws)) continue;
+      out.push({ lon: Math.round(lon * 1e6) / 1e6, lat: Math.round(lat * 1e6) / 1e6, speed_ms: Math.round(ws * 1000) / 1000, dir_deg: Math.round(wd * 10) / 10 });
+    }
+  }
+  return out;
+}
+
+export interface ConditionsRow {
+  time: string;
+  wind_ms: number | null;
+  wind_dir_deg: number | null;
+  swh_m: number | null;
+  mwp_s: number | null;
+  mwd_deg: number | null;
+  current_ms: number | null;
+  current_dir_deg: number | null;
+  msl_pa: number | null;
+  t2m_k: number | null;
+  skt_k: number | null;
+  /** Precipitation depth rate, m/s (ECMWF tprate converted at ingestion). */
+  precip_rate_ms: number | null;
+  precip_type: number | null;
+  precip_type_label: string | null;
+  dewpoint_k: number | null;
+  /** Relative humidity as a ratio 0..1 (Signal K unit). */
+  rh: number | null;
+  feels_like_k: number | null;
+  feels_like_basis: string | null;
+  wind_chill_k: number | null;
+  heat_index_k: number | null;
+  beaufort: number | null;
+  douglas: number | null;
+  douglas_label: string | null;
+  sea_state_index: number | null;
+  sea_state: string | null;
+  sea_state_partial: boolean;
+}
+
+/**
+ * One sample row at a position and time. Field names follow the routing
+ * server except where its units were not Signal K's: `precip_rate_ms`
+ * (m/s, the server sends `tprate_kg_m2_s`) and `rh` (ratio 0..1, the
+ * server sends `rh_pct`). Everything is SI or dimensionless.
+ */
+export function sampleConditions(src: OverlaySources, lon: number, lat: number, time: Date): ConditionsRow {
+  const f = src.forecast;
+  const finiteOr = (v: number | undefined | null): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  let wind: number | null = null;
+  let windDir: number | null = null;
+  let swh: number | null = null;
+  let mwp: number | null = null;
+  let mwd: number | null = null;
+  let msl: number | null = null;
+  let t2m: number | null = null;
+  let skt: number | null = null;
+  let tprate: number | null = null;
+  let d2m: number | null = null;
+  let ptypeCode: number | null = null;
+  if (f && f.covers(lon, lat)) {
+    const [ws, wd] = f.at(lon, lat, time);
+    wind = finiteOr(ws);
+    windDir = wind === null ? null : finiteOr(wd);
+    if (f.hasWaves) {
+      const w = f.wavesAt(lon, lat, time);
+      if (w) {
+        swh = finiteOr(w.swh);
+        mwp = finiteOr(w.mwp);
+        mwd = finiteOr(w.mwd);
+      }
+    }
+    msl = finiteOr(f.mslAt(lon, lat, time));
+    if (f.has('2t')) t2m = finiteOr(f.paramAt('2t', lon, lat, time));
+    if (f.has('skt')) skt = finiteOr(f.paramAt('skt', lon, lat, time));
+    if (f.has('tprate')) tprate = finiteOr(f.paramAt('tprate', lon, lat, time));
+    if (f.has('2d')) d2m = finiteOr(f.paramAt('2d', lon, lat, time));
+    if (f.has('ptype')) ptypeCode = finiteOr(f.paramAt('ptype', lon, lat, time));
+  }
+  let current: number | null = null;
+  let currentDir: number | null = null;
+  if (src.currents && !src.currents.isEmpty) {
+    const [u, v] = src.currents.at(lon, lat, time);
+    const sp = Math.hypot(u, v);
+    current = sp;
+    currentDir = sp > 1e-6 ? ((Math.atan2(u, v) * 180) / Math.PI + 360) % 360 : null;
+  }
+  const rh = relativeHumidity(t2m, d2m);
+  const fl = feelsLike(wind === null ? t2m : t2m, wind, rh);
+  const pt = precipType(ptypeCode);
+  const bft = beaufort(wind);
+  const dg = douglas(swh);
+  const ss = seaStateIndex(wind, windDir, current, currentDir, swh, mwp, mwd);
+  return {
+    time: time.toISOString(),
+    wind_ms: rnd(wind, 2),
+    wind_dir_deg: rnd(windDir, 0),
+    swh_m: rnd(swh, 2),
+    mwp_s: rnd(mwp, 1),
+    mwd_deg: rnd(mwd, 0),
+    current_ms: rnd(current, 3),
+    current_dir_deg: rnd(currentDir, 0),
+    msl_pa: rnd(msl, 0),
+    t2m_k: rnd(t2m, 2),
+    skt_k: rnd(skt, 2),
+    precip_rate_ms: rnd(tprate, 10),
+    precip_type: pt.code,
+    precip_type_label: pt.label,
+    dewpoint_k: rnd(d2m, 2),
+    rh: rnd(rh, 2),
+    feels_like_k: rnd(fl.k, 2),
+    feels_like_basis: fl.basis,
+    wind_chill_k: rnd(windChillK(t2m, wind), 2),
+    heat_index_k: rnd(heatIndexK(t2m, rh), 2),
+    beaufort: bft,
+    douglas: dg,
+    douglas_label: douglasLabel(dg),
+    sea_state_index: ss.index,
+    sea_state: seaStateBand(ss.index),
+    sea_state_partial: ss.partial,
+  };
+}
+
+export interface ConditionsSeries {
+  lon: number;
+  lat: number;
+  is_land: boolean;
+  from: string;
+  hours: number;
+  step_h: number;
+  forecast_time_range: [string, string] | null;
+  truncated: boolean;
+  series: ConditionsRow[];
+  sources: { forecast_cycle: string | null; currents: string[] };
+}
+
+const CONDITIONS_MAX_ROWS = 1000;
+
+export function conditionsSeries(src: OverlaySources, lon: number, lat: number, from: Date, hours: number, stepH: number): ConditionsSeries {
+  if (!Number.isFinite(stepH) || stepH <= 0) throw new Error('step_h must be > 0');
+  const f = src.forecast;
+  let start = from.getTime();
+  let end = start + hours * 3600_000;
+  let truncated = false;
+  let range: [string, string] | null = null;
+  if (f) {
+    const [a, b] = f.validRange;
+    range = [a.toISOString(), b.toISOString()];
+    if (start < a.getTime()) {
+      start = a.getTime();
+      truncated = true;
+    }
+    if (end > b.getTime()) {
+      end = b.getTime();
+      truncated = true;
+    }
+  }
+  const series: ConditionsRow[] = [];
+  let t = start;
+  for (; t <= end + 1 && series.length < CONDITIONS_MAX_ROWS; t += stepH * 3600_000) series.push(sampleConditions(src, lon, lat, new Date(t)));
+  if (t <= end + 1) truncated = true; // stopped by the row limit
+  return {
+    lon, lat,
+    is_land: !!src.land && src.land.isLandAt(lon, lat),
+    from: new Date(start).toISOString(), hours, step_h: stepH,
+    forecast_time_range: range, truncated, series,
+    sources: { forecast_cycle: f ? f.meta.cycleTime.toISOString() : null, currents: src.currents ? src.currents.sources.map((s) => s.name) : [] },
+  };
+}
+
+/** Isobar GeoJSON for a bbox at a time (interval in hPa). */
+export function pressureFeatures(src: OverlaySources, bbox: BBox, time: Date, intervalHpa: number): { type: 'FeatureCollection'; features: IsobarFeature[] } {
+  const f = src.forecast;
+  if (!f) throw new Error('no forecast loaded');
+  if (!f.has('msl')) throw new Error('msl not loaded');
+  const GRID = 0.25;
+  const pad = GRID;
+  const west = Math.floor((bbox.west - pad) / GRID) * GRID;
+  const east = west + Math.ceil((bboxWidth(bbox) + 2 * pad) / GRID) * GRID;
+  const south = Math.max(-90, Math.floor((bbox.south - pad) / GRID) * GRID);
+  const north = Math.min(90, Math.ceil((bbox.north + pad) / GRID) * GRID);
+  let nx = Math.round((east - west) / GRID) + 1;
+  let ny = Math.round((north - south) / GRID) + 1;
+  nx = Math.max(8, Math.min(600, nx));
+  ny = Math.max(8, Math.min(600, ny));
+  const lons = new Float64Array(nx);
+  const lats = new Float64Array(ny);
+  for (let i = 0; i < nx; i++) lons[i] = west + i * GRID;
+  for (let j = 0; j < ny; j++) lats[j] = south + j * GRID;
+  const field = new Float64Array(nx * ny);
+  for (let j = 0; j < ny; j++) {
+    for (let i = 0; i < nx; i++) {
+      field[j * nx + i] = f.mslAt(((lons[i] + 180) % 360 + 360) % 360 - 180, lats[j], time) * 0.01;
+    }
+  }
+  return { type: 'FeatureCollection', features: buildIsobarFeatures(field, lons, lats, intervalHpa) };
+}
+
+// ─────────── Conditions sample tile (GET /api/conditions-tile/:z/:x/:y) ───────────
+
+/** Lat/lon bbox `[west, south, east, north]` of slippy-map XYZ tile (z, x, y). */
+export function tileLatLonBounds(z: number, x: number, y: number): [number, number, number, number] {
+  const n = 2 ** z;
+  const west = (x / n) * 360.0 - 180.0;
+  const east = ((x + 1) / n) * 360.0 - 180.0;
+  const north = Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * (180.0 / Math.PI);
+  const south = Math.atan(Math.sinh(Math.PI * (1 - (2 * (y + 1)) / n))) * (180.0 / Math.PI);
+  return [west, south, east, north];
+}
+
+/**
+ * Global-grid lon/lat inside `[west, east) x [south, north)`, snapped to
+ * multiples of `res`, so adjacent tiles share no points at their edges.
+ */
+export function globalGridLonLats(west: number, south: number, east: number, north: number, res: number): { lons: number[]; lats: number[] } {
+  const axis = (lo: number, hi: number): number[] => {
+    const out: number[] = [];
+    const i1 = Math.ceil(hi / res);
+    for (let i = Math.ceil(lo / res); i < i1; i++) {
+      const v = i * res;
+      if (v >= lo && v < hi) out.push(v);
+    }
+    return out;
+  };
+  return { lons: axis(west, east), lats: axis(south, north) };
+}
+
+/** One sample point of a conditions tile: position plus every ConditionsRow field except `time`. */
+export type ConditionsTilePoint = { lon: number; lat: number } & Omit<ConditionsRow, 'time'>;
+
+/** Tiles below this zoom are empty (the routing server's contract). */
+export const CONDITIONS_TILE_MIN_ZOOM = 5;
+
+const tileCache = new Map<string, ConditionsTilePoint[]>();
+const TILE_CACHE_MAX = 512;
+
+/**
+ * Every conditions field at each sample point of tile (z, x, y) for one
+ * hour. Same point spacing as the routing server's wind-barb tile
+ * (`max(0.02, 0.8 / 2^(z-6))` degrees on the global grid), rows from the
+ * south, west to east within a row; land points are dropped when a land
+ * source is configured (an on-demand raster over the tile). Values come from `sampleConditions`, so a dot and the
+ * point series agree. Empty below zoom 5. Cached per forecast cycle and
+ * current-source set.
+ */
+export function conditionsTilePoints(src: OverlaySources, z: number, x: number, y: number, time: Date): ConditionsTilePoint[] {
+  if (z < CONDITIONS_TILE_MIN_ZOOM) return [];
+  const n = 2 ** z;
+  if (!Number.isInteger(z) || !Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= n || y < 0 || y >= n) throw new Error('tile out of range');
+  if (!src.forecast && (!src.currents || src.currents.isEmpty)) throw new Error('no forecast data loaded');
+  const cycle = src.forecast ? src.forecast.meta.cycleTime.getTime() : 0;
+  const cur = src.currents ? src.currents.sources.map((s) => s.name).join('+') : '';
+  const key = `${cycle}|${cur}|${src.land ? 1 : 0}|${z}/${x}/${y}|${time.getTime()}`;
+  const hit = tileCache.get(key);
+  if (hit) {
+    tileCache.delete(key);
+    tileCache.set(key, hit);
+    return hit;
+  }
+  const [w, s, e, nLat] = tileLatLonBounds(z, x, y);
+  const res = Math.max(0.02, 0.8 / 2 ** (z - 6));
+  const { lons, lats } = globalGridLonLats(w, s, e, nLat, res);
+  const lm = src.land ? src.land.forBBox({ west: w, south: s, east: e, north: nLat }, res) : null;
+  const points: ConditionsTilePoint[] = [];
+  for (const lat of lats) {
+    for (const lon of lons) {
+      if (lm && lm.isLand(lon, lat)) continue;
+      const { time: _t, ...row } = sampleConditions(src, lon, lat, time);
+      points.push({ lon: rnd(lon, 5) as number, lat: rnd(lat, 5) as number, ...row });
+    }
+  }
+  tileCache.set(key, points);
+  while (tileCache.size > TILE_CACHE_MAX) {
+    const oldest = tileCache.keys().next().value;
+    if (oldest === undefined) break;
+    tileCache.delete(oldest);
+  }
+  return points;
+}

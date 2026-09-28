@@ -88,9 +88,12 @@ export interface Grib2Message {
   hasBitmap: boolean;
   /**
    * Decode the field. Returns one value per grid point in scanning
-   * order, NaN where the bit map marks a point as missing.
+   * order, NaN where the bit map marks a point as missing. `scratch`
+   * buffers (reused across calls by a bulk loader) avoid allocating
+   * ~12 MB per 0.25° global field; the returned array is then a view of
+   * `scratch.out` and is overwritten by the next call.
    */
-  decode(): Float64Array;
+  decode(scratch?: DecodeScratch): Float64Array;
 }
 
 // ---------------------------------------------------------------------
@@ -301,7 +304,7 @@ function parseMessage(m: Uint8Array, absOffset: number): Grib2Message {
   const s7len = u32(m, s.s7);
   const data = m.subarray(s.s7 + 5, s.s7 + s7len);
 
-  const decode = (): Float64Array => unpack(data, packing, bitmap, numberOfDataPoints);
+  const decode = (scratch?: DecodeScratch): Float64Array => unpack(data, packing, bitmap, numberOfDataPoints, scratch);
 
   return {
     offset: absOffset, length, discipline, centre, referenceTime, grid, product, packing,
@@ -324,9 +327,18 @@ function timeUnitHours(code: number): number {
 }
 
 /** Read `n` packed big-endian unsigned integers of `bits` bits each. */
-function unpackSimple(data: Uint8Array, bits: number, n: number): Uint32Array {
-  const out = new Uint32Array(n);
-  if (bits === 0) return out; // all values equal the reference value
+/** Reusable decode buffers: `x` for the packed integers, `out` for the values. Grown on demand. */
+export interface DecodeScratch {
+  x?: Uint32Array;
+  out?: Float64Array;
+}
+
+function unpackSimple(data: Uint8Array, bits: number, n: number, buf?: Uint32Array): Uint32Array {
+  const out = buf && buf.length >= n ? buf.subarray(0, n) : new Uint32Array(n);
+  if (bits === 0) {
+    out.fill(0);
+    return out; // all values equal the reference value
+  }
   if (bits > 32) throw new Grib2Error(`simple packing with ${bits} bits per value not supported`);
   let acc = 0;
   let nbits = 0;
@@ -352,23 +364,26 @@ function unpack(
   packing: Grib2Packing,
   bitmap: Uint8Array | null,
   numberOfDataPoints: number,
+  scratch?: DecodeScratch,
 ): Float64Array {
   const n = packing.numberOfValues;
+  if (scratch && (!scratch.x || scratch.x.length < n)) scratch.x = new Uint32Array(n);
+  if (scratch && (!scratch.out || scratch.out.length < numberOfDataPoints)) scratch.out = new Float64Array(numberOfDataPoints);
   let x: Uint32Array;
   if (packing.dataRepresentationTemplate === 42) {
     const c = packing.ccsds!;
     if (packing.bitsPerValue === 0) {
-      x = new Uint32Array(n);
+      x = scratch ? scratch.x!.subarray(0, n).fill(0) : new Uint32Array(n);
     } else {
       x = aecDecode(data, {
         bitsPerSample: packing.bitsPerValue,
         blockSize: c.blockSize,
         rsi: c.rsi,
         flags: c.flags,
-      }, n);
+      }, n, undefined, scratch?.x);
     }
   } else {
-    x = unpackSimple(data, packing.bitsPerValue, n);
+    x = unpackSimple(data, packing.bitsPerValue, n, scratch?.x);
   }
 
   // Regulation 92.9.4: Y = (R + X * 2^E) / 10^D. eccodes evaluates this
@@ -378,7 +393,7 @@ function unpack(
   const dscale = 10 ** -packing.decimalScaleFactor;
   const R = packing.referenceValue;
 
-  const out = new Float64Array(numberOfDataPoints);
+  const out = scratch ? scratch.out!.subarray(0, numberOfDataPoints) : new Float64Array(numberOfDataPoints);
   if (!bitmap) {
     for (let i = 0; i < n; i++) out[i] = (x[i] * bscale + R) * dscale;
     return out;

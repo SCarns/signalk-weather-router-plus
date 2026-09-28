@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { availableSteps, cycleFor } from './ecmwf';
-import { cropField, nanFillLimited, sampleField, ForecastStore, type FieldGrid } from './forecast';
-import type { Grib2Grid } from '../grib/grib2';
+import { buildStep, cropField, nanFillLimited, sampleField, ForecastStore, type FieldGrid } from './forecast';
+import type { Grib2Grid, Grib2Message } from '../grib/grib2';
 
 test('cycle naming and stream selection', () => {
   const c00 = cycleFor(new Date('2026-09-27T00:00:00Z'));
@@ -203,4 +203,18 @@ test('resolveCycle uses a fully cached expected cycle without any network call',
   assert.equal(r2.fromCache, true);
   assert.ok(r2.fallback && r2.fallback.includes('using cached cycle'));
   assert.equal(r2.cycle.yyyymmdd + r2.cycle.hh, expected.yyyymmdd + expected.hh);
+});
+
+test('buildStep converts tprate from kg m⁻² s⁻¹ to a depth rate in m/s at ingestion', () => {
+  const { grid, values } = syntheticGrid();
+  const ref = new Date('2026-09-27T00:00:00Z');
+  const msg = (p: string) => ({
+    param: p,
+    message: { grid, referenceTime: ref, product: { forecastHours: 3 }, decode: () => values } as unknown as Grib2Message,
+  });
+  const step = buildStep([msg('10u'), msg('10v'), msg('tprate')], { west: -75, south: 36, east: -65, north: 45 });
+  const raw = sampleField(step.fields.get('10u')!, -70, 40);
+  const rate = sampleField(step.fields.get('tprate')!, -70, 40);
+  assert.equal(raw, 40 * 1000 + 290);
+  assert.ok(Math.abs(rate - raw * 1e-3) < 1e-6, `got ${rate}`);
 });

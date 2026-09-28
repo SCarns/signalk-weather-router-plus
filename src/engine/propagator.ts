@@ -555,6 +555,7 @@ export class OceanPropagator {
       motoringTimeS: motorS,
       sailingTimeS: sailS,
       validated: false,
+      skeleton: skeleton ? skeleton.map((p) => ({ lon: p.lon, lat: p.lat })) : undefined,
     };
     recomputePerWaypointMetadata(route);
 

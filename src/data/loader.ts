@@ -1,16 +1,16 @@
 /**
- * Fetch, decode and crop the forecast fields a route needs into a
- * ForecastStore, and decide which cycle to use without touching the
+ * Fetch and decode the forecast fields into a ForecastStore (global, or
+ * cropped to a bbox), and decide which cycle to use without touching the
  * network when fresh data is already on disk.
  */
 
 import type { BBox } from '../geo/geodesy';
-import { parseGrib2Message } from '../grib/grib2';
+import { parseGrib2Message, type DecodeScratch } from '../grib/grib2';
 import {
   ATM_PARAMS, WAVE_PARAMS, availableSteps, latestExpectedCycle,
   type Cycle, type EcmwfClient, type IndexRecord,
 } from './ecmwf';
-import { buildStep, ForecastStore, type ForecastStep } from './forecast';
+import { buildStep, ForecastStore, GLOBAL_BBOX, type ForecastStep } from './forecast';
 
 export interface LoadOptions {
   horizonHours: number;
@@ -66,7 +66,22 @@ export async function resolveCycle(
   }
 }
 
-export async function loadForecastForBBox(client: EcmwfClient, bbox: BBox, opts: LoadOptions): Promise<ForecastStore> {
+/**
+ * Load the whole globe (no crop) into a SharedArrayBuffer-backed store.
+ * Fields already in the disk cache are read from it; the rest are
+ * fetched. Messages are cached whole on disk either way, so a global
+ * load downloads exactly what a cropped one did.
+ */
+export function loadGlobalForecast(client: EcmwfClient, opts: LoadOptions): Promise<ForecastStore> {
+  return loadForecast(client, null, opts);
+}
+
+/** Load a bbox crop (the route worker's first-boot fallback and the CLI). */
+export function loadForecastForBBox(client: EcmwfClient, bbox: BBox, opts: LoadOptions): Promise<ForecastStore> {
+  return loadForecast(client, bbox, opts);
+}
+
+async function loadForecast(client: EcmwfClient, bbox: BBox | null, opts: LoadOptions): Promise<ForecastStore> {
   const log = opts.log ?? (() => undefined);
   const includeWaves = opts.includeWaves ?? true;
   const atmParams = [...ATM_PARAMS, ...(opts.extraAtmParams ?? [])];
@@ -74,6 +89,9 @@ export async function loadForecastForBBox(client: EcmwfClient, bbox: BBox, opts:
   const steps = availableSteps(cycle.atmStream, opts.horizonHours);
   const waveSteps = new Set(availableSteps(cycle.waveStream, opts.horizonHours));
   const built: ForecastStep[] = [];
+  // One set of decode buffers for every field (~12 MB for 0.25° global)
+  // instead of fresh ones per field: a 72 h load decodes ~275 fields.
+  const scratch: DecodeScratch = {};
   let done = 0;
   let downloaded = 0;
   for (const step of steps) {
@@ -109,7 +127,7 @@ export async function loadForecastForBBox(client: EcmwfClient, bbox: BBox, opts:
         named.push({ param: p, message: parseGrib2Message(msg) });
       }
     }
-    built.push(buildStep(named, bbox, opts.waveFillCells ?? 3));
+    built.push(buildStep(named, bbox, opts.waveFillCells ?? 3, scratch));
     done++;
     opts.onStep?.(done, steps.length);
     // Yield to the event loop between steps so a host process stays responsive.
@@ -117,6 +135,6 @@ export async function loadForecastForBBox(client: EcmwfClient, bbox: BBox, opts:
   }
   log(`loaded ${built.length} steps for cycle ${cycle.yyyymmdd} ${cycle.hh}z (${downloaded} fields downloaded, rest from cache)`);
   return new ForecastStore(built, {
-    cycleTime: cycle.time, bbox, steps, params: [...atmParams, ...(includeWaves ? WAVE_PARAMS : [])], loadedAt: new Date(),
+    cycleTime: cycle.time, bbox: bbox ?? GLOBAL_BBOX, steps, params: [...atmParams, ...(includeWaves ? WAVE_PARAMS : [])], loadedAt: new Date(),
   });
 }

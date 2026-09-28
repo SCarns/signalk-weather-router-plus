@@ -55,6 +55,22 @@ export interface Route {
   forecastHorizonExceededS?: number;
   /** Forecast cycle used, ISO string, when any. */
   forecastCycle?: string;
+  /** Names of the current sources that were stacked, when any. */
+  currentSources?: string[];
+  /** Coarse A* skeleton that guided the heading sweep, when one was found. */
+  skeleton?: { lon: number; lat: number }[];
+}
+
+export function skeletonToGeoJSON(route: Route): Record<string, unknown> | null {
+  if (!route.skeleton || route.skeleton.length < 2) return null;
+  return {
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: route.skeleton.map((p) => [p.lon, p.lat]) },
+      properties: { kind: 'skeleton', points: route.skeleton.length },
+    }],
+  };
 }
 
 /** Recompute cog / twa / sog on every waypoint from the final geometry. */
