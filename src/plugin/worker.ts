@@ -849,6 +849,8 @@ async function handle(msg: MainToWorker): Promise<void> {
       }
       if (msg.reload.tides && role === 'data') {
         if (msg.position !== undefined) vesselPos = msg.position;
+        // A provisional run's cached chunks may predate its update: drop them with the old client.
+        if (tides && seaLevelClient && !tides.run.settled) seaLevelClient.dropRun(tides.run.key);
         seaLevelClient = makeSeaLevelClient(config);
         tides = null;
         tidesError = null;

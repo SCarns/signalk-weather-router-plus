@@ -546,8 +546,10 @@ export class ArcoClient {
 
   /**
    * Stored bytes of one chunk: disk cache first, else downloaded (and
-   * cached, atomically). null = chunk absent in the store (all fill);
-   * absence is remembered (`.none` marker) only for a settled run.
+   * cached, atomically). null = chunk absent in the store (all fill).
+   * The disk cache is used only for a settled run: a run whose update
+   * is still being written is always downloaded and never cached, so
+   * its in-flight loads cannot repopulate the cache after dropRun().
    */
   async chunk(run: ArcoRun, layout: ArcoLayout, v: string, idx: number[], stats: DownloadStats): Promise<Uint8Array | null> {
     const level = run.levels[layout];
@@ -556,30 +558,37 @@ export class ArcoClient {
     if (!meta) throw new Error(`${this.tag}: variable ${v} not in the ${layout} level`);
     const key = chunkKey(meta, idx);
     const p = this.chunkPath(run, layout, v, key);
-    try {
-      const b = new Uint8Array(fs.readFileSync(p));
-      stats.fromDisk++;
-      this.totals.diskChunks++;
-      return b;
-    } catch {
-      // not cached
-    }
-    if (fs.existsSync(`${p}.none`)) {
-      stats.absent++;
-      return null;
+    if (run.settled) {
+      try {
+        const b = new Uint8Array(fs.readFileSync(p));
+        stats.fromDisk++;
+        this.totals.diskChunks++;
+        return b;
+      } catch {
+        // not cached
+      }
+      if (fs.existsSync(`${p}.none`)) {
+        stats.absent++;
+        return null;
+      }
     }
     if (!this.network) throw new Error(`${this.tag}: chunk ${layout}/${v}/${key} is not cached and the network is disabled`);
     const store = this.stores[layout];
     const body = await store.chunkBytes(v, meta, idx);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
     if (body === null) {
       stats.absent++;
-      if (run.settled) fs.writeFileSync(`${p}.none`, '');
+      if (run.settled) {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(`${p}.none`, '');
+      }
       return null;
     }
-    const tmp = `${p}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
-    fs.writeFileSync(tmp, body);
-    fs.renameSync(tmp, p);
+    if (run.settled) {
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      const tmp = `${p}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+      fs.writeFileSync(tmp, body);
+      fs.renameSync(tmp, p);
+    }
     stats.downloaded++;
     stats.bytes += body.length;
     this.totals.downloadedBytes += body.length;
