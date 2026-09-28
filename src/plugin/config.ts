@@ -89,9 +89,15 @@ export interface ResolvedConfig {
     keepCycles: number;
     /** Also fetch 2t, tprate, skt, 2d, ptype (temperature, precipitation, SST, humidity, precip type). */
     extraFields: boolean;
+    /** Memory guard: bytes that must remain free after a forecast load. */
+    memoryHeadroomBytes: number;
   };
   currents: {
     harmonicDir: string | null;
+    smocEnabled: boolean;
+    smocHorizonHours: number;
+    smocStepHours: number;
+    smocHalfWidthDeg: number;
     rtofsEnabled: boolean;
     rtofsRegion: string;
     rtofsHorizonHours: number;
@@ -207,9 +213,14 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       mirror,
       keepCycles: f.keepCycles,
       extraFields: f.extraFields,
+      memoryHeadroomBytes: f.memoryHeadroom,
     },
     currents: {
       harmonicDir: harmonicDir && harmonicDir.trim() ? harmonicDir.trim() : null,
+      smocEnabled: cu.smocEnabled,
+      smocHorizonHours: cu.smocHorizon / 3600,
+      smocStepHours: cu.smocStep / 3600,
+      smocHalfWidthDeg: cu.smocHalfWidth,
       rtofsEnabled: cu.rtofsEnabled,
       rtofsRegion: cu.rtofsRegion,
       rtofsHorizonHours: cu.rtofsHorizon / 3600,

@@ -41,7 +41,7 @@ export interface OnDemandLandOptions {
 }
 
 /** Raster resolutions offered, finest first (degrees). */
-export const OVERLAY_LAND_RESOLUTIONS = [0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25];
+export const OVERLAY_LAND_RESOLUTIONS = [0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25];
 
 interface Entry {
   key: string;

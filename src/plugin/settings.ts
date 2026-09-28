@@ -39,8 +39,14 @@ export interface AppSettings {
     refreshInterval: number;
     keepCycles: number;
     extraFields: boolean;
+    /** Bytes that must stay free after the forecast loads (memory guard). */
+    memoryHeadroom: number;
   };
   currents: {
+    smocEnabled: boolean;
+    smocHorizon: number;
+    smocStep: number;
+    smocHalfWidth: number;
     rtofsEnabled: boolean;
     rtofsRegion: string;
     rtofsHorizon: number;
@@ -68,7 +74,7 @@ export type SettingsGroup = keyof AppSettings;
 /**
  * What must be re-done when a setting changes:
  *  - forecast: reload the resident forecast (new horizon or field set);
- *  - currents: reload RTOFS;
+ *  - currents: reload the current sources (CMEMS SMOC, RTOFS);
  *  - refresh_timer: restart the cycle-check timer;
  *  - jobs: re-trim the finished-job list;
  *  - next_job: nothing now; the next route uses it;
@@ -81,7 +87,7 @@ export type ReloadKind = 'forecast' | 'currents' | 'refresh_timer' | 'jobs' | 'n
  * wave_height / short_distance follow the user's unit preset; hours,
  * minutes and seconds are fixed displays of a value stored in seconds.
  */
-export type Quantity = 'speed' | 'depth' | 'wave_height' | 'short_distance' | 'hours' | 'minutes' | 'seconds' | 'angle' | 'count';
+export type Quantity = 'speed' | 'depth' | 'wave_height' | 'short_distance' | 'megabytes' | 'hours' | 'minutes' | 'seconds' | 'angle' | 'count';
 
 export interface SettingSpec {
   key: string;
@@ -95,6 +101,8 @@ export interface SettingSpec {
   max?: number;
   /** Value must be a whole multiple of this (e.g. 3600 s = whole hours). */
   multipleOf?: number;
+  /** Value must be one of these (SI), e.g. [3600, 10800] for a 1 h or 3 h step. */
+  oneOf?: readonly number[];
   default: number | boolean | string | null;
   nullable?: boolean;
   enum?: readonly string[];
@@ -106,7 +114,7 @@ export interface SettingSpec {
 export const SETTINGS_GROUPS: { id: SettingsGroup; label: string; help: string }[] = [
   { id: 'vessel', label: 'Vessel', help: 'Defaults for every route. A route request\'s own vessel values take precedence.' },
   { id: 'forecast', label: 'Forecast', help: 'ECMWF open-data IFS 0.25°, held for the whole globe.' },
-  { id: 'currents', label: 'Currents', help: 'NOAA Global RTOFS ocean currents. Tidal harmonics come from the directory set in the Signal K plugin config.' },
+  { id: 'currents', label: 'Currents', help: 'Copernicus Marine SMOC (worldwide 1/12° surface currents including tides and Stokes drift; primary) and NOAA Global RTOFS (regional; backup). Tidal harmonics come from the directory set in the Signal K plugin config and take precedence where they cover.' },
   { id: 'routing', label: 'Routing engine', help: 'Isochrone solver defaults. A route request\'s stages and sail threshold take precedence.' },
   { id: 'publish', label: 'Publishing', help: 'What happens with a finished route.' },
 ];
@@ -129,8 +137,13 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
   { key: 'forecast.refreshInterval', group: 'forecast', label: 'Check for a new cycle every', type: 'number', unit: 's', quantity: 'minutes', min: 600, max: 24 * H, multipleOf: 60, default: H, help: 'How often ECMWF is checked for a newer cycle.', reload: 'refresh_timer' },
   { key: 'forecast.keepCycles', group: 'forecast', label: 'Cached cycles kept on disk', type: 'integer', min: 1, max: 10, default: 2, help: 'Older downloaded cycles are deleted beyond this.', reload: 'cache' },
   { key: 'forecast.extraFields', group: 'forecast', label: 'Temperature, precipitation, SST, humidity', type: 'boolean', default: true, help: 'Also fetch 2t, tprate, skt, 2d and ptype (the temperature, SST and precipitation layers and the full conditions). Changing it reloads the forecast.', reload: 'forecast' },
+  { key: 'forecast.memoryHeadroom', group: 'forecast', label: 'Memory kept free', type: 'number', unit: 'B', quantity: 'megabytes', min: 0, max: 64e9, multipleOf: 1e6, default: 1e9, help: 'The forecast only loads if at least this much memory stays free afterwards for Signal K, the OS and other plugins. If it does not fit, the plugin says what to change instead of loading.', reload: 'forecast' },
 
-  { key: 'currents.rtofsEnabled', group: 'currents', label: 'Use RTOFS ocean currents', type: 'boolean', default: true, help: 'Download NOAA Global RTOFS from NOMADS.', reload: 'currents' },
+  { key: 'currents.smocEnabled', group: 'currents', label: 'Use Copernicus Marine SMOC currents', type: 'boolean', default: true, help: 'Worldwide hourly surface currents (circulation + tides + Stokes drift) from Copernicus Marine, downloaded anonymously; takes precedence over RTOFS. Generated using E.U. Copernicus Marine Service Information.', reload: 'currents' },
+  { key: 'currents.smocHorizon', group: 'currents', label: 'SMOC horizon', type: 'number', unit: 's', quantity: 'hours', min: 6 * H, max: 240 * H, multipleOf: H, default: 72 * H, help: 'How far ahead SMOC is held (the product reaches about 10 days).', reload: 'currents' },
+  { key: 'currents.smocStep', group: 'currents', label: 'SMOC time step kept', type: 'number', unit: 's', quantity: 'hours', min: 1 * H, max: 3 * H, multipleOf: H, oneOf: [1 * H, 3 * H], default: 3 * H, help: '1 h or 3 h. 1 h triples the download and memory.', reload: 'currents' },
+  { key: 'currents.smocHalfWidth', group: 'currents', label: 'SMOC area around the vessel', type: 'number', unit: 'deg', quantity: 'angle', min: 2, max: 30, default: 15, help: 'Half-width of the area kept in memory around the vessel position (about 27 MB at 15° with 3 h steps over 72 h; grows with the square of the half-width). Routes and map views elsewhere load their own area on demand.', reload: 'currents' },
+  { key: 'currents.rtofsEnabled', group: 'currents', label: 'Use RTOFS ocean currents', type: 'boolean', default: true, help: 'Download NOAA Global RTOFS from NOMADS (used where SMOC has no data).', reload: 'currents' },
   { key: 'currents.rtofsRegion', group: 'currents', label: 'RTOFS regional product', type: 'enum', enum: RTOFS_REGIONS, default: 'west_atl', help: 'Which regional RTOFS product to download.', reload: 'currents' },
   { key: 'currents.rtofsHorizon', group: 'currents', label: 'RTOFS horizon', type: 'number', unit: 's', quantity: 'hours', min: 24 * H, max: 144 * H, multipleOf: H, default: 72 * H, help: 'How far ahead RTOFS is loaded.', reload: 'currents' },
   { key: 'currents.rtofsStep', group: 'currents', label: 'RTOFS time step kept', type: 'number', unit: 's', quantity: 'hours', min: 1 * H, max: 6 * H, multipleOf: H, default: 3 * H, help: 'Spacing of the RTOFS steps held in memory.', reload: 'currents' },
@@ -201,12 +214,14 @@ export function validateValue(spec: SettingSpec, raw: unknown): number | boolean
       if ((spec.min !== undefined && raw < spec.min - 1e-9) || (spec.max !== undefined && raw > spec.max + 1e-9)) {
         throw new Error(`must be in [${spec.min}, ${spec.max}]${spec.unit ? ` ${spec.unit}` : ''}`);
       }
+      let out = raw;
       if (spec.multipleOf !== undefined) {
         const q = raw / spec.multipleOf;
         if (Math.abs(q - Math.round(q)) > 1e-6) throw new Error(`must be a whole multiple of ${spec.multipleOf}${spec.unit ? ` ${spec.unit}` : ''}`);
-        return Math.round(q) * spec.multipleOf;
+        out = Math.round(q) * spec.multipleOf;
       }
-      return raw;
+      if (spec.oneOf && !spec.oneOf.some((x) => Math.abs(x - out) < 1e-9)) throw new Error(`must be one of ${spec.oneOf.join(', ')}${spec.unit ? ` ${spec.unit}` : ''}`);
+      return out;
     }
   }
 }

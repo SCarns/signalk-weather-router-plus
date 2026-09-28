@@ -236,3 +236,28 @@ test('per-route vessel values override the settings; omitted ones come from the 
   assert.equal(o.underKeelClearance, 2.0);
   assert.equal(o.name, 'Catalina 36');
 });
+
+test('CMEMS SMOC settings: defaults in SI, 1 h or 3 h step only, changes reload currents', () => {
+  const d = defaultSettings();
+  assert.equal(d.currents.smocEnabled, true);
+  assert.equal(d.currents.smocStep, 3 * 3600);
+  assert.equal(d.currents.smocHorizon, 72 * 3600);
+  assert.equal(d.currents.smocHalfWidth, 15);
+  const c = resolveConfig({ landShapefiles: '/a.shp' }, d);
+  assert.deepEqual([c.currents.smocEnabled, c.currents.smocStepHours, c.currents.smocHorizonHours, c.currents.smocHalfWidthDeg], [true, 3, 72, 15]);
+  const ok = mergeSettings(d, { currents: { smocStep: 3600, smocHalfWidth: 20, smocHorizon: 120 * 3600 } });
+  assert.deepEqual(ok.changed.sort(), ['currents.smocHalfWidth', 'currents.smocHorizon', 'currents.smocStep']);
+  assert.deepEqual([...reloadsFor(ok.changed)], ['currents']);
+  try {
+    mergeSettings(d, { currents: { smocStep: 7200, smocHalfWidth: 60, smocHorizon: 300 * 3600 } });
+    assert.fail('should throw');
+  } catch (err) {
+    const e = (err as SettingsValidationError).errors;
+    assert.match(e['currents.smocStep'], /one of 3600, 10800/);
+    assert.match(e['currents.smocHalfWidth'], /\[2, 30\]/);
+    assert.match(e['currents.smocHorizon'], /\[21600, 864000\]/);
+  }
+  const specs = settingsSchema().settings.filter((s) => s.key.startsWith('currents.smoc'));
+  assert.deepEqual(specs.map((s) => s.key), ['currents.smocEnabled', 'currents.smocHorizon', 'currents.smocStep', 'currents.smocHalfWidth']);
+  assert.deepEqual(SETTINGS_SPEC.find((s) => s.key === 'currents.smocStep')!.oneOf, [3600, 10800]);
+});

@@ -87,7 +87,17 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
     },
     servers: [{ url: basePath }],
     paths: {
-      '/api/status': { get: { summary: 'Plugin, forecast (global coverage, resident bytes, shared), currents, overlay land cache and queue status', responses: { 200: { description: 'OK' } } } },
+      '/api/status': {
+        get: {
+          summary: 'Plugin, forecast (global coverage, resident bytes, shared), currents, overlay land cache and queue status',
+          description: '`currents` lists the data worker\'s current sources in priority order ({name, priority, resolutionM, bbox, validFrom, validTo}); '
+            + 'the CMEMS-SMOC entry adds `smoc`: {run, run_last_time, stac_updated, settled, step_hours, horizon_hours, half_width_deg, '
+            + 'resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, memory_bytes, '
+            + 'shared_resident, last_download: {at, reason, bytes, chunks, downloaded, from_disk, seconds, decode_ms} | null, downloaded_bytes_total, disk_cache_bytes, layouts}. '
+            + '`currents_route_worker` is the same for the route worker (its own on-demand SMOC areas).',
+          responses: { 200: { description: 'OK' } },
+        },
+      },
       '/api/settings': {
         get: {
           summary: 'Web-app settings (vessel, forecast, currents, routing, publishing) with their schema. Values are SI: m, m/s, s (degrees for the heading increment).',
@@ -100,7 +110,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           },
         },
         put: {
-          summary: 'Update some settings (readwrite). Only the keys sent change; validated all-or-nothing, saved to settings.json and applied live: a new forecast horizon or extra-fields choice reloads the forecast, RTOFS settings reload currents, everything else applies to the next route.',
+          summary: 'Update some settings (readwrite). Only the keys sent change; validated all-or-nothing, saved to settings.json and applied live: a new forecast horizon or extra-fields choice reloads the forecast, SMOC and RTOFS settings reload currents, everything else applies to the next route.',
           requestBody: { required: true, content: { 'application/json': { schema: settingsValuesSchema() } } },
           responses: {
             200: { description: '{values, changed: ["group.key"], reloaded: {forecast, currents, refresh_timer, jobs}}' },
@@ -195,6 +205,43 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             404: { description: 'Tile out of range' },
             503: { description: 'No forecast or current data loaded' },
           },
+        },
+      },
+      '/api/field': {
+        get: {
+          summary: 'JSON value grid for a heatmap layer over a bbox at one time',
+          description: 'layer=current returns display values: gridded model currents (CMEMS SMOC, RTOFS) are extended up to 2 source-grid cells into the '
+            + 'cells the model leaves empty at the coast (inverse-distance weights over valid cells; valid cells unchanged), for clipping with /api/land-mask. '
+            + 'When the bbox is outside the resident SMOC area it is loaded on demand first (at most 60 s wait).',
+          parameters: [
+            { name: 'layer', in: 'query', required: true, schema: { type: 'string', enum: ['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current'] } },
+            { name: 'bbox', in: 'query', required: true, schema: { type: 'string' }, description: 'west,south,east,north' },
+            { name: 'time', in: 'query', schema: { type: 'string', format: 'date-time' } },
+            { name: 'res', in: 'query', schema: { type: 'number', minimum: 0.002, maximum: 2 }, description: 'lattice spacing, degrees (coarsened to at most 40k cells)' },
+          ],
+          responses: { 200: { description: '{layer, time, bbox, res, lons, lats, fields: {name: rows from the south, null = no data}, land, units}' } },
+        },
+      },
+      '/api/currents': {
+        get: {
+          summary: 'Current arrows on a lattice (display values, extended to the coast as for /api/field?layer=current)',
+          parameters: [
+            { name: 'bbox', in: 'query', required: true, schema: { type: 'string' }, description: 'west,south,east,north' },
+            { name: 'time', in: 'query', schema: { type: 'string', format: 'date-time' } },
+            { name: 'res', in: 'query', schema: { type: 'number', minimum: 0.005, maximum: 5, default: 0.05 }, description: 'lattice spacing, degrees' },
+          ],
+          responses: { 200: { description: '[{lon, lat, u_ms, v_ms, speed_ms, dir_deg (TO)}], land and near-slack points dropped' } },
+        },
+      },
+      '/api/land-mask': {
+        get: {
+          summary: 'Land mask at screen resolution for clipping drawn layers to the coastline',
+          parameters: [
+            { name: 'bbox', in: 'query', required: true, schema: { type: 'string' }, description: 'west,south,east,north' },
+            { name: 'w', in: 'query', required: true, schema: { type: 'integer', minimum: 16, maximum: 2048 } },
+            { name: 'h', in: 'query', required: true, schema: { type: 'integer', minimum: 16, maximum: 2048 } },
+          ],
+          responses: { 200: { description: 'gzip-encoded bytes, one per pixel (1 = land), row 0 at the north edge; X-Mask-Width/X-Mask-Height headers' } },
         },
       },
       '/api/forecast/refresh': { post: { summary: 'Check ECMWF for a newer cycle', responses: { 202: { description: 'Accepted' } } } },

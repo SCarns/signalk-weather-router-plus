@@ -98,3 +98,18 @@ test('precip layer keeps small m/s rates (1 mm/h ≈ 2.78e-7 m/s) instead of rou
   const v = g.fields.rate[1][1]!;
   assert.ok(Math.abs(v - Math.fround(rate)) / rate < 1e-4, `got ${v}`);
 });
+
+test('landMaskImage: one byte per pixel, row 0 north, pixel centres match the page canvas', async () => {
+  const { landMaskImage } = await import('./overlays');
+  // Land where lon < -70 (a straight north-south coast).
+  const land = {
+    forBBox: () => ({ isLand: (lon: number) => lon < -70 }),
+    isLandAt: (lon: number) => lon < -70,
+  };
+  const src = { forecast: null, currents: null, land };
+  const img = landMaskImage(src, { west: -72, south: 40, east: -68, north: 42 }, 8, 4);
+  assert.equal(img.length, 32);
+  // Pixel width 0.5°: centres at -71.75, -71.25, -70.75, -70.25 (land), -69.75... (water).
+  for (let y = 0; y < 4; y++) assert.deepEqual(Array.from(img.slice(y * 8, y * 8 + 8)), [1, 1, 1, 1, 0, 0, 0, 0]);
+  assert.throws(() => landMaskImage({ forecast: null, currents: null, land: null }, { west: 0, south: 0, east: 1, north: 1 }, 4, 4), /coastline/);
+});

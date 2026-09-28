@@ -17,8 +17,14 @@ import type { ModePolicy } from '../engine/legsim';
 import type { BBox } from '../geo/geodesy';
 import type { SerializedForecast } from '../data/forecast';
 import type { SerializedRtofs } from '../currents/rtofs';
+import type { SerializedSmoc, SmocStatus } from '../currents/smoc';
 
 export type WorkerRole = 'data' | 'route';
+
+export interface VesselPosition {
+  lat: number;
+  lon: number;
+}
 
 export interface RouteRequest {
   start: { lat: number; lon: number };
@@ -71,7 +77,7 @@ export interface RouteSummary {
   polar?: string | null;
 }
 
-export type QueryKind = 'field' | 'currents' | 'wind_points' | 'conditions' | 'conditions_tile' | 'pressure';
+export type QueryKind = 'field' | 'currents' | 'wind_points' | 'conditions' | 'conditions_tile' | 'pressure' | 'land_mask';
 
 export interface QueryArgs {
   field: { layer: string; bbox: BBox; timeMs: number; res: number };
@@ -80,6 +86,7 @@ export interface QueryArgs {
   conditions: { lon: number; lat: number; fromMs: number; hours: number; stepH: number };
   /** Current-hour conditions sample points for one XYZ tile. */
   conditions_tile: { z: number; x: number; y: number; timeMs: number };
+  land_mask: { bbox: BBox; w: number; h: number };
   pressure: { bbox: BBox; timeMs: number; intervalHpa: number };
 }
 
@@ -95,7 +102,11 @@ export interface LandCacheStatus {
 
 export interface DataStatus {
   forecast: { cycle: string; validFrom: string; validTo: string; steps: number; params: string[]; global: boolean; bytes: number; shared: boolean; hasWaves: boolean; loadedAt: string } | null;
-  currents: { name: string; priority: number; resolutionM: number; bbox: { south: number; west: number; north: number; east: number }; validFrom?: string; validTo?: string }[];
+  currents: {
+    name: string; priority: number; resolutionM: number; bbox: { south: number; west: number; north: number; east: number }; validFrom?: string; validTo?: string;
+    /** CMEMS SMOC only: run, resident / on-demand areas, memory, downloads. */
+    smoc?: SmocStatus;
+  }[];
   rtofsRun: string | null;
   /** On-demand overlay land rasters (LRU). */
   land: LandCacheStatus | null;
@@ -103,12 +114,17 @@ export interface DataStatus {
 
 export type MainToWorker =
   | { type: 'init'; role: WorkerRole; config: ResolvedConfig; cacheDir: string }
-  /** data worker: check ECMWF/NOMADS and reload the forecast and currents; route worker: reload currents from the disk cache. */
-  | { type: 'refresh'; force?: boolean }
+  /**
+   * data worker: check ECMWF/NOMADS/Copernicus and reload the forecast and currents; route worker: reload RTOFS from the disk cache.
+   * `position`: the vessel's position (Signal K navigation.position), centre of the SMOC resident area; null when unknown.
+   */
+  | { type: 'refresh'; force?: boolean; position?: VesselPosition | null }
+  /** route worker: adopt the data worker's SMOC run and resident area (shared memory, relayed by the main thread). */
+  | { type: 'smoc'; smoc: SerializedSmoc | null }
   /** Adopt a resident forecast loaded by another thread (shared memory, no copy). */
   | { type: 'forecast'; forecast: SerializedForecast }
   /** Settings changed: new config; reload what `reload` names (data worker: forecast and currents; route worker: currents from disk). */
-  | { type: 'config'; config: ResolvedConfig; reload: { forecast: boolean; currents: boolean } }
+  | { type: 'config'; config: ResolvedConfig; reload: { forecast: boolean; currents: boolean }; position?: VesselPosition | null }
   | { type: 'route'; id: string; request: RouteRequest }
   | { type: 'query'; id: number; kind: QueryKind; args: QueryArgs[QueryKind] }
   | { type: 'shutdown' };
@@ -121,6 +137,8 @@ export type WorkerToMain =
   | { type: 'refresh-error'; message: string }
   | { type: 'currents'; status: DataStatus['currents']; rtofsRun: string | null; rtofs: SerializedRtofs | null }
   | { type: 'data-status'; status: DataStatus }
+  /** data worker: SMOC run / resident area changed (SharedArrayBuffer views: relaying shares, not copies). */
+  | { type: 'smoc'; smoc: SerializedSmoc | null }
   | { type: 'progress'; id: string; stage: number; total: number; message: string }
   | { type: 'done'; id: string; geojson: Record<string, unknown>; skRoute: Record<string, unknown>; skeleton: Record<string, unknown> | null; summary: RouteSummary }
   | { type: 'error'; id: string; message: string; cancelled?: boolean }

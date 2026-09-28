@@ -1,8 +1,9 @@
 /**
  * signalk-weather-router-plus — Signal K plugin entry point.
  *
- * Standalone weather routing: ECMWF open-data forecasts and NOAA RTOFS
- * currents decoded in-process, harmonic tidal currents, GSHHG coastline
+ * Standalone weather routing: ECMWF open-data forecasts, Copernicus
+ * Marine SMOC and NOAA RTOFS currents decoded in-process, harmonic tidal
+ * currents, GSHHG coastline
  * avoidance, vessel polars, isochrone propagation. Two worker threads:
  * `data` (forecast, currents, overlay queries) and `route` (engine).
  * Routes are exposed through the plugin's REST/SSE API, saved to the
@@ -14,12 +15,14 @@ import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { IRouter } from 'express';
 import { CONFIG_SCHEMA, resolveConfig, type LegacyPluginConfig, type PluginConfig, type ResolvedConfig } from './plugin/config';
-import { reloadsFor, settingsSchema, SettingsStore } from './plugin/settings';
+import { mergeSettings, reloadsFor, settingsSchema, SettingsStore, SettingsValidationError } from './plugin/settings';
+import { checkForecastMemory } from './plugin/memguard';
 import { JobManager, type Job } from './plugin/jobs';
 import { registerApi } from './plugin/api';
 import { openApiDocument } from './plugin/openapi';
 import { makeWeatherProvider } from './plugin/weather';
-import type { DataStatus, MainToWorker, QueryArgs, QueryKind, WorkerRole, WorkerToMain } from './plugin/protocol';
+import type { DataStatus, MainToWorker, QueryArgs, QueryKind, VesselPosition, WorkerRole, WorkerToMain } from './plugin/protocol';
+import type { SerializedSmoc } from './currents/smoc';
 import { ForecastStore, type SerializedForecast } from './data/forecast';
 import { releaseMemory } from './util/gc';
 
@@ -70,6 +73,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let forecast: ForecastStore | null = null;
   /** Its serialized form, relayed to the route worker (and a restarted data worker) without copying. */
   let forecastShared: SerializedForecast | null = null;
+  /** The data worker's CMEMS SMOC run + resident area (shared memory), relayed to the route worker. */
+  let smocShared: SerializedSmoc | null = null;
   /** Raw Signal K plugin options from start(). */
   let pluginOptions: PluginConfig | undefined;
   let settings: SettingsStore | null = null;
@@ -77,6 +82,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let currentsKey = '';
   let forecastError: string | null = null;
   let dataStatus: DataStatus | null = null;
+  /** The route worker's own current sources (its SMOC on-demand areas and memory). */
+  let routeCurrents: DataStatus['currents'] | null = null;
   let refreshTimer: NodeJS.Timeout | null = null;
   let failedRefreshTimer: NodeJS.Timeout | null = null;
   let weatherRegistered = false;
@@ -105,12 +112,25 @@ export = function plugin(app: SkApp): SignalKPlugin {
     });
   }
 
+  /** Own-vessel position from Signal K (navigation.position), or null. */
+  function vesselPosition(): VesselPosition | null {
+    try {
+      const raw = app.getSelfPath?.('navigation.position') as { value?: unknown; latitude?: unknown; longitude?: unknown } | undefined;
+      const p = (raw && typeof raw === 'object' && 'value' in raw ? raw.value : raw) as { latitude?: unknown; longitude?: unknown } | undefined;
+      if (!p || typeof p.latitude !== 'number' || typeof p.longitude !== 'number') return null;
+      if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude) || Math.abs(p.latitude) > 90 || Math.abs(p.longitude) > 180) return null;
+      return { lat: p.latitude, lon: p.longitude };
+    } catch {
+      return null;
+    }
+  }
+
   function requestRefresh(force: boolean): void {
     if (!workers.data.ready) {
       pendingRefresh = { force: (pendingRefresh?.force ?? false) || force };
       return;
     }
-    post('data', { type: 'refresh', force });
+    post('data', { type: 'refresh', force, position: vesselPosition() });
   }
 
   function jobsSummary(): string {
@@ -123,7 +143,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     if (forecast) {
       const b = forecast.validRange[1];
       const cur = dataStatus?.currents.length ? `, currents ${dataStatus.currents.map((c) => c.name).join('/')}` : ', no currents';
-      app.setPluginStatus(`global forecast ${forecast.meta.cycleTime.toISOString().slice(0, 13)}Z to ${b.toISOString().slice(0, 13)}Z (${forecast.steps.length} steps, ${(forecast.bytes() / 1e6).toFixed(0)} MB)${cur}; ${jobsSummary()}`);
+      app.setPluginStatus(`global forecast ${forecast.meta.cycleTime.toISOString().slice(0, 13)}Z to ${b.toISOString().slice(0, 13)}Z (${forecast.steps.length} steps, ${(forecast.bytes() / 1e6).toFixed(0)} MB)${cur}; ${jobsSummary()}${forecastError ? `; reload refused: ${forecastError}` : ''}`);
     } else if (forecastError) {
       app.setPluginError(`forecast unavailable: ${forecastError}`);
     } else {
@@ -167,6 +187,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         // A (re)started worker adopts the resident forecast straight away
         // (shared memory); the data worker then finds it current.
         if (forecastShared) post(role, { type: 'forecast', forecast: forecastShared });
+        if (role === 'route' && smocShared) post('route', { type: 'smoc', smoc: smocShared });
         if (role === 'data' && pendingRefresh) {
           const f = pendingRefresh.force;
           pendingRefresh = null;
@@ -214,6 +235,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         updateStatus();
         return;
       case 'currents':
+        if (role === 'route') routeCurrents = msg.status;
         if (role === 'data') {
           log(`currents: ${msg.status.length ? msg.status.map((c) => `${c.name} (p${c.priority})`).join(', ') : 'none'}`);
           // New RTOFS on disk (new run or region): the route worker reloads its copy from the cache.
@@ -223,6 +245,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
             currentsKey = key;
             if (!first || msg.rtofsRun) post('route', { type: 'refresh', force: false });
           }
+        }
+        return;
+      case 'smoc':
+        if (role === 'data') {
+          // SharedArrayBuffer views: the route worker gets the same memory.
+          smocShared = msg.smoc;
+          post('route', { type: 'smoc', smoc: msg.smoc });
         }
         return;
       case 'data-status':
@@ -304,7 +333,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
             startWorker(role);
             post(role, { type: 'init', role, config, cacheDir: app.getDataDirPath() });
             if (role === 'data') requestRefresh(false);
-            else if (forecastShared) post('route', { type: 'forecast', forecast: forecastShared });
+            else {
+              if (forecastShared) post('route', { type: 'forecast', forecast: forecastShared });
+              if (smocShared) post('route', { type: 'smoc', smoc: smocShared });
+            }
           }
         }, 5000);
       }
@@ -336,7 +368,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
     const out = { forecast: kinds.has('forecast'), currents: kinds.has('currents'), refresh_timer: kinds.has('refresh_timer'), jobs: kinds.has('jobs') };
     if (stopped || !settings || changed.length === 0) return { forecast: false, currents: false, refresh_timer: false, jobs: false };
     config = resolveConfig(pluginOptions, settings.values);
-    post('data', { type: 'config', config, reload: { forecast: out.forecast, currents: out.currents } });
+    if (out.currents) smocShared = null;
+    post('data', { type: 'config', config, reload: { forecast: out.forecast, currents: out.currents }, position: vesselPosition() });
     post('route', { type: 'config', config, reload: { forecast: false, currents: out.currents } });
     if (out.refresh_timer) {
       if (refreshTimer) clearInterval(refreshTimer);
@@ -400,6 +433,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
     jobs = null;
     forecast = null;
     forecastShared = null;
+    smocShared = null;
+    routeCurrents = null;
     currentsKey = '';
     dataStatus = null;
     config = null;
@@ -427,6 +462,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           : null,
         forecast_error: forecastError,
         currents: dataStatus?.currents ?? [],
+        currents_route_worker: routeCurrents ?? [],
         rtofs_run: dataStatus?.rtofsRun ?? null,
         overlay_land: dataStatus?.land ?? null,
         weather_provider_registered: weatherRegistered,
@@ -469,6 +505,17 @@ export = function plugin(app: SkApp): SignalKPlugin {
       },
       updateSettings: (partial: unknown) => {
         if (!settings || stopped) throw new Error('plugin not started');
+        // Memory guard: refuse a forecast change the device cannot hold,
+        // before saving, so the running forecast and settings stay as they are.
+        const prospective = mergeSettings(settings.values, partial);
+        if (prospective.changed.some((k) => k === 'forecast.horizon' || k === 'forecast.extraFields' || k === 'forecast.memoryHeadroom')) {
+          const f = prospective.values.forecast;
+          const mem = checkForecastMemory(f.horizon / 3600, f.extraFields, f.memoryHeadroom);
+          if (!mem.ok) {
+            const key = prospective.changed.find((k) => k.startsWith('forecast.')) ?? 'forecast.horizon';
+            throw new SettingsValidationError({ [key]: mem.message });
+          }
+        }
         const { values, changed } = settings.update(partial);
         const reloaded = applySettings(changed);
         return { values, changed, reloaded };
@@ -480,7 +527,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     id: PLUGIN_ID,
     name: 'Weather Router Plus',
     description:
-      'Standalone weather routing: ECMWF open-data forecasts and NOAA RTOFS currents decoded in-process, harmonic tidal currents, GSHHG coastline avoidance, vessel polars. ' +
+      'Standalone weather routing: ECMWF open-data forecasts, Copernicus Marine SMOC and NOAA RTOFS currents decoded in-process, harmonic tidal currents, GSHHG coastline avoidance, vessel polars. ' +
       'Routes via its own API at /plugins/signalk-weather-router-plus, saved to the Resources API, forecast offered through the Weather API.',
     schema: () => CONFIG_SCHEMA,
     start,

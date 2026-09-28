@@ -36,6 +36,7 @@
  */
 
 import * as path from 'node:path';
+import * as zlib from 'node:zlib';
 import type { IRouter, Request, Response } from 'express';
 import type { JobManager } from './jobs';
 import type { QueryArgs, QueryKind, RouteRequest } from './protocol';
@@ -231,10 +232,32 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       if (!['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current'].includes(layer)) throw new Error('layer must be one of wind, waves, msl, temperature, sst, precip, sea_state, current');
       const bbox = parseBBox(req.query.bbox);
       const time = parseTime(req.query.time);
-      const resDeg = num(req.query.res, 0.25, 0.02, 2, 'res');
+      const resDeg = num(req.query.res, 0.25, 0.002, 2, 'res');
       const out = await deps.query('field', { layer, bbox, timeMs: time.getTime(), res: resDeg });
       cacheHeaders(res, time);
       json(res, 200, out);
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // Land mask at screen resolution for clipping drawn layers to the coast.
+  // Raw bytes (1 = land), row 0 north, gzip-compressed: a mask is mostly
+  // long runs, so a 1024×1024 view is typically a few kB on the wire.
+  ro.get('/api/land-mask', async (req: Request, res: Response) => {
+    try {
+      const bbox = parseBBox(req.query.bbox);
+      const w = Math.round(num(req.query.w, 1024, 16, 2048, 'w'));
+      const h = Math.round(num(req.query.h, 1024, 16, 2048, 'h'));
+      const out = await deps.query('land_mask', { bbox, w, h }) as Uint8Array;
+      const body = zlib.gzipSync(Buffer.from(out.buffer, out.byteOffset, out.byteLength));
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Encoding', 'gzip');
+      res.setHeader('X-Mask-Width', String(w));
+      res.setHeader('X-Mask-Height', String(h));
+      res.setHeader('Access-Control-Expose-Headers', 'X-Mask-Width, X-Mask-Height');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.status(200).end(body);
     } catch (err) {
       fail(res, err);
     }

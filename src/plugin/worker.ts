@@ -1,13 +1,17 @@
 /**
  * Worker thread. Two instances run with different roles (protocol.ts):
- *  - data:  refreshes ECMWF + RTOFS from the network, loads the global
- *           resident forecast (SharedArrayBuffer fields), keeps the
- *           current stack and the on-demand overlay land masks, and
- *           answers overlay / conditions queries;
- *  - route: runs the propagator on the same forecast memory (relayed by
- *           the main thread, not copied), with its own current stack
- *           loaded from the disk cache (no network), so a long route
- *           never delays an overlay query.
+ *  - data:  refreshes ECMWF, CMEMS SMOC and RTOFS from the network, loads
+ *           the global resident forecast and the SMOC resident area
+ *           (SharedArrayBuffers), keeps the current stack and the
+ *           on-demand overlay land masks, and answers overlay /
+ *           conditions queries (loading SMOC on demand first when the
+ *           query box is outside what is resident);
+ *  - route: runs the propagator on the same forecast and SMOC resident
+ *           memory (relayed by the main thread, not copied), with RTOFS
+ *           loaded from the disk cache; before a route whose box the
+ *           SMOC resident area does not cover it loads that area itself
+ *           (disk cache, else network), so a long route never delays an
+ *           overlay query.
  * Cancellation of the running route is a shared Int32 flag.
  */
 
@@ -17,6 +21,7 @@ import * as path from 'node:path';
 import { ATM_PARAMS, EcmwfClient, ECMWF_MIRRORS, WAVE_PARAMS, availableSteps, latestExpectedCycle, cycleFor, type Cycle } from '../data/ecmwf';
 import { ForecastStore } from '../data/forecast';
 import { loadForecastForBBox, loadGlobalForecast, resolveCycle, type ResolvedCycle } from '../data/loader';
+import { checkForecastMemory } from './memguard';
 import { bboxFromLonLat, bboxWidth, bboxHeight, type BBox } from '../geo/geodesy';
 import { LandMask } from '../geo/landmask';
 import { OnDemandLand } from '../geo/landcache';
@@ -30,9 +35,13 @@ import { HarmonicCurrentSource } from '../currents/harmonic';
 import { CurrentStack } from '../currents/stack';
 import { RtofsClient, RtofsCurrentSource, loadRtofsSteps, rtofsRunFor, type RtofsRun } from '../currents/rtofs';
 import type { CurrentSourceLike } from '../currents/types';
-import { conditionsSeries, conditionsTilePoints, currentPoints, fieldGrid, pressureFeatures, windPoints, type FieldLayer, type OverlaySources } from './overlays';
+import {
+  alignedSteps, loadResident, residentStale, SMOC_DEFAULT_BUDGET_BYTES, SmocClient, SmocCurrentSource, type SmocRun, type SmocSettings,
+} from '../currents/smoc';
+import { tileLatLonBounds } from './overlays';
+import { conditionsSeries, conditionsTilePoints, currentPoints, fieldGrid, pressureFeatures, windPoints, type FieldLayer, type OverlaySources, landMaskImage } from './overlays';
 import { routeVessel, type ResolvedConfig } from './config';
-import type { DataStatus, MainToWorker, QueryArgs, RouteRequest, RouteSummary, WorkerRole, WorkerToMain } from './protocol';
+import type { DataStatus, MainToWorker, QueryArgs, RouteRequest, RouteSummary, VesselPosition, WorkerRole, WorkerToMain } from './protocol';
 
 if (!parentPort) throw new Error('worker.ts must run as a worker thread');
 const port = parentPort;
@@ -53,9 +62,17 @@ let polar: PolarDiagram | null = null;
 let landCache: { key: string; mask: LandMask } | null = null;
 let harmonic: HarmonicCurrentSource[] = [];
 let rtofs: RtofsCurrentSource | null = null;
+let smocClient: SmocClient | null = null;
+let smoc: SmocCurrentSource | null = null;
+/** Last vessel position from the main thread (SMOC resident area centre). */
+let vesselPos: VesselPosition | null = null;
+/** Overlay / conditions queries wait at most this long for an on-demand SMOC load. */
+const SMOC_QUERY_DEADLINE_MS = 60_000;
 let stack: CurrentStack = new CurrentStack([]);
 /** overlayLand.builds when data-status was last sent. */
 let reportedLandBuilds = 0;
+/** SMOC revision when data-status was last sent. */
+let reportedSmocRev = -1;
 /** Plugin data directory (cache root). */
 let cacheRoot = '';
 
@@ -84,20 +101,170 @@ function landMaskFor(bbox: BBox, maxCells: number, shapefiles: string[]): LandMa
 
 function rebuildStack(): void {
   const sources: CurrentSourceLike[] = [...harmonic];
+  if (smoc) sources.push(smoc);
   if (rtofs) sources.push(rtofs);
   stack = new CurrentStack(sources);
 }
 
 function currentsStatus(): DataStatus['currents'] {
-  return stack.sources.map((s) => ({
-    name: s.name, priority: s.priority, resolutionM: s.resolutionM, bbox: s.bbox,
-    validFrom: s instanceof RtofsCurrentSource ? s.validRange[0].toISOString() : undefined,
-    validTo: s instanceof RtofsCurrentSource ? s.validRange[1].toISOString() : undefined,
-  }));
+  return stack.sources.map((s) => {
+    if (s instanceof SmocCurrentSource) {
+      const st = s.status();
+      return {
+        name: s.name, priority: s.priority, resolutionM: s.resolutionM, bbox: st.resident ? st.resident.bbox : s.bbox,
+        validFrom: st.resident?.valid_from ?? undefined, validTo: st.resident?.valid_to ?? undefined, smoc: st,
+      };
+    }
+    return {
+      name: s.name, priority: s.priority, resolutionM: s.resolutionM, bbox: s.bbox,
+      validFrom: s instanceof RtofsCurrentSource ? s.validRange[0].toISOString() : undefined,
+      validTo: s instanceof RtofsCurrentSource ? s.validRange[1].toISOString() : undefined,
+    };
+  });
 }
 
 function sendCurrents(): void {
   send({ type: 'currents', status: currentsStatus(), rtofsRun: rtofs ? new Date(rtofs.runMs).toISOString().slice(0, 10) : null, rtofs: null });
+}
+
+function smocSettings(cfg: ResolvedConfig): SmocSettings {
+  return { stepHours: cfg.currents.smocStepHours, horizonHours: cfg.currents.smocHorizonHours, halfWidthDeg: cfg.currents.smocHalfWidthDeg, budgetBytes: SMOC_DEFAULT_BUDGET_BYTES };
+}
+
+function makeSmocClient(cfg: ResolvedConfig): SmocClient | null {
+  if (!cfg.currents.smocEnabled) return null;
+  return new SmocClient({ cacheDir: path.join(cacheRoot, 'smoc'), log: (m) => log('debug', m) });
+}
+
+/** data worker → main → route worker: the run and the resident area (shared memory). */
+function sendSmoc(): void {
+  if (role === 'data') send({ type: 'smoc', smoc: smoc ? smoc.serialize() : null });
+}
+
+/**
+ * Data worker: check the store for a new daily run (cheap: .zmetadata +
+ * STAC), load the resident area around the vessel for the current
+ * window when the run, the window or the position changed, and prune
+ * superseded cached runs. Offline, the newest cached run is used.
+ */
+async function refreshSmoc(): Promise<void> {
+  const { config: cfg } = requireInit();
+  if (!cfg.currents.smocEnabled || !smocClient) {
+    if (smoc) {
+      smoc = null;
+      rebuildStack();
+      sendSmoc();
+    }
+    return;
+  }
+  const settings = smocSettings(cfg);
+  let run: SmocRun | null = null;
+  try {
+    const probed = await smocClient.probe(smoc?.run ?? null);
+    if (probed.settled || !smoc) {
+      run = probed;
+      if (!probed.settled) log('info', `smoc: the store update is still being written (STAC updated ${probed.stacUpdated ?? '?'}, metadata ${probed.metadataModified ?? '?'}); using run ${probed.key} provisionally`);
+    } else {
+      log('info', `smoc: store update in progress (STAC updated ${probed.stacUpdated ?? '?'}, metadata ${probed.metadataModified ?? '?'}); keeping run ${smoc.run.key}`);
+      run = smoc.run;
+    }
+  } catch (err) {
+    log('error', `smoc: cannot reach the Copernicus Marine store: ${(err as Error).message}`);
+    run = smoc?.run ?? smocClient.cachedRuns()[0] ?? null;
+    if (run && !smoc) log('info', `smoc: using cached run ${run.key} (offline)`);
+  }
+  if (!run) return;
+  // A run first loaded while its update was still being written is
+  // reloaded from scratch once the update has finished (its cached
+  // chunks may predate the update).
+  const provisionalReplaced = !!smoc && smoc.run.key === run.key && !smoc.run.settled && run.settled;
+  const newRun = !smoc || smoc.run.key !== run.key || provisionalReplaced;
+  const now = Date.now();
+  const steps = alignedSteps(run, now, now + settings.horizonHours * 3600_000, settings.stepHours);
+  const src = newRun ? new SmocCurrentSource(run, settings, smocClient, (m) => log('info', m)) : smoc!;
+  if (!newRun) src.expire(now);
+  if (provisionalReplaced) smocClient.dropRun(run.key);
+  if (newRun) smocClient.saveRun(run);
+  const pos = vesselPos;
+  let changed = newRun;
+  if (pos && (newRun || residentStale(src, pos, steps))) {
+    try {
+      const t = Date.now();
+      const res = await loadResident(smocClient, run, settings, pos, steps, { log: (m) => log('info', m) });
+      if (res) {
+        src.setResident(res.area, pos);
+        src.noteDownload('resident area', res.stats);
+        changed = true;
+        log('info', `smoc: run ${run.key}: resident ${res.area.nRows}×${res.area.nCols} cells × ${steps.length} steps, ${(src.memoryBytes() / 1e6).toFixed(1)} MB resident, downloaded ${(res.stats.bytes / 1e6).toFixed(1)} MB in ${((Date.now() - t) / 1000).toFixed(1)} s`);
+      }
+    } catch (err) {
+      log('error', `smoc: resident area load failed: ${(err as Error).message}`);
+      if (newRun && smoc) return; // keep serving the previous run
+    }
+  } else if (newRun && !pos) {
+    log('info', `smoc: run ${run.key}: no vessel position; nothing resident, areas load on demand`);
+  }
+  if (newRun) {
+    smoc = src;
+    const removed = smocClient.pruneRuns([run.key]);
+    if (removed.length) log('info', `smoc: removed superseded cached run(s) ${removed.join(', ')}`);
+  }
+  if (changed || newRun) {
+    rebuildStack();
+    sendSmoc();
+  }
+}
+
+/**
+ * Before an overlay / conditions query: load SMOC for the query box on
+ * demand when it is not resident (bounded wait; see ensure()).
+ */
+async function prepareSmocForQuery(kind: string, args: QueryArgs[keyof QueryArgs]): Promise<void> {
+  if (!smoc || !config?.currents.smocEnabled) return;
+  const src = smoc;
+  let bbox: BBox | null = null;
+  let steps: number[] = [];
+  let coarseOk = false;
+  switch (kind) {
+    case 'field': {
+      const a = args as QueryArgs['field'];
+      if (a.layer !== 'current' && a.layer !== 'sea_state') return;
+      bbox = a.bbox;
+      steps = src.bracketSteps(a.timeMs);
+      coarseOk = a.res >= 0.25;
+      break;
+    }
+    case 'currents': {
+      const a = args as QueryArgs['currents'];
+      bbox = a.bbox;
+      steps = src.bracketSteps(a.timeMs);
+      coarseOk = a.res >= 0.25;
+      break;
+    }
+    case 'conditions': {
+      const a = args as QueryArgs['conditions'];
+      bbox = { west: a.lon - 0.05, east: a.lon + 0.05, south: a.lat - 0.05, north: a.lat + 0.05 };
+      const end = Math.min(a.fromMs + a.hours * 3600_000, Date.now() + src.settings.horizonHours * 3600_000);
+      steps = src.stepsBetween(a.fromMs, Math.max(a.fromMs, end));
+      break;
+    }
+    case 'conditions_tile': {
+      const a = args as QueryArgs['conditions_tile'];
+      if (a.z < 5) return;
+      const [w, so, e, n] = tileLatLonBounds(a.z, a.x, a.y);
+      bbox = { west: w, south: so, east: e, north: n };
+      steps = src.bracketSteps(a.timeMs);
+      break;
+    }
+    default:
+      return;
+  }
+  if (!bbox || steps.length === 0) return;
+  try {
+    await src.ensure(bbox, steps, { reason: `${kind} query`, deadlineMs: SMOC_QUERY_DEADLINE_MS, coarseOk });
+  } catch (err) {
+    log('error', (err as Error).message);
+  }
 }
 
 function loadHarmonic(dir: string | null): void {
@@ -182,15 +349,21 @@ function residentMatches(cfg: ResolvedConfig, c: Cycle): boolean {
 }
 
 /**
- * Refresh currents (both roles) and, in the data worker, the global
- * forecast. The route worker never loads a forecast itself: the main
- * thread relays the data worker's (shared memory).
+ * Refresh RTOFS (both roles) and, in the data worker, the global
+ * forecast and CMEMS SMOC. The route worker never loads a forecast or
+ * the SMOC resident area itself: the main thread relays the data
+ * worker's (shared memory).
  */
 async function refresh(force: boolean): Promise<void> {
   const networkAllowed = role === 'data';
   await refreshRtofs(networkAllowed);
   sendCurrents();
-  if (role === 'data') await refreshForecast(force);
+  if (role === 'data') {
+    await refreshForecast(force);
+    // After the forecast, so a first boot is not held up by the SMOC resident download.
+    await refreshSmoc();
+    sendCurrents();
+  }
 }
 
 async function refreshForecast(force: boolean): Promise<void> {
@@ -213,6 +386,15 @@ async function refreshForecast(force: boolean): Promise<void> {
     send({ type: 'forecast-unchanged', cycleTimeMs: store!.meta.cycleTime.getTime() });
     return;
   }
+  // Memory guard: the new store must fit in what is available now (the
+  // store in use is already counted as used) with the headroom to spare.
+  const mem = checkForecastMemory(horizon, cfg.forecast.extraFields, cfg.forecast.memoryHeadroomBytes);
+  if (!mem.ok) {
+    log('error', `forecast: ${mem.message} [${mem.source}]`);
+    send({ type: 'refresh-error', message: mem.message });
+    return;
+  }
+  log('debug', `forecast: memory check ok: ${mem.message} [${mem.source}]`);
   const t = Date.now();
   try {
     // The previous store stays resident (and serving queries) until the
@@ -308,10 +490,27 @@ async function route(id: string, request: RouteRequest): Promise<void> {
     } else if (request.mode !== 'motor' && request.no_forecast) {
       progress(0, 0, 'no_forecast set: routing with calm wind');
     }
+    const departureMs = request.departure ? Date.parse(request.departure) : Date.now();
+    if (smoc && !request.no_currents) {
+      // SMOC for the route box over the currents window from departure, if the resident area does not cover it.
+      const src = smoc;
+      const steps = src.stepsBetween(departureMs, Math.max(departureMs, Date.now() + src.settings.horizonHours * 3600_000));
+      if (steps.length) {
+        progress(0, 0, 'currents: checking CMEMS SMOC coverage of the route area');
+        try {
+          await src.ensure(bbox, steps, { reason: `job ${id} route area`, shouldCancel });
+        } catch (err) {
+          if (shouldCancel()) throw new RouteCancelled();
+          progress(0, 0, `WARNING: CMEMS SMOC not loaded for the route area (${(err as Error).message}); lower-priority current sources are used there`);
+        }
+        rebuildStack();
+      }
+    }
+    if (shouldCancel()) throw new RouteCancelled();
     const current: CurrentSource = request.no_currents || stack.isEmpty ? new NoCurrent() : stack;
     if (!stack.isEmpty && !request.no_currents) progress(0, 0, `currents: ${stack.sources.map((s) => s.name).join(' > ')}`);
 
-    const departure = request.departure ? new Date(request.departure) : new Date();
+    const departure = new Date(departureMs);
     const prop = new OceanPropagator(land, {
       stages: request.stages ?? cfg.routing.stages, subsectors: cfg.routing.subsectors, headings: cfg.routing.headings, headingIncrementDeg: cfg.routing.headingIncrementDeg,
     });
@@ -357,8 +556,9 @@ function overlaySources(): OverlaySources {
   return { forecast: store, currents: stack.isEmpty ? null : stack, land: overlayLand };
 }
 
-function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs]): void {
+async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs]): Promise<void> {
   try {
+    await prepareSmocForQuery(kind, args);
     const src = overlaySources();
     let result: unknown;
     switch (kind) {
@@ -387,6 +587,11 @@ function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs]): void
         result = conditionsTilePoints(src, a.z, a.x, a.y, new Date(a.timeMs));
         break;
       }
+      case 'land_mask': {
+        const a = args as QueryArgs['land_mask'];
+        result = landMaskImage(src, a.bbox, a.w, a.h);
+        break;
+      }
       case 'pressure': {
         const a = args as QueryArgs['pressure'];
         result = pressureFeatures(src, a.bbox, new Date(a.timeMs), a.intervalHpa);
@@ -397,8 +602,10 @@ function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs]): void
     }
     send({ type: 'query-result', id, result });
     // A new overlay land raster was built: refresh the status the main thread reports.
-    if (overlayLand && overlayLand.builds !== reportedLandBuilds) {
-      reportedLandBuilds = overlayLand.builds;
+    // …or SMOC loaded an on-demand area.
+    const smocRev = smoc ? smoc.revision : -1;
+    if ((overlayLand && overlayLand.builds !== reportedLandBuilds) || smocRev !== reportedSmocRev) {
+      reportedLandBuilds = overlayLand ? overlayLand.builds : 0;
       send({ type: 'data-status', status: dataStatus() });
     }
   } catch (err) {
@@ -407,6 +614,7 @@ function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs]): void
 }
 
 function dataStatus(): DataStatus {
+  reportedSmocRev = smoc ? smoc.revision : -1;
   return {
     forecast: store ? {
       cycle: store.meta.cycleTime.toISOString(), validFrom: store.validRange[0].toISOString(), validTo: store.validRange[1].toISOString(),
@@ -440,12 +648,15 @@ async function handle(msg: MainToWorker): Promise<void> {
       }
       if (config.landShapefiles.length === 0) throw new Error('no land shapefile configured');
       overlayLand = role === 'data' ? new OnDemandLand(config.landShapefiles, { log: (m) => log('debug', m) }) : null;
+      smocClient = makeSmocClient(config);
+      smoc = null;
       loadHarmonic(config.currents.harmonicDir);
       rebuildStack();
       send({ type: 'ready', role });
       return;
     }
     case 'refresh':
+      if (msg.position !== undefined) vesselPos = msg.position;
       await refresh(msg.force ?? false);
       send({ type: 'data-status', status: dataStatus() });
       return;
@@ -466,10 +677,18 @@ async function handle(msg: MainToWorker): Promise<void> {
           ? new RtofsClient({ cacheDir: rtofsClient?.cacheDir ?? path.join(cacheRoot, 'rtofs'), region: config.currents.rtofsRegion, log: (m) => log('debug', m) })
           : null;
         rtofs = null;
+        smocClient = makeSmocClient(config);
+        smoc = null;
         rebuildStack();
+        if (msg.position !== undefined) vesselPos = msg.position;
+        // Route worker: SMOC comes back from the data worker (relayed 'smoc').
+        if (role === 'data') {
+          sendSmoc();
+          await refreshSmoc();
+        }
         await refreshRtofs(role === 'data');
         sendCurrents();
-        log('info', `currents reloaded for the new settings (RTOFS ${config.currents.rtofsEnabled ? config.currents.rtofsRegion : 'off'})`);
+        log('info', `currents reloaded for the new settings (SMOC ${config.currents.smocEnabled ? `${config.currents.smocStepHours} h steps, ${config.currents.smocHorizonHours} h, ±${config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${config.currents.rtofsEnabled ? config.currents.rtofsRegion : 'off'})`);
       }
       if (msg.reload.forecast && role === 'data') {
         log('info', `forecast settings changed (horizon ${prev.forecast.horizonHours} → ${config.forecast.horizonHours} h, extra fields ${prev.forecast.extraFields} → ${config.forecast.extraFields}); reloading`);
@@ -486,14 +705,28 @@ async function handle(msg: MainToWorker): Promise<void> {
       {
         const before = store;
         await route(msg.id, msg.request);
+        sendCurrents();
         // A new forecast arrived while the route ran on the previous one:
         // the route's reference is gone now, so let that store go.
         if (before && before !== store) releaseMemory();
       }
       return;
     case 'query':
-      query(msg.id, msg.kind, msg.args);
+      await query(msg.id, msg.kind, msg.args);
       return;
+    case 'smoc': {
+      // Route worker: the data worker's run and resident area (shared memory).
+      if (role !== 'route') return;
+      const s = msg.smoc;
+      const cfgNow = requireInit().config;
+      if (!s || !cfgNow.currents.smocEnabled) smoc = null;
+      else if (smoc && smoc.run.key === s.run.key && smoc.run.settled === s.run.settled && JSON.stringify(smoc.settings) === JSON.stringify(s.settings)) smoc.setResident(s.resident, s.centre);
+      else smoc = SmocCurrentSource.fromSerialized(s, smocClient, (m) => log('info', m));
+      rebuildStack();
+      sendCurrents();
+      if (smoc) log('debug', `smoc: adopted run ${smoc.run.key}${smoc.resident ? `, resident ${(smoc.memoryBytes() / 1e6).toFixed(1)} MB ${smoc.resident.u.buffer instanceof SharedArrayBuffer ? 'shared (no copy)' : 'copied'}` : ', nothing resident'}`);
+      return;
+    }
     case 'shutdown':
       process.exit(0);
   }

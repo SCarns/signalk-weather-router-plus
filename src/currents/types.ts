@@ -17,6 +17,18 @@ export interface CurrentSourceLike {
   /** (u, v) in m/s; exactly (0, 0) means "no data here". */
   at(lon: number, lat: number, time: Date): [number, number];
   atMany(lons: Float64Array, lats: Float64Array, time: Date): { u: Float64Array; v: Float64Array };
+  /**
+   * Display value for the overlay layers only: like `at`, but gridded
+   * model sources extend their field up to FILL_RADIUS_CELLS cells
+   * towards the coast (coastfill.ts). Absent = same as `at`.
+   */
+  atDisplay?(lon: number, lat: number, time: Date): [number, number];
+  /**
+   * Changes whenever the data the source answers with changes (new run,
+   * new resident or on-demand area), for caches keyed on the source set.
+   * Absent = the name identifies the data.
+   */
+  readonly revision?: number;
 }
 
 export function bboxContains(b: SourceBBox, lon: number, lat: number): boolean {

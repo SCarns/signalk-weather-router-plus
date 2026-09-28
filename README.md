@@ -3,8 +3,11 @@
 Standalone open-water weather routing as a Signal K plugin. Nothing runs
 outside the Signal K process: the plugin downloads ECMWF open-data
 forecasts by HTTP byte range, decodes the CCSDS-packed GRIB2 fields in
-TypeScript, avoids land with GSHHG coastline polygons, and runs an
-isochrone router against the vessel's polar in a worker thread.
+TypeScript, reads Copernicus Marine SMOC ocean currents (worldwide,
+including tides) from their Zarr store with an in-process Blosc/LZ4
+decoder, avoids land with GSHHG coastline polygons, and runs an
+isochrone router against the vessel's polar in a worker thread. No
+runtime npm dependencies.
 
 It is the "plus" sibling of `signalk-weather-router`, which is a thin
 client to the routePlanning server. This plugin needs no routePlanning
@@ -55,7 +58,93 @@ positions and treats the coastline as the only obstacle.
 - **Depth:** none in this version. There is no bathymetry gate; a
   vessel's draught only matters through the configured values carried in
   the output.
-- **Currents:** none in this version.
+- **Currents:** a stack of sources; where several cover a point the
+  highest priority with data wins, and exactly (0, 0) from a source
+  means "no data here" (the next one is asked):
+
+  | Priority | Source | Coverage |
+  |---|---|---|
+  | 10 (from the file) | user-installed tidal harmonics `.npz`, e.g. NECOFS GoM3 | its grid |
+  | 3 | **Copernicus Marine SMOC** (below) | worldwide, 80°S–90°N |
+  | 2 | NOAA Global RTOFS, depth-averaged `ubaro`/`vbaro`, one regional product | the product's box |
+  | 0 (from the file) | FES2014 harmonic extract `.npz` | its grid |
+
+  **SMOC** is product `GLOBAL_ANALYSISFORECAST_PHY_001_024`, dataset
+  `cmems_mod_glo_phy_anfc_merged-uv_PT1H-i_202211`: hourly surface
+  currents merging the Mercator 1/12° circulation model, FES2014 tidal
+  currents and Stokes drift (`utotal`/`vtotal`, m/s), from 2020-11-01 to
+  about 10 days ahead, updated once a day. It is read anonymously (no
+  account) from the Copernicus Marine ARCO Zarr v2 stores on
+  `s3.waw3-1.cloudferro.com` (`timeChunked.zarr`: 1 h × 512 × 2048-cell
+  chunks; `geoChunked.zarr`: 4272 h × 16 × 8-cell chunks;
+  `downsampled4.zarr`: 1/3°, one chunk per hour for the globe), with the
+  chunks' Blosc/LZ4 compression decoded in TypeScript
+  (`src/data/blosc.ts`, `src/data/zarr.ts`). Each load takes the layout
+  with the lower estimated download (a small box over many hours comes
+  from `geoChunked`, a wide area from `timeChunked`).
+  - *Resident area:* the vessel's position (Signal K
+    `navigation.position`) ± the configured half-width (15°), every step
+    from the current hour to the SMOC horizon (72 h) at 3 h (or 1 h)
+    spacing, cropped from the decoded chunks and held as Float32 in
+    SharedArrayBuffers: the data worker loads it and the route worker
+    uses the same memory. It is rebuilt when the window moves on a step,
+    when the vessel has moved more than a third of the half-width, or
+    for a new run.
+  - *On demand:* before a route (route worker) or an overlay /
+    conditions query (data worker) whose box the resident area does not
+    cover, the plugin loads that box first: all window steps for a
+    route or a conditions series, only the one or two steps around the
+    requested hour for a map overlay (from the 1/3° store for zoomed-out
+    views, lattice ≥ 0.25°). On-demand areas are kept in an LRU of
+    256 MB per worker; a single area is capped at half that (a route box
+    too large at 1/12° is loaded at 1/3°). Overlay queries wait at most
+    60 s; a slower load finishes in the background and serves the next
+    request. Without a vessel position nothing is resident and
+    everything loads on demand.
+  - *Runs and cache:* compressed chunks are cached under
+    `<data dir>/smoc/<run>/`, where the run is the last hour on the
+    store's time axis (it advances by 24 h each day). On every refresh
+    tick the plugin reads the 12 kB `.zmetadata` and the STAC record;
+    a new run is used once STAC reports the update finished
+    (`admp_updated_data` later than the metadata rewrite, no
+    `admp_updating_start_date`), the resident area is downloaded again,
+    and the previous run's cache is deleted. Offline, the newest cached
+    run is used.
+  - *Sampling:* bilinear on the 1/12° grid (seamless across the
+    antimeridian), linear in time between steps with a ±1 h grace at the
+    ends, like RTOFS. Cells the model leaves empty (land, and roughly the
+    first cell off the coast) are "no data".
+  - *Measured* (2026-09-28, ±15° box = 367 × 367 cells, 72 h): 26 steps
+    at 3 h: 181.8 MB download (English Channel, 208 chunks, 9 s on a fast
+    line) or 110.9 MB (US East Coast, 104 chunks), 28 MB resident; 74
+    steps at 1 h: 219.5 MB (English Channel, from `geoChunked`) or
+    315.6 MB (US East Coast), 79.7 MB resident. A one-hour overlay of a
+    1.5° × 1° box outside the resident area: 2.7 MB (2 chunks); a
+    conditions series at a point: 0.64 MB (4 `geoChunked` chunks, which
+    hold every hour of the run). Decoding runs at about 400 MB/s.
+
+  **Coastal display extension.** A ~9 km model has no value in the cells
+  next to the coast, so drawn currents would stop short of the
+  shoreline. For the map layers only (`/api/field?layer=current` and
+  `/api/currents`), SMOC and RTOFS fill an empty grid cell that has
+  valid cells within 2 grid cells from those cells (inverse-distance²
+  weights, no fade; valid cells never change), so colour and arrows
+  reach the coast, where the page's screen-resolution land mask cuts
+  them. Routing, the conditions popup and the sea-state layer use the
+  raw values only.
+
+  **Attribution and licence.** SMOC is *Generated using E.U. Copernicus
+  Marine Service Information; https://doi.org/10.48670/moi-00016*. The
+  Copernicus Marine licence
+  (https://marine.copernicus.eu/user-corner/service-commitments-and-licence)
+  grants the licence free of charge (section 2.1) as a worldwide,
+  non-exclusive, royalty-free, perpetual licence to use the products and
+  to create and distribute value-added products or derivative works
+  "for any purpose" (2.2), with the credit above, which the page shows
+  in the map's attribution while a current layer is on (2.3–2.4). The
+  products come without warranty (4). The service commitments state the
+  service is free of charge until the end of the current Copernicus
+  Marine Service phase, planned for 30 June 2028.
 
 ## Routing engine
 
@@ -125,7 +214,7 @@ the selected display units. Saving needs a `readwrite` login.
 |---|---|---|
 | `vessel` | name, draught (1.8 m), air draft (16 m), LOA (11 m), beam (3.7 m), under-keel margin (0.5 m), overhead margin (1 m), speed under power (6 kt = 3.087 m/s), max wave height (none), tack penalty (30 s) | applies to the next route |
 | `forecast` | horizon (72 h = 259200 s, 3–240 h), check interval (60 min), cached cycles kept (2), extra fields (on) | horizon / extra fields reload the forecast; the interval restarts the timer |
-| `currents` | RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
+| `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), finished routes kept (50) | applies to the next route |
 | `publish` | save to the Resources API (on), route name prefix (`WRP`), notifications (on) | applies to the next route |
 
@@ -231,6 +320,14 @@ wrp-route --start 41.44,-71.36 --end 32.42,-64.58 \
 
 - `npm test` runs the unit tests. The GRIB2/CCSDS decoder is checked
   against eccodes output stored in `test-data/` (full-array hash).
+- The Blosc decoder is checked bit for bit against numcodecs (c-blosc
+  1.21.6): a real SMOC `utotal` chunk and 25 synthetic frames covering
+  byte / bit / no shuffle, split and unsplit blocks, several blocks with
+  a partial last one, raw streams, memcpyed chunks and typesizes 1–8
+  (`test-data/blosc/`, regenerated by `tools/gen_blosc_fixtures.py`).
+  Against the live store, 154 downloaded chunks (409 MB decoded) matched
+  numcodecs exactly, and SMOC samples matched xarray bit for bit at grid
+  nodes and to 2.5e-6 m/s between them.
 - `npm run test:corpus <dir>` compares the decoder value-for-value
   against an eccodes dump of any GRIB2 corpus (see `tools/verify_grib_corpus.ts`).
   On 30 ECMWF messages (12- and 16-bit, with and without bit maps) it
@@ -240,6 +337,9 @@ wrp-route --start 41.44,-71.36 --end 32.42,-64.58 \
 
 - Open water only. A start or end inside a narrow harbour can fail with
   "stage 1 has no live waypoints"; start from the harbour approach.
-- No depth or current data.
+- No depth data.
+- SMOC areas are loaded whole-chunk: a box outside the resident area
+  costs its chunks' download (see the measured sizes above), cached for
+  the rest of the day's run.
 - Routes beyond the forecast horizon use the last step's conditions.
 - One route computes at a time (single worker thread); others queue.

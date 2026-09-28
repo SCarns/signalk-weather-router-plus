@@ -28,6 +28,25 @@ export class CurrentStack implements CurrentSource {
     return [0, 0];
   }
 
+  /**
+   * Overlay (display) value: as `at`, but each source's `atDisplay`
+   * (coastal extension) where it has one. Never used for routing or the
+   * conditions popup.
+   */
+  atDisplay(lon: number, lat: number, time: Date): [number, number] {
+    for (const s of this.sources) {
+      if (!s.contains(lon, lat)) continue;
+      const [u, v] = s.atDisplay ? s.atDisplay(lon, lat, time) : s.at(lon, lat, time);
+      if (!(u === 0 && v === 0)) return [u, v];
+    }
+    return [0, 0];
+  }
+
+  /** Identifies the data behind the stack (source names and revisions), for response caches. */
+  get key(): string {
+    return this.sources.map((s) => (s.revision === undefined ? s.name : `${s.name}#${s.revision}`)).join('+');
+  }
+
   atMany(lons: Float64Array, lats: Float64Array, time: Date): { u: Float64Array; v: Float64Array } {
     const n = lons.length;
     const u = new Float64Array(n);

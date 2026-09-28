@@ -5,7 +5,7 @@
 //
 // GET  /api/settings → {values, schema}: values are SI (m, m/s, s, deg);
 //      schema.settings[] gives key, group, label, type, unit, quantity,
-//      min/max (SI), multipleOf, default, nullable, enum, help, reload.
+//      min/max (SI), multipleOf, oneOf, default, nullable, enum, help, reload.
 // PUT  /api/settings with only the changed keys ({group: {key: SI}}) →
 //      {values, changed, reloaded} or 400 {error, errors: {key: msg}}.
 // Inputs show values in the display-unit preset (Setup → Display);
@@ -37,6 +37,7 @@
     if (q === 'hours') return { unit: 'h', f: 1 / 3600, off: 0, prec: 0 };
     if (q === 'minutes') return { unit: 'min', f: 1 / 60, off: 0, prec: 0 };
     if (q === 'seconds') return { unit: 's', f: 1, off: 0, prec: 0 };
+    if (q === 'megabytes') return { unit: 'MB', f: 1e-6, off: 0, prec: 0 };
     if (q === 'angle') return { unit: '°', f: 1, off: 0, prec: 2 };
     return { unit: spec.unit || '', f: 1, off: 0, prec: spec.type === 'integer' ? 0 : 3 };
   }
@@ -76,6 +77,9 @@
       si = Math.round(q) * s.multipleOf;
     }
     if (s.type === 'integer' && !Number.isInteger(si)) throw new Error('must be a whole number');
+    if (s.oneOf && !s.oneOf.some((x) => Math.abs(x - si) < 1e-9)) {
+      throw new Error('must be ' + s.oneOf.map((x) => textFor(s, x, r.conv)).join(' or ') + (r.conv.unit ? ' ' + r.conv.unit : ''));
+    }
     const lo = s.min, hi = s.max;
     if ((lo !== undefined && si < lo - 1e-9) || (hi !== undefined && si > hi + 1e-9)) {
       throw new Error('must be ' + textFor(s, lo, r.conv) + '–' + textFor(s, hi, r.conv) + (r.conv.unit ? ' ' + r.conv.unit : ''));

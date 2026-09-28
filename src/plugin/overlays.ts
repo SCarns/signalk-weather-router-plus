@@ -200,7 +200,8 @@ export function fieldGrid(src: OverlaySources, layer: FieldLayer, bbox: BBox, ti
         const a: (number | null)[] = [];
         const b: (number | null)[] = [];
         for (const lon of lons) {
-          const [u, v] = st.at(lon, lat, time);
+          // Display value: gridded model currents extended to the coast (coastfill.ts).
+          const [u, v] = st.atDisplay(lon, lat, time);
           if (u === 0 && v === 0) {
             a.push(null);
             b.push(null);
@@ -244,7 +245,10 @@ export interface CurrentPoint {
   dir_deg: number;
 }
 
-/** Current arrows on a lattice; land and near-slack points dropped. */
+/**
+ * Current arrows on a lattice; land and near-slack points dropped.
+ * Display values (coastal extension of gridded model currents).
+ */
 export function currentPoints(src: OverlaySources, bbox: BBox, time: Date, res: number): CurrentPoint[] {
   if (!src.currents || src.currents.isEmpty) return [];
   const { lons, lats, res: r } = lattice(bbox, res, 20_000);
@@ -253,7 +257,8 @@ export function currentPoints(src: OverlaySources, bbox: BBox, time: Date, res: 
   for (const lat of lats) {
     for (const lon of lons) {
       if (lm && lm.isLand(lon, lat)) continue;
-      const [u, v] = src.currents.at(lon, lat, time);
+      // Display value: gridded model currents extended to the coast (coastfill.ts).
+      const [u, v] = src.currents.atDisplay(lon, lat, time);
       const sp = Math.hypot(u, v);
       if (sp < 0.005) continue;
       out.push({
@@ -450,6 +455,35 @@ export function conditionsSeries(src: OverlaySources, lon: number, lat: number, 
   };
 }
 
+/**
+ * Land mask for drawing: one byte per pixel (1 = land) over `bbox` at
+ * `w`×`h` pixels, row 0 at the north edge, pixel centres at
+ * `west + (x + 0.5) * dx`, `north - (y + 0.5) * dy`, the same mapping the
+ * page uses to draw a heatmap canvas over the same box. The raster
+ * resolution follows the pixel size (finest 0.002°), so the coastline is
+ * as sharp as the screen, independent of the data grid.
+ */
+export function landMaskImage(src: OverlaySources, bbox: BBox, w: number, h: number): Uint8Array {
+  if (!src.land) throw new Error('no coastline configured');
+  const width = bboxWidth(bbox);
+  const height = bbox.north - bbox.south;
+  const dx = width / w;
+  const dy = height / h;
+  // forBBox picks a raster resolution of spacing/4; ask for 4× the pixel so the raster matches the pixel.
+  const lm = src.land.forBBox(bbox, Math.min(dx, dy) * 4);
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const lat = bbox.north - (y + 0.5) * dy;
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let lon = bbox.west + (x + 0.5) * dx;
+      if (lon > 180) lon -= 360;
+      if (lm.isLand(lon, lat)) out[row + x] = 1;
+    }
+  }
+  return out;
+}
+
 /** Isobar GeoJSON for a bbox at a time (interval in hPa). */
 export function pressureFeatures(src: OverlaySources, bbox: BBox, time: Date, intervalHpa: number): { type: 'FeatureCollection'; features: IsobarFeature[] } {
   const f = src.forecast;
@@ -531,7 +565,7 @@ export function conditionsTilePoints(src: OverlaySources, z: number, x: number, 
   if (!Number.isInteger(z) || !Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= n || y < 0 || y >= n) throw new Error('tile out of range');
   if (!src.forecast && (!src.currents || src.currents.isEmpty)) throw new Error('no forecast data loaded');
   const cycle = src.forecast ? src.forecast.meta.cycleTime.getTime() : 0;
-  const cur = src.currents ? src.currents.sources.map((s) => s.name).join('+') : '';
+  const cur = src.currents ? src.currents.key : '';
   const key = `${cycle}|${cur}|${src.land ? 1 : 0}|${z}/${x}/${y}|${time.getTime()}`;
   const hit = tileCache.get(key);
   if (hit) {

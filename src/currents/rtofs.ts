@@ -27,6 +27,7 @@ import type { BBox } from '../geo/geodesy';
 import { iterateGrib2 } from '../grib/grib2';
 import { cropField, type FieldGrid, sampleField } from '../data/forecast';
 import { bboxContains, type CurrentSourceLike, type SourceBBox } from './types';
+import { sampleFieldPairFilled } from './coastfill';
 
 export const RTOFS_REGIONS = [
   'west_atl', 'west_conus', 'alaska', 'arctic', 'bering', 'guam', 'gulf_alaska',
@@ -338,6 +339,22 @@ export class RtofsCurrentSource implements CurrentSourceLike {
     if (w !== 0 && i0 !== i1) {
       u = u * (1 - w) + sampleField(this.steps[i1].u, lon, lat) * w;
       v = v * (1 - w) + sampleField(this.steps[i1].v, lon, lat) * w;
+    }
+    if (!Number.isFinite(u) || !Number.isFinite(v)) return [0, 0];
+    return [u, v];
+  }
+
+  /** Overlay value: bilinear on the coastally extended field (coastfill.ts); routing uses `at`. */
+  atDisplay(lon: number, lat: number, time: Date): [number, number] {
+    if (!this.contains(lon, lat)) return [0, 0];
+    const tw = this.timeWeights(time.getTime());
+    if (!tw) return [0, 0];
+    const [i0, i1, w] = tw;
+    let [u, v] = sampleFieldPairFilled(this.steps[i0].u, this.steps[i0].v, lon, lat);
+    if (w !== 0 && i0 !== i1) {
+      const [u1, v1] = sampleFieldPairFilled(this.steps[i1].u, this.steps[i1].v, lon, lat);
+      u = u * (1 - w) + u1 * w;
+      v = v * (1 - w) + v1 * w;
     }
     if (!Number.isFinite(u) || !Number.isFinite(v)) return [0, 0];
     return [u, v];

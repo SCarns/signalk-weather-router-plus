@@ -299,7 +299,12 @@ function _noteOverlay(key, msg) {
 function _bboxParam(b) { return b.map(v => +v.toFixed(5)).join(','); }
 
 // --- Tidal current overlay ---
-const currentSource = new ol.source.Vector();
+// Credit required by the Copernicus Marine licence (section 2.4) wherever
+// its products are shown; NOAA RTOFS is the backup source. Shown by the
+// map's attribution control while a current layer is visible.
+const CURRENT_ATTRIBUTION = 'Currents: Generated using E.U. Copernicus Marine Service Information; '
+  + '<a href="https://doi.org/10.48670/moi-00016" target="_blank" rel="noopener">doi:10.48670/moi-00016</a>. NOAA Global RTOFS.';
+const currentSource = new ol.source.Vector({ attributions: CURRENT_ATTRIBUTION });
 
 // Pre-build current arrow styles to avoid icon cache thrashing
 const _currentStyleCache = new Map();
@@ -668,11 +673,55 @@ function _gridSampler(grid, rows) {
 // Draw a grid into a data URL. spec: { field, legend, alpha, maskLand,
 // alphaField (multiplies alpha, e.g. sea-state `signal`), fadeBelow
 // (alpha ramps 0→1 across [0, fadeBelow], precip) }.
-function renderHeatmapImage(grid, spec) {
-  const [w, s, e, n] = grid.bbox;
+// Canvas size for a heatmap of the current view (also the land-mask size).
+function _heatmapCanvasSize() {
   const size = map.getSize() || [800, 600];
-  const W = Math.max(128, Math.min(1024, Math.round(size[0])));
-  const H = Math.max(128, Math.min(1024, Math.round(size[1])));
+  return [Math.max(128, Math.min(1024, Math.round(size[0]))), Math.max(128, Math.min(1024, Math.round(size[1])))];
+}
+// Land mask at canvas resolution from the plugin's coastline, so a drawn
+// layer stops exactly at the shore instead of at the data grid's land
+// flags. Bytes, 1 = land, row 0 north, same pixel mapping as the canvas.
+// Keyed by box and size; the browser also caches the response.
+const _landMaskCache = new Map();
+function fetchLandMask(bbox, W, H) {
+  const key = bbox.join(',') + '|' + W + 'x' + H;
+  if (_landMaskCache.has(key)) return _landMaskCache.get(key);
+  const url = ROUTER + '/land-mask?bbox=' + bbox.join(',') + '&w=' + W + '&h=' + H;
+  const p = authFetch(url, {}, 'land-mask-' + key)
+    .then(r => r.ok ? r.arrayBuffer() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+    .then(buf => {
+      const bytes = new Uint8Array(buf);
+      if (bytes.length !== W * H) throw new Error('land mask size ' + bytes.length + ' != ' + (W * H));
+      return { W, H, bytes };
+    })
+    .catch(err => { _landMaskCache.delete(key); throw err; });
+  _landMaskCache.set(key, p);
+  while (_landMaskCache.size > 16) _landMaskCache.delete(_landMaskCache.keys().next().value);
+  return p;
+}
+// Streamline land test against a mask fetched for field `f`'s box.
+// Returns true / false, or null when there is no mask (caller falls back).
+function _maskIsLand(f, mask, lon, lat) {
+  if (!mask || !f || !f.bbox) return null;
+  const [w, s, e, n] = f.bbox;
+  let dx = lon - w;
+  dx = ((dx % 360) + 360) % 360;
+  const x = Math.floor(dx / (e - w) * mask.W), y = Math.floor((n - lat) / (n - s) * mask.H);
+  if (x < 0 || x >= mask.W || y < 0 || y >= mask.H) return null;
+  return mask.bytes[y * mask.W + x] === 1;
+}
+// Fetch the land mask for a streamline field and store it on the owner.
+function _attachLandMask(owner, f) {
+  owner.landMask = null;
+  if (!f || !f.bbox) return;
+  const [W, H] = _heatmapCanvasSize();
+  fetchLandMask(f.bbox, W, H).then(m => { if (owner.vectorField === f) owner.landMask = m; })
+    .catch(err => console.log('land mask unavailable for flow lines: ' + err.message));
+}
+function renderHeatmapImage(grid, spec, landMask) {
+  const [w, s, e, n] = grid.bbox;
+  const [W, H] = landMask ? [landMask.W, landMask.H] : _heatmapCanvasSize();
+  const maskBytes = landMask ? landMask.bytes : null;
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
@@ -680,13 +729,15 @@ function renderHeatmapImage(grid, spec) {
   const data = img.data;
   const { v0, v1, lut } = _rampLut(_legendStops(spec.legend));
   const sample = _gridSampler(grid, grid.fields[spec.field]);
-  const sampleLand = spec.maskLand ? _gridSampler(grid, grid.land) : null;
+  // Coarse fallback when the screen-resolution mask is unavailable.
+  const sampleLand = spec.maskLand && !maskBytes ? _gridSampler(grid, grid.land) : null;
   const sampleAlpha = spec.alphaField ? _gridSampler(grid, grid.fields[spec.alphaField]) : null;
   const baseA = spec.alpha == null ? 0.55 : spec.alpha;
   const span = (v1 - v0) || 1;
   for (let y = 0; y < H; y++) {
     const lat = n - (y + 0.5) / H * (n - s);
     for (let x = 0; x < W; x++) {
+      if (spec.maskLand && maskBytes && maskBytes[y * W + x]) continue;
       const lon = w + (x + 0.5) / W * (e - w);
       const v = sample(lon, lat);
       if (v == null) continue;
@@ -706,7 +757,9 @@ function renderHeatmapImage(grid, spec) {
 // Grid resolution for a viewport: enough cells for a smooth picture,
 // within the plugin's 40k-cell cap (it coarsens further itself).
 function _fieldRes(bbox) {
-  return Math.min(2, Math.max(0.02, +((bbox[2] - bbox[0]) / 160).toFixed(4)));
+  // Floor 0.002° (~200 m) so close-zoom views can show fine current data
+  // (NECOFS ~0.01°) right up to the coast; the 40k-cell cap still applies.
+  return Math.min(2, Math.max(0.002, +((bbox[2] - bbox[0]) / 160).toFixed(4)));
 }
 // Fetch a field grid for the current viewport + overlay time. The URL
 // is identical for the heatmap and the streamlines of the same layer,
@@ -717,18 +770,28 @@ function fetchField(layer, channel) {
   const url = ROUTER + '/field?layer=' + layer + '&bbox=' + _bboxParam(bbox) + '&time=' + encodeURIComponent(_overlayTimeIso()) + '&res=' + res;
   return authFetch(url, {}, channel).then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))));
 }
-function _setHeatmap(layer, grid, spec) {
+function _setHeatmap(layer, grid, spec, landMask) {
   const [w, s, e, n] = grid.bbox;
   layer.setSource(new ol.source.ImageStatic({
-    url: renderHeatmapImage(grid, spec),
+    url: renderHeatmapImage(grid, spec, landMask),
     imageExtent: [w, s, e, n],
     projection: 'EPSG:4326',
+    attributions: spec.attributions,
   }));
 }
 function _heatmapLoader(layer, toggleId, fieldLayer, spec, channel) {
   return function () {
     fetchField(fieldLayer, channel)
-      .then(grid => { _setHeatmap(layer, grid, spec); _noteOverlay(toggleId, null); })
+      .then(grid => {
+        if (!spec.maskLand) return { grid, mask: null };
+        const [W, H] = _heatmapCanvasSize();
+        // A mask failure falls back to the grid's land flags rather than dropping the layer.
+        return fetchLandMask(grid.bbox, W, H).then(mask => ({ grid, mask }), err => {
+          console.log('land mask unavailable, using grid land flags: ' + err.message);
+          return { grid, mask: null };
+        });
+      })
+      .then(({ grid, mask }) => { _setHeatmap(layer, grid, spec, mask); _noteOverlay(toggleId, null); })
       .catch(err => { if (err.name !== 'AbortError') { console.log(fieldLayer + ' heatmap error: ' + err.message); layer.setSource(null); _noteOverlay(toggleId, err.message); } });
   };
 }
@@ -749,7 +812,7 @@ function loadWindHeatmap() {
 // Land masked so the coasts stay sharp.
 const currentHeatmapLayer = new ol.layer.Image({ source: null, opacity: 1.0, zIndex: 6, visible: false });
 let _currentHeatmapDebounce = null;
-const _doLoadCurrentHeatmap = _heatmapLoader(currentHeatmapLayer, 'currentHeatmapToggle', 'current', { field: 'speed_ms', legend: 'current', maskLand: true }, 'current-heatmap');
+const _doLoadCurrentHeatmap = _heatmapLoader(currentHeatmapLayer, 'currentHeatmapToggle', 'current', { field: 'speed_ms', legend: 'current', maskLand: true, attributions: CURRENT_ATTRIBUTION }, 'current-heatmap');
 function loadCurrentHeatmap() {
   if (!currentHeatmapLayer.getVisible()) return;
   if (_currentHeatmapDebounce) clearTimeout(_currentHeatmapDebounce);
@@ -762,7 +825,7 @@ function loadCurrentHeatmap() {
 // 0 over land.
 const roughnessLayer = new ol.layer.Image({ source: null, opacity: 1.0, zIndex: 6, visible: false });
 let _roughnessDebounce = null;
-const _doLoadRoughness = _heatmapLoader(roughnessLayer, 'roughnessToggle', 'sea_state', { field: 'index', legend: 'sea_state', maskLand: true, alphaField: 'signal' }, 'roughness');
+const _doLoadRoughness = _heatmapLoader(roughnessLayer, 'roughnessToggle', 'sea_state', { field: 'index', legend: 'sea_state', maskLand: true, alphaField: 'signal', attributions: CURRENT_ATTRIBUTION }, 'roughness');
 function loadRoughness() {
   if (!roughnessLayer.getVisible()) return;
   if (_roughnessDebounce) clearTimeout(_roughnessDebounce);
@@ -960,6 +1023,7 @@ const waveStreamlines = {
     this.fetching = true;
     fetchField('waves', 'wave-vec').then(d => {
       this.vectorField = d;
+      _attachLandMask(this, d);
       // Respawn the whole particle population — old particles are at
       // positions now out of the field's bounds.
       const N = 1500;
@@ -992,7 +1056,9 @@ const waveStreamlines = {
     const j = Math.round(dx / f.res);
     const i = Math.round((lat - f.lats[0]) / f.res);
     if (i < 0 || i >= f.lats.length || j < 0 || j >= f.lons.length) return null;
-    if (f.land && f.land[i] && f.land[i][j]) return null;
+    const ml = _maskIsLand(f, this.landMask, lon, lat);
+    if (ml === true) return null;
+    if (ml === null && f.land && f.land[i] && f.land[i][j]) return null;
     const swh = f.fields.swh[i][j];
     const mwd = f.fields.mwd[i][j];
     if (swh == null || mwd == null) return null;
@@ -1113,6 +1179,7 @@ const windStreamlines = {
     this.fetching = true;
     fetchField('wind', 'wind-vec').then(d => {
       this.vectorField = d;
+      _attachLandMask(this, d);
       const N = 1500;
       this.particles = new Array(N);
       for (let i = 0; i < N; i++) this.particles[i] = this._spawn();
@@ -1145,7 +1212,9 @@ const windStreamlines = {
     if (i < 0 || i >= f.lats.length || j < 0 || j >= f.lons.length) return null;
     // Land cells are skipped so particles don't drift over the shore
     // (the routing server nulled them in its wind-vector field).
-    if (f.land && f.land[i] && f.land[i][j]) return null;
+    const ml = _maskIsLand(f, this.landMask, lon, lat);
+    if (ml === true) return null;
+    if (ml === null && f.land && f.land[i] && f.land[i][j]) return null;
     const spd = f.fields.speed_ms[i][j];
     const dir = f.fields.dir_from[i][j];
     if (spd == null || dir == null) return null;

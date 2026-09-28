@@ -1005,7 +1005,9 @@ function _statusLine(s) {
   const cur = Array.isArray(s.currents) && s.currents.length ? s.currents.map(c => c.name).join(', ') : 'none';
   return '<span class="ok">forecast</span> ' + f.cycle.slice(0, 13) + 'Z · ' + f.steps + ' steps to ' + f.valid_to.slice(0, 13) + 'Z'
     + (f.has_waves ? ' · waves' : '') + '<br>currents: ' + cur
-    + (s.jobs ? ' · jobs: ' + (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued' : '');
+    + (s.jobs ? ' · jobs: ' + (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued' : '')
+    // A refused reload (e.g. the memory guard) while the previous forecast keeps serving.
+    + (s.forecast_error ? '<br><span class="warn">' + String(s.forecast_error).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])) + '</span>' : '');
 }
 function loadPluginStatus() {
   const el = document.getElementById('dataStatus');
