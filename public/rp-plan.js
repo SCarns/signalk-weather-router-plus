@@ -381,6 +381,8 @@ function _legendUnit(quantity) {
   // Precip stops are a water-depth rate in m/s; the preset's precip
   // factor is per m/s as well.
   if (quantity === 'precip_depth_rate') { const d = unitDesc('precip', 'm/s'); d.p = d.u === 'in/h' ? 2 : 1; return d; }
+  // Sea-level heights (tide) follow the preset's depth unit.
+  if (quantity === 'sea_level') { const d = unitDesc('depth', 'm'); d.p = d.f === 1 ? 1 : 0; return d; }
   return { f: 1, off: 0, u: '', p: 0 };
 }
 function _legendVal(v, u) {
@@ -439,12 +441,17 @@ function updateLegends() {
   if (_on('windToggle')) rows.push(_classesRow('Wind barbs', WIND_BARB_CLASSES, (lo, c) => _windBarbSvg(lo, c)) + _noteRow('windToggle'));
   if (_on('windCombinedToggle') && G.wind) rows.push(_gradientRow(G.wind) + _noteRow('windCombinedToggle'));
   if (_on('currentToggle')) rows.push(_classesRow('Tidal current', CURRENT_ARROW_CLASSES) + _noteRow('currentToggle'));
-  if (_on('currentHeatmapToggle') && G.current) rows.push(_gradientRow(G.current) + _noteRow('currentHeatmapToggle'));
+  if (_on('currentHeatmapToggle') && G.current) rows.push(_gradientRow(G.current) + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (~9 km)</div>' + _noteRow('currentHeatmapToggle'));
   if (_on('wavesCombinedToggle') && G.waves) rows.push(_gradientRow(G.waves) + _noteRow('wavesCombinedToggle'));
   if (_on('roughnessToggle') && G.sea_state) rows.push(_bandsRow(G.sea_state) + _noteRow('roughnessToggle'));
   if (_on('precipToggle') && G.precip) rows.push(_gradientRow(G.precip) + _noteRow('precipToggle'));
   if (_on('temperatureToggle') && G.temperature) rows.push(_gradientRow(G.temperature) + _noteRow('temperatureToggle'));
   if (_on('sstToggle') && G.sst) rows.push(_gradientRow(G.sst) + _noteRow('sstToggle'));
+  if (_on('tideToggle') && G.tide) {
+    // The map stretches the tide scale to the view (rp-layers _applyAutoScale); show the stops actually drawn.
+    const scaled = (typeof _autoScaleStops !== 'undefined' && _autoScaleStops.tide) ? Object.assign({}, G.tide, { stops: _autoScaleStops.tide }) : G.tide;
+    rows.push(_gradientRow(scaled) + '<div class="lg-note">scaled to the largest tide in view · relative to mean sea level, not chart datum · Copernicus Marine</div>' + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (~9 km)</div>' + _noteRow('tideToggle'));
+  }
   if (_on('pressureToggle')) rows.push('<div class="lg-row"><div class="lg-title">Pressure <span>(hPa)</span></div><div class="lg-note">isobars every 4 hPa · bold every 20 · <b style="color:#1565C0">H</b> / <b style="color:#C62828">L</b> centres</div>' + _noteRow('pressureToggle') + '</div>');
   if (_on('conditionsToggle')) rows.push('<div class="lg-row"><div class="lg-title">Conditions</div><div class="lg-note">dots are forecast sample points · shift-click anywhere for the hourly series</div></div>');
   box.innerHTML = rows.join('');
@@ -1164,6 +1171,7 @@ function _reloadTimedOverlays() {
   loadPrecipHeatmap();
   loadTemperature();
   loadSst();
+  loadTide();
   loadPressure();
   loadConditionsLayer();
   if (waveStreamlines.enabled) waveStreamlines._fetchField();
@@ -1248,9 +1256,17 @@ function _rowCells(r) {
        + '<td>' + (r.rh == null ? '—' : (r.rh * 100).toFixed(0) + ' %') + '</td>'
        + '<td>' + (r.beaufort == null ? '—' : 'F' + r.beaufort) + '</td>'
        + '<td>' + (r.douglas == null ? '—' : r.douglas + ' ' + (r.douglas_label || '')) + '</td>'
-       + '<td>' + (r.sea_state_index == null ? '—' : r.sea_state_index.toFixed(0) + ' ' + (r.sea_state || '') + (r.sea_state_partial ? '*' : '')) + '</td>';
+       + '<td>' + (r.sea_state_index == null ? '—' : r.sea_state_index.toFixed(0) + ' ' + (r.sea_state || '') + (r.sea_state_partial ? '*' : '')) + '</td>'
+       + '<td>' + (r.tide_m == null ? '—' : _fmtTideH(r.tide_m) + ' / ' + _fmtTideH(r.water_level_m) + ' / ' + _fmtTideH(r.surge_m) + (r.tide_extrapolated ? '*' : '')) + '</td>';
 }
-const _COND_HEAD = '<tr><th>time</th><th>wind</th><th>waves (h / T)</th><th>current (set)</th><th>press.</th><th>air / water</th><th>rain</th><th>type</th><th>feels like</th><th>RH</th><th>Bft</th><th>Douglas</th><th>sea state</th></tr>';
+// Sea-level height in the preset's depth unit, one more decimal than depths (tides are small).
+function _tideUnit() { const u = unitDesc('depth', 'm'); u.p = u.f === 1 ? 2 : 1; return u; }
+function _fmtTideH(m) {
+  if (m == null) return '—';
+  const u = _tideUnit(), t = (m * u.f).toFixed(u.p);
+  return (t.startsWith('-') && Number(t) === 0 ? t.slice(1) : t) + ' ' + u.u;
+}
+const _COND_HEAD = '<tr><th>time</th><th>wind</th><th>waves (h / T)</th><th>current (set)</th><th>press.</th><th>air / water</th><th>rain</th><th>type</th><th>feels like</th><th>RH</th><th>Bft</th><th>Douglas</th><th>sea state</th><th>tide / level / surge</th></tr>';
 
 // Display-unit scale for a SI value.
 function _unitOf(key, fallbackUnit) { return unitDesc(key, fallbackUnit); }
@@ -1291,9 +1307,23 @@ const _COND_TABS = [
         range: [0, 9], yTicks: 9,
         hover: r => r.douglas_label ? ' · ' + r.douglas_label : '' },
     ] },
-  { id: 'current', label: 'Current', marine: true, overlays: [['currentToggle', 'Direction'], ['currentHeatmapToggle', 'Speed']],
-    lines: [{ key: 'current_ms', unit: () => _unitOf('speed', 'm/s'), color: '#6a1b9a', name: 'speed' }],
-    dir: { key: 'current_dir_deg', sense: 'to' } },
+  // Tide and current on one chart: tide heights relative to mean sea level
+  // (Copernicus Marine hourly sea level: tide, total water level = tide +
+  // surge, non-tidal residual) on the left axis; current speed on the right
+  // axis with its set as arrows along the top, so slack water lines up with
+  // high and low water. On land the current line (marine) is dropped.
+  { id: 'tidecur', label: 'Tide & current',
+    overlays: [['tideToggle', 'Tide height'], ['currentToggle', 'Current direction'], ['currentHeatmapToggle', 'Current speed']],
+    // Validated categorical slots (blue, violet, orange, aqua; all-pairs
+    // colour-blind ΔE ≥ 9.2, normal-vision ≥ 16.3). Aqua is light on white,
+    // so current speed is also a filled area, a different mark from the lines.
+    lines: [{ key: 'tide_m', unit: () => _tideUnit(), color: '#2a78d6', name: 'tide height', width: 2 },
+            { key: 'water_level_m', unit: () => _tideUnit(), color: '#eb6834', name: 'total water level', width: 2 },
+            { key: 'surge_m', unit: () => _tideUnit(), color: '#4a3aa7', name: 'surge (non-tidal)', width: 1.6, dash: [5, 3] },
+            { key: 'current_ms', unit: () => _unitOf('speed', 'm/s'), color: '#1baf7a', name: 'current speed', axis: 'right', width: 1.5, fill: 'rgba(27,175,122,0.16)', marine: true }],
+    dir: { key: 'current_dir_deg', sense: 'to', color: '#11805a' },
+    zeroLine: 'mean sea level', tideMarks: true,
+    hover: r => (r.tide_tendency ? ' · tide ' + r.tide_tendency : '') + (r.tide_extrapolated ? ' · tide extrapolated near the coast' : '') },
   { id: 'pressure', label: 'Pressure', overlays: [['pressureToggle', 'Isobars']],
     lines: [{ key: 'msl_pa', unit: () => unitDesc('pressure', 'Pa'), color: '#37474f', name: 'MSL' }] },
   { id: 'temp', label: 'Temp', overlays: [['temperatureToggle', 'Air'], ['sstToggle', 'Sea surface']],
@@ -1337,6 +1367,8 @@ function _condSetHour(iso) {
 
 // ── Chart ──
 const _CH = { w: 500, h: 230, left: 46, right: 10, top: 30, bottom: 28 };
+// Right margin: room for a second value axis when a line uses axis:'right'.
+function _chRight(tab) { return tab && tab.lines && tab.lines.some(l => l.axis === 'right') ? 46 : _CH.right; }
 
 function _drawArrow(ctx, x, y, deg, color) {
   // Canvas y is down; 0° = up (north), clockwise.
@@ -1357,24 +1389,37 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, _CH.w, _CH.h);
   ctx.font = '10px sans-serif';
-  const x0 = _CH.left, x1 = _CH.w - _CH.right, y0 = _CH.top, y1 = _CH.h - _CH.bottom;
+  const x0 = _CH.left, x1 = _CH.w - _chRight(tab), y0 = _CH.top, y1 = _CH.h - _CH.bottom;
   const n = series.length;
   if (n < 2) { ctx.fillStyle = '#666'; ctx.fillText('No series', x0, (y0 + y1) / 2); return; }
   const t0 = new Date(series[0].time).getTime(), tN = new Date(series[n - 1].time).getTime();
   const xOf = t => x0 + (t - t0) / (tN - t0) * (x1 - x0);
 
   // Value range across all lines (display units), padded.
-  const lines = tab.lines.map(l => ({ ...l, u: l.unit(), vals: series.map(r => _condDisplay(r[l.key], l.unit())) }));
+  const allLines = tab.lines.map(l => ({ ...l, u: l.unit(), vals: series.map(r => _condDisplay(r[l.key], l.unit())) }));
+  // Lines on a right-hand axis get their own range and scale (tide & current).
+  const rightLines = allLines.filter(l => l.axis === 'right' && l.vals.some(v => v != null));
+  let lines = allLines.filter(l => l.axis !== 'right');
+  if (!lines.some(l => l.vals.some(v => v != null)) && rightLines.length) lines = [];
   let vmin = Infinity, vmax = -Infinity;
   for (const l of lines) for (const v of l.vals) if (v != null) { vmin = Math.min(vmin, v); vmax = Math.max(vmax, v); }
   if (instant) for (const l of lines) { const v = _condDisplay(instant[l.key], l.u); if (v != null) { vmin = Math.min(vmin, v); vmax = Math.max(vmax, v); } }
-  if (!isFinite(vmin)) { ctx.fillStyle = '#666'; ctx.fillText('No data', x0, (y0 + y1) / 2); return; }
+  if (!isFinite(vmin) && !rightLines.length) { ctx.fillStyle = '#666'; ctx.fillText('No data', x0, (y0 + y1) / 2); return; }
+  if (!isFinite(vmin)) { vmin = 0; vmax = 1; }
+  let rmin = 0, rmax = -Infinity;
+  for (const l of rightLines) for (const v of l.vals) if (v != null) rmax = Math.max(rmax, v);
+  if (instant) for (const l of rightLines) { const v = _condDisplay(instant[l.key], l.u); if (v != null) rmax = Math.max(rmax, v); }
+  if (!(rmax > rmin)) rmax = rmin + 1;
+  rmax += (rmax - rmin) * 0.08;
+  const yOfR = v => y1 - (v - rmin) / (rmax - rmin) * (y1 - y0);
   if (tab.id !== 'pressure' && tab.id !== 'temp') vmin = Math.min(0, vmin);
   if (tab.bands) vmax = Math.max(vmax, tab.bands[1][0]);   // show at least two bands
   if (vmax === vmin) vmax = vmin + 1;
   if (tab.range) { vmin = tab.range[0]; vmax = tab.range[1]; }
   else { const pad = (vmax - vmin) * 0.08; vmin -= pad; vmax += pad; }
   const yOf = v => y1 - (v - vmin) / (vmax - vmin) * (y1 - y0);
+  const yOfLine = l => (l.axis === 'right' ? yOfR : yOf);
+  const drawn = lines.concat(rightLines);
 
   // Y grid + labels.
   ctx.strokeStyle = '#e6e6e6'; ctx.fillStyle = '#555'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
@@ -1382,9 +1427,20 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
   for (let i = 0; i <= yTicks; i++) {
     const v = vmin + (vmax - vmin) * i / yTicks, y = yOf(v);
     ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
-    ctx.fillText(v.toFixed(lines[0].u.p), x0 - 4, y);
+    if (lines.length) ctx.fillText(v.toFixed(lines[0].u.p), x0 - 4, y);
   }
-  ctx.textAlign = 'left'; ctx.fillText(lines[0].u.u, x0 - 44, y0 - 18);
+  ctx.textAlign = 'left'; if (lines.length) ctx.fillText(lines[0].u.u, x0 - 44, y0 - 18);
+  // Right-hand axis labels in the right line's colour and unit.
+  if (rightLines.length) {
+    const ru = rightLines[0].u;
+    ctx.fillStyle = '#555'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    for (let i = 0; i <= yTicks; i++) {
+      const v = rmin + (rmax - rmin) * i / yTicks;
+      ctx.fillText(v.toFixed(Math.max(1, ru.p)), x1 + 4, yOfR(v));
+    }
+    ctx.textAlign = 'right'; ctx.fillText(ru.u, _CH.w - 2, y0 - 18);
+    ctx.fillStyle = '#555';
+  }
 
   // Band boundaries (sea-state tab): dashed lines with the band name
   // of the region above each cut.
@@ -1416,7 +1472,22 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
   // Lines. With `tab.colorBy`, each segment takes the colour of the
   // category at its end point (precip type), so the rate line changes
   // colour where the type changes.
-  for (const l of lines) {
+  // Filled areas first (under every line), down to their axis baseline.
+  for (const l of drawn) {
+    if (!l.fill) continue;
+    const yOf = yOfLine(l), base = l.axis === 'right' ? yOfR(rmin) : yOf(Math.max(vmin, Math.min(vmax, 0)));
+    ctx.fillStyle = l.fill; ctx.beginPath(); let open = false, lastX = null;
+    series.forEach((r, i) => {
+      const v = l.vals[i]; const x = xOf(new Date(r.time).getTime());
+      if (v == null) { if (open) { ctx.lineTo(lastX, base); ctx.closePath(); open = false; } return; }
+      if (!open) { ctx.moveTo(x, base); open = true; }
+      ctx.lineTo(x, yOf(v)); lastX = x;
+    });
+    if (open) { ctx.lineTo(lastX, base); ctx.closePath(); }
+    ctx.fill();
+  }
+  for (const l of drawn) {
+    const yOf = yOfLine(l);
     ctx.lineWidth = l.width || 1.6; ctx.setLineDash(l.dash || []);
     if (tab.colorBy) {
       for (let i = 1; i < n; i++) {
@@ -1450,8 +1521,34 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
       if (i % every) return;
       const d = r[tab.dir.key]; if (d == null) return;
       const deg = tab.dir.sense === 'from' ? d + 180 : d;
-      _drawArrow(ctx, xOf(new Date(r.time).getTime()), y0 - 8, deg, lines[0].color);
+      _drawArrow(ctx, xOf(new Date(r.time).getTime()), y0 - 8, deg, tab.dir.color || (drawn[0] && drawn[0].color) || '#555');
     });
+  }
+
+  // Reference level (tide tab: mean sea level) as a labelled solid line.
+  if (tab.zeroLine && 0 >= vmin && 0 <= vmax) {
+    ctx.strokeStyle = '#90a4ae'; ctx.lineWidth = 1; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.moveTo(x0, yOf(0)); ctx.lineTo(x1, yOf(0)); ctx.stroke();
+    ctx.fillStyle = '#78909c'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    ctx.fillText(tab.zeroLine, x0 + 3, yOf(0) - 1);
+  }
+  // High / low water markers (tide tab): triangles at the refined time and height, labelled with the clock time.
+  if (tab.tideMarks && lines.length && typeof _cond !== 'undefined' && _cond && _cond.tides) {
+    const u = lines[0].u;
+    const mark = (e, up) => {
+      const t = new Date(e.time).getTime();
+      if (t < t0 || t > tN) return;
+      const x = xOf(t), y = yOf(e.height_m * u.f + (u.off || 0));
+      ctx.fillStyle = lines[0].color;
+      ctx.beginPath();
+      if (up) { ctx.moveTo(x, y - 7); ctx.lineTo(x - 4, y - 1); ctx.lineTo(x + 4, y - 1); }
+      else { ctx.moveTo(x, y + 7); ctx.lineTo(x - 4, y + 1); ctx.lineTo(x + 4, y + 1); }
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#333'; ctx.textAlign = 'center'; ctx.textBaseline = up ? 'bottom' : 'top';
+      ctx.fillText(new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), x, up ? y - 8 : y + 8);
+    };
+    for (const e of _cond.tides.highs || []) mark(e, true);
+    for (const e of _cond.tides.lows || []) mark(e, false);
   }
 
   // Current overlay hour + instant (map) value.
@@ -1460,9 +1557,9 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
     const x = xOf(tc);
     ctx.strokeStyle = '#d32f2f'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
     ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke(); ctx.setLineDash([]);
-    if (instant) for (const l of lines) {
+    if (instant) for (const l of drawn) {
       const v = _condDisplay(instant[l.key], l.u); if (v == null) continue;
-      ctx.strokeStyle = l.color; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, yOf(v), 4, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = l.color; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, yOfLine(l)(v), 4, 0, Math.PI * 2); ctx.stroke();
     }
   }
 
@@ -1470,15 +1567,15 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
   if (hoverIdx != null && series[hoverIdx]) {
     const x = xOf(new Date(series[hoverIdx].time).getTime());
     ctx.strokeStyle = '#999'; ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
-    for (const l of lines) { const v = l.vals[hoverIdx]; if (v == null) continue; ctx.fillStyle = l.color; ctx.beginPath(); ctx.arc(x, yOf(v), 3, 0, Math.PI * 2); ctx.fill(); }
+    for (const l of drawn) { const v = l.vals[hoverIdx]; if (v == null) continue; ctx.fillStyle = l.color; ctx.beginPath(); ctx.arc(x, yOfLine(l)(v), 3, 0, Math.PI * 2); ctx.fill(); }
   }
   return { xOf, t0, tN };
 }
 
-function _condIdxAtX(series, px) {
+function _condIdxAtX(series, px, tab) {
   const n = series.length; if (n < 2) return null;
   const t0 = new Date(series[0].time).getTime(), tN = new Date(series[n - 1].time).getTime();
-  const frac = Math.max(0, Math.min(1, (px - _CH.left) / (_CH.w - _CH.left - _CH.right)));
+  const frac = Math.max(0, Math.min(1, (px - _CH.left) / (_CH.w - _CH.left - _chRight(tab))));
   const t = t0 + frac * (tN - t0);
   let best = 0, bd = Infinity;
   series.forEach((r, i) => { const d = Math.abs(new Date(r.time).getTime() - t); if (d < bd) { bd = d; best = i; } });
@@ -1514,13 +1611,38 @@ function _condLegend(tab, series) {
     }
   } else if (tab.lines.length > 1) {
     for (const l of tab.lines) {
-      if ((series || []).some(r => r[l.key] != null)) items.push({ name: l.name, color: l.color, dash: l.dash || null });
+      if ((series || []).some(r => r[l.key] != null)) items.push({ name: l.name, color: l.color, dash: l.dash || null, fill: l.fill || null });
     }
   }
   return items.map(it =>
     '<span style="display:inline-flex;align-items:center;margin-right:10px;">'
-    + '<span style="display:inline-block;width:18px;border-top:' + (it.dash ? '2px dashed ' : '3px solid ') + it.color + ';margin-right:4px;"></span>'
+    + (it.fill
+      ? '<span style="display:inline-block;width:18px;height:9px;background:' + it.fill + ';border-top:2px solid ' + it.color + ';margin-right:4px;"></span>'
+      : '<span style="display:inline-block;width:18px;border-top:' + (it.dash ? '2px dashed ' : '3px solid ') + it.color + ';margin-right:4px;"></span>')
     + it.name + '</span>').join('');
+}
+
+// High / low water list and the datum / extrapolation notes under the Tide chart.
+function _tideDetailsHtml(series) {
+  const T = _cond && _cond.tides;
+  let h = '<div style="font-size:11px;color:#333;margin-top:4px;">';
+  if (T) {
+    const ev = (T.highs || []).map(e => ({ e, hi: true })).concat((T.lows || []).map(e => ({ e, hi: false })))
+      .sort((a, b) => new Date(a.e.time) - new Date(b.e.time));
+    if (ev.length) {
+      h += '<div style="display:flex;flex-wrap:wrap;gap:2px 10px;">' + ev.map(({ e, hi }) =>
+        '<span><b style="color:' + (hi ? '#004d40' : '#6d4c41') + ';">' + (hi ? '▲ High' : '▼ Low') + '</b> '
+        + _fmtWhen(e.time) + ' ' + _fmtTideH(e.height_m) + '</span>').join('') + '</div>';
+    } else h += '<div>No high or low water within this window.</div>';
+    if (T.range_m != null) h += '<div>Tidal range: ' + _fmtTideH(T.range_m) + ' mean' + (T.max_range_m != null ? ', ' + _fmtTideH(T.max_range_m) + ' largest' : '') + '</div>';
+  } else if (_cond && _cond.tidesError) {
+    h += '<div style="color:#b71c1c;">Tide data unavailable: ' + _cond.tidesError + '</div>';
+  }
+  const extrap = (T && T.extrapolated) || (series || []).some(r => r.tide_extrapolated);
+  h += '<div style="color:#666;">Heights relative to mean sea level, not chart datum. Not for under-keel clearance.'
+    + (extrap ? ' <b style="color:#e65100;">Extrapolated near the coast</b> (the nearest model cells are land).' : '')
+    + ' Copernicus Marine hourly sea level, 1/12°' + (T && T.run ? ' (run ' + T.run + ')' : '') + '.</div>';
+  return h + '</div>';
 }
 
 function _renderConditionsPopup() {
@@ -1600,6 +1722,7 @@ function _renderConditionsPopup() {
     html += '<canvas id="condChart" style="display:block;cursor:crosshair;"></canvas>'
       + '<div style="font-size:11px;color:#333;margin-top:2px;">' + _condLegend(tab, series) + '</div>'
       + '<div id="condReadout" style="font-size:11px;color:#333;min-height:14px;margin-top:2px;"></div>';
+    if (tab.tideMarks) html += _tideDetailsHtml(series);
   }
   if (note) html += '<div style="color:#666;margin-top:4px;font-size:11px;">' + note + '</div>';
   el.innerHTML = html;
@@ -1624,18 +1747,18 @@ function _renderConditionsPopup() {
     const ro = el.querySelector('#condReadout');
     const ser = series || [];
     const cur = ser.length ? _condIdxAtX(ser, _CH.left + (new Date(hourIso).getTime() - new Date(ser[0].time).getTime())
-                  / Math.max(1, new Date(ser[ser.length - 1].time).getTime() - new Date(ser[0].time).getTime()) * (_CH.w - _CH.left - _CH.right)) : null;
+                  / Math.max(1, new Date(ser[ser.length - 1].time).getTime() - new Date(ser[0].time).getTime()) * (_CH.w - _CH.left - _chRight(tab)), tab) : null;
     _drawConditionsChart(canvas, tab, ser, hourIso, instant, null);
     if (cur != null) ro.textContent = _condReadout(tab, ser[cur]);
     else if (instant) ro.textContent = _condReadout(tab, Object.assign({ time: hourIso }, instant)) + ' (map)';
     canvas.onmousemove = ev => {
       if (!ser.length) return;
-      const i = _condIdxAtX(ser, ev.offsetX);
+      const i = _condIdxAtX(ser, ev.offsetX, tab);
       _drawConditionsChart(canvas, tab, ser, hourIso, instant, i);
       ro.textContent = _condReadout(tab, ser[i]);
     };
     canvas.onmouseleave = () => { _drawConditionsChart(canvas, tab, ser, hourIso, instant, null); if (cur != null) ro.textContent = _condReadout(tab, ser[cur]); };
-    canvas.onclick = ev => { if (!ser.length) return; _condSetHour(ser[_condIdxAtX(ser, ev.offsetX)].time); };
+    canvas.onclick = ev => { if (!ser.length) return; _condSetHour(ser[_condIdxAtX(ser, ev.offsetX, tab)].time); };
   }
 }
 
@@ -1683,6 +1806,8 @@ function openConditionsAt(coordinate, pixel) {
       if (_cond !== mine) return;   // a newer click replaced this popup
       mine.series = d.series;
       mine.isLand = d.is_land === true;
+      mine.tides = d.tides || null;
+      mine.tidesError = d.tides_error || null;
       mine.note = (d.truncated && Array.isArray(d.forecast_time_range)
         ? 'Series clipped to the forecast (' + _fmtWhen(d.forecast_time_range[0]) + ' → ' + _fmtWhen(d.forecast_time_range[1]) + '). '
         : '') + 'Click the chart or a row to retime the overlays.'

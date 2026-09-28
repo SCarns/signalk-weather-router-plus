@@ -3,7 +3,8 @@
  *
  * Standalone weather routing: ECMWF open-data forecasts, Copernicus
  * Marine SMOC and NOAA RTOFS currents decoded in-process, harmonic tidal
- * currents, GSHHG coastline
+ * currents, Copernicus Marine hourly sea level (tide height, water level,
+ * surge), GSHHG coastline
  * avoidance, vessel polars, isochrone propagation. Two worker threads:
  * `data` (forecast, currents, overlay queries) and `route` (engine).
  * Routes are exposed through the plugin's REST/SSE API, saved to the
@@ -21,7 +22,7 @@ import { JobManager, type Job } from './plugin/jobs';
 import { registerApi } from './plugin/api';
 import { openApiDocument } from './plugin/openapi';
 import { makeWeatherProvider } from './plugin/weather';
-import type { DataStatus, MainToWorker, QueryArgs, QueryKind, VesselPosition, WorkerRole, WorkerToMain } from './plugin/protocol';
+import type { DataStatus, MainToWorker, QueryArgs, QueryKind, TideSeriesResult, VesselPosition, WorkerRole, WorkerToMain } from './plugin/protocol';
 import type { SerializedSmoc } from './currents/smoc';
 import { ForecastStore, type SerializedForecast } from './data/forecast';
 import { releaseMemory } from './util/gc';
@@ -350,7 +351,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
       return;
     }
     try {
-      app.registerWeatherProvider(makeWeatherProvider(() => forecast, PLUGIN_ID));
+      // Water level for point forecasts comes from the data worker's tide point series (on demand).
+      const tideSeries = async (lat: number, lon: number, fromMs: number, hours: number): Promise<TideSeriesResult | null> => {
+        if (!config?.tides.enabled) return null;
+        return await query('tide_series', { lat, lon, fromMs, hours }) as TideSeriesResult;
+      };
+      app.registerWeatherProvider(makeWeatherProvider(() => forecast, PLUGIN_ID, tideSeries, (m) => log(m)));
       weatherRegistered = true;
       log('registered as a Weather API provider');
     } catch (err) {
@@ -363,20 +369,20 @@ export = function plugin(app: SkApp): SignalKPlugin {
    * next route uses it); the forecast reloads only for a new horizon or
    * field set, RTOFS only for RTOFS changes.
    */
-  function applySettings(changed: string[]): { forecast: boolean; currents: boolean; refresh_timer: boolean; jobs: boolean } {
+  function applySettings(changed: string[]): { forecast: boolean; currents: boolean; tides: boolean; refresh_timer: boolean; jobs: boolean } {
     const kinds = reloadsFor(changed);
-    const out = { forecast: kinds.has('forecast'), currents: kinds.has('currents'), refresh_timer: kinds.has('refresh_timer'), jobs: kinds.has('jobs') };
-    if (stopped || !settings || changed.length === 0) return { forecast: false, currents: false, refresh_timer: false, jobs: false };
+    const out = { forecast: kinds.has('forecast'), currents: kinds.has('currents'), tides: kinds.has('tides'), refresh_timer: kinds.has('refresh_timer'), jobs: kinds.has('jobs') };
+    if (stopped || !settings || changed.length === 0) return { forecast: false, currents: false, tides: false, refresh_timer: false, jobs: false };
     config = resolveConfig(pluginOptions, settings.values);
     if (out.currents) smocShared = null;
-    post('data', { type: 'config', config, reload: { forecast: out.forecast, currents: out.currents }, position: vesselPosition() });
+    post('data', { type: 'config', config, reload: { forecast: out.forecast, currents: out.currents, tides: out.tides }, position: vesselPosition() });
     post('route', { type: 'config', config, reload: { forecast: false, currents: out.currents } });
     if (out.refresh_timer) {
       if (refreshTimer) clearInterval(refreshTimer);
       refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshMinutes * 60_000);
     }
     if (out.jobs) jobs?.setKeepJobs(config.routing.keepJobs);
-    log(`settings changed: ${changed.join(', ')}${out.forecast ? '; reloading the forecast' : ''}${out.currents ? '; reloading currents' : ''}`);
+    log(`settings changed: ${changed.join(', ')}${out.forecast ? '; reloading the forecast' : ''}${out.currents ? '; reloading currents' : ''}${out.tides ? '; reloading tides' : ''}`);
     updateStatus();
     return out;
   }
@@ -464,6 +470,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
         currents: dataStatus?.currents ?? [],
         currents_route_worker: routeCurrents ?? [],
         rtofs_run: dataStatus?.rtofsRun ?? null,
+        tides: config?.tides.enabled ? (dataStatus?.tides ?? null) : null,
+        tides_enabled: config?.tides.enabled ?? null,
+        tides_error: dataStatus?.tidesError ?? null,
         overlay_land: dataStatus?.land ?? null,
         weather_provider_registered: weatherRegistered,
         jobs: jobs ? { running: jobs.runningId, queued: jobs.queueLength, total: jobs.list(500).length } : null,
@@ -527,7 +536,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     id: PLUGIN_ID,
     name: 'Weather Router Plus',
     description:
-      'Standalone weather routing: ECMWF open-data forecasts, Copernicus Marine SMOC and NOAA RTOFS currents decoded in-process, harmonic tidal currents, GSHHG coastline avoidance, vessel polars. ' +
+      'Standalone weather routing: ECMWF open-data forecasts, Copernicus Marine SMOC and NOAA RTOFS currents and Copernicus Marine hourly sea level (tides) decoded in-process, harmonic tidal currents, GSHHG coastline avoidance, vessel polars. ' +
       'Routes via its own API at /plugins/signalk-weather-router-plus, saved to the Resources API, forecast offered through the Weather API.',
     schema: () => CONFIG_SCHEMA,
     start,

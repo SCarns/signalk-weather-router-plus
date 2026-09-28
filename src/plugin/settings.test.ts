@@ -118,7 +118,7 @@ test('reload kinds per changed key', () => {
     assert.ok(s.label && s.help, s.key);
     if (s.quantity && !['count'].includes(s.quantity)) assert.ok(s.unit, `${s.key} has a unit`);
   }
-  assert.equal(settingsSchema().groups.length, 5);
+  assert.equal(settingsSchema().groups.length, 6);
 });
 
 test('SettingsStore: first load migrates and writes settings.json; later loads ignore the old keys', () => {
@@ -201,7 +201,7 @@ test('GET/PUT /api/settings: schema + values, partial update, 400 with per-key e
       const { values, changed } = store.update(partial);
       applied.push(changed);
       const k = reloadsFor(changed);
-      return { values, changed, reloaded: { forecast: k.has('forecast'), currents: k.has('currents'), refresh_timer: k.has('refresh_timer'), jobs: k.has('jobs') } };
+      return { values, changed, reloaded: { forecast: k.has('forecast'), currents: k.has('currents'), tides: k.has('tides'), refresh_timer: k.has('refresh_timer'), jobs: k.has('jobs') } };
     },
   } as unknown as ApiDeps);
   const g = await call('GET', '/api/settings');

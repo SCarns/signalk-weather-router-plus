@@ -47,6 +47,15 @@ export const SEA_STATE_STOPS: [number, string][] = [
   [56.25, '#d3ecf4'], [65.625, '#ecf7e1'], [75, '#fefebe'], [84.375, '#feeca2'], [93.75, '#fdd484'], [103.125, '#fdb467'],
   [112.5, '#f88e52'], [121.875, '#f0653f'], [131.25, '#de3f2e'], [140.625, '#c41e26'], [150, '#a50026'],
 ];
+/**
+ * Tide height above mean sea level, m: diverging around 0 (BrBG): low
+ * water towards sand / brown (drying), high water towards teal, near-
+ * white at mean sea level. Values beyond ±3 m take the end colours.
+ */
+export const TIDE_STOPS: [number, string][] = [
+  [-3, '#543005'], [-2, '#8c510a'], [-1, '#d8b365'], [-0.25, '#f6e8c3'], [0, '#f5f5f5'],
+  [0.25, '#c7eae5'], [1, '#5ab4ac'], [2, '#01665e'], [3, '#003c30'],
+];
 export const SEA_STATE_BANDS: [number, string][] = [[0, 'smooth'], [35, 'good'], [50, 'slight'], [75, 'choppy'], [100, 'rough'], [150, 'extreme']];
 
 export function buildLegends(): Record<string, LegendEntry> {
@@ -58,5 +67,6 @@ export function buildLegends(): Record<string, LegendEntry> {
     temperature: { title: 'Air temperature (2 m)', quantity: 'temperature', si_unit: 'K', kind: 'gradient', stops: TEMP_STOPS },
     sst: { title: 'Sea surface temperature', quantity: 'temperature', si_unit: 'K', kind: 'gradient', stops: SST_STOPS },
     sea_state: { title: 'Sea state', quantity: 'index', si_unit: '', kind: 'bands', stops: SEA_STATE_STOPS, bands: SEA_STATE_BANDS },
+    tide: { title: 'Tide height above mean sea level', quantity: 'sea_level', si_unit: 'm', kind: 'gradient', stops: TIDE_STOPS },
   };
 }

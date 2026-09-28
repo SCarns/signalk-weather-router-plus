@@ -776,6 +776,8 @@
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="currentHeatmapToggle" style="width:auto;margin-right:4px;" onchange="currentHeatmapLayer.setVisible(this.checked); if(this.checked) loadCurrentHeatmap(); else currentHeatmapLayer.setSource(null);">Current speed (colour)</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="wavesCombinedToggle" style="width:auto;margin-right:4px;" onchange="waveHeatmapLayer.setVisible(this.checked); if(this.checked) loadWaveHeatmap(); else waveHeatmapLayer.setSource(null); waveStreamlines.setEnabled(this.checked);">Wave height (colour) + direction lines</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="roughnessToggle" style="width:auto;margin-right:4px;" onchange="roughnessLayer.setVisible(this.checked); if(this.checked) loadRoughness(); else roughnessLayer.setSource(null);">Sea state (wind + swell + current)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="tideToggle" style="width:auto;margin-right:4px;" onchange="tideLayer.setVisible(this.checked); if(this.checked) loadTide(); else tideLayer.setSource(null);">Tide height (colour)</label>
+    <div class="ctl-hint" style="margin-top:var(--s-1);">Tide height is relative to mean sea level, not chart datum (Copernicus Marine, 1/12°). Not for under-keel clearance.</div>
     </div>
   </div>
   </section>

@@ -4,8 +4,9 @@ Standalone open-water weather routing as a Signal K plugin. Nothing runs
 outside the Signal K process: the plugin downloads ECMWF open-data
 forecasts by HTTP byte range, decodes the CCSDS-packed GRIB2 fields in
 TypeScript, reads Copernicus Marine SMOC ocean currents (worldwide,
-including tides) from their Zarr store with an in-process Blosc/LZ4
-decoder, avoids land with GSHHG coastline polygons, and runs an
+including tides) and the Copernicus Marine hourly sea level (tide
+height, total water level, surge) from their Zarr stores with an
+in-process Blosc/LZ4 decoder, avoids land with GSHHG coastline polygons, and runs an
 isochrone router against the vessel's polar in a worker thread. No
 runtime npm dependencies.
 
@@ -23,7 +24,7 @@ positions and treats the coastline as the only obstacle.
 | Route job API (REST + Server-Sent Events) | `/plugins/signalk-weather-router-plus/api/…` |
 | OpenAPI | `/plugins/signalk-weather-router-plus/api/openapi.json` |
 | Finished routes | saved to `/signalk/v2/api/resources/routes/{jobId}` (needs a routes provider, e.g. `resources-provider`) |
-| Weather API provider | point forecasts anywhere from the resident global forecast via `/signalk/v2/api/weather/forecasts/point?lat=&lon=` |
+| Weather API provider | point forecasts anywhere from the resident global forecast via `/signalk/v2/api/weather/forecasts/point?lat=&lon=`, with `water.level` / `water.levelTendency` (relative to mean sea level) when tides are on |
 | Notifications | `notifications.weatherRouterPlus.{jobId}` on completion or failure |
 | CLI (no Signal K) | `wrp-route` |
 
@@ -146,6 +147,85 @@ positions and treats the coastline as the only obstacle.
   service is free of charge until the end of the current Copernicus
   Marine Service phase, planned for 30 June 2028.
 
+- **Tides and water level: Copernicus Marine hourly sea level.** Same
+  product (`GLOBAL_ANALYSISFORECAST_PHY_001_024`), dataset
+  `cmems_mod_glo_phy_anfc_merged-sl_PT1H-i_202411`: 1/12°, 80°S–90°N,
+  hourly from 2022-09-01 to about 10 days ahead, updated daily (source
+  attribute "MERCATOR GLO12, FES2014"). Read anonymously from the same
+  ARCO Zarr stores with the same run detection, disk cache and layouts
+  as SMOC (shared code in `src/data/arco.ts`; `src/tides/`). Variables
+  used, in metres:
+  - `ocean_tide`: the FES2014 ocean tide, "tidal sea surface height
+    above mean sea level", i.e. the tide relative to the sea floor, as a
+    tide gauge records it. `tide_loading` (sea-floor displacement under
+    the tidal load) is **not** added: a gauge and the land move with the
+    loaded crust, so the height a mariner sees is the ocean tide alone;
+    ocean + load tide (geocentric) matters only for satellite altimetry.
+    `total_sea_level` does not include it either.
+  - `total_sea_level`: height above the geoid = `ocean_tide` +
+    `invert_barometer` + `sea_surface_height` (GLO12 dynamic sea level,
+    which includes the mean dynamic topography) +
+    `global_mean_steric_variation` + `global_mean_mass_volume_variation`
+    (product user manual CMEMS-GLO-PUM-001-024 issue 2.4 and the
+    variable's long_name; checked on the data: the sum matches to the
+    product's 1 mm quantisation).
+
+  Derived quantities, SI metres **relative to local mean sea level**:
+
+  | Field | Formula |
+  |---|---|
+  | tide height `tide_m` | `ocean_tide` |
+  | MSL offset | mean(`total_sea_level` − `ocean_tide`) over the mean window |
+  | surge (non-tidal residual) `surge_m` | `total_sea_level` − `ocean_tide` − offset |
+  | total water level `water_level_m` | `total_sea_level` − offset = tide + surge |
+
+  The mean window is every hourly sample of the geoChunked time chunks
+  covering the last 60 days of the run (60 to ~210 days: a geo chunk
+  holds 3648 h and is downloaded whole anyway), so the offset is fixed
+  for a run and place. It removes the geoid-to-MSL separation (mean
+  dynamic topography, e.g. −0.44 m at Newport RI, +0.15 m at Sydney) and
+  the seasonal mean; the surge is the departure from that recent mean:
+  weather set-up, inverse barometer and shorter dynamic signals. Over
+  the last 130 days its standard deviation was ~8 cm at Newport and
+  Sydney, correlating with the inverse barometer (r = 0.37 and 0.68).
+
+  *Point series* (conditions popup, Weather API): from the geoChunked
+  store, bilinear from the 4 surrounding cells; a corner that is model
+  land takes the IDW² mean of valid cells within 2 cells and the value
+  is flagged `tide_extrapolated`. No valid cell within 2 cells (~18 km)
+  → no tide data (e.g. Southampton: the Solent is land at 1/12°). High
+  and low waters are those of the tide height: local extrema of the
+  hourly samples (pairs less than 3 cm apart dropped), refined with a
+  parabola through each extremum and its neighbours; range = mean of
+  consecutive high−low differences. Tendency: rising / falling, steady
+  within ±2 cm/h. Measured: 0.9–6.7 MB and 0.2–1.5 s per new place (2
+  variables × 1–4 chunks of ~0.3–1.6 MB; the whole 3120-hour chunk),
+  then served from memory (8 places) or disk for the rest of the run.
+
+  *Tide-height map layer* (`/api/field?layer=tide`): `ocean_tide` only,
+  hourly (a 3-hourly step would err by up to ~30 % of the amplitude
+  mid-step). A resident area around the vessel (± `tides.halfWidth`,
+  default 15°) over now → `tides.horizon` (default 24 h), its start
+  aligned to 6 h so it is rebuilt four times a day; views elsewhere load
+  their hour on demand (1/3° grid for zoomed-out views), LRU under
+  128 MB. Measured at 15° around Newport: 368 × 368 cells × 31 hourly
+  steps, 16.8 MB in memory, 62 timeChunked chunks = 39.9 MB downloaded
+  in 3.5 s (about 1.3 MB per hour of window; a new daily run re-downloads
+  it). One on-demand hour: 0.74 MB (1/12°, Sydney) or 0.53 MB (1/3°,
+  most of the North Atlantic). The same 2-cell coastal extension as the
+  current layers is applied for display; the page's land mask clips it.
+
+  **Datum and accuracy caveats.** Heights are relative to **mean sea
+  level, not chart datum** (LAT / MLLW): add the local chart-datum-to-MSL
+  difference yourself; **not for under-keel clearance**. The model is
+  ~9 km: in bays, estuaries and harbours the tide can be earlier and
+  smaller than local tide tables (see the Newport check under
+  Verification: highs 14–17 cm low and ~1 h early; lows within 2 cm and
+  ~30 min early), and small basins may not exist in the model at all.
+  Credit: *Generated using E.U. Copernicus Marine Service Information;
+  https://doi.org/10.48670/moi-00016* (shown in the map attribution while
+  the tide layer is on, and under the Tide chart).
+
 ## Routing engine
 
 A port of the routePlanning `OceanPropagator` (subsector isochrone,
@@ -215,6 +295,7 @@ the selected display units. Saving needs a `readwrite` login.
 | `vessel` | name, draught (1.8 m), air draft (16 m), LOA (11 m), beam (3.7 m), under-keel margin (0.5 m), overhead margin (1 m), speed under power (6 kt = 3.087 m/s), max wave height (none), tack penalty (30 s) | applies to the next route |
 | `forecast` | horizon (72 h = 259200 s, 3–240 h), check interval (60 min), cached cycles kept (2), extra fields (on) | horizon / extra fields reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
+| `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
 | `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), finished routes kept (50) | applies to the next route |
 | `publish` | save to the Resources API (on), route name prefix (`WRP`), notifications (on) | applies to the next route |
 
@@ -285,11 +366,12 @@ GET  …/api/polar-angles?path=   best upwind/downwind VMG angles per TWS (point
 GET  …/api/polars/table?path=   polar speed table in m/s for drawing
 POST …/api/polar-from-specs     generate a polar from boat specs (empirical VPP) → <polarsDir>/user/<slug>.csv
 GET  …/api/legends              colour ramps (SI stops) for every overlay
-GET  …/api/field?layer=&bbox=&time=&res=      JSON grid for a heatmap layer (wind, waves, msl, temperature, sst, precip, sea_state, current)
+GET  …/api/field?layer=&bbox=&time=&res=      JSON grid for a heatmap layer (wind, waves, msl, temperature, sst, precip, sea_state, current, tide → tide_m in m above MSL)
 GET  …/api/wind-points?bbox=&time=&res=       barb points
 GET  …/api/currents?bbox=&time=&res=          current arrow points
 GET  …/api/pressure?bbox=&time=&interval=     isobars + H/L as GeoJSON
-GET  …/api/conditions?lon=&lat=&from=&hours=  72-hour conditions series at a point
+GET  …/api/conditions?lon=&lat=&from=&hours=  72-hour conditions series at a point, with tide_m / water_level_m / surge_m /
+                                              tide_extrapolated / tide_tendency per row and `tides` {highs, lows, range_m, …}
 GET  …/api/conditions-tile/{z}/{x}/{y}?t=YYYY-MM-DDTHH   conditions sample points for one map tile at one hour
 POST …/api/forecast/refresh
 GET  …/api/status
@@ -332,6 +414,25 @@ wrp-route --start 41.44,-71.36 --end 32.42,-64.58 \
   against an eccodes dump of any GRIB2 corpus (see `tools/verify_grib_corpus.ts`).
   On 30 ECMWF messages (12- and 16-bit, with and without bit maps) it
   matched all 31,147,200 cells exactly.
+
+- Sea level: `src/tides/sealevel.test.ts` compares point series at
+  three coastal points (Narragansett Bay, Portsmouth, Sydney Harbour;
+  all use the coastal fill) against an independent xarray decode of the
+  real store (`test-data/sealevel/`, regenerated by
+  `tools/gen_sealevel_fixtures.py`): tide, water level, surge and the
+  MSL offset agree to < 1e-6 m. High / low extraction is checked against
+  dense sampling of synthetic mixed and double-high tides (times within
+  6 min, heights within 1 cm).
+- Newport RI against NOAA CO-OPS 8452660 (datum MSL), run 2026100723,
+  point 41.49 N 71.33 W (extrapolated from the model cells in Rhode
+  Island Sound), 28 Sep – 1 Oct 2026, 15 high and low waters: lows
+  within 2.4 cm and 15–33 min early; highs 14–17 cm low and 53–71 min
+  early; mean range 1.09 m vs NOAA 1.25 m. Surge on 28 Sep: model
+  +0.24 to +0.29 m vs NOAA observed − predicted +0.36 to +0.43 m
+  (NOAA's MSL is the 1983–2001 epoch, so part of that residual is
+  sea-level rise since, which the model's recent-mean offset removes).
+  Total water level vs the observed 6-min level: 0.27 m RMS, −0.22 m
+  bias (0.16 m RMS with the means removed).
 
 ## Limits
 

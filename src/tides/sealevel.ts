@@ -253,11 +253,6 @@ export interface TideStatus {
   mean_window_days: number;
 }
 
-export interface SerializedTides {
-  run: ArcoRun;
-  settings: TideSettings;
-}
-
 export class TideSource {
   readonly run: ArcoRun;
   readonly settings: TideSettings;

@@ -50,18 +50,19 @@ export function parabolicVertex(hm: number, h0: number, hp: number): { dt: numbe
 /**
  * High and low waters of a series, in time order, alternating. A local
  * extremum is a sample (or a run of equal samples) above / below both
- * finite neighbours; a single-sample extremum is refined with a
- * parabola through it and its neighbours, a plateau takes its centre.
- * Extrema at the ends of the series (or next to a gap) are not
- * reported. Then adjacent high/low pairs closer than `minProminence`
- * are removed (smallest first) and consecutive extrema of the same kind
- * merged (the more extreme kept), until every adjacent pair differs by
- * at least `minProminence`.
+ * finite neighbours; extrema at the ends of the series (or next to a
+ * gap) are not reported. On the sample values, adjacent high/low pairs
+ * closer than `minProminence` are removed (smallest first) and
+ * consecutive extrema of the same kind merged (the more extreme kept),
+ * until every adjacent pair differs by at least `minProminence`. Only
+ * then is each survivor refined: a single-sample extremum with the
+ * parabola through it and its neighbours, a plateau at its centre.
  */
 export function findExtrema(s: RegularSeries, minProminence = MIN_PROMINENCE_M): TideExtremum[] {
   const h = s.values;
   const n = h.length;
-  const cand: TideExtremum[] = [];
+  interface Cand { kind: 'high' | 'low'; i: number; j: number; v: number }
+  const cand: Cand[] = [];
   let i = 1;
   while (i < n - 1) {
     const v = h[i];
@@ -75,23 +76,16 @@ export function findExtrema(s: RegularSeries, minProminence = MIN_PROMINENCE_M):
     const right = j + 1 < n ? h[j + 1] : NaN;
     if (Number.isFinite(left) && Number.isFinite(right)) {
       const kind = v > left && v > right ? 'high' : v < left && v < right ? 'low' : null;
-      if (kind) {
-        if (j === i) {
-          const p = parabolicVertex(left, v, right);
-          cand.push({ kind, timeMs: s.t0Ms + (i + p.dt) * s.stepMs, height: p.h });
-        } else {
-          cand.push({ kind, timeMs: s.t0Ms + ((i + j) / 2) * s.stepMs, height: v });
-        }
-      }
+      if (kind) cand.push({ kind, i, j, v });
     }
     i = j + 1;
   }
-  const merge = (list: TideExtremum[]): TideExtremum[] => {
-    const out: TideExtremum[] = [];
+  const merge = (list: Cand[]): Cand[] => {
+    const out: Cand[] = [];
     for (const e of list) {
       const last = out[out.length - 1];
       if (last && last.kind === e.kind) {
-        if ((e.kind === 'high' && e.height > last.height) || (e.kind === 'low' && e.height < last.height)) out[out.length - 1] = e;
+        if ((e.kind === 'high' && e.v > last.v) || (e.kind === 'low' && e.v < last.v)) out[out.length - 1] = e;
       } else out.push(e);
     }
     return out;
@@ -101,7 +95,7 @@ export function findExtrema(s: RegularSeries, minProminence = MIN_PROMINENCE_M):
     let best = -1;
     let bestD = Infinity;
     for (let k = 0; k + 1 < list.length; k++) {
-      const d = Math.abs(list[k].height - list[k + 1].height);
+      const d = Math.abs(list[k].v - list[k + 1].v);
       if (d < bestD) {
         bestD = d;
         best = k;
@@ -110,7 +104,13 @@ export function findExtrema(s: RegularSeries, minProminence = MIN_PROMINENCE_M):
     if (best < 0 || bestD >= minProminence) break;
     list = merge([...list.slice(0, best), ...list.slice(best + 2)]);
   }
-  return list;
+  return list.map((c) => {
+    if (c.j === c.i) {
+      const p = parabolicVertex(h[c.i - 1], c.v, h[c.i + 1]);
+      return { kind: c.kind, timeMs: s.t0Ms + (c.i + p.dt) * s.stepMs, height: p.h };
+    }
+    return { kind: c.kind, timeMs: s.t0Ms + ((c.i + c.j) / 2) * s.stepMs, height: c.v };
+  });
 }
 
 /** Height differences between consecutive (alternating) high and low waters, m. */

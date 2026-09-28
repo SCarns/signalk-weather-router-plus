@@ -18,6 +18,7 @@ import type { BBox } from '../geo/geodesy';
 import type { SerializedForecast } from '../data/forecast';
 import type { SerializedRtofs } from '../currents/rtofs';
 import type { SerializedSmoc, SmocStatus } from '../currents/smoc';
+import type { TideStatus } from '../tides/sealevel';
 
 export type WorkerRole = 'data' | 'route';
 
@@ -77,7 +78,7 @@ export interface RouteSummary {
   polar?: string | null;
 }
 
-export type QueryKind = 'field' | 'currents' | 'wind_points' | 'conditions' | 'conditions_tile' | 'pressure' | 'land_mask';
+export type QueryKind = 'field' | 'currents' | 'wind_points' | 'conditions' | 'conditions_tile' | 'pressure' | 'land_mask' | 'tide_series';
 
 export interface QueryArgs {
   field: { layer: string; bbox: BBox; timeMs: number; res: number };
@@ -88,6 +89,21 @@ export interface QueryArgs {
   conditions_tile: { z: number; x: number; y: number; timeMs: number };
   land_mask: { bbox: BBox; w: number; h: number };
   pressure: { bbox: BBox; timeMs: number; intervalHpa: number };
+  /** Hourly tide / water level / surge at a point (Weather API); result TideSeriesResult. */
+  tide_series: { lat: number; lon: number; fromMs: number; hours: number };
+}
+
+/** Result of a `tide_series` query (structured-cloneable). null series: tides off, outside the grid or no data. */
+export interface TideSeriesResult {
+  run: string | null;
+  t0Ms: number;
+  stepMs: number;
+  /** m above local mean sea level; NaN = no data. */
+  waterLevel: Float64Array;
+  tide: Float64Array;
+  surge: Float64Array;
+  /** Why there is no series (null when there is one). */
+  error: string | null;
 }
 
 export interface LandCacheStatus {
@@ -110,6 +126,10 @@ export interface DataStatus {
   rtofsRun: string | null;
   /** On-demand overlay land rasters (LRU). */
   land: LandCacheStatus | null;
+  /** Copernicus Marine sea level (tides): run, resident / on-demand map areas, point cache, downloads; null when off or not loaded. */
+  tides: TideStatus | null;
+  /** Last tide source error (probe or load), null when fine. */
+  tidesError: string | null;
 }
 
 export type MainToWorker =
@@ -123,8 +143,8 @@ export type MainToWorker =
   | { type: 'smoc'; smoc: SerializedSmoc | null }
   /** Adopt a resident forecast loaded by another thread (shared memory, no copy). */
   | { type: 'forecast'; forecast: SerializedForecast }
-  /** Settings changed: new config; reload what `reload` names (data worker: forecast and currents; route worker: currents from disk). */
-  | { type: 'config'; config: ResolvedConfig; reload: { forecast: boolean; currents: boolean }; position?: VesselPosition | null }
+  /** Settings changed: new config; reload what `reload` names (data worker: forecast, currents and tides; route worker: currents from disk). */
+  | { type: 'config'; config: ResolvedConfig; reload: { forecast: boolean; currents: boolean; tides?: boolean }; position?: VesselPosition | null }
   | { type: 'route'; id: string; request: RouteRequest }
   | { type: 'query'; id: number; kind: QueryKind; args: QueryArgs[QueryKind] }
   | { type: 'shutdown' };

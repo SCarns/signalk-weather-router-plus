@@ -12,11 +12,11 @@
  *   GET  /api/polars/table?path=    polar table in m/s
  *   POST /api/polar-from-specs      generate a polar from boat specs (EmpiricalVPP) into polarsDir/user/
  *   GET  /api/legends               colour ramps (SI stops) for every layer
- *   GET  /api/field?layer=&bbox=&time=&res=     JSON grid for a heatmap/streamline layer
+ *   GET  /api/field?layer=&bbox=&time=&res=     JSON grid for a heatmap/streamline layer (layer=tide: tide_m)
  *   GET  /api/wind-points?bbox=&time=&res=      wind barb points (speed_ms, dir_deg FROM)
  *   GET  /api/currents?bbox=&time=&res=         current arrow points (dir_deg TO)
  *   GET  /api/pressure?bbox=&time=&interval=    isobars + H/L GeoJSON
- *   GET  /api/conditions?lon=&lat=&from=&hours=&step_h=   point series
+ *   GET  /api/conditions?lon=&lat=&from=&hours=&step_h=   point series (+ tide fields and high/low waters)
  *   GET  /api/conditions-tile/:z/:x/:y?t=   current-hour conditions sample points for one XYZ tile
  *   POST /api/routes                submit a route job → 202 {id, status, links}
  *   GET  /api/routes                list jobs
@@ -35,6 +35,7 @@
  * servers every route is admin-only, which is the server's default.
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import type { IRouter, Request, Response } from 'express';
@@ -62,7 +63,7 @@ export interface ApiDeps {
   /** Web-app settings; throws when the plugin is not started. */
   getSettings: () => { values: AppSettings; schema: { groups: { id: SettingsGroup; label: string; help: string }[]; settings: readonly SettingSpec[] } };
   /** Validate, persist and apply a partial settings update. */
-  updateSettings: (partial: unknown) => { values: AppSettings; changed: string[]; reloaded: { forecast: boolean; currents: boolean; refresh_timer: boolean; jobs: boolean } };
+  updateSettings: (partial: unknown) => { values: AppSettings; changed: string[]; reloaded: { forecast: boolean; currents: boolean; tides: boolean; refresh_timer: boolean; jobs: boolean } };
 }
 
 type AccessRouter = IRouter & { access?: (level: 'readonly' | 'readwrite') => IRouter };
@@ -121,13 +122,40 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     json(res, err instanceof PolarNotFoundError ? 404 : code, { error: (err as Error).message });
   };
 
+  // The page's own scripts and styles are referenced with ?v=<tag>, where
+  // the tag changes whenever any public file changes, so browsers and
+  // proxies in front of Signal K (e.g. Cloudflare) never run a stale
+  // script after an update. The versioned files can then be cached hard.
+  const publicVersion = (): string => {
+    let h = 0;
+    try {
+      for (const f of fs.readdirSync(deps.publicDir).sort()) {
+        const st = fs.statSync(path.join(deps.publicDir, f));
+        const s = `${f}:${st.size}:${Math.floor(st.mtimeMs)}`;
+        for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
+      }
+    } catch { /* fall back to a constant tag */ }
+    return (h >>> 0).toString(36);
+  };
   const servePublic = (rel: string, req: Request, res: Response): void => {
     const file = path.join(deps.publicDir, rel);
     if (!file.startsWith(deps.publicDir)) {
       res.status(404).end();
       return;
     }
-    res.setHeader('Cache-Control', 'no-cache');
+    if (rel === 'index.html') {
+      try {
+        const v = publicVersion();
+        const html = fs.readFileSync(file, 'utf8').replace(/(<(?:script|link)[^>]+(?:src|href)=")((?:ol|rp-[a-z]+)\.(?:js|css))"/g, `$1$2?v=${v}"`);
+        res.setHeader('Cache-Control', 'no-cache');
+        res.type('html').send(html);
+      } catch {
+        res.status(404).send(`not found: ${req.path}`);
+      }
+      return;
+    }
+    // Versioned requests (from the page) can be cached; bare ones revalidate.
+    res.setHeader('Cache-Control', req.query.v ? 'public, max-age=31536000, immutable' : 'no-cache');
     res.sendFile(file, (err?: Error) => {
       if (err && !res.headersSent) res.status(404).send(`not found: ${req.path}`);
     });
@@ -229,7 +257,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   ro.get('/api/field', async (req: Request, res: Response) => {
     try {
       const layer = String(req.query.layer ?? '');
-      if (!['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current'].includes(layer)) throw new Error('layer must be one of wind, waves, msl, temperature, sst, precip, sea_state, current');
+      if (!['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current', 'tide'].includes(layer)) throw new Error('layer must be one of wind, waves, msl, temperature, sst, precip, sea_state, current, tide');
       const bbox = parseBBox(req.query.bbox);
       const time = parseTime(req.query.time);
       const resDeg = num(req.query.res, 0.25, 0.002, 2, 'res');

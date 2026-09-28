@@ -103,6 +103,12 @@ export interface ResolvedConfig {
     rtofsHorizonHours: number;
     rtofsStepHours: number;
   };
+  tides: {
+    /** Copernicus Marine hourly sea level (tide height, water level, surge; tide map layer). */
+    enabled: boolean;
+    halfWidthDeg: number;
+    horizonHours: number;
+  };
   routing: {
     stages: number;
     subsectors: number;
@@ -225,6 +231,11 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       rtofsRegion: cu.rtofsRegion,
       rtofsHorizonHours: cu.rtofsHorizon / 3600,
       rtofsStepHours: cu.rtofsStep / 3600,
+    },
+    tides: {
+      enabled: settings.tides.enabled,
+      halfWidthDeg: settings.tides.halfWidth,
+      horizonHours: settings.tides.horizon / 3600,
     },
     routing: {
       stages: r.stages,

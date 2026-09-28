@@ -14,8 +14,9 @@ import {
   seaStateBand, seaStateIndex, windChillK, roughnessIndex,
 } from '../engine/conditions';
 import { buildIsobarFeatures, type IsobarFeature } from '../engine/isobars';
+import { tideRowAt, tideSummary, SL_NAME, type TidePointSeries, type TideRowFields, type TideSummary } from '../tides/sealevel';
 
-export type FieldLayer = 'wind' | 'waves' | 'msl' | 'temperature' | 'sst' | 'precip' | 'sea_state' | 'current';
+export type FieldLayer = 'wind' | 'waves' | 'msl' | 'temperature' | 'sst' | 'precip' | 'sea_state' | 'current' | 'tide';
 
 export interface FieldGridResponse {
   layer: FieldLayer;
@@ -64,6 +65,8 @@ export interface OverlaySources {
   currents: CurrentStack | null;
   /** On-demand land: a raster per request bbox, exact point tests. */
   land: OverlayLand | null;
+  /** Tide-height map field (Copernicus Marine ocean_tide), display value with the coastal fill; NaN = no data. */
+  tides?: { tideAtDisplay(lon: number, lat: number, time: Date): number } | null;
 }
 
 export function fieldGrid(src: OverlaySources, layer: FieldLayer, bbox: BBox, time: Date, res: number): FieldGridResponse {
@@ -219,12 +222,20 @@ export function fieldGrid(src: OverlaySources, layer: FieldLayer, bbox: BBox, ti
       units.dir_to = 'deg';
       break;
     }
+    case 'tide': {
+      const t = src.tides;
+      if (!t) throw new Error('no tide data loaded (enable Tides in Settings)');
+      // Tide height above mean sea level, m: display value extended to the coast (coastfill.ts).
+      fields.tide_m = rowsOf((lon, lat) => t.tideAtDisplay(lon, lat, time));
+      units.tide_m = 'm';
+      break;
+    }
   }
   // A cropped store (not the resident global one) clamps to its edge
   // outside its box; those values are not forecast, so every
   // forecast-derived layer reports no data there. The global store
-  // covers everywhere. Currents carry their own coverage (zero = none).
-  if (layer !== 'current' && f) {
+  // covers everywhere. Currents and tides carry their own coverage.
+  if (layer !== 'current' && layer !== 'tide' && f) {
     for (let r = 0; r < lats.length; r++) {
       for (let c = 0; c < lons.length; c++) {
         if (f.covers(lons[c], lats[r])) continue;
@@ -408,6 +419,9 @@ export function sampleConditions(src: OverlaySources, lon: number, lat: number, 
   };
 }
 
+/** A conditions series row: the sample fields plus the tide fields (null when tides are off or have no data here). */
+export type ConditionsSeriesRow = ConditionsRow & TideRowFields;
+
 export interface ConditionsSeries {
   lon: number;
   lat: number;
@@ -417,13 +431,23 @@ export interface ConditionsSeries {
   step_h: number;
   forecast_time_range: [string, string] | null;
   truncated: boolean;
-  series: ConditionsRow[];
-  sources: { forecast_cycle: string | null; currents: string[] };
+  series: ConditionsSeriesRow[];
+  /** High / low waters and range over the rows' span (null when tides are off or have no data here). */
+  tides: TideSummary | null;
+  /** Why `tides` is null when tides are enabled (download failure, outside the grid, no model water nearby). */
+  tides_error: string | null;
+  sources: { forecast_cycle: string | null; currents: string[]; tides: string | null };
+}
+
+/** The tide point series for a conditions query (fetched asynchronously before conditionsSeries). */
+export interface ConditionsTide {
+  series: TidePointSeries | null;
+  error: string | null;
 }
 
 const CONDITIONS_MAX_ROWS = 1000;
 
-export function conditionsSeries(src: OverlaySources, lon: number, lat: number, from: Date, hours: number, stepH: number): ConditionsSeries {
+export function conditionsSeries(src: OverlaySources, lon: number, lat: number, from: Date, hours: number, stepH: number, tide: ConditionsTide | null = null): ConditionsSeries {
   if (!Number.isFinite(stepH) || stepH <= 0) throw new Error('step_h must be > 0');
   const f = src.forecast;
   let start = from.getTime();
@@ -442,16 +466,30 @@ export function conditionsSeries(src: OverlaySources, lon: number, lat: number, 
       truncated = true;
     }
   }
-  const series: ConditionsRow[] = [];
+  const series: ConditionsSeriesRow[] = [];
+  const ts = tide?.series ?? null;
   let t = start;
-  for (; t <= end + 1 && series.length < CONDITIONS_MAX_ROWS; t += stepH * 3600_000) series.push(sampleConditions(src, lon, lat, new Date(t)));
+  for (; t <= end + 1 && series.length < CONDITIONS_MAX_ROWS; t += stepH * 3600_000) series.push({ ...sampleConditions(src, lon, lat, new Date(t)), ...tideRowAt(ts, t) });
   if (t <= end + 1) truncated = true; // stopped by the row limit
+  let tides: TideSummary | null = null;
+  let tidesError = tide?.error ?? null;
+  if (ts && series.length) {
+    tides = tideSummary(ts, Date.parse(series[0].time), Date.parse(series[series.length - 1].time));
+    if (!series.some((r) => r.tide_m !== null)) {
+      tides = null;
+      tidesError = tidesError ?? 'no model sea level within 2 grid cells (~18 km) of this point';
+    }
+  }
   return {
     lon, lat,
     is_land: !!src.land && src.land.isLandAt(lon, lat),
     from: new Date(start).toISOString(), hours, step_h: stepH,
-    forecast_time_range: range, truncated, series,
-    sources: { forecast_cycle: f ? f.meta.cycleTime.toISOString() : null, currents: src.currents ? src.currents.sources.map((s) => s.name) : [] },
+    forecast_time_range: range, truncated, series, tides, tides_error: tidesError,
+    sources: {
+      forecast_cycle: f ? f.meta.cycleTime.toISOString() : null,
+      currents: src.currents ? src.currents.sources.map((s) => s.name) : [],
+      tides: ts ? `${SL_NAME}, run ${ts.run}` : null,
+    },
   };
 }
 

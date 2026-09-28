@@ -31,3 +31,10 @@ test('availableMemory returns a positive figure and its source', () => {
   assert.ok(a.bytes > 0);
   assert.ok(a.source.length > 0);
 });
+
+test('parseVmStat sums free, inactive, speculative and purgeable pages', async () => {
+  const { parseVmStat } = await import('./memguard');
+  const text = 'Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                3785.\nPages active:                            188296.\nPages inactive:                          187679.\nPages speculative:                          245.\nPages throttled:                              0.\nPages wired down:                        203849.\nPages purgeable:                              2.\n';
+  assert.equal(parseVmStat(text), (3785 + 187679 + 245 + 2) * 16384);
+  assert.equal(parseVmStat('nonsense'), null);
+});

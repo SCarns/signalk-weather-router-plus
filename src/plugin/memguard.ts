@@ -11,9 +11,13 @@
  *
  * Available memory is Linux MemAvailable (what the kernel can hand out
  * without swapping), bounded by a cgroup memory limit when the plugin
- * runs in a container; elsewhere Node's os.freemem().
+ * runs in a container. On macOS os.freemem() counts only completely free
+ * pages (often tens of MB on a busy Mac), so there the figure is free +
+ * inactive + speculative + purgeable pages from vm_stat, the memory the
+ * kernel reclaims without swapping. Elsewhere os.freemem().
  */
 
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { availableSteps, ATM_PARAMS, WAVE_PARAMS, cycleFor } from '../data/ecmwf';
@@ -51,6 +55,13 @@ export function availableMemory(): { bytes: number; source: string } {
       source = 'MemAvailable';
     }
   } catch { /* not Linux */ }
+  if (process.platform === 'darwin' && source === 'os.freemem') {
+    const mac = darwinAvailable();
+    if (mac !== null) {
+      bytes = mac;
+      source = 'vm_stat free+inactive+speculative+purgeable';
+    }
+  }
   // cgroup v2, then v1: a container limit can be far below the host's free memory.
   const limit = readNumber('/sys/fs/cgroup/memory.max') ?? readNumber('/sys/fs/cgroup/memory/memory.limit_in_bytes');
   const used = readNumber('/sys/fs/cgroup/memory.current') ?? readNumber('/sys/fs/cgroup/memory/memory.usage_in_bytes');
@@ -62,6 +73,25 @@ export function availableMemory(): { bytes: number; source: string } {
     }
   }
   return { bytes, source };
+}
+
+/** macOS reclaimable memory from vm_stat, bytes, or null when unavailable. */
+export function parseVmStat(text: string): number | null {
+  const page = /page size of (\d+) bytes/.exec(text);
+  if (!page) return null;
+  const pages = (name: string): number => {
+    const m = new RegExp(`^Pages ${name}:\\s+(\\d+)\\.`, 'm').exec(text);
+    return m ? Number(m[1]) : 0;
+  };
+  return (pages('free') + pages('inactive') + pages('speculative') + pages('purgeable')) * Number(page[1]);
+}
+
+function darwinAvailable(): number | null {
+  try {
+    return parseVmStat(execFileSync('/usr/bin/vm_stat', { encoding: 'utf8', timeout: 2000 }));
+  } catch {
+    return null;
+  }
 }
 
 export interface MemoryCheck {

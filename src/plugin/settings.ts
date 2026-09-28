@@ -52,6 +52,13 @@ export interface AppSettings {
     rtofsHorizon: number;
     rtofsStep: number;
   };
+  tides: {
+    enabled: boolean;
+    /** Half-width of the resident tide-height map area around the vessel, degrees. */
+    halfWidth: number;
+    /** How far ahead the resident tide-height map area reaches, s. */
+    horizon: number;
+  };
   routing: {
     stages: number;
     subsectors: number;
@@ -75,12 +82,13 @@ export type SettingsGroup = keyof AppSettings;
  * What must be re-done when a setting changes:
  *  - forecast: reload the resident forecast (new horizon or field set);
  *  - currents: reload the current sources (CMEMS SMOC, RTOFS);
+ *  - tides: reload the Copernicus Marine sea-level source only;
  *  - refresh_timer: restart the cycle-check timer;
  *  - jobs: re-trim the finished-job list;
  *  - next_job: nothing now; the next route uses it;
  *  - cache: used at the next cache prune.
  */
-export type ReloadKind = 'forecast' | 'currents' | 'refresh_timer' | 'jobs' | 'next_job' | 'cache';
+export type ReloadKind = 'forecast' | 'currents' | 'tides' | 'refresh_timer' | 'jobs' | 'next_job' | 'cache';
 
 /**
  * Display quantity, for the page's unit conversion: speed / depth /
@@ -115,6 +123,7 @@ export const SETTINGS_GROUPS: { id: SettingsGroup; label: string; help: string }
   { id: 'vessel', label: 'Vessel', help: 'Defaults for every route. A route request\'s own vessel values take precedence.' },
   { id: 'forecast', label: 'Forecast', help: 'ECMWF open-data IFS 0.25°, held for the whole globe.' },
   { id: 'currents', label: 'Currents', help: 'Copernicus Marine SMOC (worldwide 1/12° surface currents including tides and Stokes drift; primary) and NOAA Global RTOFS (regional; backup). Tidal harmonics come from the directory set in the Signal K plugin config and take precedence where they cover.' },
+  { id: 'tides', label: 'Tides', help: 'Copernicus Marine hourly sea level (worldwide 1/12°): tide height, total water level and surge in the conditions popup and the Weather API, and the tide-height map layer. Heights are relative to mean sea level, not chart datum; not for under-keel clearance. Generated using E.U. Copernicus Marine Service Information.' },
   { id: 'routing', label: 'Routing engine', help: 'Isochrone solver defaults. A route request\'s stages and sail threshold take precedence.' },
   { id: 'publish', label: 'Publishing', help: 'What happens with a finished route.' },
 ];
@@ -147,6 +156,10 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
   { key: 'currents.rtofsRegion', group: 'currents', label: 'RTOFS regional product', type: 'enum', enum: RTOFS_REGIONS, default: 'west_atl', help: 'Which regional RTOFS product to download.', reload: 'currents' },
   { key: 'currents.rtofsHorizon', group: 'currents', label: 'RTOFS horizon', type: 'number', unit: 's', quantity: 'hours', min: 24 * H, max: 144 * H, multipleOf: H, default: 72 * H, help: 'How far ahead RTOFS is loaded.', reload: 'currents' },
   { key: 'currents.rtofsStep', group: 'currents', label: 'RTOFS time step kept', type: 'number', unit: 's', quantity: 'hours', min: 1 * H, max: 6 * H, multipleOf: H, default: 3 * H, help: 'Spacing of the RTOFS steps held in memory.', reload: 'currents' },
+
+  { key: 'tides.enabled', group: 'tides', label: 'Use Copernicus Marine sea level', type: 'boolean', default: true, help: 'Tide height, total water level and surge (relative to mean sea level) for the conditions popup, the Weather API (water.level) and the tide-height map layer, downloaded anonymously from Copernicus Marine. About 1–4 MB per new place for a point series.', reload: 'tides' },
+  { key: 'tides.halfWidth', group: 'tides', label: 'Tide map area around the vessel', type: 'number', unit: 'deg', quantity: 'angle', min: 1, max: 30, default: 15, help: 'Half-width of the tide-height map area kept in memory around the vessel position (hourly steps; about 17 MB at 15° over 24 h, growing with the square of the half-width and with the horizon). Map views elsewhere load their own hour on demand.', reload: 'tides' },
+  { key: 'tides.horizon', group: 'tides', label: 'Tide map horizon', type: 'number', unit: 's', quantity: 'hours', min: 6 * H, max: 240 * H, multipleOf: H, default: 24 * H, help: 'How far ahead the resident tide-height map area reaches (hourly steps; each hour of a 30° area downloads about 1–3 MB per new daily run). Map times beyond it load on demand. The conditions popup and Weather API are not limited by this.', reload: 'tides' },
 
   { key: 'routing.stages', group: 'routing', label: 'Isochrone stages', type: 'integer', min: 4, max: 200, default: 20, help: 'Propagation stages between start and end.', reload: 'next_job' },
   { key: 'routing.subsectors', group: 'routing', label: 'Subsectors', type: 'integer', min: 4, max: 200, default: 30, help: 'Angular sectors each isochrone is pruned to.', reload: 'next_job' },
@@ -301,7 +314,7 @@ export function migrateLegacy(legacy: LegacyPluginConfig | undefined): { values:
     if (v === undefined || v === null || v === '') return;
     o[key] = v;
   };
-  const src: Record<string, Record<string, unknown>> = { vessel: {}, forecast: {}, currents: {}, routing: {}, publish: {} };
+  const src: Record<string, Record<string, unknown>> = { vessel: {}, forecast: {}, currents: {}, tides: {}, routing: {}, publish: {} };
   const num = (v: unknown, k = 1): unknown => (v === undefined || v === null || v === '' ? undefined : typeof v === 'number' ? v * k : Number.isFinite(Number(v)) ? Number(v) * k : v);
   const v = l.vessel ?? {};
   set(src.vessel, 'name', v.name);

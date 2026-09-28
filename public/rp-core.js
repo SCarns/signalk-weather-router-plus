@@ -179,6 +179,7 @@ const TACK_COLOR = { starboard: '#2E7D32', port: '#D32F2F' };
     'precipToggle',
     'temperatureToggle',
     'sstToggle',
+    'tideToggle',
   ];
   const inputs = HEATMAP_TOGGLE_IDS
     .map((id) => document.getElementById(id))
@@ -821,7 +822,7 @@ document.getElementById('polarSelect').addEventListener('change', function() {
 (function() {
   const LAYER_IDS = [
     'osmToggle', 'seamarkToggle', 'vesselToggle',
-    'currentToggle', 'windToggle', 'windCombinedToggle', 'currentHeatmapToggle', 'roughnessToggle', 'wavesCombinedToggle', 'precipToggle', 'temperatureToggle', 'sstToggle', 'pressureToggle', 'conditionsToggle',
+    'currentToggle', 'windToggle', 'windCombinedToggle', 'currentHeatmapToggle', 'roughnessToggle', 'wavesCombinedToggle', 'precipToggle', 'temperatureToggle', 'sstToggle', 'tideToggle', 'pressureToggle', 'conditionsToggle',
   ];
   const KEY = (id) => 'layer:' + id;
   for (const id of LAYER_IDS) {

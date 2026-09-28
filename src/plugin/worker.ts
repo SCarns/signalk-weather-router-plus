@@ -12,6 +12,10 @@
  *           SMOC resident area does not cover it loads that area itself
  *           (disk cache, else network), so a long route never delays an
  *           overlay query.
+ * The data worker also holds the Copernicus Marine sea level (tides):
+ * point series for conditions / Weather API queries (geoChunked, on
+ * demand) and the tide-height map field (a resident area around the
+ * vessel plus on-demand areas). The route worker does not use tides.
  * Cancellation of the running route is a shared Int32 flag.
  */
 
@@ -38,10 +42,12 @@ import type { CurrentSourceLike } from '../currents/types';
 import {
   alignedSteps, loadResident, residentStale, SMOC_DEFAULT_BUDGET_BYTES, SmocClient, SmocCurrentSource, type SmocRun, type SmocSettings,
 } from '../currents/smoc';
-import { tileLatLonBounds } from './overlays';
+import { loadTideResident, SeaLevelClient, TIDE_DEFAULT_BUDGET_BYTES, TideSource, type TideSettings } from '../tides/sealevel';
+import type { ArcoRun } from '../data/arco';
+import { tileLatLonBounds, type ConditionsTide } from './overlays';
 import { conditionsSeries, conditionsTilePoints, currentPoints, fieldGrid, pressureFeatures, windPoints, type FieldLayer, type OverlaySources, landMaskImage } from './overlays';
 import { routeVessel, type ResolvedConfig } from './config';
-import type { DataStatus, MainToWorker, QueryArgs, RouteRequest, RouteSummary, VesselPosition, WorkerRole, WorkerToMain } from './protocol';
+import type { DataStatus, MainToWorker, QueryArgs, RouteRequest, RouteSummary, TideSeriesResult, VesselPosition, WorkerRole, WorkerToMain } from './protocol';
 
 if (!parentPort) throw new Error('worker.ts must run as a worker thread');
 const port = parentPort;
@@ -75,6 +81,15 @@ let reportedLandBuilds = 0;
 let reportedSmocRev = -1;
 /** Plugin data directory (cache root). */
 let cacheRoot = '';
+/** Copernicus Marine sea level (data worker only). */
+let seaLevelClient: SeaLevelClient | null = null;
+let tides: TideSource | null = null;
+/** Last tide probe / load error (status). */
+let tidesError: string | null = null;
+/** Tide revision when data-status was last sent. */
+let reportedTidesRev = -1;
+/** Map / conditions queries wait at most this long for a tide download. */
+const TIDE_QUERY_DEADLINE_MS = 60_000;
 
 const send = (m: WorkerToMain): void => port.postMessage(m);
 const log = (level: 'debug' | 'info' | 'error', message: string): void => send({ type: 'log', level, message: `[${role}] ${message}` });
@@ -213,6 +228,134 @@ async function refreshSmoc(): Promise<void> {
     rebuildStack();
     sendSmoc();
   }
+}
+
+function tideSettings(cfg: ResolvedConfig): TideSettings {
+  return { halfWidthDeg: cfg.tides.halfWidthDeg, horizonHours: cfg.tides.horizonHours, budgetBytes: TIDE_DEFAULT_BUDGET_BYTES };
+}
+
+function makeSeaLevelClient(cfg: ResolvedConfig): SeaLevelClient | null {
+  if (role !== 'data' || !cfg.tides.enabled) return null;
+  return new SeaLevelClient({ cacheDir: path.join(cacheRoot, 'sealevel'), log: (m) => log('debug', m) });
+}
+
+/**
+ * Data worker: check the sea-level store for a new daily run (same
+ * pattern as SMOC: .zmetadata + STAC; a run still being written is used
+ * provisionally only when there is nothing else), rebuild the resident
+ * tide map area when the run, the 6-hour-aligned window or the vessel
+ * position changed, prune superseded cached runs. Offline, the newest
+ * cached run is used.
+ */
+async function refreshTides(): Promise<void> {
+  const { config: cfg } = requireInit();
+  if (!cfg.tides.enabled || !seaLevelClient) {
+    tides = null;
+    tidesError = null;
+    return;
+  }
+  const settings = tideSettings(cfg);
+  let run: ArcoRun | null = null;
+  try {
+    const probed = await seaLevelClient.probe(tides?.run ?? null);
+    if (probed.settled || !tides) {
+      run = probed;
+      if (!probed.settled) log('info', `tides: the store update is still being written (STAC updated ${probed.stacUpdated ?? '?'}); using run ${probed.key} provisionally`);
+    } else {
+      log('info', `tides: store update in progress (STAC updated ${probed.stacUpdated ?? '?'}); keeping run ${tides.run.key}`);
+      run = tides.run;
+    }
+    tidesError = null;
+  } catch (err) {
+    tidesError = `cannot reach the Copernicus Marine sea-level store: ${(err as Error).message}`;
+    log('error', `tides: ${tidesError}`);
+    run = tides?.run ?? seaLevelClient.cachedRuns()[0] ?? null;
+    if (run && !tides) log('info', `tides: using cached run ${run.key} (offline)`);
+  }
+  if (!run) return;
+  const provisionalReplaced = !!tides && tides.run.key === run.key && !tides.run.settled && run.settled;
+  const newRun = !tides || tides.run.key !== run.key || provisionalReplaced;
+  const now = Date.now();
+  const src = newRun ? new TideSource(run, settings, seaLevelClient, (m) => log('info', m)) : tides!;
+  if (!newRun) src.expire(now);
+  if (provisionalReplaced) seaLevelClient.dropRun(run.key);
+  if (newRun) seaLevelClient.saveRun(run);
+  const steps = src.windowSteps(now);
+  const pos = vesselPos;
+  if (pos && (newRun || src.residentStale(pos, steps))) {
+    try {
+      const t = Date.now();
+      const res = await loadTideResident(seaLevelClient, run, settings, pos, steps, { log: (m) => log('info', m) });
+      if (res) {
+        src.setResident(res.area, pos);
+        src.noteDownload('resident tide area', res.stats);
+        log('info', `tides: run ${run.key}: resident ${res.area.nRows}×${res.area.nCols} cells × ${steps.length} hourly steps, ${(src.memoryBytes() / 1e6).toFixed(1)} MB, downloaded ${(res.stats.bytes / 1e6).toFixed(1)} MB in ${((Date.now() - t) / 1000).toFixed(1)} s`);
+      }
+    } catch (err) {
+      tidesError = `resident tide area load failed: ${(err as Error).message}`;
+      log('error', `tides: ${tidesError}`);
+      if (newRun && tides) return; // keep serving the previous run
+    }
+  } else if (newRun && !pos) {
+    log('info', `tides: run ${run.key}: no vessel position; nothing resident, map areas load on demand`);
+  }
+  if (newRun) {
+    tides = src;
+    const removed = seaLevelClient.pruneRuns([run.key]);
+    if (removed.length) log('info', `tides: removed superseded cached run(s) ${removed.join(', ')}`);
+  }
+}
+
+/** Before a tide map query: load the view's hour on demand when not resident (bounded wait). */
+async function prepareTidesForQuery(kind: string, args: QueryArgs[keyof QueryArgs]): Promise<void> {
+  if (!tides || kind !== 'field') return;
+  const a = args as QueryArgs['field'];
+  if (a.layer !== 'tide') return;
+  const steps = tides.bracketSteps(a.timeMs);
+  if (!steps.length) return;
+  try {
+    await tides.ensure(a.bbox, steps, { reason: 'tide map query', deadlineMs: TIDE_QUERY_DEADLINE_MS, coarseOk: a.res >= 0.25 });
+  } catch (err) {
+    log('error', (err as Error).message);
+  }
+}
+
+/** A promise with a deadline: rejects with `message` when it takes longer (the work itself continues). */
+function withDeadline<T>(p: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  const d = new Promise<never>((_r, rej) => {
+    timer = setTimeout(() => rej(new Error(message)), ms);
+  });
+  return Promise.race([p, d]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/** Tide point series for a conditions query (null when tides are off). */
+async function conditionsTide(a: QueryArgs['conditions']): Promise<ConditionsTide | null> {
+  if (!config?.tides.enabled) return null;
+  if (!tides) return { series: null, error: tidesError ?? 'tide data not loaded yet' };
+  try {
+    const p = tides.pointSeries(a.lat, a.lon, a.fromMs, a.fromMs + a.hours * 3600_000, { reason: 'conditions query' });
+    p.catch(() => undefined);
+    const series = await withDeadline(p, TIDE_QUERY_DEADLINE_MS, 'tide series still downloading; try again shortly');
+    return { series, error: series ? null : 'outside the sea-level grid or its time range' };
+  } catch (err) {
+    log('error', `tides: conditions query: ${(err as Error).message}`);
+    return { series: null, error: (err as Error).message };
+  }
+}
+
+/** Point series for the Weather API (structured-cloneable). */
+async function tideSeriesQuery(a: QueryArgs['tide_series']): Promise<TideSeriesResult> {
+  const empty = (error: string): TideSeriesResult => ({ run: null, t0Ms: 0, stepMs: 3600_000, waterLevel: new Float64Array(0), tide: new Float64Array(0), surge: new Float64Array(0), error });
+  if (!config?.tides.enabled) return empty('tides are turned off');
+  if (!tides) return empty(tidesError ?? 'tide data not loaded yet');
+  const p = tides.pointSeries(a.lat, a.lon, a.fromMs, a.fromMs + a.hours * 3600_000, { reason: 'Weather API' });
+  p.catch(() => undefined);
+  const s = await withDeadline(p, TIDE_QUERY_DEADLINE_MS, 'tide series still downloading; try again shortly');
+  if (!s) return empty('outside the sea-level grid or its time range');
+  return { run: s.run, t0Ms: s.t0Ms, stepMs: s.stepMs, waterLevel: s.waterLevel, tide: s.tide, surge: s.surge, error: null };
 }
 
 /**
@@ -363,6 +506,7 @@ async function refresh(force: boolean): Promise<void> {
     // After the forecast, so a first boot is not held up by the SMOC resident download.
     await refreshSmoc();
     sendCurrents();
+    await refreshTides();
   }
 }
 
@@ -553,12 +697,14 @@ async function route(id: string, request: RouteRequest): Promise<void> {
 }
 
 function overlaySources(): OverlaySources {
-  return { forecast: store, currents: stack.isEmpty ? null : stack, land: overlayLand };
+  return { forecast: store, currents: stack.isEmpty ? null : stack, land: overlayLand, tides };
 }
 
 async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs]): Promise<void> {
   try {
     await prepareSmocForQuery(kind, args);
+    await prepareTidesForQuery(kind, args);
+    const tide = kind === 'conditions' ? await conditionsTide(args as QueryArgs['conditions']) : null;
     const src = overlaySources();
     let result: unknown;
     switch (kind) {
@@ -579,7 +725,11 @@ async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs])
       }
       case 'conditions': {
         const a = args as QueryArgs['conditions'];
-        result = conditionsSeries(src, a.lon, a.lat, new Date(a.fromMs), a.hours, a.stepH);
+        result = conditionsSeries(src, a.lon, a.lat, new Date(a.fromMs), a.hours, a.stepH, tide);
+        break;
+      }
+      case 'tide_series': {
+        result = await tideSeriesQuery(args as QueryArgs['tide_series']);
         break;
       }
       case 'conditions_tile': {
@@ -604,7 +754,8 @@ async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs])
     // A new overlay land raster was built: refresh the status the main thread reports.
     // …or SMOC loaded an on-demand area.
     const smocRev = smoc ? smoc.revision : -1;
-    if ((overlayLand && overlayLand.builds !== reportedLandBuilds) || smocRev !== reportedSmocRev) {
+    const tidesRev = tides ? tides.revision : -1;
+    if ((overlayLand && overlayLand.builds !== reportedLandBuilds) || smocRev !== reportedSmocRev || tidesRev !== reportedTidesRev || kind === 'conditions' || kind === 'tide_series') {
       reportedLandBuilds = overlayLand ? overlayLand.builds : 0;
       send({ type: 'data-status', status: dataStatus() });
     }
@@ -615,6 +766,7 @@ async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs])
 
 function dataStatus(): DataStatus {
   reportedSmocRev = smoc ? smoc.revision : -1;
+  reportedTidesRev = tides ? tides.revision : -1;
   return {
     forecast: store ? {
       cycle: store.meta.cycleTime.toISOString(), validFrom: store.validRange[0].toISOString(), validTo: store.validRange[1].toISOString(),
@@ -623,6 +775,8 @@ function dataStatus(): DataStatus {
     currents: currentsStatus(),
     rtofsRun: rtofs ? new Date(rtofs.runMs).toISOString().slice(0, 10) : null,
     land: overlayLand ? overlayLand.stats() : null,
+    tides: tides ? tides.status() : null,
+    tidesError,
   };
 }
 
@@ -650,6 +804,9 @@ async function handle(msg: MainToWorker): Promise<void> {
       overlayLand = role === 'data' ? new OnDemandLand(config.landShapefiles, { log: (m) => log('debug', m) }) : null;
       smocClient = makeSmocClient(config);
       smoc = null;
+      seaLevelClient = makeSeaLevelClient(config);
+      tides = null;
+      tidesError = null;
       loadHarmonic(config.currents.harmonicDir);
       rebuildStack();
       send({ type: 'ready', role });
@@ -689,6 +846,14 @@ async function handle(msg: MainToWorker): Promise<void> {
         await refreshRtofs(role === 'data');
         sendCurrents();
         log('info', `currents reloaded for the new settings (SMOC ${config.currents.smocEnabled ? `${config.currents.smocStepHours} h steps, ${config.currents.smocHorizonHours} h, ±${config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${config.currents.rtofsEnabled ? config.currents.rtofsRegion : 'off'})`);
+      }
+      if (msg.reload.tides && role === 'data') {
+        if (msg.position !== undefined) vesselPos = msg.position;
+        seaLevelClient = makeSeaLevelClient(config);
+        tides = null;
+        tidesError = null;
+        await refreshTides();
+        log('info', `tides reloaded for the new settings (${config.tides.enabled ? `map area ±${config.tides.halfWidthDeg}°, ${config.tides.horizonHours} h` : 'off'})`);
       }
       if (msg.reload.forecast && role === 'data') {
         log('info', `forecast settings changed (horizon ${prev.forecast.horizonHours} → ${config.forecast.horizonHours} h, extra fields ${prev.forecast.extraFields} → ${config.forecast.extraFields}); reloading`);

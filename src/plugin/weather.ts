@@ -9,10 +9,20 @@
  * configured to fetch them. Precipitation volume is not provided: the
  * store holds only ECMWF's instantaneous `tprate`, not an accumulated
  * field or an interval-mean rate, so no interval depth can be derived.
+ *
+ * Water level (when tides are enabled): `water.level` is the total water
+ * level (tide + surge) in metres relative to local MEAN SEA LEVEL (not
+ * chart datum) from the Copernicus Marine hourly sea level at the
+ * position, and `water.levelTendency` its tendency at that time
+ * (Signal K TendencyKind: increasing / decreasing, steady within
+ * ±2 cm/h, from the central difference of the hourly series). The point
+ * series is fetched on demand (the provider methods are async); when it
+ * is unavailable the two fields are left out.
  */
 
 import type { ForecastStore } from '../data/forecast';
 import { relativeHumidity } from '../engine/conditions';
+import { sampleSeries, signalKTendency, slopeAt, type RegularSeries } from '../tides/tidecalc';
 
 export interface SkPosition {
   latitude: number;
@@ -38,7 +48,15 @@ export interface WeatherData {
     /** Depth in m accumulated over the interval ending at `date`. */
     precipitationVolume?: number;
   };
-  water?: { temperature?: number; waveSignificantHeight?: number; wavePeriod?: number; waveDirection?: number };
+  water?: {
+    temperature?: number;
+    /** Total water level relative to local mean sea level, m. */
+    level?: number;
+    levelTendency?: 'steady' | 'decreasing' | 'increasing' | 'not available';
+    waveSignificantHeight?: number;
+    wavePeriod?: number;
+    waveDirection?: number;
+  };
   wind?: { speedTrue?: number; directionTrue?: number };
 }
 
@@ -52,7 +70,52 @@ export interface WeatherProviderLike {
   };
 }
 
-export function makeWeatherProvider(getStore: () => ForecastStore | null, pluginId: string): WeatherProviderLike {
+/** Hourly water level at a point (m above local mean sea level, NaN = none), or null when tides are off. */
+export interface TideSeriesLike {
+  t0Ms: number;
+  stepMs: number;
+  waterLevel: ArrayLike<number>;
+  run?: string | null;
+  error: string | null;
+}
+
+export type TideSeriesFn = (lat: number, lon: number, fromMs: number, hours: number) => Promise<TideSeriesLike | null>;
+
+/** Add water.level / water.levelTendency to point forecasts from an hourly water-level series. */
+export function applyWaterLevel(items: WeatherData[], s: TideSeriesLike): number {
+  const wl: RegularSeries = { t0Ms: s.t0Ms, stepMs: s.stepMs, values: s.waterLevel };
+  let n = 0;
+  for (const item of items) {
+    const t = Date.parse(item.date);
+    const level = sampleSeries(wl, t);
+    if (level === null) continue;
+    item.water = { ...(item.water ?? {}), level, levelTendency: signalKTendency(slopeAt(wl, t)) };
+    n++;
+  }
+  return n;
+}
+
+export function makeWeatherProvider(getStore: () => ForecastStore | null, pluginId: string, tideSeries?: TideSeriesFn, log: (m: string) => void = () => undefined): WeatherProviderLike {
+  let lastTideError = '';
+  const withWaterLevel = async (position: SkPosition, items: WeatherData[]): Promise<WeatherData[]> => {
+    if (!tideSeries || items.length === 0) return items;
+    const times = items.map((i) => Date.parse(i.date));
+    // One step either side for the tendency's central difference.
+    const fromMs = Math.min(...times) - 3600_000;
+    const hours = Math.ceil((Math.max(...times) - fromMs) / 3600_000) + 1;
+    try {
+      const s = await tideSeries(position.latitude, position.longitude, fromMs, Math.min(hours, 400));
+      if (!s) return items;
+      if (s.error) throw new Error(s.error);
+      applyWaterLevel(items, s);
+      lastTideError = '';
+    } catch (err) {
+      const m = (err as Error).message;
+      if (m !== lastTideError) log(`Weather API: water level unavailable at ${position.latitude.toFixed(3)}, ${position.longitude.toFixed(3)}: ${m}`);
+      lastTideError = m;
+    }
+    return items;
+  };
   const pointForecasts = (position: SkPosition, options?: WeatherReqParams): WeatherData[] => {
     const store = getStore();
     if (!store) throw new Error('no forecast loaded yet');
@@ -115,7 +178,7 @@ export function makeWeatherProvider(getStore: () => ForecastStore | null, plugin
       getObservations: async () => [],
       getForecasts: async (position, type, options) => {
         if (type !== 'point') return [];
-        return pointForecasts(position, options);
+        return withWaterLevel(position, pointForecasts(position, options));
       },
       getWarnings: async () => [],
     },

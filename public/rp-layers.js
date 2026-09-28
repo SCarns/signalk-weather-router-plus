@@ -305,6 +305,9 @@ function _bboxParam(b) { return b.map(v => +v.toFixed(5)).join(','); }
 const CURRENT_ATTRIBUTION = 'Currents: Generated using E.U. Copernicus Marine Service Information; '
   + '<a href="https://doi.org/10.48670/moi-00016" target="_blank" rel="noopener">doi:10.48670/moi-00016</a>. NOAA Global RTOFS.';
 const currentSource = new ol.source.Vector({ attributions: CURRENT_ATTRIBUTION });
+// Tide height layer: Copernicus Marine hourly sea level (ocean_tide, FES2014).
+const TIDE_ATTRIBUTION = 'Tide height: Generated using E.U. Copernicus Marine Service Information; '
+  + '<a href="https://doi.org/10.48670/moi-00016" target="_blank" rel="noopener">doi:10.48670/moi-00016</a>. Relative to mean sea level, not chart datum.';
 
 // Pre-build current arrow styles to avoid icon cache thrashing
 const _currentStyleCache = new Map();
@@ -580,6 +583,7 @@ document.getElementById('departure').addEventListener('change', function() {
   loadPrecipHeatmap();
   loadTemperature();
   loadSst();
+  loadTide();
   loadPressure();
   if (waveStreamlines.enabled) waveStreamlines._fetchField();
   if (windStreamlines.enabled) windStreamlines._fetchField();
@@ -605,6 +609,7 @@ const _FALLBACK_STOPS = {
   precip: [[0, '#b3e5fc'], [0.5 * MMH_MS, '#b3e5fc'], [2 * MMH_MS, '#4fc3f7'], [5 * MMH_MS, '#43a047'], [10 * MMH_MS, '#fdd835'], [25 * MMH_MS, '#c2185b']],
   temperature: [[253.15, '#0d2673'], [263.15, '#3359b2'], [268.15, '#73a6e6'], [273.15, '#b2d9f2'], [278.15, '#66d9e6'], [288.15, '#66cc66'], [293.15, '#f2eb4c'], [298.15, '#faa626'], [303.15, '#f2591a'], [308.15, '#cc261a'], [313.15, '#800d0d']],
   sst: [[271.15, '#4c1a80'], [275.15, '#1a4cbf'], [281.15, '#4ca6d9'], [287.15, '#4cbfa6'], [291.15, '#8cd966'], [295.15, '#f2eb4c'], [299.15, '#faa626'], [303.15, '#f24c1a'], [305.15, '#a61a1a']],
+  tide: [[-3, '#543005'], [-2, '#8c510a'], [-1, '#d8b365'], [-0.25, '#f6e8c3'], [0, '#f5f5f5'], [0.25, '#c7eae5'], [1, '#5ab4ac'], [2, '#01665e'], [3, '#003c30']],
   sea_state: [[0, '#313695'], [9.375, '#3d5da8'], [18.75, '#5083bb'], [28.125, '#6ea6cd'], [37.5, '#90c3dd'], [46.875, '#b2dceb'], [56.25, '#d3ecf4'], [65.625, '#ecf7e1'], [75, '#fefebe'], [84.375, '#feeca2'], [93.75, '#fdd484'], [103.125, '#fdb467'], [112.5, '#f88e52'], [121.875, '#f0653f'], [131.25, '#de3f2e'], [140.625, '#c41e26'], [150, '#a50026']],
 };
 function _legendStops(key) {
@@ -727,7 +732,7 @@ function renderHeatmapImage(grid, spec, landMask) {
   const ctx = canvas.getContext('2d');
   const img = ctx.createImageData(W, H);
   const data = img.data;
-  const { v0, v1, lut } = _rampLut(_legendStops(spec.legend));
+  const { v0, v1, lut } = _rampLut(spec.stops || _legendStops(spec.legend));
   const sample = _gridSampler(grid, grid.fields[spec.field]);
   // Coarse fallback when the screen-resolution mask is unavailable.
   const sampleLand = spec.maskLand && !maskBytes ? _gridSampler(grid, grid.land) : null;
@@ -740,7 +745,16 @@ function renderHeatmapImage(grid, spec, landMask) {
       if (spec.maskLand && maskBytes && maskBytes[y * W + x]) continue;
       const lon = w + (x + 0.5) / W * (e - w);
       const v = sample(lon, lat);
-      if (v == null) continue;
+      if (v == null) {
+        // Water (per the coastline) the source model has no value for:
+        // channels narrower than its grid. Hatch it so a gap never reads as
+        // zero. Needs the screen-resolution mask to know it is water.
+        if (spec.hatchNoData && maskBytes && ((x + y) % 7) < 1) {
+          const o = (y * W + x) * 4;
+          data[o] = 96; data[o + 1] = 96; data[o + 2] = 96; data[o + 3] = 150;
+        }
+        continue;
+      }
       if (sampleLand) { const l = sampleLand(lon, lat); if (l != null && l > 0.5) continue; }
       let a = baseA;
       if (sampleAlpha) { const sg = sampleAlpha(lon, lat); a *= sg == null ? 0 : Math.max(0, Math.min(1, sg)); }
@@ -770,7 +784,33 @@ function fetchField(layer, channel) {
   const url = ROUTER + '/field?layer=' + layer + '&bbox=' + _bboxParam(bbox) + '&time=' + encodeURIComponent(_overlayTimeIso()) + '&res=' + res;
   return authFetch(url, {}, channel).then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))));
 }
+// Symmetric auto-scale for a diverging layer (tide height): stretch the
+// legend's stops so the largest |value| over water in this grid sits at
+// the ends, never tighter than spec.minScale. Keeps the colour readable
+// when the tide is small or near half-tide; the legend shows the numbers.
+const _autoScaleStops = {};
+function _applyAutoScale(grid, spec) {
+  if (!spec.autoScaleSym) return;
+  const base = _legendStops(spec.legend);
+  if (!base) return;
+  const baseMax = Math.max(...base.map(s => Math.abs(s[0]))) || 1;
+  const rows = grid.fields[spec.field] || [];
+  let m = 0;
+  for (let j = 0; j < rows.length; j++) {
+    const r = rows[j], lr = grid.land && grid.land[j];
+    for (let i = 0; i < r.length; i++) {
+      const v = r[i];
+      if (v == null || (lr && lr[i])) continue;
+      const a = Math.abs(v);
+      if (a > m) m = a;
+    }
+  }
+  const S = Math.max(spec.minScale || 0.5, Math.ceil(m * 4) / 4);
+  spec.stops = base.map(([v, c]) => [+(v * S / baseMax).toFixed(4), c]);
+  _autoScaleStops[spec.legend] = spec.stops;
+}
 function _setHeatmap(layer, grid, spec, landMask) {
+  _applyAutoScale(grid, spec);
   const [w, s, e, n] = grid.bbox;
   layer.setSource(new ol.source.ImageStatic({
     url: renderHeatmapImage(grid, spec, landMask),
@@ -812,7 +852,7 @@ function loadWindHeatmap() {
 // Land masked so the coasts stay sharp.
 const currentHeatmapLayer = new ol.layer.Image({ source: null, opacity: 1.0, zIndex: 6, visible: false });
 let _currentHeatmapDebounce = null;
-const _doLoadCurrentHeatmap = _heatmapLoader(currentHeatmapLayer, 'currentHeatmapToggle', 'current', { field: 'speed_ms', legend: 'current', maskLand: true, attributions: CURRENT_ATTRIBUTION }, 'current-heatmap');
+const _doLoadCurrentHeatmap = _heatmapLoader(currentHeatmapLayer, 'currentHeatmapToggle', 'current', { field: 'speed_ms', legend: 'current', maskLand: true, hatchNoData: true, attributions: CURRENT_ATTRIBUTION }, 'current-heatmap');
 function loadCurrentHeatmap() {
   if (!currentHeatmapLayer.getVisible()) return;
   if (_currentHeatmapDebounce) clearTimeout(_currentHeatmapDebounce);
@@ -876,6 +916,19 @@ function loadSst() {
   if (!sstLayer.getVisible()) return;
   if (_sstDebounce) clearTimeout(_sstDebounce);
   _sstDebounce = setTimeout(_doLoadSst, 300);
+}
+
+// ─────────── Tide height heatmap (Copernicus Marine, −3..+3 m around mean sea level) ──
+// Land masked at the true coastline; the plugin extends the 1/12° field
+// up to 2 cells towards the coast for display. Hourly: reloads with the
+// overlay time like the other layers.
+const tideLayer = new ol.layer.Image({ source: null, opacity: 1.0, zIndex: 5, visible: false });
+let _tideDebounce = null;
+const _doLoadTide = _heatmapLoader(tideLayer, 'tideToggle', 'tide', { field: 'tide_m', legend: 'tide', maskLand: true, hatchNoData: true, autoScaleSym: true, minScale: 0.5, attributions: TIDE_ATTRIBUTION }, 'tide-heatmap');
+function loadTide() {
+  if (!tideLayer.getVisible()) return;
+  if (_tideDebounce) clearTimeout(_tideDebounce);
+  _tideDebounce = setTimeout(_doLoadTide, 300);
 }
 
 // ─────────── MSL pressure synoptic chart (vector GeoJSON) ─────────
@@ -1342,7 +1395,7 @@ try {
 
 const map = new ol.Map({
   target: 'map',
-  layers: [osmLayer, seamarkLayer, conditionsLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, pressureLayer, currentLayer, windLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, markerLayer, condMarkerLayer],
+  layers: [osmLayer, seamarkLayer, conditionsLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, markerLayer, condMarkerLayer],
   view: new ol.View({
     // Last view this browser had (saved on every move), else Block
     // Island Sound at zoom 11. On a first visit the geolocation block
@@ -1395,6 +1448,7 @@ map.on('moveend', function() {
   loadPrecipHeatmap();
   loadTemperature();
   loadSst();
+  loadTide();
   loadPressure();
   // wave/wind streamlines each attach their own moveend listener in setEnabled
 });

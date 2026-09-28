@@ -94,7 +94,11 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             + 'the CMEMS-SMOC entry adds `smoc`: {run, run_last_time, stac_updated, settled, step_hours, horizon_hours, half_width_deg, '
             + 'resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, memory_bytes, '
             + 'shared_resident, last_download: {at, reason, bytes, chunks, downloaded, from_disk, seconds, decode_ms} | null, downloaded_bytes_total, disk_cache_bytes, layouts}. '
-            + '`currents_route_worker` is the same for the route worker (its own on-demand SMOC areas).',
+            + '`currents_route_worker` is the same for the route worker (its own on-demand SMOC areas). '
+            + '`tides` (null when off or not loaded; `tides_enabled`, `tides_error`): the Copernicus Marine sea-level source {name, doi, datum, run, run_last_time, '
+            + 'stac_updated, settled, half_width_deg, horizon_hours, resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, '
+            + 'point_cache: {entries, bytes, queries, hits}, memory_bytes, last_download, last_point_query: {at, lat, lon, bytes, chunks, downloaded, from_disk, seconds, cached} | null, '
+            + 'downloaded_bytes_total, disk_cache_bytes, layouts, mean_window_days}.',
           responses: { 200: { description: 'OK' } },
         },
       },
@@ -110,10 +114,10 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           },
         },
         put: {
-          summary: 'Update some settings (readwrite). Only the keys sent change; validated all-or-nothing, saved to settings.json and applied live: a new forecast horizon or extra-fields choice reloads the forecast, SMOC and RTOFS settings reload currents, everything else applies to the next route.',
+          summary: 'Update some settings (readwrite). Only the keys sent change; validated all-or-nothing, saved to settings.json and applied live: a new forecast horizon or extra-fields choice reloads the forecast, SMOC and RTOFS settings reload currents, tide settings reload tides only, everything else applies to the next route.',
           requestBody: { required: true, content: { 'application/json': { schema: settingsValuesSchema() } } },
           responses: {
-            200: { description: '{values, changed: ["group.key"], reloaded: {forecast, currents, refresh_timer, jobs}}' },
+            200: { description: '{values, changed: ["group.key"], reloaded: {forecast, currents, tides, refresh_timer, jobs}}' },
             400: { description: '{error, errors: {"group.key": message}}; nothing saved' },
             401: { description: 'Not signed in' },
             403: { description: 'Needs readwrite access' },
@@ -212,14 +216,47 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           summary: 'JSON value grid for a heatmap layer over a bbox at one time',
           description: 'layer=current returns display values: gridded model currents (CMEMS SMOC, RTOFS) are extended up to 2 source-grid cells into the '
             + 'cells the model leaves empty at the coast (inverse-distance weights over valid cells; valid cells unchanged), for clipping with /api/land-mask. '
-            + 'When the bbox is outside the resident SMOC area it is loaded on demand first (at most 60 s wait).',
+            + 'When the bbox is outside the resident SMOC area it is loaded on demand first (at most 60 s wait). '
+            + 'layer=tide returns `tide_m`: the tide height in metres above MEAN SEA LEVEL (not chart datum) from Copernicus Marine `ocean_tide` (FES2014) at the hour '
+            + '(linear between hourly steps), with the same 2-cell coastal extension for display; outside the resident tide area the hour is loaded on demand '
+            + '(1/3° grid for res ≥ 0.25°).',
           parameters: [
-            { name: 'layer', in: 'query', required: true, schema: { type: 'string', enum: ['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current'] } },
+            { name: 'layer', in: 'query', required: true, schema: { type: 'string', enum: ['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current', 'tide'] } },
             { name: 'bbox', in: 'query', required: true, schema: { type: 'string' }, description: 'west,south,east,north' },
             { name: 'time', in: 'query', schema: { type: 'string', format: 'date-time' } },
             { name: 'res', in: 'query', schema: { type: 'number', minimum: 0.002, maximum: 2 }, description: 'lattice spacing, degrees (coarsened to at most 40k cells)' },
           ],
           responses: { 200: { description: '{layer, time, bbox, res, lons, lats, fields: {name: rows from the south, null = no data}, land, units}' } },
+        },
+      },
+      '/api/conditions': {
+        get: {
+          summary: 'Hourly point series of every conditions field, plus tide height, total water level and surge with the high and low waters',
+          description: 'Rows: the /api/conditions-tile fields plus `time` and the tide fields `tide_m` (tide height above mean sea level, m; Copernicus Marine ocean_tide, FES2014), '
+            + '`water_level_m` (total water level above local mean sea level, m = total_sea_level − local mean), `surge_m` (non-tidal residual = water level − tide, m), '
+            + '`tide_extrapolated` (a bilinear corner is model land and took the value of valid cells within 2 cells, ~18 km), `tide_tendency` (rising / falling / steady within ±2 cm/h). '
+            + 'Tide fields are null when tides are off or there is no model water within 2 cells. '
+            + '`tides`: {highs: [{time, height_m, water_level_m}], lows: [...], range_m (mean of consecutive high−low differences), max_range_m, of: "tide_m", source, run, '
+            + 'datum: "mean sea level", msl_offset_m (mean of total_sea_level − ocean_tide over mean_window, removed from the total level), mean_window: {from, to, samples}, extrapolated, doi} '
+            + 'or null (`tides_error` says why). High / low waters are those of the tide height, refined with a parabola through the hourly samples. '
+            + 'Heights are relative to mean sea level, NOT chart datum: not for under-keel clearance.',
+          parameters: [
+            { name: 'lon', in: 'query', required: true, schema: { type: 'number' } },
+            { name: 'lat', in: 'query', required: true, schema: { type: 'number' } },
+            { name: 'from', in: 'query', schema: { type: 'string', format: 'date-time' }, description: 'Default: the current hour' },
+            { name: 'hours', in: 'query', schema: { type: 'number', minimum: 1, maximum: 240, default: 72 } },
+            { name: 'step_h', in: 'query', schema: { type: 'number', minimum: 1, maximum: 24, default: 1 } },
+          ],
+          responses: {
+            200: { description: '{lon, lat, is_land, from, hours, step_h, forecast_time_range, truncated, series: [row], tides, tides_error, sources: {forecast_cycle, currents, tides}}' },
+            400: { description: 'Bad parameters' },
+          },
+        },
+      },
+      '/api/legends': {
+        get: {
+          summary: 'Colour ramps for the heatmap layers: {key: {title, quantity, si_unit, kind, stops: [[SI value, css colour]], bands?}}; `tide`: tide height above mean sea level, −3..+3 m diverging',
+          responses: { 200: { description: 'OK' } },
         },
       },
       '/api/currents': {
