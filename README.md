@@ -16,6 +16,9 @@ server and no S-57 charts. It does **not** do near-shore chart
 navigation (fairways, depths, bridges); it routes between open-water
 positions and treats the coastline as the only obstacle.
 
+What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
+[CHANGELOG.md](CHANGELOG.md).
+
 ## What it provides
 
 | Surface | Path |
@@ -226,6 +229,35 @@ positions and treats the coastline as the only obstacle.
   https://doi.org/10.48670/moi-00016* (shown in the map attribution while
   the tide layer is on, and under the Tide chart).
 
+## Using the webapp
+
+- **Planning.** Click the map for the menu: set or move the start, set or
+  move the destination, **Add waypoint here** (the clicked point becomes
+  the destination and the old destination becomes the last waypoint, so
+  waypoints stay in placing order), or **Conditions here**. Holding on
+  the map does the direct action (start, then destination, then extend
+  the course). Drag any pin to move it. Holding on a computed route pins
+  that point as a waypoint.
+- **Layers** (Base / Weather / Water): each layer is named for the
+  quantity it shows. Colour layers are exclusive (one at a time) and are
+  cut at the coastline with a screen-resolution land mask from
+  `/api/land-mask`. The tide colour scale stretches to the largest tide
+  in view (at least ±0.5 m). On the tide and current layers, water the
+  source model has no value for (narrower than its ~9 km grid) is hatched
+  and labelled "no model data".
+- **Conditions popup** (shift-click, or the menu): 72-hour charts for
+  Wind, Waves, Sea state (index / Beaufort / Douglas), **Tide & current**
+  (tide height, total water level and surge on the left axis; current
+  speed as a filled area on the right axis; the current's set as arrows;
+  high and low water marked), Pressure, Temp, Precip, and a Raw table.
+  Click the chart to move every map layer to that hour.
+- **Polars**: the picker lists the default polar and the polars
+  directory; "Create polar from boat specs…" generates one.
+- **Settings tab**: the web-app settings below, in the selected units.
+- The page references its scripts with `?v=<tag>`, a tag that changes
+  whenever a file in `public/` changes, so browsers and proxies in front
+  of Signal K always load the current scripts after an update.
+
 ## Routing engine
 
 A port of the routePlanning `OceanPropagator` (subsector isochrone,
@@ -293,11 +325,21 @@ the selected display units. Saving needs a `readwrite` login.
 | Group | Settings (default) | A change… |
 |---|---|---|
 | `vessel` | name, draught (1.8 m), air draft (16 m), LOA (11 m), beam (3.7 m), under-keel margin (0.5 m), overhead margin (1 m), speed under power (6 kt = 3.087 m/s), max wave height (none), tack penalty (30 s) | applies to the next route |
-| `forecast` | horizon (72 h = 259200 s, 3–240 h), check interval (60 min), cached cycles kept (2), extra fields (on) | horizon / extra fields reload the forecast; the interval restarts the timer |
+| `forecast` | horizon (72 h = 259200 s, 3–240 h), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
 | `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), finished routes kept (50) | applies to the next route |
 | `publish` | save to the Resources API (on), route name prefix (`WRP`), notifications (on) | applies to the next route |
+
+**Memory guard.** Before a forecast load or reload, the plugin compares
+the new store's exact size (fields × steps × 4.15 MB) with the memory
+available now: Linux `MemAvailable`, bounded by a cgroup (container)
+limit, or reclaimable pages from `vm_stat` on macOS. It loads only if
+"memory kept free" remains afterwards. Otherwise it does not load; the
+Signal K plugin status and the page's status line say how much is needed
+and available and what would fit (extra fields off, a shorter horizon, a
+lower setting), and a running forecast keeps serving. A settings change
+that would not fit is rejected before it is saved.
 
 `PUT` takes only the keys to change, e.g. `{"vessel": {"draught": 1.9}}`,
 validates all of them (same ranges and enums as before), and either saves
@@ -373,6 +415,7 @@ GET  …/api/pressure?bbox=&time=&interval=     isobars + H/L as GeoJSON
 GET  …/api/conditions?lon=&lat=&from=&hours=  72-hour conditions series at a point, with tide_m / water_level_m / surge_m /
                                               tide_extrapolated / tide_tendency per row and `tides` {highs, lows, range_m, …}
 GET  …/api/conditions-tile/{z}/{x}/{y}?t=YYYY-MM-DDTHH   conditions sample points for one map tile at one hour
+GET  …/api/land-mask?bbox=&w=&h=               land mask at screen resolution: gzip bytes, one per pixel (1 = land), row 0 north
 POST …/api/forecast/refresh
 GET  …/api/status
 ```
@@ -438,6 +481,12 @@ wrp-route --start 41.44,-71.36 --end 32.42,-64.58 \
 
 - Open water only. A start or end inside a narrow harbour can fail with
   "stage 1 has no live waypoints"; start from the harbour approach.
+- The route search covers the rectangle around the start, end and
+  waypoints plus 1°. A route whose only water path lies outside it fails
+  (e.g. Lisbon to Palma: the Strait of Gibraltar is south of that box);
+  add a waypoint in the passage. On very long routes the stage length
+  (route length / stages) can exceed a strait's width and leave few
+  surviving branches; more stages or a waypoint helps.
 - No depth data.
 - SMOC areas are loaded whole-chunk: a box outside the resident area
   costs its chunks' download (see the measured sizes above), cached for
