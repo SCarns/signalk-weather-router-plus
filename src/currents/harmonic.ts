@@ -15,6 +15,14 @@
  * (ported in tidal_arguments.ts). The whole grid is predicted once per
  * 5-minute time bin and cached; points are then bilinear on the grid,
  * with any NaN corner giving (0, 0) = no data.
+ *
+ * Memory: the constituent arrays are kept at the file's float32 precision
+ * in ONE SharedArrayBuffer per file (a NECOFS GoM3 extract is 116 MB;
+ * widening to float64 and loading it in each worker cost ~470 MB). The
+ * data worker loads it and the route worker adopts the same memory via
+ * serialize()/fromSerialized(). One large block is mmap'd and returned
+ * to the OS when dropped (see FloatSlab in data/forecast.ts). The
+ * prediction cache holds float32 grids and is capped by bytes.
  */
 
 import { readNpz, type NpyArray } from '../data/npz';
@@ -22,6 +30,22 @@ import { isSupportedConstituent, tidalArguments } from './tidal_arguments';
 import { bboxContains, dateToMjd, type CurrentSourceLike, type SourceBBox } from './types';
 
 const CM_S_TO_MS = 0.01;
+/** Default byte cap for the per-source prediction cache (u and v float32 grids per 5-min bin). */
+const CACHE_MAX_BYTES = 64e6;
+
+/** A source's data in a structured-clone-friendly form; the constituent block stays shared. */
+export interface SerializedHarmonic {
+  name: string;
+  priority: number;
+  resolutionM: number;
+  bbox: SourceBBox;
+  lats: Float64Array;
+  lons: Float64Array;
+  constituents: string[];
+  dropped: string[];
+  /** eastAmp, eastPha, northAmp, northPha back to back, each constituents × lats × lons float32. */
+  block: SharedArrayBuffer;
+}
 
 function asFloat64(a: NpyArray | undefined, name: string): Float64Array {
   if (!a) throw new Error(`harmonic .npz lacks ${name}`);
@@ -45,18 +69,35 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
   readonly lons: Float64Array;
   readonly constituents: string[];
   readonly dropped: string[];
-  /** Amplitudes (cm/s) and phases (degrees), constituent-major, row-major (lat, lon). */
-  private readonly eastAmp: Float64Array;
-  private readonly eastPha: Float64Array;
-  private readonly northAmp: Float64Array;
-  private readonly northPha: Float64Array;
+  /** Amplitudes (cm/s) and phases (degrees), constituent-major, row-major (lat, lon), float32 views of `block`. */
+  private readonly eastAmp: Float32Array;
+  private readonly eastPha: Float32Array;
+  private readonly northAmp: Float32Array;
+  private readonly northPha: Float32Array;
+  private readonly block: SharedArrayBuffer;
   private readonly latStep: number;
   private readonly lonStep: number;
-  private readonly cache = new Map<number, { u: Float64Array; v: Float64Array }>();
+  private readonly cache = new Map<number, { u: Float32Array; v: Float32Array }>();
   readonly cacheBinMinutes = 5;
   readonly cacheMaxEntries: number;
 
-  constructor(filePath: string, opts: { cacheMaxEntries?: number } = {}) {
+  /** Load from a `.npz` file (data worker). */
+  constructor(filePath: string, opts?: { cacheMaxEntries?: number });
+  /** Adopt another thread's loaded source (route worker): shares the constituent block. */
+  constructor(serialized: SerializedHarmonic, opts?: { cacheMaxEntries?: number });
+  constructor(src: string | SerializedHarmonic, opts: { cacheMaxEntries?: number } = {}) {
+    if (typeof src !== 'string') {
+      this.name = src.name; this.priority = src.priority; this.resolutionM = src.resolutionM; this.bbox = src.bbox;
+      this.lats = src.lats; this.lons = src.lons; this.constituents = src.constituents; this.dropped = src.dropped;
+      this.block = src.block;
+      const n = this.constituents.length * this.lats.length * this.lons.length;
+      [this.eastAmp, this.eastPha, this.northAmp, this.northPha] = [0, 1, 2, 3].map((k) => new Float32Array(src.block, k * n * 4, n));
+      this.latStep = this.lats[1] - this.lats[0];
+      this.lonStep = this.lons[1] - this.lons[0];
+      this.cacheMaxEntries = HarmonicCurrentSource.cacheEntries(opts.cacheMaxEntries, this.lats.length * this.lons.length);
+      return;
+    }
+    const filePath = src;
     const z = readNpz(filePath);
     this.lats = asFloat64(z.get('lats'), 'lats');
     this.lons = asFloat64(z.get('lons'), 'lons');
@@ -66,10 +107,15 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
     const nLat = this.lats.length;
     const nLon = this.lons.length;
     if (nLat < 2 || nLon < 2) throw new Error(`${filePath}: grid too small`);
-    const ea = asFloat64(z.get('east_amplitude'), 'east_amplitude');
-    const ep = asFloat64(z.get('east_phase'), 'east_phase');
-    const na = asFloat64(z.get('north_amplitude'), 'north_amplitude');
-    const np_ = asFloat64(z.get('north_phase'), 'north_phase');
+    const asF32 = (a: NpyArray | undefined, name: string): Float32Array | Float64Array => {
+      if (!a) throw new Error(`harmonic .npz lacks ${name}`);
+      if (a.kind === 'f32' || a.kind === 'f64') return a.data as Float32Array | Float64Array;
+      throw new Error(`harmonic .npz ${name} has dtype ${a.kind}, expected float`);
+    };
+    const ea = asF32(z.get('east_amplitude'), 'east_amplitude');
+    const ep = asF32(z.get('east_phase'), 'east_phase');
+    const na = asF32(z.get('north_amplitude'), 'north_amplitude');
+    const np_ = asF32(z.get('north_phase'), 'north_phase');
     const per = nLat * nLon;
     const expected = allCons.length * per;
     for (const [label, arr] of [['east_amplitude', ea], ['east_phase', ep], ['north_amplitude', na], ['north_phase', np_]] as const) {
@@ -83,15 +129,12 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
     allCons.forEach((c, i) => (isSupportedConstituent(c) ? keep.push(i) : dropped.push(c)));
     this.constituents = keep.map((i) => allCons[i]);
     this.dropped = dropped;
-    const pick = (src: Float64Array): Float64Array => {
-      const out = new Float64Array(keep.length * per);
-      keep.forEach((ci, k) => out.set(src.subarray(ci * per, (ci + 1) * per), k * per));
-      return out;
-    };
-    this.eastAmp = pick(ea);
-    this.eastPha = pick(ep);
-    this.northAmp = pick(na);
-    this.northPha = pick(np_);
+    // One shared block for the four arrays (kept constituents only).
+    const n = keep.length * per;
+    this.block = new SharedArrayBuffer(4 * n * 4);
+    const views = [0, 1, 2, 3].map((k) => new Float32Array(this.block, k * n * 4, n));
+    [ea, ep, na, np_].forEach((srcArr, a) => keep.forEach((ci, k) => views[a].set(srcArr.subarray(ci * per, (ci + 1) * per), k * per)));
+    [this.eastAmp, this.eastPha, this.northAmp, this.northPha] = views;
 
     const bb = asFloat64(z.get('bbox'), 'bbox');
     this.bbox = { south: bb[0], west: bb[1], north: bb[2], east: bb[3] };
@@ -103,7 +146,26 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
     this.name = typeof nm === 'string' && nm ? nm : filePath.replace(/^.*[\\/]/, '').replace(/\.npz$/, '');
     this.latStep = this.lats[1] - this.lats[0];
     this.lonStep = this.lons[1] - this.lons[0];
-    this.cacheMaxEntries = Math.max(1, opts.cacheMaxEntries ?? 96);
+    this.cacheMaxEntries = HarmonicCurrentSource.cacheEntries(opts.cacheMaxEntries, per);
+  }
+
+  /** Cache entries: explicit, or as many 5-min grids (u + v float32) as fit in CACHE_MAX_BYTES (at least 4). */
+  private static cacheEntries(explicit: number | undefined, cells: number): number {
+    if (explicit !== undefined) return Math.max(1, explicit);
+    return Math.max(4, Math.floor(CACHE_MAX_BYTES / (cells * 8)));
+  }
+
+  /** For relaying to another worker: small metadata plus the shared constituent block (not copied). */
+  serialize(): SerializedHarmonic {
+    return {
+      name: this.name, priority: this.priority, resolutionM: this.resolutionM, bbox: this.bbox,
+      lats: this.lats, lons: this.lons, constituents: this.constituents, dropped: this.dropped, block: this.block,
+    };
+  }
+
+  /** Bytes of the constituent block (shared between workers). */
+  blockBytes(): number {
+    return this.block.byteLength;
   }
 
   contains(lon: number, lat: number): boolean {
@@ -111,25 +173,26 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
   }
 
   /** Predict u/v (cm/s) over the whole grid at an MJD. */
-  predictGrid(mjd: number): { u: Float64Array; v: Float64Array } {
+  predictGrid(mjd: number): { u: Float32Array; v: Float32Array } {
     const { pu, pf, G } = tidalArguments(mjd, this.constituents);
     const per = this.lats.length * this.lons.length;
-    const u = new Float64Array(per);
-    const v = new Float64Array(per);
+    // Accumulate in double, store float32 (the constituents are float32).
+    const ud = new Float64Array(per);
+    const vd = new Float64Array(per);
     const DEG = Math.PI / 180;
     for (let c = 0; c < this.constituents.length; c++) {
       const theta = G[c] * DEG + pu[c];
       const f = pf[c];
       const base = c * per;
       for (let i = 0; i < per; i++) {
-        u[i] += this.eastAmp[base + i] * f * Math.cos(theta - this.eastPha[base + i] * DEG);
-        v[i] += this.northAmp[base + i] * f * Math.cos(theta - this.northPha[base + i] * DEG);
+        ud[i] += this.eastAmp[base + i] * f * Math.cos(theta - this.eastPha[base + i] * DEG);
+        vd[i] += this.northAmp[base + i] * f * Math.cos(theta - this.northPha[base + i] * DEG);
       }
     }
-    return { u, v };
+    return { u: Float32Array.from(ud), v: Float32Array.from(vd) };
   }
 
-  private cachedGrid(mjd: number): { u: Float64Array; v: Float64Array } {
+  private cachedGrid(mjd: number): { u: Float32Array; v: Float32Array } {
     const bin = this.cacheBinMinutes / 1440;
     const key = Math.round(mjd / bin) * bin;
     const hit = this.cache.get(key);
@@ -154,7 +217,7 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
    * scalar to float32); this port uses double, which differs from the
    * reference by up to ~1e-5 m/s on strong currents.
    */
-  private interp(grid: Float64Array, lon: number, lat: number): number {
+  private interp(grid: Float32Array, lon: number, lat: number): number {
     const nLat = this.lats.length;
     const nLon = this.lons.length;
     const latIdx = (lat - this.lats[0]) / this.latStep;
@@ -199,7 +262,7 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
   }
 
   cacheBytes(): number {
-    const per = this.lats.length * this.lons.length * 8 * 2;
+    const per = this.lats.length * this.lons.length * 4 * 2;
     return per * this.cache.size;
   }
 }

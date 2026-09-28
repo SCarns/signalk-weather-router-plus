@@ -453,7 +453,6 @@ function updateLegends() {
     rows.push(_gradientRow(scaled) + '<div class="lg-note">scaled to the largest tide in view · relative to mean sea level, not chart datum · Copernicus Marine</div>' + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (~9 km)</div>' + _noteRow('tideToggle'));
   }
   if (_on('pressureToggle')) rows.push('<div class="lg-row"><div class="lg-title">Pressure <span>(hPa)</span></div><div class="lg-note">isobars every 4 hPa · bold every 20 · <b style="color:#1565C0">H</b> / <b style="color:#C62828">L</b> centres</div>' + _noteRow('pressureToggle') + '</div>');
-  if (_on('conditionsToggle')) rows.push('<div class="lg-row"><div class="lg-title">Conditions</div><div class="lg-note">dots are forecast sample points · shift-click anywhere for the hourly series</div></div>');
   box.innerHTML = rows.join('');
 }
 // Any layer toggle change (user click, or the saved-state restore that
@@ -899,7 +898,12 @@ function buildRoutePayload(overrides) {
       ? overrides.waypoints
       : waypointCoords.map(c => ({ lat: c[1], lon: c[0] }));
   if (wps && wps.length > 0) {
-    body.waypoints = wps.map(w => ({ lat: w.lat, lon: w.lon, radius_m: w.radius_m != null ? w.radius_m : radiusM }));
+    // Each waypoint ends one leg and starts the next. radius_m only when a
+    // caller supplies one per waypoint; otherwise arrival_radius_m applies.
+    body.waypoints = wps.map(w => (w.radius_m != null ? { lat: w.lat, lon: w.lon, radius_m: w.radius_m } : { lat: w.lat, lon: w.lon }));
+    const precEl = document.getElementById('precision');
+    body.precision = precEl && precEl.value === 'approximate' ? 'approximate' : 'precise';
+    if (Number.isFinite(radiusM)) body.arrival_radius_m = radiusM;
   }
   return body;
 }
@@ -1173,7 +1177,6 @@ function _reloadTimedOverlays() {
   loadSst();
   loadTide();
   loadPressure();
-  loadConditionsLayer();
   if (waveStreamlines.enabled) waveStreamlines._fetchField();
   if (windStreamlines.enabled) windStreamlines._fetchField();
 }
@@ -1762,36 +1765,13 @@ function _renderConditionsPopup() {
   }
 }
 
-// Nearest conditions sample dot (GET /api/conditions-tile) within 60 px
-// of a click, as its properties — the popup's instant "(map)" row. Null
-// when the Conditions layer is off or no dot is near.
-function _nearestConditionsPoint(pixel) {
-  if (!pixel || !conditionsLayer.getVisible()) return null;
-  const feats = map.getFeaturesAtPixel(pixel, {
-    layerFilter: l => l === conditionsLayer, hitTolerance: 60 });
-  if (!feats || !feats.length) return null;
-  const c0 = map.getCoordinateFromPixel(pixel);
-  let best = null, bestD = Infinity;
-  for (const f of feats) {
-    const g = f.getGeometry ? f.getGeometry() : f;
-    const xy = g && g.getFlatCoordinates ? g.getFlatCoordinates() : null;
-    if (!xy) continue;
-    const d = (xy[0] - c0[0]) ** 2 + (xy[1] - c0[1]) ** 2;
-    if (d < bestD) { bestD = d; best = f; }
-  }
-  if (!best) return null;
-  const p = Object.assign({}, best.getProperties());
-  delete p.geometry;
-  return p;
-}
-
 // Open the conditions popup for a map coordinate (shift-click, or
 // "Conditions here" on the click menu). 72 hourly rows from the overlay
 // hour; the plugin clips the series to the forecast's valid range.
 function openConditionsAt(coordinate, pixel) {
   const [lon, lat] = ol.proj.toLonLat(coordinate);
   const hourIso = _overlayTimeIso().slice(0, 13) + ':00:00Z';
-  _cond = { lon, lat, hourIso, instant: _nearestConditionsPoint(pixel), series: null, note: 'Loading forecast…' };
+  _cond = { lon, lat, hourIso, instant: null, series: null, note: 'Loading forecast…' };
   condMarkerFeature.setGeometry(new ol.geom.Point(coordinate));
   _renderConditionsPopup();
   // Centre the map on the clicked spot, then anchor the popup there

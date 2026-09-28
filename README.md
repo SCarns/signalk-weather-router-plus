@@ -27,7 +27,7 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
 | Route job API (REST + Server-Sent Events) | `/plugins/signalk-weather-router-plus/api/…` |
 | OpenAPI | `/plugins/signalk-weather-router-plus/api/openapi.json` |
 | Finished routes | saved to `/signalk/v2/api/resources/routes/{jobId}` (needs a routes provider, e.g. `resources-provider`) |
-| Weather API provider | point forecasts anywhere from the resident global forecast via `/signalk/v2/api/weather/forecasts/point?lat=&lon=`, with `water.level` / `water.levelTendency` (relative to mean sea level) when tides are on |
+| Weather API provider | point forecasts anywhere from the global forecast (read from the decoded run on disk by the data worker) via `/signalk/v2/api/weather/forecasts/point?lat=&lon=`, with `water.level` / `water.levelTendency` (relative to mean sea level) when tides are on |
 | Notifications | `notifications.weatherRouterPlus.{jobId}` on completion or failure |
 | CLI (no Signal K) | `wrp-route` |
 
@@ -38,15 +38,75 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   `swh`, `mwp`, `mwd`. Only those fields are fetched (byte-range
   requests against the published `.index` files, roughly 4.7 MB per
   step instead of 140 MB) and cached on disk under the plugin's data
-  directory. The whole globe is kept in memory at full Float32
+  directory (`ecmwf/`). The whole globe is decoded at full Float32
   precision (exactly the decoded values), so overlays, conditions, the
   Weather API and routing work anywhere: 1440 × 721 cells × 4 B =
   4.15 MB per field per step. A 72 h horizon (25 steps) is 623 MB with
   the six base fields and 1.14 GB with the extra fields (`2t`, `tprate`,
-  `skt`, `2d`, `ptype`). The fields live in SharedArrayBuffers, so the
-  data worker, the main thread and the route worker share that one
-  copy. While a new cycle loads the previous one stays resident, so
-  peak memory during a reload is twice that.
+  `skt`, `2d`, `ptype`).
+
+  **Decoded once per update, kept on disk, read per request.** The
+  decoded forecast is not kept in memory. When a new ECMWF run arrives
+  the data worker decodes it one step at a time into one reusable
+  one-step block (45.7 MB with the extra fields) plus decode buffers
+  (20.8 MB: one global field as Uint32 + Float64 + Float32 + Int32) and
+  writes each step to `forecast/<yyyymmddHH>/` under the
+  plugin data directory: one raw Float32 file per field and step
+  (`<step>-<param>.f32`, rows from the south, 1440 × 721, NaN kept, the
+  exact in-memory layout) and an `index.json` (cycle, steps and valid
+  times, parameters, grid, format version, `complete`). The run is
+  written into a temporary directory, every file fsync'd, and renamed
+  into place only when complete, so a crash never leaves a run that
+  looks complete. It stays there until the next run replaces it
+  (`forecast.keepCycles` applies, as for the GRIB cache). At start-up a
+  complete decoded run of the current cycle is used as it is, without
+  decoding. Each request then reads only what it needs, for as long as
+  it needs it: a map layer reads its view (plus two cells) at the two
+  steps around the map time; the conditions popup, the Weather API and
+  `/api/forecast?lat=&lon=` read a few cells around the point for every
+  step; a route reads its corridor box plus 5° (wind and waves, every
+  step) into one block before it runs and drops it when it ends. Inside
+  what was read every sample is bit for bit the value of the whole
+  global store (the unit tests check map grids, arrows, isobars,
+  conditions, Weather API points and corridor sampling against it).
+  Nothing is cached in the process beyond that: warm reads come from the
+  OS page cache (1–2 ms for a map view, below), so an in-process cache
+  of field-steps was not added.
+
+  Disk: one run of 72 h with the extra fields is 1,142,064,000 B of
+  `.f32` files plus a 3.5 kB `index.json`; with `keepCycles` 2 up to two
+  runs are kept, next to the GRIB cache (212.5 MB for one 72 h cycle
+  with the extra fields). An update writes the run once:
+  1,144,471,552 B written by the plugin process during a forced reload
+  (`/proc/<pid>/io` `write_bytes`). The GRIB cache stays, so a settings
+  change (horizon, extra fields) can decode again without downloading.
+
+  *Measured on a Pi 5 (8 GB, NVMe), 2026-09-28*, the installed build
+  (whole forecast in memory) against this design, same settings (72 h,
+  extra fields, SMOC, RTOFS, tides), the plugin run with a stand-in
+  Signal K app, process RSS sampled every second from `/proc/<pid>/status`:
+
+  | | whole forecast in memory | decoded on disk |
+  |---|---|---|
+  | RSS after start-up, all loads + 60 s | 1644.0 MiB | 533.8 MiB |
+  | peak RSS during a forced forecast reload | 3059.6 MiB | 891.3 MiB |
+  | RSS 60 s after the reload | 1987.3 MiB | 806.3 MiB |
+  | start-up to forecast ready | 64.6 s (decode from the GRIB cache) | 1.3 s (decoded run on disk); 68.6 s when it has to decode |
+  | forced reload (decode from the GRIB cache) | 66.9 s | 69.4 s (includes writing and fsyncing 1.14 GB) |
+
+  Forecast reads from the decoded run (`DecodedRun.window`), cold = page
+  cache dropped first: a map view (10° × 8°, wind, 2 steps) 7.1 ms cold,
+  1.6–1.7 ms warm; the North Atlantic (70° × 40°) 10.5 / 2.1–2.4 ms; the
+  whole world 37.9 / 8.4–9.2 ms (16.6 MB); a point series (11 fields ×
+  25 steps) 34.7 / 25–29 ms; a route corridor (5 fields × 25 steps)
+  108.6–148.4 ms cold, 27–35 ms warm (3.7–7.4 MB). Route jobs Newport
+  RI → Bermuda and → Horta (motor and sail_max) took 196–238 s with the
+  whole forecast in memory and 199–239 s decoded on disk; Lisbon →
+  Palma 3.2–7.2 s and 6.8–12.9 s (the first Lisbon route of the second
+  run downloaded 19.2 MB of SMOC chunks the first run already had on
+  disk). Route areas are released when a route ends, so each route
+  decodes its CMEMS SMOC area again from the disk cache (2.1–3.4 s
+  measured).
 - **Land:** GSHHG shorelines as shapefiles (`GSHHS_f_L1.shp` for full
   resolution; add `GSHHS_f_L6.shp` for Antarctica) or the OSM
   land-polygons export. Overlay land flags use a raster built on demand
@@ -54,11 +114,16 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   sample spacing (a quarter of it, 0.002° to 0.25°, at most 4 M cells),
   from an in-memory index of the shapefile records; the last 8 rasters
   are kept. Conditions `is_land` uses the exact polygons. For routing,
-  land is loaded per route bounding box and rasterised at
+  land is loaded for the box around the route's corridor (see [Global
+  water grid](#global-water-grid)) plus 1° and rasterised at
   the finest resolution that fits the configured cell budget (0.5 m
   arc-seconds to 0.01°). The raster is conservative: cells crossed by a
-  coastline edge count as land. Endpoints and the finished route are
-  checked against the exact polygons.
+  coastline edge count as land (an exact supercover of every edge, so a
+  water cell contains no coastline). Where the corridor passes a passage
+  only a few cells wide, finer patches (down to 0.0005°, about 55 m) are
+  rasterised locally. Endpoints and the finished route are checked
+  against the exact polygons (only samples in land or coastline cells
+  need the polygon test).
 - **Depth:** none in this version. There is no bathymetry gate; a
   vessel's draught only matters through the configured values carried in
   the output.
@@ -99,9 +164,13 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
     cover, the plugin loads that box first: all window steps for a
     route or a conditions series, only the one or two steps around the
     requested hour for a map overlay (from the 1/3° store for zoomed-out
-    views, lattice ≥ 0.25°). On-demand areas are kept in an LRU of
-    256 MB per worker; a single area is capped at half that (a route box
-    too large at 1/12° is loaded at 1/3°). Overlay queries wait at most
+    views, lattice ≥ 0.25°). A single area is capped at 128 MB (a route
+    box too large at 1/12° is loaded at 1/3°). On-demand areas are not
+    kept for long: the route worker releases its route areas when the
+    route ends, and the data worker keeps at most 16 MB of areas loaded
+    for map / conditions queries (least recently used first; measured on
+    a Pi 5 NVMe, 2026-09-28: a map view's area is 0.0–0.2 MB decoded, and
+    decoding one again from the disk cache takes 25–89 ms). Overlay queries wait at most
     60 s; a slower load finishes in the background and serves the next
     request. Without a vessel position nothing is resident and
     everything loads on demand.
@@ -210,8 +279,8 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   mid-step). A resident area around the vessel (± `tides.halfWidth`,
   default 15°) over now → `tides.horizon` (default 24 h), its start
   aligned to 6 h so it is rebuilt four times a day; views elsewhere load
-  their hour on demand (1/3° grid for zoomed-out views), LRU under
-  128 MB. Measured at 15° around Newport: 368 × 368 cells × 31 hourly
+  their hour on demand (1/3° grid for zoomed-out views); at most 16 MB
+  of those on-demand hours are kept between queries. Measured at 15° around Newport: 368 × 368 cells × 31 hourly
   steps, 16.8 MB in memory, 62 timeChunked chunks = 39.9 MB downloaded
   in 3.5 s (about 1.3 MB per hour of window; a new daily run re-downloads
   it). One on-demand hour: 0.74 MB (1/12°, Sydney) or 0.53 MB (1/3°,
@@ -238,6 +307,11 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   the map does the direct action (start, then destination, then extend
   the course). Drag any pin to move it. Holding on a computed route pins
   that point as a waypoint.
+- **Waypoint behaviour** (Setup tab): **Precision** Precise (each leg
+  ends exactly at its waypoint) or Approximate (a leg ends on entering
+  the circle around the waypoint and the next leg starts there), and
+  **Waypoint radius** 50–2000 m, default 200 (Approximate only). See
+  [Waypoints](#waypoints-legs).
 - **Layers** (Base / Weather / Water): each layer is named for the
   quantity it shows. Colour layers are exclusive (one at a time) and are
   cut at the coastline with a screen-resolution land mask from
@@ -261,26 +335,174 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
 ## Routing engine
 
 A port of the routePlanning `OceanPropagator` (subsector isochrone,
-Hagiwara 1989 / Chen & Mao 2024):
+Hagiwara 1989 / Chen & Mao 2024), guided by a corridor from a global
+water grid:
 
-1. A coarse A* on a raster of the land mask produces a land-avoiding
-   skeleton; each stage aims its heading sweep at the next skeleton point.
-2. From each retained parent, 2m+1 candidate headings are projected one
-   stage step ahead; candidates whose great-circle leg touches land are
+1. **Corridor.** A* on the [global water grid](#global-water-grid) finds
+   a land-avoiding corridor from the start to the end of each leg (see
+   [Waypoints](#waypoints-legs)), wherever the water path goes (Lisbon → Palma goes south through
+   the Strait of Gibraltar, far outside the box around the endpoints).
+   The route's land raster, the CMEMS SMOC area loaded for the route and
+   the first-boot forecast crop cover the corridor's box plus 1°.
+2. **Consistency with the route raster.** A flood fill on the route's
+   (conservative) land raster, inside a band of grid cells along the
+   corridor, must connect start and end. Where it stops, because the
+   raster's resolution closes a passage the grid keeps open, the raster
+   is refined locally (a finer patch, down to 0.0005°) and the fill
+   repeated. A passage still closed at 0.0005° is not navigable for this
+   router: its grid cells are blocked and A* runs again (up to 12 times).
+   Narrow stretches of the corridor (a passage under 10 raster cells
+   wide) are refined the same way so the isochrones have room, and
+   stretches under 8 km wide are re-traced on the route raster (a fine
+   A* kept to mid-channel), because the grid's 2 km cells cannot place
+   the skeleton inside a 700 m strait.
+3. **Isochrones.** From each retained parent, 2m+1 candidate headings
+   are projected one stage step ahead, aimed at the corridor point one
+   step ahead; candidates whose great-circle leg touches land are
    dropped; survivors are timed by a leg simulator that samples wind and
    the polar every `simStepM` metres (mode policy `sail_max`, `fastest`
-   or `motor`).
-3. Candidates are binned by cross-track offset into 2k subsectors and
-   the cheapest per bin is kept.
-4. Vias are soft pass-through discs; a branch must cross each disc in
-   order before it may finish.
+   or `motor`). Candidates are binned by cross-track offset into 2k
+   subsectors and the cheapest per bin is kept.
+4. **Narrow passages.** The corridor carries the across-track water
+   width at every point. A parent's step never jumps past a point where
+   the passage is narrower than a quarter of the step: it may step up to
+   that point, and inside the passage it steps at most 4 × the local
+   width (not below 1 km); the stage budget grows by the stages this
+   costs. Inside a stretch narrower than one subsector bin, candidates
+   are binned across the passage (6 bins over its width) instead of by
+   the start → end offset, so several branches get through a strait
+   (in the test runs Madeira → Cartagena kept 8–12 branches through
+   Gibraltar, where it used to get down to 1).
+5. **Automatic vias.** Where the corridor crosses a narrow passage the
+   grid build recorded (below) that is narrower than one stage step, a
+   soft via (a pass-through disc of radius half the width + 500 m, at
+   least 1 km) is placed at its narrowest point, so every branch is
+   pulled through the passage instead of drifting against the coast
+   beside it. Progress messages name them ("auto via at Strait of
+   Gibraltar, width 14.2 km"); the GeoJSON lists them in the
+   `auto_vias` property and the job summary in `auto_vias`. They are not
+   route waypoints and never carry `role: "via"`.
+6. **Finish.** The search stops when a branch that crossed every
+   automatic via is within one (local) stage step of the leg's end with a
+   land-free straight final leg (or, for an approximate waypoint, as soon
+   as a branch is inside the waypoint's circle); the terminal is chosen
+   among those with a clear final leg. If the planned stages run out
+   first, up to K/2 more run.
+
+### Waypoints (legs)
+
+A waypoint is an end point and a start point by another name: it ends
+one leg and starts the next (port of the routePlanning
+`compute_multi_leg_route`). Each leg is routed as its own route, with its
+own corridor, land raster, isochrone search (K stages per leg) and
+retries, departing at the previous leg's arrival time so wind, current
+and waves move on with the boat. The legs are then stitched: the
+duplicate junction point is dropped, distances and sailing/motoring
+times are summed, and the junction point of each waypoint carries
+`role: "via"` in the GeoJSON (automatic vias stay in `auto_vias` and are
+never `role: "via"`). Progress messages are prefixed `leg 2/4: …`.
+
+`precision` decides where an intermediate leg ends:
+
+- **`precise`** (default): exactly on the waypoint (a straight final leg
+  from the last stage to the point, checked against land and simulated
+  like the final leg to the destination).
+- **`approximate`**: as soon as the route enters the waypoint's circle
+  (`arrival_radius_m`, default 200 m, or the waypoint's own `radius_m`):
+  the leg stops when a branch is inside the circle; if the search instead
+  stops within one stage step of the waypoint (the reference's fallback),
+  the straight final leg goes only as far as the circle. The next leg
+  starts where the route entered the circle.
+
+The final destination is always exact. Routes without waypoints are one
+leg, unchanged. Where this differs from the reference: its next leg
+starts from the canonical waypoint and the stitch trims the points inside
+the circle; here the next leg starts at the circle entry, so the track is
+continuous. The reference's merging of consecutive approximate ocean legs
+into one search with via discs is not ported (that single search with
+discs is what failed on routes with waypoints before).
+
+The forecast area and the CMEMS SMOC area are read per leg (the leg's
+corridor box plus the margin) and released after the leg; everything is
+released when the route ends. On brain (Pi 5) one area for all legs took
+the same time (Baja, 4 legs: 11.9 / 12.0 s against 11.5 / 11.8 s per leg)
+and held more forecast (3.0 MB against at most 2.0 MB per leg) and SMOC
+(2.5 MB against at most 0.9 MB).
 
 One deliberate difference from the reference: the stage budget is sized
-to the skeleton length, not the straight-line distance, so detours around
+to the corridor length, not the straight-line distance, so detours around
 land fit within the configured number of stages.
 
 If a route arrives after the last forecast step, conditions are held at
 the last step and the GeoJSON carries `forecast_horizon_exceeded_s`.
+
+### Global water grid
+
+`data/water-grid-0.02.bin.gz` (shipped, 1.49 MB) is a navigability graph
+of the whole world at 0.02° (18000 × 9000 cells), built from GSHHG full
+resolution L1 (`GSHHS_f_L1.shp`):
+
+- **Water and edges.** The coastline is rasterised at 0.005° (4 × 4 fine
+  cells per grid cell) in 10° tiles with a 1.2° halo, so edges on tile
+  borders and across the antimeridian see the neighbouring tile. A fine
+  cell is water when its centre is outside every polygon. Per grid cell
+  the file stores a water bit and two edge bits (east, north). An edge is
+  open when a 4-connected path of fine water cells inside the two cells
+  crosses it, i.e. when some fine row (or column) has water on both
+  sides. A plain "any water in the cell" rule closed the Bosphorus (a
+  one-cell thread crossing cells corner to corner); the edge rule keeps
+  it open. Diagonal fine contacts do not count: on the conservative
+  raster the Bosphorus is closed even with diagonal connectivity, while
+  centre sampling with 4-connectivity keeps it open and keeps every
+  isthmus in the checks below closed.
+- **Split cells.** Where a cell's fine water forms two components that
+  both touch its border (the two shores of a spit or isthmus thinner
+  than a cell), the grid stores the component of each border fine cell
+  and which fine rows cross to each neighbour (57 759 cells worldwide),
+  and the search follows components through them. Without this the grid
+  leaked across such strips.
+- **Moves.** A* moves to the four neighbours through open edges, and
+  diagonally only where both L-shaped paths through the two side cells
+  are open (never through a split cell), so a diagonal never cuts a land
+  corner. Cost is distance times a coast penalty (up to 1.4× next to
+  land, fading out 4 cells off), with a heuristic weight of 1.1 (corridor
+  cost at most 10 % above optimal; measured +0.3 %). The search window
+  grows from the legs' box until the path is found (at most 12 M cells,
+  about 84 MB while it runs) and wraps round the antimeridian.
+- **Narrow passages.** Per grid cell the build takes the largest
+  distance to land of its fine water cells (the clearance) and runs a
+  merge tree in local windows (2° cores, 1° margin): cells are added
+  from the widest water down, and a cell that joins two basins whose
+  widest water is at least 1.5× its own clearance (and 500 m wider, and
+  basins at least 2 km wide) is a passage's narrowest point. Windows are
+  local on purpose: Messina joins the Tyrrhenian and the Ionian, which
+  also connect round Sicily. 4987 passages up to 40 km wide are stored
+  with position, width and channel axis; names come from a table of
+  well-known straits.
+- **Canals.** Known ship canals (Corinth, Cape Cod, Chesapeake and
+  Delaware, Kiel, Suez, Panama) are stored as the edges their cut lines
+  cross, closed unless **Allow canals** is on. With GSHHG none of them is
+  open water at 0.005° (Cape Cod and Corinth only look open when a test
+  box lets the water go round the cape or the Peloponnese); three edges
+  near the Panama Canal's approaches are recorded, but the canal is
+  closed anyway. The setting matters with coastline data that includes
+  canals (e.g. OSM land polygons).
+- **Memory and loading.** The route worker loads it once (about 20 ms
+  to decompress, into one buffer): 62.9 MB of arrays (three 20.25 MB bit
+  planes, 1.3 MB of split cells, the passage list) plus 2.3 MB of lookup
+  maps; measured process RSS +73 MB. The data worker does not load it.
+- **Rebuilding.** The file records the shapefiles it was built from
+  (name, size, modification time and a SHA-256 of the size and the first
+  and last MiB). When the configured `landShapefiles` differ (another
+  GSHHG resolution, L6 Antarctica added, OSM land polygons), the route
+  worker keeps routing with the shipped grid and rebuilds a matching one
+  in a background thread into the plugin data directory, then switches
+  to it. A rebuild needs about 400 MB while it runs (checked against
+  "memory kept free" first) and took 74–79 s for GSHHG full L1 and 47 s for
+  GSHHG high on an Apple M3; not measured on a Raspberry Pi 5 (expect
+  several minutes). To rebuild the shipped file:
+  `npm run build:water-grid -- --land /path/GSHHS_f_L1.shp`;
+  `npm run check:water-grid` runs the connectivity checks.
 
 ## Install
 
@@ -328,18 +550,26 @@ the selected display units. Saving needs a `readwrite` login.
 | `forecast` | horizon (72 h = 259200 s, 3–240 h), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
-| `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), finished routes kept (50) | applies to the next route |
+| `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), allow canals (off), finished routes kept (50) | applies to the next route |
 | `publish` | save to the Resources API (on), route name prefix (`WRP`), notifications (on) | applies to the next route |
 
-**Memory guard.** Before a forecast load or reload, the plugin compares
-the new store's exact size (fields × steps × 4.15 MB) with the memory
-available now: Linux `MemAvailable`, bounded by a cgroup (container)
-limit, or reclaimable pages from `vm_stat` on macOS. It loads only if
-"memory kept free" remains afterwards. Otherwise it does not load; the
-Signal K plugin status and the page's status line say how much is needed
-and available and what would fit (extra fields off, a shorter horizon, a
-lower setting), and a running forecast keeps serving. A settings change
-that would not fit is rejected before it is saved.
+**Resource guard.** The decoded forecast is on disk, so the guard
+checks what actually needs memory. Before a forecast update: the
+streaming decoder's one-step block and buffers (66 MB with the extra
+fields) against the memory available now (Linux `MemAvailable`, bounded
+by a cgroup (container) limit, or reclaimable pages from `vm_stat` on
+macOS), leaving "memory kept free"; and the decoded run's exact size
+(fields × steps × 4.15 MB) against the free disk space, leaving 1 GB.
+Before a route: its corridor store (area × 5 fields × steps × 4 B)
+against available memory. If something does not fit, it does not run;
+the Signal K plugin status and the page's status line say how much is
+needed and available and what would fit (extra fields off, a shorter
+horizon, a lower setting, free disk space), and the run in use keeps
+serving. A settings change that would not fit is rejected before it is
+saved. The global water grid
+(about 65 MB in the route worker) is loaded at start-up, so it is already
+counted as used; a water grid rebuild is checked the same way before it
+starts.
 
 `PUT` takes only the keys to change, e.g. `{"vessel": {"draught": 1.9}}`,
 validates all of them (same ranges and enums as before), and either saves
@@ -361,7 +591,9 @@ POST /plugins/signalk-weather-router-plus/api/routes
 {
   "start": {"lat": 41.44, "lon": -71.36},
   "end":   {"lat": 32.42, "lon": -64.58},
-  "waypoints": [{"lat": 41.13, "lon": -71.53, "radius_m": 1000}],
+  "waypoints": [{"lat": 41.13, "lon": -71.53}],
+  "precision": "precise",
+  "arrival_radius_m": 200,
   "departure": "2026-09-28T12:00:00Z",
   "mode": "sail_max",
   "name": "Newport to Bermuda",
@@ -369,6 +601,15 @@ POST /plugins/signalk-weather-router-plus/api/routes
 }
 → 202 {"id": "…", "status": "queued", "links": {…}}
 ```
+
+`waypoints` (at most 20) end one leg each ([Waypoints](#waypoints-legs)).
+`precision` is `"precise"` (default: each leg ends exactly on its
+waypoint) or `"approximate"` (a leg ends on entering the waypoint's
+circle). `arrival_radius_m` is that circle in metres (default 200,
+0..5000, must be > 0 with `"approximate"`); a waypoint's own `radius_m`
+(0..5000) overrides it for that waypoint. Both are ignored in precise
+mode and for the destination, which is always exact. The job summary of
+a route with waypoints carries `legs` and `precision`.
 
 `vessel.polar` is a token from `GET …/api/polars`. A file name such as
 `a_boat.pol` resolves only inside the configured `polarsDir`. Use
@@ -386,12 +627,6 @@ server, writes `<polarsDir>/user/<slug>.csv` in its CSV layout and returns
 the empirical VPP cannot model. In the webapp, use "Create polar from
 boat specs…" under the polar picker.
 
-`GET …/api/conditions-tile/{z}/{x}/{y}?t=` returns the conditions fields
-(the same names and units as `/api/conditions` rows) at the wind-barb
-sample points of one XYZ tile for the hour `t`, with land points dropped.
-Tiles below zoom 5 are empty. The webapp draws them as the Conditions dot
-layer (Layers → Weather).
-
 ```
 
 GET  …/api/routes/{id}          status, progress, summary
@@ -400,7 +635,7 @@ GET  …/api/routes/{id}/result   GeoJSON FeatureCollection (LineString + one Po
 GET  …/api/routes/{id}/signalk  Signal K route record
 POST …/api/routes/{id}/cancel
 POST …/api/routes/{id}/publish
-GET  …/api/forecast?lat=&lon=   resident forecast metadata and a time series at a position
+GET  …/api/forecast?lat=&lon=   forecast metadata and a time series at a position (every step)
 GET  …/api/settings             web-app settings {values, schema} (SI)
 PUT  …/api/settings             change some settings (readwrite)
 GET  …/api/polars               polar library: the configured default + every .pol/.csv in the polars directory
@@ -414,10 +649,10 @@ GET  …/api/currents?bbox=&time=&res=          current arrow points
 GET  …/api/pressure?bbox=&time=&interval=     isobars + H/L as GeoJSON
 GET  …/api/conditions?lon=&lat=&from=&hours=  72-hour conditions series at a point, with tide_m / water_level_m / surge_m /
                                               tide_extrapolated / tide_tendency per row and `tides` {highs, lows, range_m, …}
-GET  …/api/conditions-tile/{z}/{x}/{y}?t=YYYY-MM-DDTHH   conditions sample points for one map tile at one hour
 GET  …/api/land-mask?bbox=&w=&h=               land mask at screen resolution: gzip bytes, one per pixel (1 = land), row 0 north
-POST …/api/forecast/refresh
-GET  …/api/status
+POST …/api/forecast/refresh      check for a new cycle (?force=true decodes the current one again from the GRIB cache)
+GET  …/api/status               forecast: decoded run (decoded_dir, decoded_bytes, decoded_disk_bytes, grib_cache_bytes, source disk|grib,
+                                last_decode) and memory actually held (memory.data_worker_held_bytes, route_worker_held_bytes, …); process_rss_bytes
 ```
 
 All values are in Signal K SI units: metres, m/s, Pa, K, seconds, degrees
@@ -439,9 +674,47 @@ wrp-route --start 41.44,-71.36 --end 32.42,-64.58 \
   --mode sail_max --hours 72 --cache ./ecmwf-cache -o route.geojson
 ```
 
-`--no-forecast` routes with calm wind; `--via "lat,lon@radius_m;…"` adds pass-through discs.
+`--no-forecast` routes with calm wind; `--via "lat,lon[@radius_m];…"` adds
+waypoints (each ends a leg), `--precision precise|approximate` (default
+precise) and `--radius <m>` (approximate circle, default 200; `@radius_m`
+overrides it per waypoint).
+The corridor uses `data/water-grid-0.02.bin.gz` (or a rebuilt grid matching
+`--land`); `--water-grid <file>` picks another, `--no-water-grid` uses the old
+per-route skeleton, `--allow-canals` opens the known canals.
 
 ## Verification
+
+- Water grid: `npm run check:water-grid` floods the grid between point
+  pairs inside tight boxes (so going round an island or peninsula does
+  not count). Open: Gibraltar, Messina, Bonifacio, Dover, Dardanelles,
+  Bosphorus, Øresund, Bab-el-Mandeb, Hormuz, Singapore, Magellan, Kerch.
+  Closed with canals blocked (and still closed with canals allowed, since
+  GSHHG has no canal water): Corinth, Cape Cod, Panama, Suez, Kra, Kiel,
+  Chesapeake and Delaware, Perekop. `src/geo/watergrid.test.ts` and
+  `src/engine/corridor.test.ts` cover the edge rule (a one-cell staircase
+  thread, a diagonal-only contact, one-sided slivers), split cells, tile
+  border and antimeridian edges (a synthetic shapefile built with the
+  real builder), A* (walls, blocked cells, corner cutting, antimeridian
+  wrap), the chokepoint merge tree, canal blocking, local refinement and
+  re-routing round a passage closed on the route raster.
+- Routes (CLI, GSHHG full, Apple M3). Motor, no forecast:
+
+  | Route | Distance | Waypoints | Duration | Corridor A* | Total | Auto vias |
+  |---|---|---|---|---|---|---|
+  | Lisbon → Palma | 742.2 nm | 23 | 123.7 h | 155 ms | 0.9 s | Gibraltar |
+  | Madeira → Cartagena | 846.7 nm | 22 | 141.1 h | 233 ms | 1.0 s | Gibraltar |
+  | Cape St Vincent → Alboran | 357.8 nm | 21 | 59.6 h | 78 ms | 0.6 s | Gibraltar |
+  | Aegean (39.45 N 25.0 E) → Black Sea | 311.5 nm | 35 | 51.9 h | 63 ms | 1.0 s | Dardanelles ×4, Bosphorus |
+  | Tyrrhenian → Ionian | 180.9 nm | 22 | 30.1 h | 75 ms | 0.7 s | Messina |
+  | Newport RI → Horta | 1955.7 nm | 26 | 326.0 h | 150 ms | 1.5 s | unnamed passage 41.47 N 70.02 W (17.2 km, east of Nantucket Sound) |
+  | Singapore Strait (1.5 N 103 E → 1.5 N 105 E) | 127.0 nm | 21 | 21.2 h | 43 ms | 0.6 s | Singapore Strait |
+  | Lisbon → Helsinki | 2176.3 nm | 38 | 362.7 h | 1550 ms | 4.8 s | Dover; 57.42 N 11.46 E (Kattegat); Øresund; 59.76 N 24.44 E (Gulf of Finland) |
+
+  `sail_max` with the ECMWF 2026-09-28 00z forecast (72 h, Catalina 36
+  polar): Lisbon → Palma 782.7 nm, 220.1 h; Madeira → Cartagena
+  886.1 nm, 226.8 h; Aegean → Black Sea 313.8 nm, 52.3 h; Tyrrhenian →
+  Ionian 193.0 nm, 55.9 h; Newport → Horta 2044.4 nm, 419.8 h. Every
+  route above has 0 legs crossing land in the exact polygon check.
 
 - `npm test` runs the unit tests. The GRIB2/CCSDS decoder is checked
   against eccodes output stored in `test-data/` (full-array hash).
@@ -481,12 +754,19 @@ wrp-route --start 41.44,-71.36 --end 32.42,-64.58 \
 
 - Open water only. A start or end inside a narrow harbour can fail with
   "stage 1 has no live waypoints"; start from the harbour approach.
-- The route search covers the rectangle around the start, end and
-  waypoints plus 1°. A route whose only water path lies outside it fails
-  (e.g. Lisbon to Palma: the Strait of Gibraltar is south of that box);
-  add a waypoint in the passage. On very long routes the stage length
-  (route length / stages) can exceed a strait's width and leave few
-  surviving branches; more stages or a waypoint helps.
+- Passages narrower than about 150 m (three 55 m cells of the finest
+  local raster) are not navigable for the router; the corridor goes round
+  them, or the route fails with a message naming the place when there is
+  no way round. Corridors are searched on 0.02° cells: water enclosed at
+  that resolution with no open water within 10 km cannot be reached.
+- The corridor's box (plus 1°) may be at most 120° × 90°, and one leg's
+  grid search at most 12 M cells (about 69° × 69°); longer routes need
+  intermediate waypoints.
+- Automatic vias fix the passage the corridor chose (e.g. Messina rather
+  than round Sicily). If a sailing route would rather take another
+  passage, set a waypoint in it.
+- Canals are closed unless allowed, and with GSHHG none of the listed
+  canals is open water anyway.
 - No depth data.
 - SMOC areas are loaded whole-chunk: a box outside the resident area
   costs its chunks' download (see the measured sizes above), cached for

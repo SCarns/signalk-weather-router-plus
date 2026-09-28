@@ -352,6 +352,11 @@ export class TideSource {
     return this.set.memoryBytes() + this.pointBytes();
   }
 
+  /** Drop least recently used on-demand areas down to `maxBytes` (0: all); returns the bytes released. */
+  trimOnDemand(maxBytes: number): number {
+    return this.set.trimOnDemand(maxBytes);
+  }
+
   /**
    * Hourly tide, water level and surge at (lat, lon) from `fromMs` to
    * `toMs` (inclusive, rounded outwards to whole hours, clipped to the

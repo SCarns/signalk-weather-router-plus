@@ -2,8 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ForecastStore, type FieldGrid } from '../data/forecast';
 import type { OverlayLand } from '../geo/landcache';
-import { conditionsTilePoints, globalGridLonLats, sampleConditions, tileLatLonBounds, type OverlaySources } from './overlays';
-import { parseHourT } from './api';
+import { sampleConditions, type OverlaySources } from './overlays';
 
 // Reference grids from the routing server's routing/routers/_tile.py
 // (tile_latlon_bounds + global_grid_lonlats at res = max(0.02, 0.8/2^(z-6))),
@@ -20,47 +19,6 @@ function store(): ForecastStore {
   const steps = [0, 3].map((h) => ({ validMs: t0 + h * 3600_000, stepHours: h, fields: new Map([['10u', c(3)], ['10v', c(-4)], ['msl', c(101500)]]) }));
   return new ForecastStore(steps, { cycleTime: new Date(t0), bbox: { west: -90, south: 30, east: -51, north: 59 }, steps: [0, 3], params: ['10u', '10v', 'msl'], loadedAt: new Date() });
 }
-
-test('tile bounds and sample grid match the routing server', () => {
-  for (const [k, ref] of Object.entries(PY_TILES)) {
-    const [z, x, y] = k.split('/').map(Number);
-    const b = tileLatLonBounds(z, x, y);
-    for (let i = 0; i < 4; i++) assert.ok(Math.abs(b[i] - ref.bounds[i]) < 1e-12, `${k} bound ${i}`);
-    const g = globalGridLonLats(b[0], b[1], b[2], b[3], Math.max(0.02, 0.8 / 2 ** (z - 6)));
-    assert.deepEqual(g.lons.map((v) => Math.round(v * 1e5) / 1e5), ref.lons, k);
-    assert.deepEqual(g.lats.map((v) => Math.round(v * 1e5) / 1e5), ref.lats, k);
-  }
-});
-
-test('conditionsTilePoints: one point per sample, ConditionsRow names, land dropped, empty below z5', () => {
-  const t = new Date(Date.UTC(2026, 0, 1, 1));
-  const lookup = { isLand: (lon: number, _lat: number) => lon < -71.0 };
-  const land: OverlayLand = { forBBox: () => lookup, isLandAt: lookup.isLand };
-  const src: OverlaySources = { forecast: store(), currents: null, land };
-  const pts = conditionsTilePoints(src, 8, 77, 94, t);
-  // 7 lons x 5 lats, minus the lons west of -71.0 (-71.6, -71.4, -71.2) -> 4 x 5.
-  assert.equal(pts.length, 20);
-  assert.deepEqual([...new Set(pts.map((p) => p.lon))], [-71.0, -70.8, -70.6, -70.4]);
-  assert.deepEqual([...new Set(pts.map((p) => p.lat))], [42.2, 42.4, 42.6, 42.8, 43.0]);
-  const p = pts[0];
-  assert.equal(p.wind_ms, 5);
-  assert.equal(p.msl_pa, 101500);
-  assert.ok('rh' in p && 'precip_rate_ms' in p && !('rh_pct' in p) && !('tprate_kg_m2_s' in p) && !('time' in p));
-  const { time: _t, ...row } = sampleConditions(src, p.lon, p.lat, t);
-  assert.deepEqual({ ...p, lon: undefined, lat: undefined }, { ...row, lon: undefined, lat: undefined });
-  assert.deepEqual(conditionsTilePoints(src, 4, 4, 5, t), []);
-  assert.throws(() => conditionsTilePoints(src, 8, 256, 94, t), /out of range/);
-  assert.throws(() => conditionsTilePoints({ forecast: null, currents: null, land: null }, 8, 77, 94, t), /no forecast data loaded/);
-});
-
-test('parseHourT follows round_t_to_hour', () => {
-  assert.equal(parseHourT('2026-01-01T05').toISOString(), '2026-01-01T05:00:00.000Z');
-  assert.equal(parseHourT('2026-01-01T05:00:00Z').toISOString(), '2026-01-01T05:00:00.000Z');
-  assert.throws(() => parseHourT('2026-01-01T05:30'), /minute=30/);
-  assert.throws(() => parseHourT('2026-01-01T05:00:07Z'), /second=07/);
-  assert.throws(() => parseHourT(''), /t is required/);
-  assert.throws(() => parseHourT('2026-13-01T05'), /Bad t/);
-});
 
 test('forecast-derived layers report no data outside a cropped (non-global) store', async () => {
   const { ForecastStore } = await import('../data/forecast');

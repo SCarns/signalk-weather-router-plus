@@ -1,29 +1,44 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkForecastMemory, forecastBytes, FIELD_STEP_BYTES, availableMemory } from './memguard';
+import { checkDecodeResources, checkRouteForecastMemory, forecastBytes, FIELD_STEP_BYTES, availableMemory, DISK_RESERVE_BYTES } from './memguard';
+import { streamingDecodeBytes } from '../data/loader';
 
 const NOW = new Date('2026-09-28T00:30:00Z'); // 00z cycle: oper stream, 3-hourly to 144 h
 
-test('forecastBytes is steps × fields × one global grid', () => {
+test('forecastBytes (a decoded run on disk) is steps × fields × one global grid', () => {
   assert.equal(FIELD_STEP_BYTES, 4_152_960);
   assert.equal(forecastBytes(72, false, NOW), 25 * 6 * FIELD_STEP_BYTES);   // 622,944,000
   assert.equal(forecastBytes(72, true, NOW), 25 * 11 * FIELD_STEP_BYTES);   // 1,142,064,000 (matches the measured store)
 });
 
-test('check passes with room, refuses and suggests what fits', () => {
+test('update check: memory for one decode step, disk for the decoded run', () => {
   const GB = 1e9;
-  const ok = checkForecastMemory(72, true, GB, { bytes: 5 * GB, source: 'test' }, NOW);
+  // One step with the extra fields: 11 global Float32 fields + decode buffers (12 B/cell) + wave fill temporaries (8 B/cell).
+  assert.equal(streamingDecodeBytes(11), 1440 * 721 * (11 * 4 + 12 + 8));
+  const ok = checkDecodeResources(72, true, GB, null, { bytes: 2 * GB, source: 'test' }, 10 * GB, NOW);
   assert.equal(ok.ok, true);
-  // 2 GB available, 1 GB headroom: 1.14 GB does not fit; extra fields off (0.62 GB) does.
-  const tight = checkForecastMemory(72, true, GB, { bytes: 2 * GB, source: 'test' }, NOW);
-  assert.equal(tight.ok, false);
-  assert.match(tight.message, /not enough memory/);
-  assert.match(tight.message, /turn off the extra fields/);
-  // 1.5 GB available: 72 h base (0.62) +1 GB = 1.62 no; 48 h base = 17×6×4.15 = 0.42 GB fits.
-  const tighter = checkForecastMemory(72, true, GB, { bytes: 1.5 * GB, source: 'test' }, NOW);
-  assert.equal(tighter.ok, false);
-  assert.match(tighter.message, /48 h/);
-  assert.match(tighter.message, /headroom/);
+  assert.equal(ok.needBytes, streamingDecodeBytes(11));
+  // Memory: one step fits where the old whole store (1.14 GB + 1 GB headroom) did not.
+  assert.equal(checkDecodeResources(72, true, GB, null, { bytes: GB + streamingDecodeBytes(11), source: 'test' }, 10 * GB, NOW).ok, true);
+  const noMem = checkDecodeResources(72, true, GB, null, { bytes: GB + streamingDecodeBytes(11) - 1, source: 'test' }, 10 * GB, NOW);
+  assert.equal(noMem.ok, false);
+  assert.match(noMem.message, /not enough memory/);
+  // Disk: 1.14 GB run + 1 GB reserve.
+  const run = forecastBytes(72, true, NOW);
+  assert.equal(checkDecodeResources(72, true, GB, null, { bytes: 5 * GB, source: 'test' }, run + DISK_RESERVE_BYTES, NOW).ok, true);
+  const noDisk = checkDecodeResources(72, true, GB, null, { bytes: 5 * GB, source: 'test' }, run + DISK_RESERVE_BYTES - 1, NOW);
+  assert.equal(noDisk.ok, false);
+  assert.match(noDisk.message, /not enough disk space/);
+  assert.match(noDisk.message, /turn off the extra fields/);
+  // Unknown free disk space does not block.
+  assert.equal(checkDecodeResources(72, true, GB, null, { bytes: 5 * GB, source: 'test' }, null, NOW).ok, true);
+});
+
+test('route check: the corridor store must fit with the headroom', () => {
+  assert.equal(checkRouteForecastMemory(100e6, 1e9, { bytes: 1.1e9, source: 'test' }).ok, true);
+  const no = checkRouteForecastMemory(100e6, 1e9, { bytes: 1.1e9 - 1, source: 'test' });
+  assert.equal(no.ok, false);
+  assert.match(no.message, /route's forecast area/);
 });
 
 test('availableMemory returns a positive figure and its source', () => {
@@ -37,4 +52,13 @@ test('parseVmStat sums free, inactive, speculative and purgeable pages', async (
   const text = 'Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                3785.\nPages active:                            188296.\nPages inactive:                          187679.\nPages speculative:                          245.\nPages throttled:                              0.\nPages wired down:                        203849.\nPages purgeable:                              2.\n';
   assert.equal(parseVmStat(text), (3785 + 187679 + 245 + 2) * 16384);
   assert.equal(parseVmStat('nonsense'), null);
+});
+
+test('water grid rebuild memory check', async () => {
+  const { checkWaterGridBuildMemory, WATER_GRID_BUILD_BYTES } = await import('./memguard');
+  const ok = checkWaterGridBuildMemory(1e9, { bytes: WATER_GRID_BUILD_BYTES + 1e9, source: 'test' });
+  assert.equal(ok.ok, true);
+  const no = checkWaterGridBuildMemory(1e9, { bytes: WATER_GRID_BUILD_BYTES + 1e9 - 1, source: 'test' });
+  assert.equal(no.ok, false);
+  assert.match(no.message, /not enough memory to rebuild the water grid/);
 });

@@ -59,6 +59,8 @@ export interface Route {
   currentSources?: string[];
   /** Coarse A* skeleton that guided the heading sweep, when one was found. */
   skeleton?: { lon: number; lat: number }[];
+  /** Automatic vias the router placed at narrow passages (not waypoints). */
+  autoVias?: { lon: number; lat: number; radiusM: number; widthM: number; name: string }[];
 }
 
 export function skeletonToGeoJSON(route: Route): Record<string, unknown> | null {
@@ -138,6 +140,9 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
     smoother_drops: 0,
   };
   if (route.forecastCycle) props.forecast_cycle = route.forecastCycle;
+  if (route.autoVias && route.autoVias.length) {
+    props.auto_vias = route.autoVias.map((v) => ({ name: v.name, lat: round(v.lat, 6), lon: round(v.lon, 6), width_m: Math.round(v.widthM), radius_m: Math.round(v.radiusM) }));
+  }
   if (route.forecastHorizonExceededS && route.forecastHorizonExceededS > 0) {
     props.forecast_horizon_exceeded_s = round(route.forecastHorizonExceededS, 0);
     props.forecast_horizon_note =

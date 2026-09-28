@@ -5,7 +5,7 @@
  *   GET  /api/status                plugin, forecast, currents and queue status
  *   GET  /api/settings              web-app settings {values, schema} (SI)
  *   PUT  /api/settings              partial update → validated, saved, applied live
- *   GET  /api/forecast              resident forecast metadata (+ series at ?lat=&lon=)
+ *   GET  /api/forecast              forecast metadata (+ series at ?lat=&lon=)
  *   POST /api/forecast/refresh      re-check ECMWF / NOMADS
  *   GET  /api/polars                polar library (default + polarsDir)
  *   GET  /api/polar-angles?path=    best VMG angles per TWS
@@ -17,7 +17,6 @@
  *   GET  /api/currents?bbox=&time=&res=         current arrow points (dir_deg TO)
  *   GET  /api/pressure?bbox=&time=&interval=    isobars + H/L GeoJSON
  *   GET  /api/conditions?lon=&lat=&from=&hours=&step_h=   point series (+ tide fields and high/low waters)
- *   GET  /api/conditions-tile/:z/:x/:y?t=   current-hour conditions sample points for one XYZ tile
  *   POST /api/routes                submit a route job → 202 {id, status, links}
  *   GET  /api/routes                list jobs
  *   GET  /api/routes/:id            job status
@@ -46,13 +45,14 @@ import { buildLegends } from './legends';
 import { listPolars, loadPolarCached, PolarNotFoundError, polarAngles, polarFromSpecs, polarTable, resolvePolarPath } from './polars';
 import type { BBox } from '../geo/geodesy';
 import { SettingsValidationError, type AppSettings, type SettingsGroup, type SettingSpec } from './settings';
+import { validateLegOptions } from '../engine/multileg';
 
 export interface ApiDeps {
   pluginId: string;
   basePath: string;
   jobs: JobManager;
   status: () => Record<string, unknown>;
-  forecastInfo: (lat?: number, lon?: number) => Record<string, unknown>;
+  forecastInfo: (lat?: number, lon?: number) => Promise<Record<string, unknown>>;
   refreshForecast: (force: boolean) => void;
   cancelRunning: (id: string) => void;
   publish: (id: string) => Promise<string>;
@@ -85,23 +85,7 @@ function parseTime(s: unknown): Date {
   return d;
 }
 
-const HOUR_RE = /^(\d{4}-\d{2}-\d{2}T\d{2})(?::([0-5]\d))?(?::([0-5]\d))?Z?$/;
 
-/**
- * Hour-truncated UTC ISO time, `YYYY-MM-DDTHH[:MM[:SS]][Z]` with zero
- * minutes and seconds (the routing server's `round_t_to_hour`).
- */
-export function parseHourT(s: unknown): Date {
-  const t = typeof s === 'string' ? s : '';
-  if (!t) throw new Error('t is required');
-  const m = HOUR_RE.exec(t);
-  if (!m) throw new Error(`t must be hour-truncated ISO (YYYY-MM-DDTHH[:00[:00]][Z]); got '${t}'`);
-  if (m[2] !== undefined && Number(m[2]) !== 0) throw new Error(`t must be truncated to the hour; got minute=${m[2]}`);
-  if (m[3] !== undefined && Number(m[3]) !== 0) throw new Error(`t must be truncated to the hour; got second=${m[3]}`);
-  const d = new Date(`${m[1]}:00:00Z`);
-  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 13) !== m[1]) throw new Error(`Bad t: ${t}`);
-  return d;
-}
 
 function num(s: unknown, def: number, min: number, max: number, name: string): number {
   if (s === undefined || s === '') return def;
@@ -185,7 +169,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     }
   });
 
-  ro.get('/api/forecast', (req: Request, res: Response) => {
+  ro.get('/api/forecast', async (req: Request, res: Response) => {
     const lat = req.query.lat !== undefined ? Number(req.query.lat) : undefined;
     const lon = req.query.lon !== undefined ? Number(req.query.lon) : undefined;
     if ((lat !== undefined && !Number.isFinite(lat)) || (lon !== undefined && !Number.isFinite(lon))) {
@@ -193,7 +177,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       return;
     }
     try {
-      json(res, 200, deps.forecastInfo(lat, lon));
+      json(res, 200, await deps.forecastInfo(lat, lon));
     } catch (err) {
       fail(res, err);
     }
@@ -342,47 +326,6 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       json(res, 200, out);
     } catch (err) {
       fail(res, err);
-    }
-  });
-
-  // Conditions sample tile: every ConditionsRow field at the wind-barb
-  // sample positions of one XYZ tile for hour `t`, land points dropped.
-  // `/api/conditions-tile/{z}/{x}/{y}` (a `.json` suffix on y is accepted).
-  ro.get('/api/conditions-tile/:z/:x/:y', async (req: Request, res: Response) => {
-    const zs = String(req.params.z);
-    const xs = String(req.params.x);
-    const ym = /^(\d+)(?:\.json)?$/.exec(String(req.params.y));
-    if (!/^\d+$/.test(zs) || !/^\d+$/.test(xs) || !ym) {
-      json(res, 404, { error: 'tile not found' });
-      return;
-    }
-    const z = Number(zs);
-    const x = Number(xs);
-    const y = Number(ym[1]);
-    let t: Date;
-    try {
-      t = parseHourT(req.query.t);
-    } catch (err) {
-      fail(res, err);
-      return;
-    }
-    if (z < 5) {
-      cacheHeaders(res, t);
-      json(res, 200, []);
-      return;
-    }
-    const n = 2 ** z;
-    if (z > 30 || x >= n || y >= n) {
-      json(res, 404, { error: 'tile not found' });
-      return;
-    }
-    try {
-      const out = await deps.query('conditions_tile', { z, x, y, timeMs: t.getTime() });
-      cacheHeaders(res, t);
-      json(res, 200, out);
-    } catch (err) {
-      const msg = (err as Error).message;
-      fail(res, err, /no forecast data loaded/.test(msg) ? 503 : 500);
     }
   });
 
@@ -554,6 +497,8 @@ function validateRequestShape(b: RouteRequest): string | null {
     if (!Array.isArray(b.waypoints) || !b.waypoints.every(isPt)) return 'waypoints must be an array of {lat, lon}';
     if (b.waypoints.length > 20) return 'at most 20 waypoints';
   }
+  const legErr = validateLegOptions(b.precision, b.arrival_radius_m, b.waypoints);
+  if (legErr) return legErr;
   if (b.mode !== undefined && !['sail_max', 'fastest', 'motor'].includes(b.mode)) return 'mode must be sail_max, fastest or motor';
   if (b.departure !== undefined && b.departure !== '' && Number.isNaN(Date.parse(b.departure))) return 'departure must be ISO 8601';
   if (b.stages !== undefined && (typeof b.stages !== 'number' || b.stages < 4 || b.stages > 200)) return 'stages must be 4..200';

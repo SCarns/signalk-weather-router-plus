@@ -295,6 +295,11 @@ export class SmocCurrentSource implements CurrentSourceLike {
     return this.set.onDemandBytes();
   }
 
+  /** Drop least recently used on-demand areas down to `maxBytes` (0: all); returns the bytes released. */
+  trimOnDemand(maxBytes: number): number {
+    return this.set.trimOnDemand(maxBytes);
+  }
+
   /**
    * Make `bbox` × `steps` resident (on demand); see ArcoAreaSet.ensure.
    * A coarse overlay view (lattice ≥ 1/4°) may take the 1/3° level.

@@ -779,7 +779,7 @@ document.getElementById('polarSelect').addEventListener('change', function() {
 // labels update to match.
 (function() {
   const PERSIST_IDS = [
-    'mode', 'sailThresh', 'tackPenalty', 'stages', 'underKeelClearance', 'arrivalRadiusM',
+    'mode', 'sailThresh', 'tackPenalty', 'stages', 'underKeelClearance', 'arrivalRadiusM', 'precision',
     'publishSel', 'proximityRadiusM', 'xteThresholdM', 'xteSustainSec',
   ];
   const CHECK_IDS = ['noCurrents', 'noForecast'];
@@ -822,7 +822,7 @@ document.getElementById('polarSelect').addEventListener('change', function() {
 (function() {
   const LAYER_IDS = [
     'osmToggle', 'seamarkToggle', 'vesselToggle',
-    'currentToggle', 'windToggle', 'windCombinedToggle', 'currentHeatmapToggle', 'roughnessToggle', 'wavesCombinedToggle', 'precipToggle', 'temperatureToggle', 'sstToggle', 'tideToggle', 'pressureToggle', 'conditionsToggle',
+    'currentToggle', 'windToggle', 'windCombinedToggle', 'currentHeatmapToggle', 'roughnessToggle', 'wavesCombinedToggle', 'precipToggle', 'temperatureToggle', 'sstToggle', 'tideToggle', 'pressureToggle',
   ];
   const KEY = (id) => 'layer:' + id;
   for (const id of LAYER_IDS) {
@@ -1022,7 +1022,8 @@ function loadPluginStatus() {
         const f = s.forecast;
         fi.innerHTML = f
           ? 'Cycle <b>' + f.cycle + '</b><br>valid ' + f.valid_from + ' → ' + f.valid_to + '<br>coverage ' + (f.coverage || 'global')
-            + (typeof f.resident_bytes === 'number' ? ', ' + (f.resident_bytes / 1e6).toFixed(0) + ' MB resident' : '')
+            + (typeof f.decoded_bytes === 'number' ? ', ' + (f.decoded_bytes / 1e6).toFixed(0) + ' MB decoded on disk' : '')
+            + (f.memory ? ', ' + ((f.memory.data_worker_held_bytes + f.memory.route_worker_held_bytes) / 1e6).toFixed(1) + ' MB in memory now' : '')
             + '<br>params: ' + (f.params || []).join(', ') + (s.extra_fields ? '' : '<br><span style="color:var(--warn)">extra fields (temperature, precipitation, SST, humidity) are off in Settings</span>')
             + (s.rtofs_run ? '<br>RTOFS run ' + s.rtofs_run : '')
             + (s.vessel ? '<br>vessel ' + (s.vessel.name || '—') + ', motor ' + (fmtSpeed(s.vessel.motorSpeedMs) || '—') : '')

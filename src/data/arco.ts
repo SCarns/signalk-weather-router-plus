@@ -1080,6 +1080,28 @@ export class ArcoAreaSet<A extends ArcoArea> {
     this.rev++;
   }
 
+  /**
+   * Drop least recently used on-demand areas until they hold at most
+   * `maxBytes` (0 drops them all). The data worker trims to a small set
+   * after each query; the route worker drops its route areas when the
+   * route ends. Returns the bytes released.
+   */
+  trimOnDemand(maxBytes: number): number {
+    let total = this.onDemandBytes();
+    let released = 0;
+    while (total > maxBytes && this.lru.length > 0) {
+      const gone = this.lru.pop()!;
+      const b = arcoAreaBytes(gone);
+      total -= b;
+      released += b;
+    }
+    if (released > 0) {
+      this.rev++;
+      this.log(`${this.opts.tag}: released ${(released / 1e6).toFixed(1)} MB of on-demand areas (kept ${(total / 1e6).toFixed(1)} MB)`);
+    }
+    return released;
+  }
+
   /** Drop on-demand areas whose steps all lie before `nowMs − grace` (they can no longer answer). */
   expire(nowMs: number): void {
     const before = this.lru.length;

@@ -8,8 +8,9 @@
  * avoidance, vessel polars, isochrone propagation. Two worker threads:
  * `data` (forecast, currents, overlay queries) and `route` (engine).
  * Routes are exposed through the plugin's REST/SSE API, saved to the
- * Resources API, and the resident forecast is offered through the
- * Weather API.
+ * Resources API, and the forecast is offered through the Weather API.
+ * The decoded forecast lives on disk (data/decoded.ts); this thread holds
+ * none of it: forecast reads happen in the workers.
  */
 
 import * as path from 'node:path';
@@ -17,15 +18,16 @@ import { Worker } from 'node:worker_threads';
 import type { IRouter } from 'express';
 import { CONFIG_SCHEMA, resolveConfig, type LegacyPluginConfig, type PluginConfig, type ResolvedConfig } from './plugin/config';
 import { mergeSettings, reloadsFor, settingsSchema, SettingsStore, SettingsValidationError } from './plugin/settings';
-import { checkForecastMemory } from './plugin/memguard';
+import { checkDecodeResources } from './plugin/memguard';
 import { JobManager, type Job } from './plugin/jobs';
 import { registerApi } from './plugin/api';
 import { openApiDocument } from './plugin/openapi';
-import { makeWeatherProvider } from './plugin/weather';
-import type { DataStatus, MainToWorker, QueryArgs, QueryKind, TideSeriesResult, VesselPosition, WorkerRole, WorkerToMain } from './plugin/protocol';
+import { makeWeatherProvider, startMsOf, type WeatherData } from './plugin/weather';
+import type {
+  DataStatus, ForecastMemory, ForecastRunInfo, MainToWorker, QueryArgs, QueryKind, TideSeriesResult, VesselPosition, WorkerRole, WorkerToMain,
+} from './plugin/protocol';
 import type { SerializedSmoc } from './currents/smoc';
-import { ForecastStore, type SerializedForecast } from './data/forecast';
-import { releaseMemory } from './util/gc';
+import type { SerializedHarmonic } from './currents/harmonic';
 
 const PLUGIN_ID = 'signalk-weather-router-plus';
 const BASE_PATH = `/plugins/${PLUGIN_ID}`;
@@ -70,12 +72,14 @@ export = function plugin(app: SkApp): SignalKPlugin {
   };
   let cancelFlag: Int32Array | null = null;
   let jobs: JobManager | null = null;
-  /** The data worker's global forecast: shared memory, the same arrays the workers read. */
-  let forecast: ForecastStore | null = null;
-  /** Its serialized form, relayed to the route worker (and a restarted data worker) without copying. */
-  let forecastShared: SerializedForecast | null = null;
+  /** The decoded run in use (where it is on disk and its index), relayed to the route worker. */
+  let forecastRun: ForecastRunInfo | null = null;
+  /** Forecast memory the route worker holds (its corridor store while a route runs). */
+  let routeForecastMemory: ForecastMemory | null = null;
   /** The data worker's CMEMS SMOC run + resident area (shared memory), relayed to the route worker. */
   let smocShared: SerializedSmoc | null = null;
+  /** The data worker's tidal-harmonic sources (shared constituent blocks), relayed to the route worker. */
+  let harmonicShared: SerializedHarmonic[] | null = null;
   /** Raw Signal K plugin options from start(). */
   let pluginOptions: PluginConfig | undefined;
   let settings: SettingsStore | null = null;
@@ -141,10 +145,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
 
   function updateStatus(): void {
     if (stopped) return;
-    if (forecast) {
-      const b = forecast.validRange[1];
+    if (forecastRun) {
+      const ix = forecastRun.index;
+      const b = new Date(ix.steps[ix.steps.length - 1].validMs);
       const cur = dataStatus?.currents.length ? `, currents ${dataStatus.currents.map((c) => c.name).join('/')}` : ', no currents';
-      app.setPluginStatus(`global forecast ${forecast.meta.cycleTime.toISOString().slice(0, 13)}Z to ${b.toISOString().slice(0, 13)}Z (${forecast.steps.length} steps, ${(forecast.bytes() / 1e6).toFixed(0)} MB)${cur}; ${jobsSummary()}${forecastError ? `; reload refused: ${forecastError}` : ''}`);
+      app.setPluginStatus(`global forecast ${new Date(ix.cycleTimeMs).toISOString().slice(0, 13)}Z to ${b.toISOString().slice(0, 13)}Z (${ix.steps.length} steps, ${(ix.bytes / 1e6).toFixed(0)} MB decoded on disk)${cur}; ${jobsSummary()}${forecastError ? `; reload refused: ${forecastError}` : ''}`);
     } else if (forecastError) {
       app.setPluginError(`forecast unavailable: ${forecastError}`);
     } else {
@@ -185,10 +190,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'ready':
         workers[role].ready = true;
         log(`${role} worker ready`);
-        // A (re)started worker adopts the resident forecast straight away
-        // (shared memory); the data worker then finds it current.
-        if (forecastShared) post(role, { type: 'forecast', forecast: forecastShared });
+        // A (re)started route worker learns where the decoded run is.
+        if (role === 'route' && forecastRun) post('route', { type: 'forecast', run: forecastRun });
         if (role === 'route' && smocShared) post('route', { type: 'smoc', smoc: smocShared });
+        if (role === 'route' && harmonicShared) post('route', { type: 'harmonic', sources: harmonicShared });
         if (role === 'data' && pendingRefresh) {
           const f = pendingRefresh.force;
           pendingRefresh = null;
@@ -202,23 +207,20 @@ export = function plugin(app: SkApp): SignalKPlugin {
         return;
       case 'forecast':
         if (role !== 'data') return;
-        // Wraps the data worker's SharedArrayBuffers: no second copy.
-        forecast = ForecastStore.deserialize(msg.forecast);
-        forecastShared = msg.forecast;
+        forecastRun = msg.run;
         forecastError = null;
         if (failedRefreshTimer) {
           clearTimeout(failedRefreshTimer);
           failedRefreshTimer = null;
         }
         registerWeather();
-        // Relay to the route worker: structured clone of SharedArrayBuffer
-        // views shares the memory, so all three threads read one copy.
-        post('route', { type: 'forecast', forecast: msg.forecast });
-        // Drop this thread's hold on the previous store now rather than at
-        // some later major GC (see util/gc.ts).
-        releaseMemory();
-        log(`forecast ${forecast.meta.cycleTime.toISOString().slice(0, 13)}Z adopted: ${(forecast.bytes() / 1e6).toFixed(1)} MB ${forecast.shared ? 'shared with both workers' : 'copied'}`);
+        // The route worker reads route areas from the same run on disk.
+        post('route', { type: 'forecast', run: msg.run });
+        log(`forecast ${new Date(msg.run.index.cycleTimeMs).toISOString().slice(0, 13)}Z ready: decoded run ${msg.run.dir} (${(msg.run.index.bytes / 1e6).toFixed(1)} MB on disk; nothing resident)`);
         updateStatus();
+        return;
+      case 'forecast-memory':
+        if (role === 'route') routeForecastMemory = msg.memory;
         return;
       case 'forecast-unchanged':
         if (role === 'data') updateStatus();
@@ -226,7 +228,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'refresh-error':
         if (role !== 'data') return;
         forecastError = msg.message;
-        app.error(`forecast refresh failed: ${msg.message}${forecast ? ' (keeping the resident forecast)' : ''}`);
+        app.error(`forecast refresh failed: ${msg.message}${forecastRun ? ' (keeping the decoded run in use)' : ''}`);
         if (!failedRefreshTimer) {
           failedRefreshTimer = setTimeout(() => {
             failedRefreshTimer = null;
@@ -246,6 +248,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
             currentsKey = key;
             if (!first || msg.rtofsRun) post('route', { type: 'refresh', force: false });
           }
+        }
+        return;
+      case 'harmonic':
+        if (role === 'data') {
+          // Shared constituent blocks: the route worker adopts the same memory.
+          harmonicShared = msg.sources;
+          post('route', { type: 'harmonic', sources: msg.sources });
         }
         return;
       case 'smoc':
@@ -335,8 +344,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
             post(role, { type: 'init', role, config, cacheDir: app.getDataDirPath() });
             if (role === 'data') requestRefresh(false);
             else {
-              if (forecastShared) post('route', { type: 'forecast', forecast: forecastShared });
+              if (forecastRun) post('route', { type: 'forecast', run: forecastRun });
               if (smocShared) post('route', { type: 'smoc', smoc: smocShared });
+              if (harmonicShared) post('route', { type: 'harmonic', sources: harmonicShared });
             }
           }
         }, 5000);
@@ -356,7 +366,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (!config?.tides.enabled) return null;
         return await query('tide_series', { lat, lon, fromMs, hours }) as TideSeriesResult;
       };
-      app.registerWeatherProvider(makeWeatherProvider(() => forecast, PLUGIN_ID, tideSeries, (m) => log(m)));
+      // Point forecasts are read by the data worker from the decoded run (this thread holds no forecast).
+      const points = async (position: { latitude: number; longitude: number }, options?: { startDate?: string; maxCount?: number }): Promise<WeatherData[]> => {
+        if (!forecastRun) throw new Error('no forecast loaded yet');
+        return await query('weather_point', { lat: position.latitude, lon: position.longitude, startMs: startMsOf(options), maxCount: options?.maxCount ?? null }) as WeatherData[];
+      };
+      app.registerWeatherProvider(makeWeatherProvider(points, PLUGIN_ID, tideSeries, (m) => log(m)));
       weatherRegistered = true;
       log('registered as a Weather API provider');
     } catch (err) {
@@ -437,8 +452,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
     }
     jobs?.failRunning('plugin stopped');
     jobs = null;
-    forecast = null;
-    forecastShared = null;
+    forecastRun = null;
+    routeForecastMemory = null;
     smocShared = null;
     routeCurrents = null;
     currentsKey = '';
@@ -459,13 +474,32 @@ export = function plugin(app: SkApp): SignalKPlugin {
         plugin: PLUGIN_ID,
         started: !stopped,
         workers: { data: workers.data.ready, route: workers.route.ready },
-        forecast: forecast
+        forecast: forecastRun
           ? {
-            cycle: forecast.meta.cycleTime.toISOString(), valid_from: forecast.validRange[0].toISOString(), valid_to: forecast.validRange[1].toISOString(),
-            steps: forecast.steps.length, params: forecast.meta.params, coverage: forecast.global ? 'global' : 'bbox', resident_bytes: forecast.bytes(),
-            shared: forecast.shared, loaded_at: forecast.meta.loadedAt.toISOString(), has_waves: forecast.hasWaves,
+            cycle: new Date(forecastRun.index.cycleTimeMs).toISOString(),
+            valid_from: new Date(forecastRun.index.steps[0].validMs).toISOString(),
+            valid_to: new Date(forecastRun.index.steps[forecastRun.index.steps.length - 1].validMs).toISOString(),
+            steps: forecastRun.index.steps.length, params: forecastRun.index.request.params, coverage: 'global',
+            storage: 'decoded-on-disk',
+            loaded_at: new Date(forecastRun.loadedAtMs).toISOString(),
+            has_waves: dataStatus?.forecast?.hasWaves ?? forecastRun.index.steps.every((s) => ['swh', 'mwp', 'mwd'].every((p) => s.params.includes(p))),
+            // 'disk': a complete decoded run was found on disk (no decode); 'grib': decoded from the GRIB cache / download.
+            source: forecastRun.source, ready_ms: forecastRun.readyMs, fields_downloaded: forecastRun.downloaded,
+            decoded_dir: forecastRun.dir, decoded_bytes: forecastRun.index.bytes, decoded_at: forecastRun.index.decodedAt, decode_ms: forecastRun.index.decodeMs,
+            decoded_disk_bytes: dataStatus?.forecast?.decodedDiskBytes ?? null,
+            grib_cache_bytes: dataStatus?.forecast?.gribCacheBytes ?? null,
+            last_decode: dataStatus?.lastDecode ?? null,
+            memory: {
+              // Forecast memory actually held now; the decoded run itself is never resident.
+              data_worker_held_bytes: dataStatus?.forecastMemory.heldBytes ?? 0,
+              data_worker_largest_recent_window: dataStatus?.forecastMemory.last ?? null,
+              route_worker_held_bytes: routeForecastMemory?.heldBytes ?? 0,
+              route_worker_largest_recent_window: routeForecastMemory?.last ?? null,
+              decoding_block_bytes: dataStatus?.decodingBlockBytes ?? null,
+            },
           }
           : null,
+        process_rss_bytes: process.memoryUsage().rss,
         forecast_error: forecastError,
         currents: dataStatus?.currents ?? [],
         currents_route_worker: routeCurrents ?? [],
@@ -482,22 +516,15 @@ export = function plugin(app: SkApp): SignalKPlugin {
         harmonic_dir: config?.currents.harmonicDir,
         extra_fields: config?.forecast.extraFields,
       }),
-      forecastInfo: (lat, lon) => {
-        if (!forecast) throw new Error(forecastError ? `forecast unavailable: ${forecastError}` : 'forecast not loaded yet');
+      forecastInfo: async (lat, lon) => {
+        if (!forecastRun) throw new Error(forecastError ? `forecast unavailable: ${forecastError}` : 'forecast not loaded yet');
+        const ix = forecastRun.index;
         const out: Record<string, unknown> = {
-          cycle: forecast.meta.cycleTime.toISOString(), valid_from: forecast.validRange[0].toISOString(), valid_to: forecast.validRange[1].toISOString(),
-          steps: forecast.meta.steps, params: forecast.meta.params, coverage: forecast.global ? 'global' : 'bbox',
+          cycle: new Date(ix.cycleTimeMs).toISOString(), valid_from: new Date(ix.steps[0].validMs).toISOString(),
+          valid_to: new Date(ix.steps[ix.steps.length - 1].validMs).toISOString(),
+          steps: ix.stepHours, params: ix.request.params, coverage: 'global',
         };
-        if (lat !== undefined && lon !== undefined) {
-          if (!forecast.covers(lon, lat)) throw new Error('position outside the resident forecast');
-          out.samples = forecast.steps.map((s) => {
-            const t = new Date(s.validMs);
-            const [ws, wd] = forecast!.at(lon, lat, t);
-            const wave = forecast!.wavesAt(lon, lat, t);
-            const msl = forecast!.mslAt(lon, lat, t);
-            return { time: t.toISOString(), wind_ms: ws, wind_dir_deg: wd, msl_pa: Number.isFinite(msl) ? msl : null, swh_m: wave?.swh ?? null, mwp_s: wave?.mwp ?? null, mwd_deg: wave?.mwd ?? null };
-          });
-        }
+        if (lat !== undefined && lon !== undefined) out.samples = await query('forecast_info', { lat, lon });
         return out;
       },
       refreshForecast: (force) => requestRefresh(force),
@@ -514,12 +541,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
       },
       updateSettings: (partial: unknown) => {
         if (!settings || stopped) throw new Error('plugin not started');
-        // Memory guard: refuse a forecast change the device cannot hold,
-        // before saving, so the running forecast and settings stay as they are.
+        // Resource guard: refuse a forecast change the device cannot do
+        // (memory for one decode step, disk for the decoded run), before
+        // saving, so the running forecast and settings stay as they are.
         const prospective = mergeSettings(settings.values, partial);
         if (prospective.changed.some((k) => k === 'forecast.horizon' || k === 'forecast.extraFields' || k === 'forecast.memoryHeadroom')) {
           const f = prospective.values.forecast;
-          const mem = checkForecastMemory(f.horizon / 3600, f.extraFields, f.memoryHeadroom);
+          const mem = checkDecodeResources(f.horizon / 3600, f.extraFields, f.memoryHeadroom, app.getDataDirPath());
           if (!mem.ok) {
             const key = prospective.changed.find((k) => k.startsWith('forecast.')) ?? 'forecast.horizon';
             throw new SettingsValidationError({ [key]: mem.message });

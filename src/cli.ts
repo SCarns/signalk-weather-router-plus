@@ -9,6 +9,14 @@
  *       --departure 2026-09-28T12:00:00Z -o route.geojson
  *
  * `--no-forecast` runs with calm wind (motor timing only).
+ * Waypoints: `--via "lat,lon[@radius_m];lat,lon"`; each waypoint ends one
+ * leg and starts the next. `--precision precise|approximate` (default
+ * precise: each leg ends exactly on its waypoint; approximate: on entering
+ * its circle), `--radius <m>` the circle (default 200; @radius overrides
+ * it per waypoint).
+ * The corridor comes from the global water grid (data/water-grid-0.02.bin.gz
+ * by default; `--water-grid <file>` for another, `--no-water-grid` for the
+ * old per-route skeleton); `--allow-canals` opens known canals.
  */
 
 import * as fs from 'node:fs';
@@ -17,7 +25,11 @@ import { EcmwfClient, ECMWF_MIRRORS } from './data/ecmwf';
 import { bboxFromLonLat } from './geo/geodesy';
 import { LandMask } from './geo/landmask';
 import { OceanPropagator } from './engine/propagator';
-import { routeToGeoJSON } from './engine/route';
+import { routeMultiLeg, validateLegOptions, type LegPlan, type Precision, type Stop } from './engine/multileg';
+import { CorridorError, mergeVias, planCorridor, type Corridor } from './engine/corridor';
+import { WaterGrid } from './geo/watergrid';
+import { chooseWaterGrid } from './geo/watergrid_store';
+import { routeToGeoJSON, type Route } from './engine/route';
 import type { ModePolicy } from './engine/legsim';
 import { PolarDiagram } from './vessel/polar';
 import { makeVessel } from './vessel/vessel';
@@ -55,54 +67,118 @@ async function main(): Promise<void> {
   const stages = Number(arg('stages', '20'));
   const motorKts = Number(arg('motor-kts', '6'));
   const viasArg = arg('via');
-  const vias = viasArg
+  const vias: Stop[] | undefined = viasArg
     ? viasArg.split(';').map((v) => {
       const [ll, r] = v.split('@');
       const [lon, lat] = parseLatLon(ll, '--via');
-      return { lon, lat, radiusM: Number(r ?? '500') };
+      return r !== undefined ? { lon, lat, radiusM: Number(r) } : { lon, lat };
     })
     : undefined;
 
   const log = (m: string): void => console.log(m);
-  const pts = [start, end, ...(vias ?? []).map((v) => [v.lon, v.lat] as [number, number])];
-  const bbox = bboxFromLonLat(pts.map((p) => p[0]), pts.map((p) => p[1]), 1.0);
-  log(`bbox W${bbox.west.toFixed(2)} S${bbox.south.toFixed(2)} E${bbox.east.toFixed(2)} N${bbox.north.toFixed(2)}`);
-
+  const tAll = Date.now();
+  const precisionArg = arg('precision', 'precise');
+  if (precisionArg !== 'precise' && precisionArg !== 'approximate') throw new Error('--precision must be precise or approximate');
+  const precision: Precision = precisionArg;
+  const radiusArg = arg('radius');
+  const arrivalRadiusM = radiusArg !== undefined ? Number(radiusArg) : undefined;
+  const legErr = validateLegOptions(precision, arrivalRadiusM, (vias ?? []).map((v) => ({ radius_m: v.radiusM })));
+  if (legErr) throw new Error(legErr);
+  const stops: Stop[] = [{ lon: start[0], lat: start[1] }, ...(vias ?? []), { lon: end[0], lat: end[1] }];
+  const multi = stops.length > 2;
   let t = Date.now();
-  const res = LandMask.chooseResolution(bbox);
-  const lm = LandMask.fromShapefiles(land, bbox, { resolutionDeg: res });
-  log(`land mask: ${lm.shapes.length} polygons, ${lm.nx}x${lm.ny} cells at ${res}°, ${Date.now() - t} ms`);
+  let grid: WaterGrid | null = null;
+  if (!flag('no-water-grid')) {
+    const gridArg = arg('water-grid');
+    if (gridArg) {
+      grid = WaterGrid.load(gridArg);
+      log(`water grid: ${gridArg}, built ${grid.header.builtAt} from ${grid.header.sources.map((s) => s.name).join(', ')}`);
+    } else {
+      const choice = chooseWaterGrid(land, null);
+      grid = choice.grid;
+      for (const n of choice.notes) log(`water grid: ${n}`);
+      if (!grid) log('water grid: none available; using the per-route skeleton (build one with npm run build:water-grid)');
+    }
+    if (grid) {
+      grid.setCanalsAllowed(flag('allow-canals'));
+      log(`water grid: loaded in ${Date.now() - t} ms, ${(grid.bytes() / 1e6).toFixed(1)} MB resident, canals ${flag('allow-canals') ? 'allowed' : 'blocked'}`);
+    }
+  }
+  const landFor = (b: ReturnType<typeof bboxFromLonLat>): LandMask => {
+    const t1 = Date.now();
+    const r = LandMask.chooseResolution(b);
+    const m = LandMask.fromShapefiles(land, b, { resolutionDeg: r });
+    log(`land mask: box W${b.west.toFixed(2)} S${b.south.toFixed(2)} E${b.east.toFixed(2)} N${b.north.toFixed(2)}, ${m.shapes.length} polygons, ${m.nx}x${m.ny} cells at ${r}°, ${Date.now() - t1} ms`);
+    return m;
+  };
 
   const polar = polarPath ? PolarDiagram.load(polarPath) : null;
   const vessel = makeVessel({ motorSpeedMs: motorKts * 1852 / 3600 });
+  const client = flag('no-forecast') ? null : new EcmwfClient({ cacheDir, baseUrl: arg('mirror') ? ECMWF_MIRRORS[arg('mirror')!] ?? arg('mirror') : undefined, log: (m) => log(`  ecmwf: ${m}`) });
+  const cycle = client ? (await resolveCycle(client, hours, { log: (m) => log(`  forecast: ${m}`) })).cycle : null;
+  let cycleLabel: string | undefined;
 
-  let wind;
-  if (!flag('no-forecast')) {
-    t = Date.now();
-    const client = new EcmwfClient({ cacheDir, baseUrl: arg('mirror') ? ECMWF_MIRRORS[arg('mirror')!] ?? arg('mirror') : undefined, log: (m) => log(`  ecmwf: ${m}`) });
-    const resolved = await resolveCycle(client, hours, { log: (m) => log(`  forecast: ${m}`) });
-    wind = await loadForecastForBBox(client, bbox, { horizonHours: hours, cycle: resolved.cycle, log: (m) => log(`  forecast: ${m}`) });
-    log(`forecast: ${wind.steps.length} steps, ${(wind.bytes() / 1024).toFixed(0)} kB resident, ${Date.now() - t} ms`);
-  }
-
-  const prop = new OceanPropagator(lm, { stages });
-  t = Date.now();
-  const route = prop.computeRoute({
-    start, end, departureTime: departure, vessel, polar, wind, modePolicy: mode, vias,
-    onProgress: (s, K, msg) => log(`  [${s}/${K}] ${msg}`),
-  });
-  if (wind) {
-    route.forecastCycle = wind.meta.cycleTime.toISOString();
-    const lastValid = wind.validRange[1].getTime();
-    const arrival = route.waypoints[route.waypoints.length - 1].time.getTime();
-    if (arrival > lastValid) {
-      route.forecastHorizonExceededS = (arrival - lastValid) / 1000;
-      log(`WARNING: arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`);
+  // Waypoints are leg ends (engine/multileg.ts); each leg is its own route.
+  const runLeg = async (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> => {
+    const tag = multi ? `leg ${plan.index + 1}/${plan.count} ` : '';
+    const chain: [number, number][] = [legStart, plan.end];
+    let corridor: Corridor | null = null;
+    if (grid) {
+      t = Date.now();
+      try {
+        corridor = planCorridor(grid, chain, { landFor, stages, onProgress: (m) => log(`  ${tag}corridor: ${m}`) });
+        const st = corridor.stats;
+        log(`${tag}corridor: ${(corridor.lengthM / 1000).toFixed(1)} km, A* ${st.astarMs} ms (${st.expanded} cells expanded, window ≤ ${st.windowCells} cells), verify ${st.verifyMs} ms, ${st.refines} refinement(s), ${st.reroutes} re-route(s), total ${Date.now() - t} ms`);
+        for (const v of corridor.autoVias) log(`${tag}corridor: auto via at ${v.name}, width ${(v.widthM / 1000).toFixed(1)} km (${v.lat.toFixed(4)}, ${v.lon.toFixed(4)}, radius ${(v.radiusM / 1000).toFixed(1)} km)`);
+      } catch (err) {
+        if (!(err instanceof CorridorError) || err.fatal) throw err;
+        log(`WARNING: ${tag}corridor failed (${err.message}); falling back to the per-route skeleton`);
+        corridor = null;
+      }
     }
-  }
+    let lm: LandMask;
+    let bbox;
+    if (corridor) {
+      lm = corridor.land;
+      bbox = corridor.bbox;
+    } else {
+      bbox = bboxFromLonLat(chain.map((p) => p[0]), chain.map((p) => p[1]), 1.0);
+      lm = landFor(bbox);
+    }
+    log(`${tag}bbox W${bbox.west.toFixed(2)} S${bbox.south.toFixed(2)} E${bbox.east.toFixed(2)} N${bbox.north.toFixed(2)}`);
+
+    let wind;
+    if (client && cycle) {
+      t = Date.now();
+      wind = await loadForecastForBBox(client, bbox, { horizonHours: hours, cycle, log: (m) => log(`  forecast: ${m}`) });
+      log(`${tag}forecast: ${wind.steps.length} steps, ${(wind.bytes() / 1024).toFixed(0)} kB resident, ${Date.now() - t} ms`);
+      cycleLabel = wind.meta.cycleTime.toISOString();
+    }
+
+    const prop = new OceanPropagator(lm, { stages });
+    const autoVias = corridor ? mergeVias([], corridor.autoVias) : [];
+    const r = prop.computeRoute({
+      start: legStart, end: plan.end, departureTime: legDeparture, vessel, polar, wind, modePolicy: mode, vias: autoVias.length ? autoVias : undefined,
+      corridor: corridor ? { skeleton: corridor.skeleton, widthM: corridor.widthM } : undefined,
+      arrivalRadiusM: plan.arrivalRadiusM, snapToExact: plan.snapToExact,
+      onProgress: (s, K, msg) => log(`  ${tag}[${s}/${K}] ${msg}`),
+    });
+    if (wind) {
+      const lastValid = wind.validRange[1].getTime();
+      const arrival = r.waypoints[r.waypoints.length - 1].time.getTime();
+      if (arrival > lastValid) {
+        r.forecastHorizonExceededS = (arrival - lastValid) / 1000;
+        log(`WARNING: ${tag}arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`);
+      }
+    }
+    return r;
+  };
+  t = Date.now();
+  const route = await routeMultiLeg({ stops, departureTime: departure, precision, arrivalRadiusM, runLeg, onProgress: log });
+  if (cycleLabel) route.forecastCycle = cycleLabel;
   log(`route: ${route.waypoints.length} waypoints, ${(route.totalDistanceM / 1852).toFixed(1)} nm, ${(route.totalTimeS / 3600).toFixed(1)} h (sail ${(route.sailingTimeS / 3600).toFixed(1)} h, motor ${(route.motoringTimeS / 3600).toFixed(1)} h), warnings ${route.warnings?.length ?? 0}, ${Date.now() - t} ms`);
   fs.writeFileSync(out, JSON.stringify(routeToGeoJSON(route), null, 1));
-  log(`wrote ${out}`);
+  log(`wrote ${out}; total ${((Date.now() - tAll) / 1000).toFixed(1)} s`);
 }
 
 main().catch((err) => {

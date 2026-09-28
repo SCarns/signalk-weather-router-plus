@@ -680,14 +680,25 @@
   </div>
   </details>
 
-  <!-- Waypoint behaviour: pass-through radius. -->
+  <!-- Waypoint behaviour: precision + radius (as routePlanning's route-planner.html). -->
   <details class="subsection">
   <summary>Waypoint behaviour</summary>
   <div class="subsection-body">
 
-  <label>Waypoint radius: <span id="arrivalRadiusMLabel">500</span> <span class="unitOf" data-for="arrivalRadiusMLabel"></span></label>
-  <div class="ctl-hint">Pass-through disc around each intermediate waypoint — the track must cross it. Final destination is always exact.</div>
-  <input type="range" id="arrivalRadiusM" min="50" max="2000" step="50" value="500" aria-label="Waypoint pass-through radius in metres">
+  <label for="precision">Precision</label>
+  <div class="ctl-hint">
+    Each waypoint ends one leg and starts the next.
+    <b>Precise</b>: each leg ends exactly at its waypoint.
+    <b>Approximate</b>: a leg ends as soon as the route enters the circle below around the waypoint, and the next leg starts there. Final destination is always exact.
+  </div>
+  <select id="precision">
+    <option value="precise" selected>Precise (exact waypoint)</option>
+    <option value="approximate">Approximate (pass through the circle)</option>
+  </select>
+
+  <label>Waypoint radius: <span id="arrivalRadiusMLabel">200</span> <span class="unitOf" data-for="arrivalRadiusMLabel"></span></label>
+  <div class="ctl-hint">Circle around each intermediate waypoint in Approximate mode. Ignored in Precise mode.</div>
+  <input type="range" id="arrivalRadiusM" min="50" max="2000" step="50" value="200" aria-label="Waypoint circle radius in metres">
 
   </div>
   </details>
@@ -768,7 +779,6 @@
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="temperatureToggle" style="width:auto;margin-right:4px;" onchange="temperatureLayer.setVisible(this.checked); if(this.checked) loadTemperature(); else temperatureLayer.setSource(null);">Air temperature (2 m)</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="sstToggle" style="width:auto;margin-right:4px;" onchange="sstLayer.setVisible(this.checked); if(this.checked) loadSst(); else sstLayer.setSource(null);">Sea-surface temp (skin)</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="pressureToggle" style="width:auto;margin-right:4px;" onchange="pressureLayer.setVisible(this.checked); if(this.checked) loadPressure(); else pressureSource.clear();">Pressure (isobars, H/L)</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="conditionsToggle" style="width:auto;margin-right:4px;" onchange="conditionsLayer.setVisible(this.checked); if(this.checked) loadConditionsLayer();">Conditions (shift-click a spot for a forecast)</label>
     <div class="ctl-hint" style="margin-top:var(--s-1);">Shift-click anywhere on the map (or use the click menu) for the 72-hour conditions forecast at that spot.</div>
     </div>
     <div class="layer-group" data-group="water">

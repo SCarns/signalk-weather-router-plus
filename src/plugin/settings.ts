@@ -67,6 +67,8 @@ export interface AppSettings {
     sailThreshold: number;
     simStep: number;
     landRasterMaxCells: number;
+    /** Let routes use known ship canals (Corinth, Cape Cod, Kiel, Suez, …) where the coastline data shows them as water. */
+    allowCanals: boolean;
     keepJobs: number;
   };
   publish: {
@@ -80,7 +82,7 @@ export type SettingsGroup = keyof AppSettings;
 
 /**
  * What must be re-done when a setting changes:
- *  - forecast: reload the resident forecast (new horizon or field set);
+ *  - forecast: decode the forecast again (new horizon or field set);
  *  - currents: reload the current sources (CMEMS SMOC, RTOFS);
  *  - tides: reload the Copernicus Marine sea-level source only;
  *  - refresh_timer: restart the cycle-check timer;
@@ -142,11 +144,11 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
   { key: 'vessel.maxSwh', group: 'vessel', label: 'Maximum wave height', type: 'number', unit: 'm', quantity: 'wave_height', min: 0, max: 30, default: null, nullable: true, help: 'Significant wave height limit (informational). Empty = none.', reload: 'next_job' },
   { key: 'vessel.tackPenalty', group: 'vessel', label: 'Tack penalty', type: 'number', unit: 's', quantity: 'seconds', min: 0, max: 3600, default: 30, help: 'Time lost per tack or gybe.', reload: 'next_job' },
 
-  { key: 'forecast.horizon', group: 'forecast', label: 'Forecast horizon', type: 'number', unit: 's', quantity: 'hours', min: 3 * H, max: 240 * H, multipleOf: H, default: 72 * H, help: 'How far ahead the resident forecast reaches. Changing it reloads the forecast; memory grows with it.', reload: 'forecast' },
+  { key: 'forecast.horizon', group: 'forecast', label: 'Forecast horizon', type: 'number', unit: 's', quantity: 'hours', min: 3 * H, max: 240 * H, multipleOf: H, default: 72 * H, help: 'How far ahead the forecast reaches. Changing it decodes the forecast again; the decoded run on disk grows with it (about 1.1 GB for 72 h with the extra fields), memory does not.', reload: 'forecast' },
   { key: 'forecast.refreshInterval', group: 'forecast', label: 'Check for a new cycle every', type: 'number', unit: 's', quantity: 'minutes', min: 600, max: 24 * H, multipleOf: 60, default: H, help: 'How often ECMWF is checked for a newer cycle.', reload: 'refresh_timer' },
-  { key: 'forecast.keepCycles', group: 'forecast', label: 'Cached cycles kept on disk', type: 'integer', min: 1, max: 10, default: 2, help: 'Older downloaded cycles are deleted beyond this.', reload: 'cache' },
+  { key: 'forecast.keepCycles', group: 'forecast', label: 'Cached cycles kept on disk', type: 'integer', min: 1, max: 10, default: 2, help: 'Older downloaded cycles (GRIB messages and decoded runs) are deleted beyond this.', reload: 'cache' },
   { key: 'forecast.extraFields', group: 'forecast', label: 'Temperature, precipitation, SST, humidity', type: 'boolean', default: true, help: 'Also fetch 2t, tprate, skt, 2d and ptype (the temperature, SST and precipitation layers and the full conditions). Changing it reloads the forecast.', reload: 'forecast' },
-  { key: 'forecast.memoryHeadroom', group: 'forecast', label: 'Memory kept free', type: 'number', unit: 'B', quantity: 'megabytes', min: 0, max: 64e9, multipleOf: 1e6, default: 1e9, help: 'The forecast only loads if at least this much memory stays free afterwards for Signal K, the OS and other plugins. If it does not fit, the plugin says what to change instead of loading.', reload: 'forecast' },
+  { key: 'forecast.memoryHeadroom', group: 'forecast', label: 'Memory kept free', type: 'number', unit: 'B', quantity: 'megabytes', min: 0, max: 64e9, multipleOf: 1e6, default: 1e9, help: 'A forecast update (one step decoded at a time) or a route (its forecast area) only runs if at least this much memory stays free afterwards for Signal K, the OS and other plugins. If it does not fit, the plugin says what to change instead.', reload: 'forecast' },
 
   { key: 'currents.smocEnabled', group: 'currents', label: 'Use Copernicus Marine SMOC currents', type: 'boolean', default: true, help: 'Worldwide hourly surface currents (circulation + tides + Stokes drift) from Copernicus Marine, downloaded anonymously; takes precedence over RTOFS. Generated using E.U. Copernicus Marine Service Information.', reload: 'currents' },
   { key: 'currents.smocHorizon', group: 'currents', label: 'SMOC horizon', type: 'number', unit: 's', quantity: 'hours', min: 6 * H, max: 240 * H, multipleOf: H, default: 72 * H, help: 'How far ahead SMOC is held (the product reaches about 10 days).', reload: 'currents' },
@@ -168,6 +170,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
   { key: 'routing.sailThreshold', group: 'routing', label: 'Sail when boat speed exceeds', type: 'number', unit: 'm/s', quantity: 'speed', min: 0, max: 50 * KTS_TO_MS, default: 4.9 * KTS_TO_MS, help: 'Below this polar speed the route motors (sail_max mode).', reload: 'next_job' },
   { key: 'routing.simStep', group: 'routing', label: 'Leg simulation step', type: 'number', unit: 'm', quantity: 'short_distance', min: 50, max: 5000, default: 200, help: 'Distance between samples along each leg.', reload: 'next_job' },
   { key: 'routing.landRasterMaxCells', group: 'routing', label: 'Land raster cell budget', type: 'integer', min: 1_000_000, max: 1_000_000_000, default: 25_000_000, help: 'Upper bound on the per-route land raster (1 byte per cell). Lower it on small machines.', reload: 'next_job' },
+  { key: 'routing.allowCanals', group: 'routing', label: 'Allow canals', type: 'boolean', default: false, help: 'Let routes pass through known ship canals (Corinth, Cape Cod, Chesapeake and Delaware, Kiel, Suez, Panama) where the coastline data shows them as water. Off: routes go the natural way round. With the GSHHG coastline none of these canals is open water, so this only matters with coastline data that includes canals.', reload: 'next_job' },
   { key: 'routing.keepJobs', group: 'routing', label: 'Finished routes kept', type: 'integer', min: 1, max: 500, default: 50, help: 'Older finished route jobs are deleted beyond this.', reload: 'jobs' },
 
   { key: 'publish.toResources', group: 'publish', label: 'Save finished routes to Signal K', type: 'boolean', default: true, help: 'Write each finished route to the Resources API (routes).', reload: 'next_job' },

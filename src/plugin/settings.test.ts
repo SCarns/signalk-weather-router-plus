@@ -261,3 +261,16 @@ test('CMEMS SMOC settings: defaults in SI, 1 h or 3 h step only, changes reload 
   assert.deepEqual(specs.map((s) => s.key), ['currents.smocEnabled', 'currents.smocHorizon', 'currents.smocStep', 'currents.smocHalfWidth']);
   assert.deepEqual(SETTINGS_SPEC.find((s) => s.key === 'currents.smocStep')!.oneOf, [3600, 10800]);
 });
+
+test('allow canals: routing setting, off by default, applies to the next route', () => {
+  const spec = SETTINGS_SPEC.find((s) => s.key === 'routing.allowCanals');
+  assert.ok(spec);
+  assert.equal(spec!.type, 'boolean');
+  assert.equal(spec!.default, false);
+  assert.equal(defaultSettings().routing.allowCanals, false);
+  assert.equal(resolveConfig({ landShapefiles: '/x.shp' }, defaultSettings()).routing.allowCanals, false);
+  const r = mergeSettings(defaultSettings(), { routing: { allowCanals: true } });
+  assert.deepEqual(r.changed, ['routing.allowCanals']);
+  assert.equal(resolveConfig({ landShapefiles: '/x.shp' }, r.values).routing.allowCanals, true);
+  assert.deepEqual([...reloadsFor(['routing.allowCanals'])], ['next_job']);
+});

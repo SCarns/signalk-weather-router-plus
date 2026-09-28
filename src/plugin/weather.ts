@@ -1,7 +1,12 @@
 /**
- * Signal K Weather API provider backed by the resident global forecast.
- * Point forecasts only (one WeatherData per forecast step); daily
- * summaries, observations and warnings are not provided.
+ * Signal K Weather API provider backed by the decoded forecast. Point
+ * forecasts only (one WeatherData per forecast step); daily summaries,
+ * observations and warnings are not provided.
+ *
+ * The main thread holds no forecast: the provider asks the data worker
+ * (query 'weather_point'), which reads the few grid cells around the
+ * position for every step from the decoded run on disk and runs
+ * pointForecasts() on them.
  *
  * Every value is in the Signal K unit for its field: m/s, rad, Pa, K,
  * m, s, and relative humidity as a ratio. The extra fields (temperature,
@@ -95,7 +100,17 @@ export function applyWaterLevel(items: WeatherData[], s: TideSeriesLike): number
   return n;
 }
 
-export function makeWeatherProvider(getStore: () => ForecastStore | null, pluginId: string, tideSeries?: TideSeriesFn, log: (m: string) => void = () => undefined): WeatherProviderLike {
+/** Point forecasts at a position (the data worker runs pointForecasts on a window of the decoded run). */
+export type PointForecastFn = (position: SkPosition, options?: WeatherReqParams) => Promise<WeatherData[]>;
+
+/** The step start time a request asks for (options.startDate, else now). */
+export function startMsOf(options?: WeatherReqParams): number | null {
+  if (!options?.startDate) return null;
+  const d = Date.parse(options.startDate);
+  return Number.isNaN(d) ? null : d;
+}
+
+export function makeWeatherProvider(points: PointForecastFn, pluginId: string, tideSeries?: TideSeriesFn, log: (m: string) => void = () => undefined): WeatherProviderLike {
   let lastTideError = '';
   const withWaterLevel = async (position: SkPosition, items: WeatherData[]): Promise<WeatherData[]> => {
     if (!tideSeries || items.length === 0) return items;
@@ -116,61 +131,6 @@ export function makeWeatherProvider(getStore: () => ForecastStore | null, plugin
     }
     return items;
   };
-  const pointForecasts = (position: SkPosition, options?: WeatherReqParams): WeatherData[] => {
-    const store = getStore();
-    if (!store) throw new Error('no forecast loaded yet');
-    const lon = position.longitude;
-    const lat = position.latitude;
-    if (!store.covers(lon, lat)) {
-      throw new Error(`position ${lat.toFixed(3)}, ${lon.toFixed(3)} is outside the resident forecast`);
-    }
-    let fromMs = Date.now();
-    if (options?.startDate) {
-      const d = Date.parse(options.startDate);
-      if (!Number.isNaN(d)) fromMs = d;
-    }
-    const finiteOr = (v: number): number | undefined => (Number.isFinite(v) ? v : undefined);
-    const has2t = store.has('2t');
-    const hasD2m = store.has('2d');
-    const hasSkt = store.has('skt');
-    const out: WeatherData[] = [];
-    for (let i = 0; i < store.steps.length; i++) {
-      const step = store.steps[i];
-      if (step.validMs + 3 * 3600_000 <= fromMs) continue; // step already fully in the past
-      const t = new Date(step.validMs);
-      const [ws, wd] = store.at(lon, lat, t);
-      const wave = store.wavesAt(lon, lat, t);
-      const msl = store.mslAt(lon, lat, t);
-      const item: WeatherData = {
-        description: `ECMWF IFS 0.25° open data, cycle ${store.meta.cycleTime.toISOString()}, +${step.stepHours} h`,
-        date: t.toISOString(),
-        type: 'point',
-        wind: { speedTrue: ws, directionTrue: (wd * Math.PI) / 180 },
-      };
-      const outside: NonNullable<WeatherData['outside']> = {};
-      if (Number.isFinite(msl)) outside.pressure = msl;
-      const t2m = has2t ? finiteOr(store.paramAt('2t', lon, lat, t)) : undefined;
-      const d2m = hasD2m ? finiteOr(store.paramAt('2d', lon, lat, t)) : undefined;
-      if (t2m !== undefined) outside.temperature = t2m;
-      if (d2m !== undefined) outside.dewPointTemperature = d2m;
-      const rh = relativeHumidity(t2m ?? null, d2m ?? null);
-      if (rh !== null) outside.relativeHumidity = rh;
-      if (Object.keys(outside).length > 0) item.outside = outside;
-      const water: NonNullable<WeatherData['water']> = {};
-      const skt = hasSkt ? finiteOr(store.paramAt('skt', lon, lat, t)) : undefined;
-      if (skt !== undefined) water.temperature = skt;
-      if (wave && Number.isFinite(wave.swh)) {
-        water.waveSignificantHeight = wave.swh;
-        water.wavePeriod = wave.mwp;
-        water.waveDirection = (wave.mwd * Math.PI) / 180;
-      }
-      if (Object.keys(water).length > 0) item.water = water;
-      out.push(item);
-      if (options?.maxCount && out.length >= options.maxCount) break;
-    }
-    return out;
-  };
-
   return {
     name: 'Weather Router Plus (ECMWF open data)',
     methods: {
@@ -178,9 +138,64 @@ export function makeWeatherProvider(getStore: () => ForecastStore | null, plugin
       getObservations: async () => [],
       getForecasts: async (position, type, options) => {
         if (type !== 'point') return [];
-        return withWaterLevel(position, pointForecasts(position, options));
+        return withWaterLevel(position, await points(position, options));
       },
       getWarnings: async () => [],
     },
   };
+}
+
+/** Parameters pointForecasts reads. */
+export const POINT_FORECAST_PARAMS = ['10u', '10v', 'msl', 'swh', 'mwp', 'mwd', '2t', '2d', 'skt'] as const;
+
+/**
+ * Point forecasts from a store holding every step around the position
+ * (the data worker passes a window of the decoded run, which samples
+ * exactly like the whole global store).
+ */
+export function pointForecasts(store: ForecastStore, lon: number, lat: number, startMs: number | null, maxCount: number | null): WeatherData[] {
+  if (!store.covers(lon, lat)) {
+    throw new Error(`position ${lat.toFixed(3)}, ${lon.toFixed(3)} is outside the forecast`);
+  }
+  const fromMs = startMs ?? Date.now();
+  const finiteOr = (v: number): number | undefined => (Number.isFinite(v) ? v : undefined);
+  const has2t = store.has('2t');
+  const hasD2m = store.has('2d');
+  const hasSkt = store.has('skt');
+  const out: WeatherData[] = [];
+  for (let i = 0; i < store.steps.length; i++) {
+    const step = store.steps[i];
+    if (step.validMs + 3 * 3600_000 <= fromMs) continue; // step already fully in the past
+    const t = new Date(step.validMs);
+    const [ws, wd] = store.at(lon, lat, t);
+    const wave = store.wavesAt(lon, lat, t);
+    const msl = store.mslAt(lon, lat, t);
+    const item: WeatherData = {
+      description: `ECMWF IFS 0.25° open data, cycle ${store.meta.cycleTime.toISOString()}, +${step.stepHours} h`,
+      date: t.toISOString(),
+      type: 'point',
+      wind: { speedTrue: ws, directionTrue: (wd * Math.PI) / 180 },
+    };
+    const outside: NonNullable<WeatherData['outside']> = {};
+    if (Number.isFinite(msl)) outside.pressure = msl;
+    const t2m = has2t ? finiteOr(store.paramAt('2t', lon, lat, t)) : undefined;
+    const d2m = hasD2m ? finiteOr(store.paramAt('2d', lon, lat, t)) : undefined;
+    if (t2m !== undefined) outside.temperature = t2m;
+    if (d2m !== undefined) outside.dewPointTemperature = d2m;
+    const rh = relativeHumidity(t2m ?? null, d2m ?? null);
+    if (rh !== null) outside.relativeHumidity = rh;
+    if (Object.keys(outside).length > 0) item.outside = outside;
+    const water: NonNullable<WeatherData['water']> = {};
+    const skt = hasSkt ? finiteOr(store.paramAt('skt', lon, lat, t)) : undefined;
+    if (skt !== undefined) water.temperature = skt;
+    if (wave && Number.isFinite(wave.swh)) {
+      water.waveSignificantHeight = wave.swh;
+      water.wavePeriod = wave.mwp;
+      water.waveDirection = (wave.mwd * Math.PI) / 180;
+    }
+    if (Object.keys(water).length > 0) item.water = water;
+    out.push(item);
+    if (maxCount && out.length >= maxCount) break;
+  }
+  return out;
 }

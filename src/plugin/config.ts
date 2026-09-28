@@ -117,6 +117,8 @@ export interface ResolvedConfig {
     sailThreshMs: number;
     simStepM: number;
     landRasterMaxCells: number;
+    /** Open the known canals' edges in the global water grid. */
+    allowCanals: boolean;
     keepJobs: number;
   };
   publish: {
@@ -245,6 +247,7 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       sailThreshMs: r.sailThreshold,
       simStepM: r.simStep,
       landRasterMaxCells: r.landRasterMaxCells,
+      allowCanals: r.allowCanals,
       keepJobs: r.keepJobs,
     },
     publish: {

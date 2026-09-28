@@ -1,18 +1,22 @@
 /**
- * In-memory forecast store: gridded wind (10u/10v), pressure (msl),
- * waves (swh/mwp/mwd) and the optional extra fields, with bilinear
- * spatial and linear temporal interpolation.
+ * Forecast store: gridded wind (10u/10v), pressure (msl), waves
+ * (swh/mwp/mwd) and the optional extra fields, with bilinear spatial and
+ * linear temporal interpolation.
  *
- * The resident store is global: every field keeps the whole decoded
- * 0.25° grid (1440 × 721 cells × 4 B ≈ 4.15 MB per field per step) as
- * Float32, exactly the decoded values, in SharedArrayBuffer-backed
- * arrays. Posting the store to another thread (structured clone) shares
- * that memory instead of copying it, so the data worker, the main
- * thread and the route worker hold one copy between them. Longitude
- * wraps across the 0/360 seam and the antimeridian.
+ * The decoded global forecast is not kept in memory: it lives on disk
+ * (decoded.ts, one raw Float32 file per field and step, exactly the
+ * decoded values). A request reads the part it needs into a short-lived
+ * store: a *window* of the global grid (FieldGrid.win) holding only some
+ * rows and columns, for some steps and parameters. A windowed field
+ * samples with the global grid's own index arithmetic, so every value
+ * inside the window is bit-for-bit the value the whole global store
+ * gives (the tests check this). Longitude wraps across the 0/360 seam and
+ * the antimeridian.
  *
- * `cropField` still builds bbox crops (plain arrays) for the RTOFS
- * currents and for the route worker's first-boot fallback.
+ * A store of whole global fields (globalField) is what the decoder builds
+ * one step at a time before writing it out; `cropField` still builds bbox
+ * crops (plain arrays) for the RTOFS currents and for the route worker's
+ * fallback when no decoded run exists yet.
  *
  * Wind direction is meteorological (FROM). Wave fields carry NaN over
  * land in the source; a limited nearest-neighbour fill (up to
@@ -41,11 +45,63 @@ export interface FieldGrid {
    * sampling then wraps in longitude instead of clamping at the edges.
    */
   wrapLon?: boolean;
+  /**
+   * Set when this field holds only a window of the grid described above:
+   * lat0/lon0/dLat/dLon/nLat/nLon/wrapLon describe the whole grid, and
+   * `values` holds rows r0..r0+nr-1 and columns c0..c0+nc-1 (columns wrap
+   * modulo nLon), row-major from the south, nr × nc values. Sampling
+   * inside the window gives exactly what the whole grid gives; outside it
+   * clamps to the window's edge (those values are not forecast; `covers`
+   * says where the window is valid).
+   */
+  win?: FieldWindow;
+}
+
+export interface FieldWindow {
+  r0: number;
+  c0: number;
+  nr: number;
+  nc: number;
 }
 
 /** Float32Array backed by a SharedArrayBuffer (shared, not copied, across worker threads). */
 export function sharedFloat32(n: number): Float32Array {
   return new Float32Array(new SharedArrayBuffer(n * Float32Array.BYTES_PER_ELEMENT));
+}
+
+/**
+ * One SharedArrayBuffer carved into Float32 views: the streaming decoder
+ * holds one forecast step (every field of it) in one, reused for every
+ * step (reset()).
+ *
+ * Why one block: glibc gives each worker thread its own malloc arena and
+ * raises its mmap threshold (up to 32 MB) after large blocks are freed,
+ * so a store built from ~275 separate 4.15 MB buffers ends up served from
+ * the arena, and when the store is replaced that memory stays in the
+ * arena instead of going back to the OS: measured on a Pi 5, one previous
+ * store (0.6–1.1 GB) stayed resident after every refresh. A single block
+ * of hundreds of MB is always mmap'd and returned to the OS the moment
+ * the last thread drops it. Pages never touched (a field missing from a
+ * cycle) are never resident. The same holds for the one-step block the
+ * streaming decoder reuses (about 46 MB with the extra fields): it is
+ * allocated once per update and returned to the OS when the update ends.
+ */
+export class FloatSlab {
+  readonly buffer: SharedArrayBuffer;
+  private offset = 0;
+  constructor(readonly capacity: number) {
+    this.buffer = new SharedArrayBuffer(capacity * Float32Array.BYTES_PER_ELEMENT);
+  }
+  /** A view of `n` floats, or null when the slab has no room (the caller allocates its own). */
+  take(n: number): Float32Array | null {
+    if (this.offset + n > this.capacity) return null;
+    const v = new Float32Array(this.buffer, this.offset * Float32Array.BYTES_PER_ELEMENT, n);
+    this.offset += n;
+    return v;
+  }
+  get used(): number { return this.offset; }
+  /** Reuse the block from the start (the streaming decoder refills it for every step). */
+  reset(): void { this.offset = 0; }
 }
 
 /** Same backing kind as `like` (shared or plain). */
@@ -65,11 +121,11 @@ function spansCircle(nLon: number, dLon: number): boolean {
  * rounded again, the same two roundings `cropField` + `scaleField`
  * perform), so samples are identical to those from a crop.
  */
-export function globalField(grid: Grib2Grid, values: Float64Array, scale = 1): FieldGrid {
+export function globalField(grid: Grib2Grid, values: Float64Array, scale = 1, slab?: FloatSlab): FieldGrid {
   if (!grid.iScansPositively) throw new Error('globalField: grids scanning west are not supported');
   const { ni, nj, di, dj } = grid;
   if (values.length !== ni * nj) throw new Error(`globalField: ${values.length} values for a ${ni}x${nj} grid`);
-  const out = sharedFloat32(ni * nj);
+  const out = slab?.take(ni * nj) ?? sharedFloat32(ni * nj);
   const southUp = grid.jScansPositively;
   for (let r = 0; r < nj; r++) {
     const src = (southUp ? r : nj - 1 - r) * ni;
@@ -179,7 +235,13 @@ export function cropField(grid: Grib2Grid, values: Float64Array, bbox: BBox, mar
  * temporary copy), so filling a global shared field does not leave a
  * second 4 MB SharedArrayBuffer behind as garbage.
  */
-export function nanFillLimited(f: FieldGrid, maxCells: number, opts: { inPlace?: boolean } = {}): FieldGrid {
+/** Reusable temporaries for nanFillLimited (the streaming decoder fills ~75 global wave fields per update). */
+export interface NanFillScratch {
+  copy?: Float32Array;
+  count?: Int32Array;
+}
+
+export function nanFillLimited(f: FieldGrid, maxCells: number, opts: { inPlace?: boolean; scratch?: NanFillScratch } = {}): FieldGrid {
   const { nLat, nLon } = f;
   const wrap = !!f.wrapLon;
   let anyValid = false;
@@ -188,7 +250,12 @@ export function nanFillLimited(f: FieldGrid, maxCells: number, opts: { inPlace?:
   let values: Float32Array;
   let out: Float32Array;
   if (opts.inPlace) {
-    values = new Float32Array(f.values);
+    const sc = opts.scratch;
+    if (sc) {
+      if (!sc.copy || sc.copy.length !== f.values.length) sc.copy = new Float32Array(f.values.length);
+      sc.copy.set(f.values);
+      values = sc.copy;
+    } else values = new Float32Array(f.values);
     out = f.values;
   } else {
     values = f.values;
@@ -197,7 +264,11 @@ export function nanFillLimited(f: FieldGrid, maxCells: number, opts: { inPlace?:
   }
   const R = Math.max(0, Math.ceil(maxCells));
   // near[idx] = number of valid cells within the (2R+1)² box around idx.
-  const rowCount = new Int32Array(values.length);
+  let rowCount: Int32Array;
+  if (opts.scratch) {
+    if (!opts.scratch.count || opts.scratch.count.length !== values.length) opts.scratch.count = new Int32Array(values.length);
+    rowCount = opts.scratch.count;
+  } else rowCount = new Int32Array(values.length);
   for (let r = 0; r < nLat; r++) {
     const base = r * nLon;
     for (let c = 0; c < nLon; c++) {
@@ -265,6 +336,7 @@ export function nanFillLimited(f: FieldGrid, maxCells: number, opts: { inPlace?:
  * cell (extrapolating would invent values). Latitude always clamps.
  */
 export function sampleField(f: FieldGrid, lon: number, lat: number): number {
+  if (f.win) return sampleWindow(f, f.win, lon, lat);
   const { nLat, nLon } = f;
   if (f.wrapLon) return sampleWrapped(f, lon, lat);
   const offLon = ((lon - f.lon0) % 360 + 360) % 360;
@@ -317,8 +389,106 @@ function sampleWrapped(f: FieldGrid, lon: number, lat: number): number {
   return a + ty * (b - a);
 }
 
+/** Local row of global row `r` in a window (clamped to the window). */
+function winRow(w: FieldWindow, r: number): number {
+  const lr = r - w.r0;
+  return lr < 0 ? 0 : lr >= w.nr ? w.nr - 1 : lr;
+}
+
+/** Local column of global column `c` (0..nLon-1) in a window (clamped to its nearer edge outside it). */
+function winCol(w: FieldWindow, nLon: number, wrap: boolean, c: number): number {
+  let lc = c - w.c0;
+  if (wrap && lc < 0) lc += nLon;
+  if (lc >= 0 && lc < w.nc) return lc;
+  if (!wrap) return lc < 0 ? 0 : w.nc - 1;
+  // Outside a window of a wrapping grid: the nearer edge, going either way round.
+  return lc - (w.nc - 1) <= nLon - lc ? w.nc - 1 : 0;
+}
+
+/**
+ * Bilinear sample of a windowed field: the global grid's index and
+ * weight arithmetic (sampleWrapped / sampleField, operation for
+ * operation), then each cell read from the window. Inside the window the
+ * result is therefore identical to sampling the whole grid.
+ */
+function sampleWindow(f: FieldGrid, w: FieldWindow, lon: number, lat: number): number {
+  const { nLat, nLon } = f;
+  let c: number;
+  let c1: number;
+  let tx: number;
+  if (f.wrapLon) {
+    const x = (((lon - f.lon0) % 360) + 360) % 360 / f.dLon;
+    c = Math.floor(x);
+    if (c >= nLon) c -= nLon;
+    tx = x - Math.floor(x);
+    c1 = c + 1 === nLon ? 0 : c + 1;
+  } else {
+    const offLon = ((lon - f.lon0) % 360 + 360) % 360;
+    let x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
+    if (x < 0) x = 0;
+    if (x > nLon - 1) x = nLon - 1;
+    c = Math.floor(x);
+    if (nLon === 1) c = 0;
+    else c = Math.max(0, Math.min(nLon - 2, c));
+    tx = nLon === 1 ? 0 : x - c;
+    c1 = Math.min(nLon - 1, c + 1);
+  }
+  let y = (lat - f.lat0) / f.dLat;
+  if (y < 0) y = 0;
+  if (y > nLat - 1) y = nLat - 1;
+  let r = Math.floor(y);
+  if (nLat === 1) r = 0;
+  else r = Math.max(0, Math.min(nLat - 2, r));
+  const ty = nLat === 1 ? 0 : y - r;
+  const r1 = Math.min(nLat - 1, r + 1);
+  const wrap = !!f.wrapLon;
+  const nc = w.nc;
+  const lr = winRow(w, r) * nc;
+  const lr1 = winRow(w, r1) * nc;
+  const lc = winCol(w, nLon, wrap, c);
+  const lc1 = winCol(w, nLon, wrap, c1);
+  const v00 = f.values[lr + lc];
+  const v01 = f.values[lr + lc1];
+  const v10 = f.values[lr1 + lc];
+  const v11 = f.values[lr1 + lc1];
+  const a = v00 + tx * (v01 - v00);
+  const b = v10 + tx * (v11 - v10);
+  return a + ty * (b - a);
+}
+
+/**
+ * Is (lon, lat) inside the part of the grid a windowed field holds, so
+ * that its bilinear neighbours are all in the window?
+ */
+export function windowCovers(f: FieldGrid, w: FieldWindow, lon: number, lat: number): boolean {
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return false;
+  const y = (lat - f.lat0) / f.dLat;
+  if (!(y >= w.r0 && y <= w.r0 + w.nr - 1)) return false;
+  if (w.nc >= f.nLon) return true;
+  let x = (((lon - f.lon0) % 360) + 360) % 360 / f.dLon - w.c0;
+  if (x < 0) x += f.nLon;
+  return x <= w.nc - 1;
+}
+
 /** Nearest-cell sample (categorical fields). */
 export function sampleFieldNearest(f: FieldGrid, lon: number, lat: number): number {
+  if (f.win) {
+    const w = f.win;
+    let x: number;
+    let y: number;
+    if (f.wrapLon) {
+      x = Math.round((((lon - f.lon0) % 360) + 360) % 360 / f.dLon);
+      if (x >= f.nLon) x -= f.nLon;
+      y = Math.max(0, Math.min(f.nLat - 1, Math.round((lat - f.lat0) / f.dLat)));
+    } else {
+      const offLon = ((lon - f.lon0) % 360 + 360) % 360;
+      x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
+      y = (lat - f.lat0) / f.dLat;
+      x = Math.max(0, Math.min(f.nLon - 1, Math.round(x)));
+      y = Math.max(0, Math.min(f.nLat - 1, Math.round(y)));
+    }
+    return f.values[winRow(w, y) * w.nc + winCol(w, f.nLon, !!f.wrapLon, x)];
+  }
   if (f.wrapLon) {
     let x = Math.round((((lon - f.lon0) % 360) + 360) % 360 / f.dLon);
     if (x >= f.nLon) x -= f.nLon;
@@ -340,17 +510,30 @@ export class ForecastStore implements WindSource {
   /** Every field of every step spans the full circle and pole to pole: covers() is true everywhere. */
   readonly global: boolean;
 
-  constructor(steps: ForecastStep[], meta: ForecastMeta) {
+  /**
+   * `requireWind` (default true): every step must hold 10u/10v. A window
+   * read for one map layer (e.g. msl only) passes false; its at() then
+   * returns NaN.
+   */
+  constructor(steps: ForecastStep[], meta: ForecastMeta, opts: { requireWind?: boolean } = {}) {
     if (steps.length === 0) throw new Error('ForecastStore needs at least one step');
     this.steps = [...steps].sort((a, b) => a.validMs - b.validMs);
     this.meta = meta;
     this.hasWaves = this.steps.every((s) => s.fields.has('swh') && s.fields.has('mwp') && s.fields.has('mwd'));
-    for (const s of this.steps) {
-      if (!s.fields.has('10u') || !s.fields.has('10v')) throw new Error(`step +${s.stepHours}h lacks 10u/10v`);
+    if (opts.requireWind !== false) {
+      for (const s of this.steps) {
+        if (!s.fields.has('10u') || !s.fields.has('10v')) throw new Error(`step +${s.stepHours}h lacks 10u/10v`);
+      }
     }
     const isGlobal = (f: FieldGrid): boolean =>
-      !!f.wrapLon && f.lat0 <= -90 + 1e-6 && f.lat0 + (f.nLat - 1) * f.dLat >= 90 - 1e-6;
+      !f.win && !!f.wrapLon && f.lat0 <= -90 + 1e-6 && f.lat0 + (f.nLat - 1) * f.dLat >= 90 - 1e-6;
     this.global = this.steps.every((s) => [...s.fields.values()].every(isGlobal));
+  }
+
+  /** Any field of the first step (the geometry reference for covers()). */
+  private refField(): FieldGrid | undefined {
+    const s = this.steps[0];
+    return s.fields.get('10u') ?? s.fields.values().next().value;
   }
 
   /** Bracketing step indices and blend factor for a time. */
@@ -459,7 +642,9 @@ export class ForecastStore implements WindSource {
   /** Does the store cover this position (always, for a global store; else within the cropped grid)? */
   covers(lon: number, lat: number): boolean {
     if (this.global) return Number.isFinite(lon) && Number.isFinite(lat) && lat >= -90 && lat <= 90;
-    const f = this.steps[0].fields.get('10u')!;
+    const f = this.refField();
+    if (!f) return false;
+    if (f.win) return windowCovers(f, f.win, lon, lat);
     const off = lonOffsetFromWest({ west: f.lon0, east: f.lon0, south: 0, north: 0 }, lon);
     const x = off > 180 ? off - 360 : off;
     const y = lat - f.lat0;
@@ -508,7 +693,14 @@ export class ForecastStore implements WindSource {
   /** Does this store's crop contain the whole box? */
   coversBBox(b: BBox): boolean {
     if (this.global) return true;
-    const f = this.steps[0].fields.get('10u')!;
+    const f = this.refField();
+    if (!f) return false;
+    if (f.win) {
+      const w = f.win;
+      const east = b.west + bboxWidth(b);
+      return windowCovers(f, w, b.west, b.south) && windowCovers(f, w, east, b.north)
+        && (w.nc >= f.nLon || bboxWidth(b) <= (w.nc - 1) * f.dLon);
+    }
     const spanLon = (f.nLon - 1) * f.dLon;
     const spanLat = (f.nLat - 1) * f.dLat;
     const west = lonOffsetFromWest({ west: f.lon0, east: f.lon0, south: 0, north: 0 }, b.west);
@@ -541,10 +733,12 @@ function scaleField(f: FieldGrid, k: number): FieldGrid {
 /**
  * Build a step from decoded messages. `messages` must all share the
  * same valid time; params are named by the caller. `bbox` null keeps
- * each field whole (global, SharedArrayBuffer-backed); a bbox crops.
+ * each field whole (global, SharedArrayBuffer-backed, in `slab` when
+ * given); a bbox crops.
  */
 export function buildStep(
-  named: { param: string; message: Grib2Message }[], bbox: BBox | null, waveFillCells = 3, scratch?: DecodeScratch,
+  named: { param: string; message: Grib2Message }[], bbox: BBox | null, waveFillCells = 3, scratch?: DecodeScratch, slab?: FloatSlab,
+  fillScratch?: NanFillScratch,
 ): ForecastStep {
   if (named.length === 0) throw new Error('buildStep: no messages');
   const first = named[0].message;
@@ -562,8 +756,8 @@ export function buildStep(
     } else {
       // Scale is folded into the copy (no wave field is scaled, so the
       // order relative to the NaN fill does not matter).
-      f = globalField(message.grid, message.decode(scratch), INGEST_SCALE[param] ?? 1);
-      if (isWave) f = nanFillLimited(f, waveFillCells, { inPlace: true });
+      f = globalField(message.grid, message.decode(scratch), INGEST_SCALE[param] ?? 1, slab);
+      if (isWave) f = nanFillLimited(f, waveFillCells, { inPlace: true, scratch: fillScratch });
     }
     fields.set(param, f);
   }

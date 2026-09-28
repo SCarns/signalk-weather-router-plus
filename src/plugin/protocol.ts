@@ -1,23 +1,26 @@
 /**
  * Message protocol between the plugin (main thread) and its two
  * workers. Both workers run the same code; `role` decides what they do:
- *  - `data`: loads the resident global forecast, the current sources
- *    and the on-demand overlay land masks; answers overlay/conditions
- *    queries; refreshes from the network.
+ *  - `data`: decodes each new forecast run to disk (decoded.ts), holds
+ *    the current sources and the on-demand overlay land masks; answers
+ *    overlay / conditions / Weather API queries by reading what each
+ *    needs from the decoded run; refreshes from the network.
  *  - `route`: computes routes, so a running route never blocks an
- *    overlay query. It uses the data worker's forecast, relayed by the
- *    main thread: the field arrays live in SharedArrayBuffers, so the
- *    relay shares one copy between all three threads. Current sources
- *    are its own copies, loaded from the disk cache (never the network).
+ *    overlay query. Before a route it reads the route area of the
+ *    decoded run (whose location the main thread relays) into a store it
+ *    drops when the route ends. Current sources are its own copies,
+ *    loaded from the disk cache (never the network).
+ * No thread keeps the decoded forecast in memory.
  * Everything crossing the boundary is structured-cloneable.
  */
 
 import type { ResolvedConfig } from './config';
 import type { ModePolicy } from '../engine/legsim';
 import type { BBox } from '../geo/geodesy';
-import type { SerializedForecast } from '../data/forecast';
+import type { DecodedIndex } from '../data/decoded';
 import type { SerializedRtofs } from '../currents/rtofs';
 import type { SerializedSmoc, SmocStatus } from '../currents/smoc';
+import type { SerializedHarmonic } from '../currents/harmonic';
 import type { TideStatus } from '../tides/sealevel';
 
 export type WorkerRole = 'data' | 'route';
@@ -30,7 +33,15 @@ export interface VesselPosition {
 export interface RouteRequest {
   start: { lat: number; lon: number };
   end: { lat: number; lon: number };
+  /**
+   * Intermediate waypoints; each ends one leg and starts the next.
+   * radius_m overrides arrival_radius_m for that waypoint (approximate).
+   */
   waypoints?: { lat: number; lon: number; radius_m?: number }[];
+  /** "precise" (default): each leg ends exactly on its waypoint; "approximate": on entering its circle. */
+  precision?: 'precise' | 'approximate';
+  /** Waypoint circle radius in approximate mode, metres (default 200, 0..5000, > 0 when approximate). */
+  arrival_radius_m?: number;
   departure?: string;
   mode?: ModePolicy;
   sail_thresh_ms?: number;
@@ -76,9 +87,14 @@ export interface RouteSummary {
   current_sources?: string[];
   /** Label of the polar the route was computed with, or null when motor-only. */
   polar?: string | null;
+  /** Automatic vias placed at narrow passages (not waypoints of the route). */
+  auto_vias?: { name: string; width_m: number }[];
+  /** Routes with waypoints: number of legs and the waypoint precision used. */
+  legs?: number;
+  precision?: 'precise' | 'approximate';
 }
 
-export type QueryKind = 'field' | 'currents' | 'wind_points' | 'conditions' | 'conditions_tile' | 'pressure' | 'land_mask' | 'tide_series';
+export type QueryKind = 'field' | 'currents' | 'wind_points' | 'conditions' | 'pressure' | 'land_mask' | 'tide_series' | 'weather_point' | 'forecast_info';
 
 export interface QueryArgs {
   field: { layer: string; bbox: BBox; timeMs: number; res: number };
@@ -86,11 +102,36 @@ export interface QueryArgs {
   wind_points: { bbox: BBox; timeMs: number; res: number };
   conditions: { lon: number; lat: number; fromMs: number; hours: number; stepH: number };
   /** Current-hour conditions sample points for one XYZ tile. */
-  conditions_tile: { z: number; x: number; y: number; timeMs: number };
   land_mask: { bbox: BBox; w: number; h: number };
   pressure: { bbox: BBox; timeMs: number; intervalHpa: number };
   /** Hourly tide / water level / surge at a point (Weather API); result TideSeriesResult. */
   tide_series: { lat: number; lon: number; fromMs: number; hours: number };
+  /** Signal K Weather API point forecasts (result WeatherData[], without water level). */
+  weather_point: { lat: number; lon: number; startMs: number | null; maxCount: number | null };
+  /** GET /api/forecast samples at a point (result the `samples` array). */
+  forecast_info: { lat: number; lon: number };
+}
+
+/** The decoded run in use: where it is on disk and its index (relayed data worker → main → route worker). */
+export interface ForecastRunInfo {
+  dir: string;
+  index: DecodedIndex;
+  /** When the data worker adopted this run (status loaded_at). */
+  loadedAtMs: number;
+  /** 'disk': a complete decoded run of this cycle was already on disk (no decode); 'grib': decoded now from the GRIB cache / download. */
+  source: 'disk' | 'grib';
+  /** Milliseconds from the start of the check to the run being ready. */
+  readyMs: number;
+  /** GRIB fields downloaded for this run (0 when decoded from the disk cache or opened). */
+  downloaded: number;
+}
+
+/** Memory a thread holds for the forecast (windows read from the decoded run). */
+export interface ForecastMemory {
+  /** Bytes held now (a route's corridor store while it runs; a query's window while it is answered). */
+  heldBytes: number;
+  /** Largest recent window: what it was for, bytes, read time. */
+  last: { what: string; bytes: number; readMs: number; at: string } | null;
 }
 
 /** Result of a `tide_series` query (structured-cloneable). null series: tides off, outside the grid or no data. */
@@ -117,7 +158,22 @@ export interface LandCacheStatus {
 }
 
 export interface DataStatus {
-  forecast: { cycle: string; validFrom: string; validTo: string; steps: number; params: string[]; global: boolean; bytes: number; shared: boolean; hasWaves: boolean; loadedAt: string } | null;
+  forecast: {
+    cycle: string; validFrom: string; validTo: string; steps: number; params: string[]; hasWaves: boolean; loadedAt: string;
+    source: 'disk' | 'grib'; readyMs: number;
+    /** Directory and bytes of the run in use. */
+    decodedDir: string; decodedBytes: number;
+    /** Bytes of every decoded run kept on disk (keepCycles). */
+    decodedDiskBytes: number;
+    /** Bytes of the GRIB message cache. */
+    gribCacheBytes: number;
+  } | null;
+  /** Last streaming decode: time, the one-step block it reused, bytes written. */
+  lastDecode: { at: string; cycle: string; ms: number; stepBlockBytes: number; writtenBytes: number; downloaded: number } | null;
+  /** Bytes of the one-step block while a decode runs (null otherwise). */
+  decodingBlockBytes: number | null;
+  /** Forecast memory the data worker holds (query windows). */
+  forecastMemory: ForecastMemory;
   currents: {
     name: string; priority: number; resolutionM: number; bbox: { south: number; west: number; north: number; east: number }; validFrom?: string; validTo?: string;
     /** CMEMS SMOC only: run, resident / on-demand areas, memory, downloads. */
@@ -141,8 +197,10 @@ export type MainToWorker =
   | { type: 'refresh'; force?: boolean; position?: VesselPosition | null }
   /** route worker: adopt the data worker's SMOC run and resident area (shared memory, relayed by the main thread). */
   | { type: 'smoc'; smoc: SerializedSmoc | null }
-  /** Adopt a resident forecast loaded by another thread (shared memory, no copy). */
-  | { type: 'forecast'; forecast: SerializedForecast }
+  /** route worker: adopt the data worker's tidal-harmonic sources (shared constituent blocks, relayed by the main thread). */
+  | { type: 'harmonic'; sources: SerializedHarmonic[] }
+  /** route worker: the decoded run to read route areas from (null: none yet). */
+  | { type: 'forecast'; run: ForecastRunInfo | null }
   /** Settings changed: new config; reload what `reload` names (data worker: forecast, currents and tides; route worker: currents from disk). */
   | { type: 'config'; config: ResolvedConfig; reload: { forecast: boolean; currents: boolean; tides?: boolean }; position?: VesselPosition | null }
   | { type: 'route'; id: string; request: RouteRequest }
@@ -152,13 +210,18 @@ export type MainToWorker =
 export type WorkerToMain =
   | { type: 'ready'; role: WorkerRole }
   | { type: 'log'; level: 'debug' | 'info' | 'error'; message: string }
-  | { type: 'forecast'; forecast: SerializedForecast }
+  /** data worker: a decoded run is ready (decoded now or found on disk). */
+  | { type: 'forecast'; run: ForecastRunInfo }
   | { type: 'forecast-unchanged'; cycleTimeMs: number }
+  /** route worker: forecast memory it holds (the corridor store while a route runs). */
+  | { type: 'forecast-memory'; memory: ForecastMemory }
   | { type: 'refresh-error'; message: string }
   | { type: 'currents'; status: DataStatus['currents']; rtofsRun: string | null; rtofs: SerializedRtofs | null }
   | { type: 'data-status'; status: DataStatus }
   /** data worker: SMOC run / resident area changed (SharedArrayBuffer views: relaying shares, not copies). */
   | { type: 'smoc'; smoc: SerializedSmoc | null }
+  /** data worker: tidal-harmonic sources loaded (shared constituent blocks). */
+  | { type: 'harmonic'; sources: SerializedHarmonic[] }
   | { type: 'progress'; id: string; stage: number; total: number; message: string }
   | { type: 'done'; id: string; geojson: Record<string, unknown>; skRoute: Record<string, unknown>; skeleton: Record<string, unknown> | null; summary: RouteSummary }
   | { type: 'error'; id: string; message: string; cancelled?: boolean }

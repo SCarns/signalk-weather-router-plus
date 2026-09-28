@@ -1,13 +1,20 @@
 /**
- * Memory guard: refuse to load a forecast the device cannot hold with
- * the user's headroom to spare, instead of letting the system swap or
- * kill Signal K.
+ * Resource guard: refuse work the device cannot hold with the user's
+ * headroom to spare, instead of letting the system swap or kill Signal K.
  *
- * The need is exact: the resident forecast is one Float32 global grid
- * (1440 × 721 cells) per field per step. While a new forecast loads the
- * previous one keeps serving, so the check compares the new store's size
- * against memory available *now* (which already excludes the store in
- * use): after the load, `headroom` bytes must remain.
+ * The decoded forecast lives on disk (decoded.ts), not in memory. What
+ * needs memory is:
+ *  - a forecast update: the streaming decoder's one-step block plus its
+ *    decode buffers (streamingDecodeBytes, ≈67 MB with the extra fields),
+ *    held only while the update runs;
+ *  - a route: its corridor store (the route area × the engine's fields ×
+ *    every step), held only while the route runs;
+ * and what needs disk is the decoded run itself (one Float32 global grid,
+ * 1440 × 721 cells, per field per step: 1.14 GB for 72 h with the extra
+ * fields), written next to the run in use before that one is pruned.
+ * Each check compares the need against what is available *now*: after
+ * the work, `headroom` bytes of memory must remain, and at least
+ * DISK_RESERVE_BYTES of disk.
  *
  * Available memory is Linux MemAvailable (what the kernel can hand out
  * without swapping), bounded by a cgroup memory limit when the plugin
@@ -15,22 +22,28 @@
  * pages (often tens of MB on a busy Mac), so there the figure is free +
  * inactive + speculative + purgeable pages from vm_stat, the memory the
  * kernel reclaims without swapping. Elsewhere os.freemem().
+ *
+ * The global water grid (about 65 MB, route worker only) is resident from
+ * start-up, so it is already excluded from the available figure when a
+ * forecast update or a route runs. Rebuilding it (only when no grid matches the configured
+ * coastline) needs WATER_GRID_BUILD_BYTES more while it runs;
+ * checkWaterGridBuildMemory guards that the same way.
  */
 
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { availableSteps, ATM_PARAMS, WAVE_PARAMS, cycleFor } from '../data/ecmwf';
+import { streamingDecodeBytes } from '../data/loader';
 
 /** Bytes of one global field for one step (Float32, 0.25°). */
 export const FIELD_STEP_BYTES = 1440 * 721 * 4;
 export const EXTRA_FIELD_COUNT = 5;
 
-/** Bytes the global store needs for a horizon and field set. */
+/** Bytes of a decoded run (on disk) for a horizon and field set: steps × fields × one global grid. */
 export function forecastBytes(horizonHours: number, extraFields: boolean, now = new Date()): number {
   const steps = availableSteps(cycleFor(now).atmStream, horizonHours).length;
-  const fields = ATM_PARAMS.length + WAVE_PARAMS.length + (extraFields ? EXTRA_FIELD_COUNT : 0);
-  return steps * fields * FIELD_STEP_BYTES;
+  return steps * fieldsPerStep(extraFields) * FIELD_STEP_BYTES;
 }
 
 function readNumber(file: string): number | null {
@@ -106,20 +119,43 @@ export interface MemoryCheck {
 
 const mb = (b: number): string => `${Math.round(b / 1e6)} MB`;
 
+/** Parameters per step for a field set. */
+export function fieldsPerStep(extraFields: boolean): number {
+  return ATM_PARAMS.length + WAVE_PARAMS.length + (extraFields ? EXTRA_FIELD_COUNT : 0);
+}
+
+/** Disk left free after writing a decoded run (a policy, not a measurement). */
+export const DISK_RESERVE_BYTES = 1e9;
+
+/** Free disk space for this process below `dir`, bytes, or null when unknown. */
+export function availableDisk(dir: string): number | null {
+  try {
+    const st = fs.statfsSync(dir);
+    return Number(st.bavail) * Number(st.bsize);
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Can a forecast of this horizon and field set be loaded, leaving
- * `headroomBytes` free? `available` defaults to the live reading (tests
- * pass their own).
+ * Can a forecast update run: memory for one decode step with `headroom`
+ * to spare, and disk for the whole decoded run with DISK_RESERVE_BYTES to
+ * spare? `available` / `disk` default to live readings (tests pass their own).
  */
-export function checkForecastMemory(
-  horizonHours: number, extraFields: boolean, headroomBytes: number,
-  available: { bytes: number; source: string } = availableMemory(), now = new Date(),
+export function checkDecodeResources(
+  horizonHours: number, extraFields: boolean, headroomBytes: number, dir: string | null,
+  available: { bytes: number; source: string } = availableMemory(), disk: number | null = dir ? availableDisk(dir) : null, now = new Date(),
 ): MemoryCheck {
-  const need = forecastBytes(horizonHours, extraFields, now);
-  const ok = need + headroomBytes <= available.bytes;
-  let message = `forecast needs ${mb(need)} (${horizonHours} h${extraFields ? ', extra fields' : ''}); ${mb(available.bytes)} available, ${mb(headroomBytes)} headroom kept`;
-  if (!ok) {
-    const fits = (h: number, x: boolean): boolean => forecastBytes(h, x, now) + headroomBytes <= available.bytes;
+  const need = streamingDecodeBytes(fieldsPerStep(extraFields));
+  const runBytes = forecastBytes(horizonHours, extraFields, now);
+  const memOk = need + headroomBytes <= available.bytes;
+  const diskOk = disk === null || runBytes + DISK_RESERVE_BYTES <= disk;
+  const diskText = disk === null ? 'free disk space unknown' : `${mb(disk)} disk free`;
+  let message = `update needs ${mb(need)} of memory for one decode step (${horizonHours} h${extraFields ? ', extra fields' : ''}) and ${mb(runBytes)} of disk for the decoded run; ${mb(available.bytes)} memory available, ${mb(headroomBytes)} headroom kept; ${diskText}`;
+  if (!memOk) {
+    message = `not enough memory: ${message}. Free memory or lower the memory headroom setting (Settings tab).`;
+  } else if (!diskOk) {
+    const fits = (h: number, x: boolean): boolean => forecastBytes(h, x, now) + DISK_RESERVE_BYTES <= disk!;
     const options: string[] = [];
     if (extraFields && fits(horizonHours, false)) options.push('turn off the extra fields');
     for (const h of [120, 96, 72, 48, 24, 12]) {
@@ -127,8 +163,39 @@ export function checkForecastMemory(
       if (fits(h, extraFields)) { options.push(`shorten the forecast horizon to ${h} h`); break; }
       if (extraFields && fits(h, false)) { options.push(`shorten the horizon to ${h} h with the extra fields off`); break; }
     }
-    options.push('lower the memory headroom setting');
-    message = `not enough memory: ${message}. To fit: ${options.join(', or ')} (Settings tab).`;
+    options.push(`free disk space (${mb(DISK_RESERVE_BYTES)} must stay free)`);
+    message = `not enough disk space: ${message}. To fit: ${options.join(', or ')}.`;
   }
+  return { ok: memOk && diskOk, needBytes: need, availableBytes: available.bytes, headroomBytes, source: available.source, message };
+}
+
+/** Can a route's corridor store of `needBytes` be read, leaving `headroomBytes` free? */
+export function checkRouteForecastMemory(
+  needBytes: number, headroomBytes: number, available: { bytes: number; source: string } = availableMemory(),
+): MemoryCheck {
+  const ok = needBytes + headroomBytes <= available.bytes;
+  const message = ok
+    ? `route forecast area needs ${mb(needBytes)}; ${mb(available.bytes)} available, ${mb(headroomBytes)} headroom kept`
+    : `not enough memory for the route's forecast area: it needs ${mb(needBytes)}, ${mb(available.bytes)} available with ${mb(headroomBytes)} to keep free. Shorten the route (fewer waypoints far apart), shorten the forecast horizon, or lower the memory headroom setting.`;
+  return { ok, needBytes, availableBytes: available.bytes, headroomBytes, source: available.source, message };
+}
+
+/**
+ * Peak extra memory of a water grid rebuild (the three global bit planes,
+ * one 10° tile with halo, its distance field, decoded polygons), bytes.
+ * Measured on the full GSHHG L1: 419 MB peak RSS for the standalone build
+ * process including Node itself (about 60 MB).
+ */
+export const WATER_GRID_BUILD_BYTES = 400e6;
+
+/** Can a water grid rebuild run now, leaving `headroomBytes` free? */
+export function checkWaterGridBuildMemory(
+  headroomBytes: number, available: { bytes: number; source: string } = availableMemory(),
+): MemoryCheck {
+  const need = WATER_GRID_BUILD_BYTES;
+  const ok = need + headroomBytes <= available.bytes;
+  const message = ok
+    ? `water grid rebuild needs about ${mb(need)}; ${mb(available.bytes)} available, ${mb(headroomBytes)} headroom kept`
+    : `not enough memory to rebuild the water grid: it needs about ${mb(need)}, ${mb(available.bytes)} available with ${mb(headroomBytes)} to keep free. Routes use the shipped grid meanwhile; free memory or lower the memory headroom setting and restart the plugin.`;
   return { ok, needBytes: need, availableBytes: available.bytes, headroomBytes, source: available.source, message };
 }

@@ -231,10 +231,10 @@ export function fieldGrid(src: OverlaySources, layer: FieldLayer, bbox: BBox, ti
       break;
     }
   }
-  // A cropped store (not the resident global one) clamps to its edge
-  // outside its box; those values are not forecast, so every
-  // forecast-derived layer reports no data there. The global store
-  // covers everywhere. Currents and tides carry their own coverage.
+  // A cropped or windowed store clamps to its edge outside its box; those
+  // values are not forecast, so every forecast-derived layer reports no
+  // data there (the data worker reads the view plus a margin, so a map
+  // view is covered everywhere). The global store covers everywhere. Currents and tides carry their own coverage.
   if (layer !== 'current' && layer !== 'tide' && f) {
     for (let r = 0; r < lats.length; r++) {
       for (let c = 0; c < lons.length; c++) {
@@ -514,8 +514,7 @@ export function landMaskImage(src: OverlaySources, bbox: BBox, w: number, h: num
     const lat = bbox.north - (y + 0.5) * dy;
     const row = y * w;
     for (let x = 0; x < w; x++) {
-      let lon = bbox.west + (x + 0.5) * dx;
-      if (lon > 180) lon -= 360;
+      const lon = ((bbox.west + (x + 0.5) * dx + 180) % 360 + 360) % 360 - 180;
       if (lm.isLand(lon, lat)) out[row + x] = 1;
     }
   }
@@ -548,86 +547,4 @@ export function pressureFeatures(src: OverlaySources, bbox: BBox, time: Date, in
     }
   }
   return { type: 'FeatureCollection', features: buildIsobarFeatures(field, lons, lats, intervalHpa) };
-}
-
-// ─────────── Conditions sample tile (GET /api/conditions-tile/:z/:x/:y) ───────────
-
-/** Lat/lon bbox `[west, south, east, north]` of slippy-map XYZ tile (z, x, y). */
-export function tileLatLonBounds(z: number, x: number, y: number): [number, number, number, number] {
-  const n = 2 ** z;
-  const west = (x / n) * 360.0 - 180.0;
-  const east = ((x + 1) / n) * 360.0 - 180.0;
-  const north = Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * (180.0 / Math.PI);
-  const south = Math.atan(Math.sinh(Math.PI * (1 - (2 * (y + 1)) / n))) * (180.0 / Math.PI);
-  return [west, south, east, north];
-}
-
-/**
- * Global-grid lon/lat inside `[west, east) x [south, north)`, snapped to
- * multiples of `res`, so adjacent tiles share no points at their edges.
- */
-export function globalGridLonLats(west: number, south: number, east: number, north: number, res: number): { lons: number[]; lats: number[] } {
-  const axis = (lo: number, hi: number): number[] => {
-    const out: number[] = [];
-    const i1 = Math.ceil(hi / res);
-    for (let i = Math.ceil(lo / res); i < i1; i++) {
-      const v = i * res;
-      if (v >= lo && v < hi) out.push(v);
-    }
-    return out;
-  };
-  return { lons: axis(west, east), lats: axis(south, north) };
-}
-
-/** One sample point of a conditions tile: position plus every ConditionsRow field except `time`. */
-export type ConditionsTilePoint = { lon: number; lat: number } & Omit<ConditionsRow, 'time'>;
-
-/** Tiles below this zoom are empty (the routing server's contract). */
-export const CONDITIONS_TILE_MIN_ZOOM = 5;
-
-const tileCache = new Map<string, ConditionsTilePoint[]>();
-const TILE_CACHE_MAX = 512;
-
-/**
- * Every conditions field at each sample point of tile (z, x, y) for one
- * hour. Same point spacing as the routing server's wind-barb tile
- * (`max(0.02, 0.8 / 2^(z-6))` degrees on the global grid), rows from the
- * south, west to east within a row; land points are dropped when a land
- * source is configured (an on-demand raster over the tile). Values come from `sampleConditions`, so a dot and the
- * point series agree. Empty below zoom 5. Cached per forecast cycle and
- * current-source set.
- */
-export function conditionsTilePoints(src: OverlaySources, z: number, x: number, y: number, time: Date): ConditionsTilePoint[] {
-  if (z < CONDITIONS_TILE_MIN_ZOOM) return [];
-  const n = 2 ** z;
-  if (!Number.isInteger(z) || !Number.isInteger(x) || !Number.isInteger(y) || x < 0 || x >= n || y < 0 || y >= n) throw new Error('tile out of range');
-  if (!src.forecast && (!src.currents || src.currents.isEmpty)) throw new Error('no forecast data loaded');
-  const cycle = src.forecast ? src.forecast.meta.cycleTime.getTime() : 0;
-  const cur = src.currents ? src.currents.key : '';
-  const key = `${cycle}|${cur}|${src.land ? 1 : 0}|${z}/${x}/${y}|${time.getTime()}`;
-  const hit = tileCache.get(key);
-  if (hit) {
-    tileCache.delete(key);
-    tileCache.set(key, hit);
-    return hit;
-  }
-  const [w, s, e, nLat] = tileLatLonBounds(z, x, y);
-  const res = Math.max(0.02, 0.8 / 2 ** (z - 6));
-  const { lons, lats } = globalGridLonLats(w, s, e, nLat, res);
-  const lm = src.land ? src.land.forBBox({ west: w, south: s, east: e, north: nLat }, res) : null;
-  const points: ConditionsTilePoint[] = [];
-  for (const lat of lats) {
-    for (const lon of lons) {
-      if (lm && lm.isLand(lon, lat)) continue;
-      const { time: _t, ...row } = sampleConditions(src, lon, lat, time);
-      points.push({ lon: rnd(lon, 5) as number, lat: rnd(lat, 5) as number, ...row });
-    }
-  }
-  tileCache.set(key, points);
-  while (tileCache.size > TILE_CACHE_MAX) {
-    const oldest = tileCache.keys().next().value;
-    if (oldest === undefined) break;
-    tileCache.delete(oldest);
-  }
-  return points;
 }

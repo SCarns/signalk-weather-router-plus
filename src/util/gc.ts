@@ -1,15 +1,11 @@
 /**
- * Explicit full garbage collection after the resident forecast is
- * replaced.
- *
- * The global forecast is ~0.6–1.1 GB of SharedArrayBuffer memory held by
- * three isolates (main thread, data worker, route worker). A shared
- * backing store is released only when every isolate that referenced it
- * has collected its wrapper, and an idle isolate (the main thread
- * between requests, the route worker between jobs) can go hours without
- * a major GC, so the previous cycle's store would otherwise stay
- * resident next to the new one. Each thread calls releaseMemory() right
- * after dropping its reference; the last one frees the old store.
+ * Explicit full garbage collection after large short-lived forecast
+ * memory is dropped: the streaming decoder's one-step block and decode
+ * buffers at the end of an update, and a route's corridor store when the
+ * route ends. An idle isolate (the route worker between jobs) can go
+ * hours without a major GC, so that memory would otherwise stay resident
+ * until some later collection. (The decoded forecast itself is on disk,
+ * never resident; see data/decoded.ts.)
  *
  * `gc` is obtained without a command-line flag: --expose_gc set at run
  * time installs `gc` in contexts created afterwards, so a fresh vm

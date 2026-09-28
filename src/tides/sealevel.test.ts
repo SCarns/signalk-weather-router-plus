@@ -12,7 +12,7 @@ import {
 import { parseConsolidated } from '../data/zarr';
 import type { ArcoRun } from '../data/arco';
 import { conditionsSeries, fieldGrid, type OverlaySources } from '../plugin/overlays';
-import { applyWaterLevel, makeWeatherProvider, type WeatherData } from '../plugin/weather';
+import { applyWaterLevel, makeWeatherProvider, pointForecasts, startMsOf, type WeatherData, type PointForecastFn } from '../plugin/weather';
 import { buildLegends } from '../plugin/legends';
 import { defaultSettings, mergeSettings, reloadsFor, SETTINGS_SPEC } from '../plugin/settings';
 import { resolveConfig } from '../plugin/config';
@@ -455,7 +455,8 @@ test('Weather API: water.level (m above MSL) and water.levelTendency from the po
     at: () => [5, 90], wavesAt: () => null, mslAt: () => 101300, paramAt: () => NaN,
   } as unknown as ForecastStore;
   const asked: number[][] = [];
-  const provider = makeWeatherProvider(() => store, 'x', async (lat, lon, fromMs, hours) => {
+  const points: PointForecastFn = async (p, o) => pointForecasts(store, p.longitude, p.latitude, startMsOf(o), o?.maxCount ?? null);
+  const provider = makeWeatherProvider(points, 'x', async (lat, lon, fromMs, hours) => {
     asked.push([lat, lon, fromMs, hours]);
     return { t0Ms: t0 - H, stepMs: H, waterLevel: Float64Array.from({ length: 20 }, (_, k) => 0.9 * Math.cos(M2 * (k - 1) * H)), error: null };
   });
@@ -471,7 +472,7 @@ test('Weather API: water.level (m above MSL) and water.levelTendency from the po
   assert.equal(out[0].outside!.pressure, 101300, 'existing fields kept');
   assert.deepEqual(asked, [[41.4, -71.3, t0 - H, 8]]);
   // A failing tide query leaves the forecast intact without water.level.
-  const failing = makeWeatherProvider(() => store, 'x', async () => { throw new Error('down'); });
+  const failing = makeWeatherProvider(points, 'x', async () => { throw new Error('down'); });
   const f = await failing.methods.getForecasts({ latitude: 41.4, longitude: -71.3 }, 'point', { startDate: new Date(t0).toISOString() });
   assert.equal(f.length, 3);
   assert.equal(f[0].water, undefined);

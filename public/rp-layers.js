@@ -657,8 +657,11 @@ function _gridSampler(grid, rows) {
   if (!rows || !nx || !ny) return () => null;
   const lon0 = lons[0], lat0 = lats[0];
   return function (lon, lat) {
-    let dx = lon - lon0;
-    dx = ((dx + 180) % 360 + 360) % 360 - 180;
+    // Offset east of the grid's first column in [0, 360): a grid may span
+    // more than 180° (views across the date line), so wrap from its west
+    // edge, allowing half a cell west of it.
+    let dx = ((lon - lon0) % 360 + 360) % 360;
+    if (dx > 360 - res / 2) dx -= 360;
     let fx = dx / res, fy = (lat - lat0) / res;
     if (fx < -0.5 || fx > nx - 0.5 || fy < -0.5 || fy > ny - 0.5) return null;
     fx = Math.max(0, Math.min(nx - 1, fx)); fy = Math.max(0, Math.min(ny - 1, fy));
@@ -709,8 +712,7 @@ function fetchLandMask(bbox, W, H) {
 function _maskIsLand(f, mask, lon, lat) {
   if (!mask || !f || !f.bbox) return null;
   const [w, s, e, n] = f.bbox;
-  let dx = lon - w;
-  dx = ((dx % 360) + 360) % 360;
+  const dx = ((lon - w) % 360 + 360) % 360;
   const x = Math.floor(dx / (e - w) * mask.W), y = Math.floor((n - lat) / (n - s) * mask.H);
   if (x < 0 || x >= mask.W || y < 0 || y >= mask.H) return null;
   return mask.bytes[y * mask.W + x] === 1;
@@ -723,10 +725,26 @@ function _attachLandMask(owner, f) {
   fetchLandMask(f.bbox, W, H).then(m => { if (owner.vectorField === f) owner.landMask = m; })
     .catch(err => console.log('land mask unavailable for flow lines: ' + err.message));
 }
-function renderHeatmapImage(grid, spec, landMask) {
+// Draw the grid onto a canvas in the map's own projection (Web Mercator)
+// over `ext3857`, the view extent at request time in unwrapped map
+// coordinates, so the image sits exactly on the viewed world copy even
+// when the view crosses the date line. Each pixel's lon/lat comes from
+// the projection; the grid and the land mask (fetched for grid.bbox,
+// equirectangular) are looked up with longitude wrapped from their west
+// edge.
+function renderHeatmapImage(grid, spec, landMask, ext3857) {
   const [w, s, e, n] = grid.bbox;
   const [W, H] = landMask ? [landMask.W, landMask.H] : _heatmapCanvasSize();
   const maskBytes = landMask ? landMask.bytes : null;
+  const mW = landMask ? landMask.W : 0, mH = landMask ? landMask.H : 0, spanLon = (e - w) || 360;
+  const maskAt = (lon, lat) => {
+    if (!maskBytes) return 0;
+    const mx = Math.floor((((lon - w) % 360 + 360) % 360) / spanLon * mW);
+    const my = Math.floor((n - lat) / (n - s) * mH);
+    if (mx < 0 || mx >= mW || my < 0 || my >= mH) return 0;
+    return maskBytes[my * mW + mx];
+  };
+  const [ex0, ey0, ex1, ey1] = ext3857;
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
@@ -739,11 +757,13 @@ function renderHeatmapImage(grid, spec, landMask) {
   const sampleAlpha = spec.alphaField ? _gridSampler(grid, grid.fields[spec.alphaField]) : null;
   const baseA = spec.alpha == null ? 0.55 : spec.alpha;
   const span = (v1 - v0) || 1;
+  const R = 6378137;
   for (let y = 0; y < H; y++) {
-    const lat = n - (y + 0.5) / H * (n - s);
+    const my = ey1 - (y + 0.5) / H * (ey1 - ey0);
+    const lat = (2 * Math.atan(Math.exp(my / R)) - Math.PI / 2) * 180 / Math.PI;
     for (let x = 0; x < W; x++) {
-      if (spec.maskLand && maskBytes && maskBytes[y * W + x]) continue;
-      const lon = w + (x + 0.5) / W * (e - w);
+      const lon = (ex0 + (x + 0.5) / W * (ex1 - ex0)) / R * 180 / Math.PI;
+      if (spec.maskLand && maskBytes && maskAt(lon, lat)) continue;
       const v = sample(lon, lat);
       if (v == null) {
         // Water (per the coastline) the source model has no value for:
@@ -780,9 +800,11 @@ function _fieldRes(bbox) {
 // so the second request is a browser-cache hit.
 function fetchField(layer, channel) {
   const bbox = _viewBBox();
+  const ext3857 = map.getView().calculateExtent(map.getSize());
   const res = _fieldRes(bbox);
   const url = ROUTER + '/field?layer=' + layer + '&bbox=' + _bboxParam(bbox) + '&time=' + encodeURIComponent(_overlayTimeIso()) + '&res=' + res;
-  return authFetch(url, {}, channel).then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))));
+  return authFetch(url, {}, channel).then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+    .then(g => { if (g && typeof g === 'object') g._ext3857 = ext3857; return g; });
 }
 // Symmetric auto-scale for a diverging layer (tide height): stretch the
 // legend's stops so the largest |value| over water in this grid sits at
@@ -811,11 +833,12 @@ function _applyAutoScale(grid, spec) {
 }
 function _setHeatmap(layer, grid, spec, landMask) {
   _applyAutoScale(grid, spec);
-  const [w, s, e, n] = grid.bbox;
+  // The view extent the grid was requested for, in map coordinates.
+  const ext = grid._ext3857 || map.getView().calculateExtent(map.getSize());
   layer.setSource(new ol.source.ImageStatic({
-    url: renderHeatmapImage(grid, spec, landMask),
-    imageExtent: [w, s, e, n],
-    projection: 'EPSG:4326',
+    url: renderHeatmapImage(grid, spec, landMask, ext),
+    imageExtent: ext,
+    projection: 'EPSG:3857',
     attributions: spec.attributions,
   }));
 }
@@ -1104,8 +1127,9 @@ const waveStreamlines = {
   _sample(lon, lat) {
     const f = this.vectorField;
     if (!f || !f.res || !f.fields || !f.fields.swh) return null;
-    let dx = lon - f.lons[0];
-    dx = ((dx + 180) % 360 + 360) % 360 - 180;
+    // Offset east of the field's first column in [0, 360) (fields can span > 180°).
+    let dx = ((lon - f.lons[0]) % 360 + 360) % 360;
+    if (dx > 360 - f.res / 2) dx -= 360;
     const j = Math.round(dx / f.res);
     const i = Math.round((lat - f.lats[0]) / f.res);
     if (i < 0 || i >= f.lats.length || j < 0 || j >= f.lons.length) return null;
@@ -1258,8 +1282,9 @@ const windStreamlines = {
   _sample(lon, lat) {
     const f = this.vectorField;
     if (!f || !f.res || !f.fields || !f.fields.speed_ms) return null;
-    let dx = lon - f.lons[0];
-    dx = ((dx + 180) % 360 + 360) % 360 - 180;
+    // Offset east of the field's first column in [0, 360) (fields can span > 180°).
+    let dx = ((lon - f.lons[0]) % 360 + 360) % 360;
+    if (dx > 360 - f.res / 2) dx -= 360;
     const j = Math.round(dx / f.res);
     const i = Math.round((lat - f.lats[0]) / f.res);
     if (i < 0 || i >= f.lats.length || j < 0 || j >= f.lons.length) return null;
@@ -1334,57 +1359,6 @@ const windStreamlines = {
 };
 
 // --- Map ---
-// ─────────── Conditions sample points (current overlay hour) ───────────
-// `GET /api/conditions-tile/{z}/{x}/{y}?t=<hour>` — one point per
-// wind-barb sample position carrying every conditions field for the
-// hour (SI, the plugin's ConditionsRow names). Drawn as faint dots;
-// shift-click (or "Conditions here") reads the nearest one for instant
-// values, then fetches the hourly series from `/api/conditions`. The
-// source is rebuilt on every overlay-time change (`loadConditionsLayer`).
-function _conditionsSource(tHour) {
-  return new ol.source.VectorTile({
-    format: new ol.format.GeoJSON(),
-    url: ROUTER + '/conditions-tile/{z}/{x}/{y}?t=' + encodeURIComponent(tHour),
-    minZoom: 5,
-    maxZoom: 18,
-    tileLoadFunction: function(tile, url) {
-      if (AuthGate.tripped) { tile.setFeatures([]); return; }
-      tile.setLoader(function(extent, resolution, projection) {
-        authFetch(url, {}, null)
-          .then(r => r.json())
-          .then(points => {
-            const feats = (Array.isArray(points) ? points : []).map(p => {
-              const f = new ol.Feature(new ol.geom.Point(
-                ol.proj.transform([p.lon, p.lat], 'EPSG:4326', projection)));
-              f.setProperties(p, true);
-              return f;
-            });
-            tile.setFeatures(feats);
-          })
-          .catch(() => tile.setFeatures([]));
-      });
-    },
-  });
-}
-
-const conditionsLayer = new ol.layer.VectorTile({
-  source: _conditionsSource(_overlayTimeIso().slice(0, 13)),
-  zIndex: 7,
-  visible: false,
-  style: new ol.style.Style({
-    image: new ol.style.Circle({
-      radius: 3,
-      fill: new ol.style.Fill({ color: 'rgba(30, 60, 120, 0.35)' }),
-      stroke: new ol.style.Stroke({ color: 'rgba(255,255,255,0.8)', width: 1 }),
-    }),
-  }),
-});
-
-function loadConditionsLayer() {
-  if (!conditionsLayer.getVisible()) return;
-  conditionsLayer.setSource(_conditionsSource(_overlayTimeIso().slice(0, 13)));
-}
-
 const _DEFAULT_LONLAT = [-71.7, 41.25];
 let _SAVED_VIEW = null;
 try {
@@ -1395,7 +1369,7 @@ try {
 
 const map = new ol.Map({
   target: 'map',
-  layers: [osmLayer, seamarkLayer, conditionsLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, markerLayer, condMarkerLayer],
+  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, markerLayer, condMarkerLayer],
   view: new ol.View({
     // Last view this browser had (saved on every move), else Block
     // Island Sound at zoom 11. On a first visit the geolocation block

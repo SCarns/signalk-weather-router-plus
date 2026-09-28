@@ -41,8 +41,17 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       end: point,
       waypoints: {
         type: 'array',
-        description: 'Ordered pass-through points; radius_m is the disc the track must cross (default 500).',
-        items: { ...point, properties: { ...point.properties, radius_m: { type: 'number' } } },
+        maxItems: 20,
+        description: 'Ordered waypoints; each ends one leg and starts the next. radius_m overrides arrival_radius_m for that waypoint (approximate precision).',
+        items: { ...point, properties: { ...point.properties, radius_m: { type: 'number', minimum: 0, maximum: 5000 } } },
+      },
+      precision: {
+        type: 'string', enum: ['precise', 'approximate'], default: 'precise',
+        description: 'precise: each leg ends exactly on its waypoint; approximate: a leg ends as soon as the route enters the waypoint circle and the next leg starts there. The destination is always exact.',
+      },
+      arrival_radius_m: {
+        type: 'number', minimum: 0, maximum: 5000, default: 200,
+        description: 'Waypoint circle radius in metres for approximate precision (must be > 0 then); ignored when precise.',
       },
       departure: { type: 'string', format: 'date-time', description: 'Empty or absent = now' },
       mode: { type: 'string', enum: ['sail_max', 'fastest', 'motor'], default: 'sail_max' },
@@ -89,8 +98,14 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
     paths: {
       '/api/status': {
         get: {
-          summary: 'Plugin, forecast (global coverage, resident bytes, shared), currents, overlay land cache and queue status',
-          description: '`currents` lists the data worker\'s current sources in priority order ({name, priority, resolutionM, bbox, validFrom, validTo}); '
+          summary: 'Plugin, forecast (decoded run on disk, memory held), currents, overlay land cache and queue status',
+          description: '`forecast` (null until a run is ready): {cycle, valid_from, valid_to, steps, params, coverage, storage: "decoded-on-disk", loaded_at, has_waves, '
+            + 'source: "disk" (a complete decoded run was already on disk, no decode) | "grib" (decoded from the GRIB cache / download), ready_ms, fields_downloaded, '
+            + 'decoded_dir, decoded_bytes (this run on disk), decoded_at, decode_ms, decoded_disk_bytes (all decoded runs kept), grib_cache_bytes, '
+            + 'last_decode: {at, cycle, ms, stepBlockBytes, writtenBytes, downloaded} | null, memory: {data_worker_held_bytes, data_worker_largest_recent_window, '
+            + 'route_worker_held_bytes, route_worker_largest_recent_window, decoding_block_bytes}} — the decoded forecast is never resident; `memory` is what '
+            + 'requests hold now (a route\'s corridor store while it runs, a query\'s window while it is answered). `process_rss_bytes`: the Signal K process RSS. '
+            + '`currents` lists the data worker\'s current sources in priority order ({name, priority, resolutionM, bbox, validFrom, validTo}); '
             + 'the CMEMS-SMOC entry adds `smoc`: {run, run_last_time, stac_updated, settled, step_hours, horizon_hours, half_width_deg, '
             + 'resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, memory_bytes, '
             + 'shared_resident, last_download: {at, reason, bytes, chunks, downloaded, from_disk, seconds, decode_ms} | null, downloaded_bytes_total, disk_cache_bytes, layouts}. '
@@ -127,7 +142,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       },
       '/api/forecast': {
         get: {
-          summary: 'Resident (global) forecast metadata, optionally sampled at any position',
+          summary: 'Forecast (global, decoded on disk) metadata, optionally sampled at any position (every step)',
           parameters: [
             { name: 'lat', in: 'query', schema: { type: 'number' } },
             { name: 'lon', in: 'query', schema: { type: 'number' } },
@@ -194,23 +209,6 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           },
         },
       },
-      '/api/conditions-tile/{z}/{x}/{y}': {
-        parameters: [
-          { name: 'z', in: 'path', required: true, schema: { type: 'integer' } },
-          { name: 'x', in: 'path', required: true, schema: { type: 'integer' } },
-          { name: 'y', in: 'path', required: true, schema: { type: 'string' }, description: 'Tile row; a ".json" suffix is accepted' },
-          { name: 't', in: 'query', required: true, schema: { type: 'string' }, description: 'Hour-truncated UTC ISO time, YYYY-MM-DDTHH[:00[:00]][Z]' },
-        ],
-        get: {
-          summary: 'Conditions sample points for one XYZ tile at one hour (wind-barb spacing, land dropped, empty below zoom 5)',
-          responses: {
-            200: { description: '[{lon, lat, wind_ms, wind_dir_deg, swh_m, mwp_s, mwd_deg, current_ms, current_dir_deg, msl_pa, t2m_k, skt_k, precip_rate_ms, precip_type, precip_type_label, dewpoint_k, rh, feels_like_k, feels_like_basis, wind_chill_k, heat_index_k, beaufort, douglas, douglas_label, sea_state_index, sea_state, sea_state_partial}]' },
-            400: { description: 'Bad t' },
-            404: { description: 'Tile out of range' },
-            503: { description: 'No forecast or current data loaded' },
-          },
-        },
-      },
       '/api/field': {
         get: {
           summary: 'JSON value grid for a heatmap layer over a bbox at one time',
@@ -232,7 +230,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       '/api/conditions': {
         get: {
           summary: 'Hourly point series of every conditions field, plus tide height, total water level and surge with the high and low waters',
-          description: 'Rows: the /api/conditions-tile fields plus `time` and the tide fields `tide_m` (tide height above mean sea level, m; Copernicus Marine ocean_tide, FES2014), '
+          description: 'Rows: every conditions field (wind_ms, wind_dir_deg, swh_m, mwp_s, mwd_deg, current_ms, current_dir_deg, msl_pa, t2m_k, skt_k, precip_rate_ms, precip_type, precip_type_label, dewpoint_k, rh, feels_like_k, feels_like_basis, wind_chill_k, heat_index_k, beaufort, douglas, douglas_label, sea_state_index, sea_state, sea_state_partial) plus `time` and the tide fields `tide_m` (tide height above mean sea level, m; Copernicus Marine ocean_tide, FES2014), '
             + '`water_level_m` (total water level above local mean sea level, m = total_sea_level − local mean), `surge_m` (non-tidal residual = water level − tide, m), '
             + '`tide_extrapolated` (a bilinear corner is model land and took the value of valid cells within 2 cells, ~18 km), `tide_tendency` (rising / falling / steady within ±2 cm/h). '
             + 'Tide fields are null when tides are off or there is no model water within 2 cells. '
