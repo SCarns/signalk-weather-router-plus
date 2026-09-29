@@ -1,5 +1,7 @@
 /** OpenAPI 3.0 description of the plugin API, served at /api/openapi.json and via getOpenApi(). */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { SETTINGS_GROUPS, SETTINGS_SPEC, type SettingSpec } from './settings';
 
 /** JSON schema of one setting's value (SI). */
@@ -34,6 +36,15 @@ function settingsValuesSchema(): Record<string, unknown> {
     props[g.id] = { type: 'object', description: `${g.label}. ${g.help}`, properties: inner };
   }
   return { type: 'object', properties: props };
+}
+
+/** The plugin's package.json version (dist/plugin and src/plugin are both two levels below it). */
+function packageVersion(): string {
+  try {
+    return (JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8')) as { version: string }).version;
+  } catch {
+    return 'unknown';
+  }
 }
 
 export function openApiDocument(basePath: string): Record<string, unknown> {
@@ -71,7 +82,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       },
       departure: { type: 'string', format: 'date-time', description: 'Empty or absent = now' },
       mode: { type: 'string', enum: ['sail_max', 'fastest', 'motor'], default: 'sail_max' },
-      sail_thresh_ms: { type: 'number', description: 'Overrides the routing.sailThreshold setting (m/s)' },
+      sail_thresh_ms: { type: 'number', minimum: 0, description: 'Overrides the routing.sailThreshold setting (m/s)' },
       simplify_m: {
         type: 'number',
         minimum: 0,
@@ -86,8 +97,9 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         description: 'Shortcut time tolerance as a ratio; overrides routing.smootherTolerance',
       },
       name: { type: 'string', description: 'Name for the Signal K route resource' },
-      stages: { type: 'integer', minimum: 4, maximum: 200, description: 'Overrides the routing.stages setting' },
+      stages: { type: 'number', minimum: 4, maximum: 200, description: 'Overrides the routing.stages setting' },
       no_forecast: { type: 'boolean', description: 'Route with calm wind' },
+      no_currents: { type: 'boolean', description: 'Route without currents' },
       publish: { type: 'boolean', description: 'Override the publish.toResources setting for this route' },
       vessel: {
         type: 'object',
@@ -125,6 +137,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       summary: { type: 'object' },
       error: { type: 'string' },
       resource_id: { type: 'string' },
+      publish_error: { type: 'string', description: 'Why publishing to the Resources API failed, when it did' },
       links: { type: 'object' },
     },
   };
@@ -132,7 +145,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
     openapi: '3.0.0',
     info: {
       title: 'signalk-weather-router-plus',
-      version: '0.1.0',
+      version: packageVersion(),
       description: 'Standalone open-water weather routing on ECMWF open data. All values SI (m, m/s, s, degrees true).',
     },
     servers: [{ url: basePath }],
@@ -141,6 +154,8 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         get: {
           summary: 'Plugin, forecast (decoded run on disk, memory held), currents, overlay land cache and queue status',
           description:
+            'Top level: plugin, started, workers {data, route}, forecast, forecast_error, currents, currents_route_worker, rtofs_run, overlay_land, ' +
+            'weather_provider_registered, jobs, vessel, polar, land, harmonic_dir, extra_fields, tides, tides_enabled, tides_error, process_rss_bytes. ' +
             '`forecast` (null until a run is ready): {cycle, valid_from, valid_to, steps, params, coverage, storage: "decoded-on-disk", loaded_at, has_waves, ' +
             'source: "disk" (a complete decoded run was already on disk, no decode) | "grib" (decoded from the GRIB cache / download), ready_ms, fields_downloaded, ' +
             'decoded_dir, decoded_bytes (this run on disk), decoded_at, decode_ms, decoded_disk_bytes (all decoded runs kept), grib_cache_bytes, ' +
@@ -185,6 +200,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             400: { description: '{error, errors: {"group.key": message}}; nothing saved' },
             401: { description: 'Not signed in' },
             403: { description: 'Needs readwrite access' },
+            500: { description: 'Saving failed' },
             503: { description: 'Plugin not started' },
           },
         },
@@ -196,13 +212,13 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             { name: 'lat', in: 'query', schema: { type: 'number' } },
             { name: 'lon', in: 'query', schema: { type: 'number' } },
           ],
-          responses: { 200: { description: 'OK' } },
+          responses: { 200: { description: 'OK' }, 400: { description: 'lat/lon not numbers, or no forecast' } },
         },
       },
       '/api/polars': {
         get: {
           summary: 'Polar library: the configured default plus every .pol/.csv in the polars directory',
-          responses: { 200: { description: '[{path,label,source}]' } },
+          responses: { 200: { description: '[{path,label,source}]' }, 400: { description: 'Plugin not started' } },
         },
       },
       '/api/polar-angles': {
@@ -217,7 +233,11 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               description: 'Token from /api/polars; absent or empty = the configured default',
             },
           ],
-          responses: { 200: { description: '{tws_ms[], beat_deg[], run_deg[]}' }, 404: { description: 'Not in the library' } },
+          responses: {
+            200: { description: '{tws_ms[], beat_deg[], run_deg[]}' },
+            400: { description: 'No polar configured, or plugin not started' },
+            404: { description: 'Not in the library' },
+          },
         },
       },
       '/api/polars/table': {
@@ -232,7 +252,11 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               description: 'Token from /api/polars; absent or empty = the configured default',
             },
           ],
-          responses: { 200: { description: '{twa_deg[], tws_ms[], speeds_ms[][]}' }, 404: { description: 'Not in the library' } },
+          responses: {
+            200: { description: '{path, twa_deg[], tws_ms[], speeds_ms[][]}' },
+            400: { description: 'No polar configured, or plugin not started' },
+            404: { description: 'Not in the library' },
+          },
         },
       },
       '/api/polar-from-specs': {
@@ -289,6 +313,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             400: { description: 'Invalid specs or name, or no polarsDir configured' },
             409: { description: 'A polar with that name exists and overwrite is false' },
             422: { description: 'Hull type the polar calculator does not model (multihulls)' },
+            500: { description: 'Calculator failed ("VPP failed: …")' },
           },
         },
       },
@@ -314,12 +339,13 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             {
               name: 'res',
               in: 'query',
-              schema: { type: 'number', minimum: 0.002, maximum: 2 },
+              schema: { type: 'number', minimum: 0.002, maximum: 2, default: 0.25 },
               description: 'lattice spacing, degrees (coarsened to at most 40k cells)',
             },
           ],
           responses: {
             200: { description: '{layer, time, bbox, res, lons, lats, fields: {name: rows from the south, null = no data}, land, units}' },
+            400: { description: 'Bad layer, bbox, time or res, or no forecast' },
           },
         },
       },
@@ -355,7 +381,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       '/api/legends': {
         get: {
           summary:
-            'Colour ramps for the heatmap layers: {key: {title, quantity, si_unit, kind, stops: [[SI value, css colour]], bands?}}; `tide`: tide height above mean sea level, −3..+3 m diverging',
+            'Colour ramps for the heatmap layers: {key: {title, quantity, category, si_unit, kind, stops: [[SI value, css colour]], bands?}}; `category` is the Signal K unit category for display; `tide`: tide height above mean sea level, −3..+3 m diverging',
           responses: { 200: { description: 'OK' } },
         },
       },
@@ -372,7 +398,51 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               description: 'lattice spacing, degrees',
             },
           ],
-          responses: { 200: { description: '[{lon, lat, u_ms, v_ms, speed_ms, dir_deg (TO)}], land and near-slack points dropped' } },
+          responses: {
+            200: { description: '[{lon, lat, u_ms, v_ms, speed_ms, dir_deg (TO)}], land and near-slack points dropped' },
+            400: { description: 'Bad bbox, time or res' },
+          },
+        },
+      },
+      '/api/wind-points': {
+        get: {
+          summary: 'Wind barb points on a lattice',
+          parameters: [
+            { name: 'bbox', in: 'query', required: true, schema: { type: 'string' }, description: 'west,south,east,north' },
+            { name: 'time', in: 'query', schema: { type: 'string', format: 'date-time' } },
+            {
+              name: 'res',
+              in: 'query',
+              schema: { type: 'number', minimum: 0.02, maximum: 5, default: 0.5 },
+              description: 'lattice spacing, degrees',
+            },
+          ],
+          responses: {
+            200: { description: '[{lon, lat, speed_ms, dir_deg (FROM, degrees true)}]' },
+            400: { description: 'Bad bbox, time or res, or no forecast' },
+          },
+        },
+      },
+      '/api/pressure': {
+        get: {
+          summary: 'Mean-sea-level pressure isobars with labels and high/low centres, as GeoJSON',
+          parameters: [
+            { name: 'bbox', in: 'query', required: true, schema: { type: 'string' }, description: 'west,south,east,north' },
+            { name: 'time', in: 'query', schema: { type: 'string', format: 'date-time' } },
+            {
+              name: 'interval',
+              in: 'query',
+              schema: { type: 'number', minimum: 1, maximum: 20, default: 4 },
+              description: 'isobar spacing, hPa',
+            },
+          ],
+          responses: {
+            200: {
+              description:
+                'FeatureCollection. properties.kind: "isobar" (LineString; hpa, pa, bold), "label" (Point; hpa, pa), "high" / "low" (Point; hpa, pa). pa is the SI value.',
+            },
+            400: { description: 'Bad bbox, time or interval, or no forecast' },
+          },
         },
       },
       '/api/land-mask': {
@@ -380,63 +450,162 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           summary: 'Land mask at screen resolution for clipping drawn layers to the coastline',
           parameters: [
             { name: 'bbox', in: 'query', required: true, schema: { type: 'string' }, description: 'west,south,east,north' },
-            { name: 'w', in: 'query', required: true, schema: { type: 'integer', minimum: 16, maximum: 2048 } },
-            { name: 'h', in: 'query', required: true, schema: { type: 'integer', minimum: 16, maximum: 2048 } },
+            {
+              name: 'w',
+              in: 'query',
+              schema: { type: 'number', minimum: 16, maximum: 2048, default: 1024 },
+              description: 'pixels, rounded',
+            },
+            {
+              name: 'h',
+              in: 'query',
+              schema: { type: 'number', minimum: 16, maximum: 2048, default: 1024 },
+              description: 'pixels, rounded',
+            },
           ],
           responses: {
             200: {
               description: 'gzip-encoded bytes, one per pixel (1 = land), row 0 at the north edge; X-Mask-Width/X-Mask-Height headers',
             },
+            400: { description: 'Bad bbox, w or h' },
           },
         },
       },
-      '/api/forecast/refresh': { post: { summary: 'Check ECMWF for a newer cycle', responses: { 202: { description: 'Accepted' } } } },
+      '/api/forecast/refresh': {
+        post: {
+          summary: 'Check ECMWF for a newer cycle',
+          parameters: [
+            {
+              name: 'force',
+              in: 'query',
+              schema: { type: 'string', enum: ['true', '1'] },
+              description: 'Decode the current cycle again from the GRIB cache',
+            },
+          ],
+          responses: { 202: { description: '{status: "refresh requested"}' } },
+        },
+      },
       '/api/routes': {
         post: {
           summary: 'Submit a route job',
           requestBody: { required: true, content: { 'application/json': { schema: routeRequest } } },
-          responses: { 202: { description: 'Job accepted' }, 400: { description: 'Invalid request' }, 429: { description: 'Queue full' } },
+          responses: {
+            202: { description: '{id, status, links}; Location header = links.self' },
+            400: { description: 'Invalid request' },
+            429: { description: 'Queue full (16 queued jobs)' },
+            503: { description: 'Plugin not started' },
+          },
         },
         get: {
-          summary: 'List jobs',
-          responses: { 200: { description: 'OK', content: { 'application/json': { schema: { type: 'array', items: job } } } } },
+          summary: 'List jobs, newest first',
+          parameters: [{ name: 'limit', in: 'query', schema: { type: 'number', minimum: 1, maximum: 500, default: 50 } }],
+          responses: {
+            200: { description: 'OK', content: { 'application/json': { schema: { type: 'array', items: job } } } },
+            503: { description: 'Plugin not started' },
+          },
         },
       },
       '/api/routes/{id}': {
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         get: {
           summary: 'Job status',
-          responses: { 200: { description: 'OK', content: { 'application/json': { schema: job } } }, 404: { description: 'Not found' } },
+          responses: {
+            200: { description: 'OK', content: { 'application/json': { schema: job } } },
+            404: { description: 'Not found' },
+            503: { description: 'Plugin not started' },
+          },
         },
-        delete: { summary: 'Delete a finished job', responses: { 204: { description: 'Deleted' } } },
+        delete: {
+          summary: 'Delete a queued or finished job (a running job must be cancelled first)',
+          responses: {
+            204: { description: 'Deleted' },
+            404: { description: 'Not found' },
+            409: { description: 'Job is running' },
+            503: { description: 'Plugin not started' },
+          },
+        },
       },
       '/api/routes/{id}/events': {
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         get: {
-          summary: 'Server-Sent Events: status, progress, route, done, error',
-          responses: { 200: { description: 'text/event-stream' } },
+          summary: 'Server-Sent Events: status, progress, route, done, error (Last-Event-ID honoured; ends after done/error)',
+          responses: {
+            200: { description: 'text/event-stream' },
+            404: { description: 'Not found' },
+            503: { description: 'Plugin not started' },
+          },
         },
       },
       '/api/routes/{id}/result': {
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         get: {
           summary: 'Route as GeoJSON FeatureCollection (LineString + one Point per waypoint)',
-          responses: { 200: { description: 'OK' }, 409: { description: 'Not finished' } },
+          responses: {
+            200: { description: 'OK' },
+            404: { description: 'Not found' },
+            409: { description: 'Not finished: {error, status, message}' },
+            503: { description: 'Plugin not started' },
+          },
+        },
+      },
+      '/api/routes/{id}/skeleton': {
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        get: {
+          summary: 'Coarse A* skeleton that guided the heading sweep, as a GeoJSON FeatureCollection',
+          responses: {
+            200: { description: 'OK' },
+            404: { description: 'Job not found, or no skeleton for this job' },
+            503: { description: 'Plugin not started' },
+          },
         },
       },
       '/api/routes/{id}/signalk': {
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-        get: { summary: 'Route as a Signal K Resources API route record', responses: { 200: { description: 'OK' } } },
+        get: {
+          summary: 'Route as a Signal K Resources API route record',
+          responses: {
+            200: { description: 'OK' },
+            404: { description: 'Not found' },
+            409: { description: 'Not finished' },
+            503: { description: 'Plugin not started' },
+          },
+        },
       },
       '/api/routes/{id}/cancel': {
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-        post: { summary: 'Cancel a queued or running job', responses: { 202: { description: 'Accepted' } } },
+        post: {
+          summary: 'Cancel a queued or running job',
+          responses: {
+            202: { description: '{id, status: "cancelling" | the current status when already finished}' },
+            404: { description: 'Not found' },
+            503: { description: 'Plugin not started' },
+          },
+        },
       },
       '/api/routes/{id}/publish': {
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         post: {
           summary: 'Save the route to /signalk/v2/api/resources/routes',
-          responses: { 200: { description: 'Published' }, 502: { description: 'Resources API error' } },
+          responses: {
+            200: { description: '{id, resource_id, href}' },
+            404: { description: 'Not found' },
+            409: { description: 'Not finished' },
+            502: { description: 'Resources API error' },
+            503: { description: 'Plugin not started' },
+          },
+        },
+      },
+      '/api/openapi.json': {
+        get: { summary: 'This document', responses: { 200: { description: 'OpenAPI 3.0 JSON' } } },
+      },
+      '/ui': {
+        get: { summary: 'The route planner page (readonly)', responses: { 200: { description: 'text/html' } } },
+      },
+      '/ui/{file}': {
+        parameters: [{ name: 'file', in: 'path', required: true, schema: { type: 'string' } }],
+        get: {
+          summary: "The page's scripts and styles (cached for a year when requested with ?v=)",
+          responses: { 200: { description: 'OK' }, 404: { description: 'Not found' } },
         },
       },
     },

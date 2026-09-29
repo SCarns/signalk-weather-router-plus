@@ -109,6 +109,15 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   const json = (res: Response, code: number, body: unknown): void => {
     res.status(code).json(body);
   };
+  /** The job manager, or null after answering 503 when the plugin is not started. */
+  const jobsOr503 = (res: Response): JobManager | null => {
+    try {
+      return deps.jobs;
+    } catch (err) {
+      json(res, 503, { error: (err as Error).message });
+      return null;
+    }
+  };
   const fail = (res: Response, err: unknown, code = 400): void => {
     json(res, err instanceof PolarNotFoundError ? 404 : code, { error: (err as Error).message });
   };
@@ -155,8 +164,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       if (err && !res.headersSent) res.status(404).send(`not found: ${req.path}`);
     });
   };
-  router.get(['/ui', '/ui/'], (req: Request, res: Response) => servePublic('index.html', req, res));
-  router.get('/ui/:file', (req: Request, res: Response) => servePublic(path.basename(req.params.file), req, res));
+  // Registered through `ro`: on Signal K >= 2.31 a route registered on the
+  // bare router stays admin-only.
+  ro.get('/ui', (req: Request, res: Response) => servePublic('index.html', req, res));
+  ro.get('/ui/', (req: Request, res: Response) => servePublic('index.html', req, res));
+  ro.get('/ui/:file', (req: Request, res: Response) => servePublic(path.basename(req.params.file), req, res));
 
   ro.get('/api/status', (_req: Request, res: Response) => json(res, 200, deps.status()));
 
@@ -346,6 +358,8 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   });
 
   rw.post('/api/routes', (req: Request, res: Response) => {
+    const jobs = jobsOr503(res);
+    if (!jobs) return;
     const body = req.body as RouteRequest | undefined;
     if (!body || typeof body !== 'object') {
       json(res, 400, { error: 'JSON body required: {start:{lat,lon}, end:{lat,lon}, ...}' });
@@ -356,35 +370,41 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       json(res, 400, { error: err });
       return;
     }
-    if (deps.jobs.queueLength >= 16) {
+    if (jobs.queueLength >= 16) {
       json(res, 429, { error: 'job queue is full' });
       return;
     }
-    const job = deps.jobs.submit(body);
-    res.setHeader('Location', deps.jobs.links(job.id).self);
-    json(res, 202, { id: job.id, status: job.status, links: deps.jobs.links(job.id) });
+    const job = jobs.submit(body);
+    res.setHeader('Location', jobs.links(job.id).self);
+    json(res, 202, { id: job.id, status: job.status, links: jobs.links(job.id) });
   });
 
   ro.get('/api/routes', (req: Request, res: Response) => {
+    const jobs = jobsOr503(res);
+    if (!jobs) return;
     const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 50) || 50));
     json(
       res,
       200,
-      deps.jobs.list(limit).map(j => deps.jobs.toPublic(j))
+      jobs.list(limit).map(j => jobs.toPublic(j))
     );
   });
 
   ro.get('/api/routes/:id', (req: Request, res: Response) => {
-    const job = deps.jobs.get(req.params.id);
+    const jobs = jobsOr503(res);
+    if (!jobs) return;
+    const job = jobs.get(req.params.id);
     if (!job) {
       json(res, 404, { error: 'job not found' });
       return;
     }
-    json(res, 200, deps.jobs.toPublic(job));
+    json(res, 200, jobs.toPublic(job));
   });
 
   ro.get('/api/routes/:id/result', (req: Request, res: Response) => {
-    const job = deps.jobs.get(req.params.id);
+    const jobs = jobsOr503(res);
+    if (!jobs) return;
+    const job = jobs.get(req.params.id);
     if (!job) {
       json(res, 404, { error: 'job not found' });
       return;
@@ -397,7 +417,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   });
 
   ro.get('/api/routes/:id/skeleton', (req: Request, res: Response) => {
-    const job = deps.jobs.get(req.params.id);
+    const jobs = jobsOr503(res);
+    if (!jobs) return;
+    const job = jobs.get(req.params.id);
     if (!job) {
       json(res, 404, { error: 'job not found' });
       return;
@@ -410,7 +432,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   });
 
   ro.get('/api/routes/:id/signalk', (req: Request, res: Response) => {
-    const job = deps.jobs.get(req.params.id);
+    const jobs = jobsOr503(res);
+    if (!jobs) return;
+    const job = jobs.get(req.params.id);
     if (!job) {
       json(res, 404, { error: 'job not found' });
       return;
@@ -423,7 +447,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   });
 
   ro.get('/api/routes/:id/events', (req: Request, res: Response) => {
-    const job = deps.jobs.get(req.params.id);
+    const jobs = jobsOr503(res);
+    if (!jobs) return;
+    const job = jobs.get(req.params.id);
     if (!job) {
       json(res, 404, { error: 'job not found' });
       return;
@@ -456,25 +482,29 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     const keepalive = setInterval(() => res.write(': keepalive\n\n'), 15000);
     const cleanup = (): void => {
       clearInterval(keepalive);
-      deps.jobs.off('event', listener);
+      jobs.off('event', listener);
     };
-    deps.jobs.on('event', listener);
+    jobs.on('event', listener);
     req.on('close', cleanup);
   });
 
   rw.post('/api/routes/:id/cancel', (req: Request, res: Response) => {
-    const job = deps.jobs.get(req.params.id);
+    const jobs = jobsOr503(res);
+    if (!jobs) return;
+    const job = jobs.get(req.params.id);
     if (!job) {
       json(res, 404, { error: 'job not found' });
       return;
     }
-    const what = deps.jobs.cancel(job.id);
+    const what = jobs.cancel(job.id);
     if (what === 'running') deps.cancelRunning(job.id);
     json(res, 202, { id: job.id, status: what ? 'cancelling' : job.status });
   });
 
   rw.post('/api/routes/:id/publish', async (req: Request, res: Response) => {
-    const job = deps.jobs.get(req.params.id);
+    const jobs = jobsOr503(res);
+    if (!jobs) return;
+    const job = jobs.get(req.params.id);
     if (!job) {
       json(res, 404, { error: 'job not found' });
       return;
@@ -492,7 +522,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   });
 
   rw.delete('/api/routes/:id', (req: Request, res: Response) => {
-    const job = deps.jobs.get(req.params.id);
+    const jobs = jobsOr503(res);
+    if (!jobs) return;
+    const job = jobs.get(req.params.id);
     if (!job) {
       json(res, 404, { error: 'job not found' });
       return;
@@ -501,7 +533,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       json(res, 409, { error: 'cancel the running job before deleting it' });
       return;
     }
-    deps.jobs.delete(job.id);
+    jobs.delete(job.id);
     res.status(204).end();
   });
 

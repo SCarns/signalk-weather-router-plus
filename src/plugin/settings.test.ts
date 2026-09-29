@@ -284,6 +284,37 @@ test('GET/PUT /api/settings: schema + values, partial update, 400 with per-key e
   assert.deepEqual(applied, [['forecast.horizon']]);
 });
 
+test('route endpoints answer JSON 503 when the plugin is not started', async () => {
+  const { router, call } = fakeRouter();
+  registerApi(
+    router as never,
+    {
+      pluginId: 'x',
+      basePath: '/x',
+      publicDir: tmp(),
+      get jobs(): never {
+        throw new Error('plugin not started');
+      },
+    } as unknown as ApiDeps
+  );
+  for (const [m, p] of [
+    ['GET', '/api/routes'],
+    ['POST', '/api/routes'],
+    ['GET', '/api/routes/:id'],
+    ['GET', '/api/routes/:id/result'],
+    ['GET', '/api/routes/:id/skeleton'],
+    ['GET', '/api/routes/:id/signalk'],
+    ['GET', '/api/routes/:id/events'],
+    ['POST', '/api/routes/:id/cancel'],
+    ['POST', '/api/routes/:id/publish'],
+    ['DELETE', '/api/routes/:id'],
+  ]) {
+    const r = await call(m, p, { start: { lat: 0, lon: 0 }, end: { lat: 1, lon: 1 } });
+    assert.equal(r.status, 503, `${m} ${p}`);
+    assert.deepEqual(r.body, { error: 'plugin not started' }, `${m} ${p}`);
+  }
+});
+
 test('per-route vessel values override the settings; omitted ones come from the settings', () => {
   const m = migrateLegacy(LEGACY);
   const cfg = resolveConfig({ landShapefiles: '/a.shp' }, m.values);

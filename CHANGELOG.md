@@ -84,6 +84,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`sail_max` now honours the sail threshold.** The boat sails when the
+  polar speed is at or above `routing.sailThreshold` (or the request's
+  `sail_thresh_ms`) and motors otherwise. Before, it also sailed whenever
+  the VMG along the leg was above 0.25 m/s or the polar speed was at least
+  1.0 m/s; since that VMG equals the polar speed, the boat sailed above
+  0.25 m/s (≈ 0.5 kn) and the threshold never decided. This deliberately
+  differs from the parent routePlanning server (`leg_sim.py`).
+
 - **The polar generator ("Create polar from boat specs…",
   `POST /api/polar-from-specs`) uses a new physics calculator**
   (`src/vessel/vpp_physics.ts`) instead of the empirical one. Sail forces

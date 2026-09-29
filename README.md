@@ -586,34 +586,311 @@ configuration file is not modified. `forecast.region` and
 
 ## API
 
+This section describes every HTTP endpoint of the plugin and what it
+publishes into Signal K. It is written from `src/plugin/api.ts` and the
+modules it calls. Another app (a dashboard, a chart plotter) can compute
+routes, read overlays and read conditions with it alone.
+
+### Overview
+
+**Base path.** Every endpoint below is relative to
+`/plugins/signalk-weather-router-plus` on the Signal K server, e.g.
+`http://localhost:3000/plugins/signalk-weather-router-plus/api/status`.
+The links the plugin returns (`links`, `Location`) are absolute paths
+that start with this base path.
+
+**Units.** All values are in Signal K SI units: metres, m/s, Pa, K,
+seconds, degrees true. Dimensionless quantities are plain ratios or
+indices: relative humidity is 0..1 (`rh`), Beaufort and Douglas are
+integers (Douglas with a label, `douglas_label`), and the sea-state
+index is a number to one decimal place with a label (`sea_state`).
+Precipitation is a depth rate in m/s (`precip_rate_ms`); ECMWF's
+kg m⁻² s⁻¹ is converted once, when the field enters the forecast store,
+so every endpoint agrees. Nothing is sent in percent, knots or mm/h; the
+client converts. Two exceptions, both named in the field: angles in the
+plugin's own API are degrees (`*_deg`), while the Signal K Weather API
+answers in radians as that API requires ([Weather API
+provider](#weather-api-provider)); and the isobar interval of
+`/api/pressure` is given and returned in hPa (`hpa`) beside Pa (`pa`).
+Directions are named by their convention: wind and waves are the
+direction they come FROM (`dir_from`, `wind_dir_deg`, `mwd_deg`),
+currents the direction they flow TO (`dir_to`, `current_dir_deg`, the
+`dir_deg` of `/api/currents`). Times are ISO 8601 strings in UTC.
+
+**Access.** Authentication is done by the Signal K server (its session
+cookie or a bearer token), not by the plugin. On Signal K 2.31 and
+later (servers with `router.access()`), read endpoints are open to
+`readonly` users and write endpoints to `readwrite` users; the Access
+column of each table says which. Older servers keep every plugin route
+admin-only, which is the server's default. When a request lacks the
+access it needs, the server answers (401 not signed in, 403 not enough
+access) before the plugin sees it. A route registered without an access
+level stays admin-only on those servers (upstream `asPluginRouter`), so
+every plugin route, `/ui` included, is registered with one.
+
+**Errors.** Errors the plugin produces are JSON with a message:
+
+```json
+{"error": "bbox must be w,s,e,n"}
 ```
-POST /plugins/signalk-weather-router-plus/api/routes
-{
+
+Some add fields: `GET /api/routes/{id}/result` adds `status` and
+`message`, and `PUT /api/settings` adds `errors` (one message per
+setting). A parameter or data problem is `400`; the per-endpoint tables
+list the other codes. Overlay and conditions requests go to the plugin's
+data worker; its failures (for example `no forecast loaded`,
+`data worker not ready`, or `query timed out` after 120 s) also come
+back as `400` with the message. While the plugin is stopped, the route
+job endpoints answer `503 {"error": "plugin not started"}`.
+
+A body that is not valid JSON never reaches the plugin: the Signal K
+server parses bodies itself (`body-parser`) and has no JSON error
+handler, so it answers with Express's default `400` page, in HTML, not
+the JSON shape above.
+
+**CORS.** The plugin sets no CORS headers of its own, apart from
+exposing `X-Mask-Width` and `X-Mask-Height` on `/api/land-mask`
+(`Access-Control-Expose-Headers`). Cross-origin access is whatever the
+Signal K server allows.
+
+**OpenAPI.** `GET /api/openapi.json` returns an OpenAPI 3.0 document of
+the API. The same document is given to the Signal K server through the
+plugin's `getOpenApi()`, so it also appears in the server's own API
+documentation. It is a summary; where it and this section differ, this
+section follows the code.
+
+**Webapp.** `GET /ui` (and `/ui/`) serves the plugin's webapp; `GET
+/ui/{file}` serves its scripts and styles; both need `readonly` access.
+The webapp is also listed on the Admin UI's Webapps page and served by
+the Signal K server at `/signalk-weather-router-plus/`.
+
+### Quick start: compute a route from another app
+
+The minimal sequence is: submit a job, wait for it to finish (Server-Sent
+Events or polling), then read the result. The values below are examples.
+
+```sh
+BASE=http://localhost:3000/plugins/signalk-weather-router-plus
+AUTH="Authorization: Bearer $TOKEN"   # a Signal K token with readwrite access
+```
+
+**1. Submit the job.**
+
+```sh
+curl -s -X POST "$BASE/api/routes" -H "$AUTH" -H 'Content-Type: application/json' -d '{
   "start": {"lat": 41.44, "lon": -71.36},
   "end":   {"lat": 32.42, "lon": -64.58},
   "waypoints": [{"lat": 41.13, "lon": -71.53}],
   "precision": "precise",
-  "arrival_radius_m": 200,
   "departure": "2026-09-28T12:00:00Z",
   "mode": "sail_max",
   "name": "Newport to Bermuda",
   "vessel": {"polar": "a_boat.pol"}
-}
-→ 202 {"id": "…", "status": "queued", "links": {…}}
+}'
 ```
 
-`waypoints` (at most 20) end one leg each ([Waypoints](#waypoints-legs)).
-`precision` is `"precise"` (default: each leg ends exactly on its
-waypoint) or `"approximate"` (a leg ends on entering the waypoint's
-circle). `arrival_radius_m` is that circle in metres (default 200,
-0..5000, must be > 0 with `"approximate"`); a waypoint's own `radius_m`
-(0..5000) overrides it for that waypoint. Both are ignored in precise
-mode and for the destination, which is always exact. The job summary of
-a route with waypoints carries `legs` and `precision`.
+Response `202 Accepted`, with a `Location` header equal to `links.self`:
 
-`vessel.polar` is a token from `GET …/api/polars`. A file name such as
+```json
+{
+  "id": "5b0f3c2e-8d1a-4c7e-9f7b-2a6d1e0c9a41",
+  "status": "queued",
+  "links": {
+    "self": "/plugins/signalk-weather-router-plus/api/routes/5b0f3c2e-8d1a-4c7e-9f7b-2a6d1e0c9a41",
+    "events": "/plugins/signalk-weather-router-plus/api/routes/5b0f3c2e-8d1a-4c7e-9f7b-2a6d1e0c9a41/events",
+    "result": "/plugins/signalk-weather-router-plus/api/routes/5b0f3c2e-8d1a-4c7e-9f7b-2a6d1e0c9a41/result",
+    "skeleton": "/plugins/signalk-weather-router-plus/api/routes/5b0f3c2e-8d1a-4c7e-9f7b-2a6d1e0c9a41/skeleton",
+    "cancel": "/plugins/signalk-weather-router-plus/api/routes/5b0f3c2e-8d1a-4c7e-9f7b-2a6d1e0c9a41/cancel",
+    "publish": "/plugins/signalk-weather-router-plus/api/routes/5b0f3c2e-8d1a-4c7e-9f7b-2a6d1e0c9a41/publish"
+  }
+}
+```
+
+**2a. Follow progress with Server-Sent Events** (the stream ends after
+`done` or `error`):
+
+```sh
+curl -sN "$BASE/api/routes/$ID/events" -H "$AUTH"
+```
+
+```
+id: 1
+event: status
+data: {"status":"queued","position":1}
+
+id: 2
+event: status
+data: {"status":"running"}
+
+id: 3
+event: progress
+data: {"time":"2026-09-28T11:58:02.114Z","stage":0,"total":0,"message":"leg 1/2 corridor: searching the global 0.02° water grid (canals blocked)"}
+
+id: 57
+event: route
+data: {"type":"FeatureCollection","features":[…]}
+
+id: 58
+event: done
+data: {"status":"done","summary":{"total_distance_m":1183412.6,"total_time_s":461880.2,…}}
+```
+
+**2b. Or poll** until `status` is `done`, `failed` or `cancelled`:
+
+```sh
+curl -s "$BASE/api/routes/$ID" -H "$AUTH"
+```
+
+```json
+{
+  "id": "5b0f3c2e-8d1a-4c7e-9f7b-2a6d1e0c9a41",
+  "status": "done",
+  "request": {"start": {"lat": 41.44, "lon": -71.36}, "end": {"lat": 32.42, "lon": -64.58}, "…": "…"},
+  "created_at": "2026-09-28T11:58:00.021Z",
+  "started_at": "2026-09-28T11:58:00.030Z",
+  "finished_at": "2026-09-28T11:58:41.577Z",
+  "progress": [{"time": "2026-09-28T11:58:40.912Z", "stage": 20, "total": 20, "message": "…"}],
+  "summary": {
+    "total_distance_m": 1183412.6,
+    "total_time_s": 461880.2,
+    "sailing_time_s": 420120.0,
+    "motoring_time_s": 41760.2,
+    "waypoint_count": 38,
+    "warnings": 0,
+    "departure": "2026-09-28T12:00:00.000Z",
+    "arrival": "2026-10-03T20:18:00.200Z",
+    "forecast_cycle": "2026-09-28T00:00:00.000Z",
+    "current_sources": ["CMEMS-SMOC"],
+    "polar": "a_boat.pol",
+    "polar_performance": 1,
+    "legs": 2,
+    "precision": "precise"
+  },
+  "resource_id": "5b0f3c2e-8d1a-4c7e-9f7b-2a6d1e0c9a41",
+  "links": {"self": "…", "events": "…", "result": "…", "skeleton": "…", "cancel": "…", "publish": "…"}
+}
+```
+
+**3. Read the route** as GeoJSON (or `…/signalk` for the Signal K route
+record):
+
+```sh
+curl -s "$BASE/api/routes/$ID/result" -H "$AUTH"
+```
+
+```json
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {"type": "LineString", "coordinates": [[-71.36, 41.44], [-71.402113, 41.301877], "…"]},
+      "properties": {
+        "total_distance_m": 1183412.6, "total_time_s": 461880.2,
+        "motoring_time_s": 41760.2, "sailing_time_s": 420120.0,
+        "departure": "2026-09-28T12:00:00.000Z", "arrival": "2026-10-03T20:18:00.200Z",
+        "waypoint_count": 38, "validated": true, "repairs_applied": 0, "smoother_drops": 3,
+        "forecast_cycle": "2026-09-28T00:00:00.000Z", "max_swh_m": 2.41, "avg_swh_m": 1.37
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {"type": "Point", "coordinates": [-71.36, 41.44]},
+      "properties": {
+        "lon": -71.36, "lat": 41.44, "time": "2026-09-28T12:00:00.000Z",
+        "sog_ms": 0, "cog_deg": 0, "depth_m": null, "mode": "motoring",
+        "wind_ms": 7.214, "wind_dir_deg": 225, "leg": "ocean",
+        "leg_distance_m": 15612.3, "leg_time_s": 3021.4
+      }
+    }
+  ]
+}
+```
+
+A finished route is also saved to the Resources API when publishing is
+on (the default; [Publishing](#resources-api-publishing)), so a chart
+plotter that reads `/signalk/v2/api/resources/routes` sees it there
+without calling this API.
+
+### Routes (jobs)
+
+A route request becomes a job. Jobs run one at a time in the route
+worker; the others wait in a queue. Each job keeps an event log that
+the SSE endpoint replays.
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| POST | `/api/routes` | readwrite | submit a route request |
+| GET | `/api/routes` | readonly | list jobs |
+| GET | `/api/routes/{id}` | readonly | job status, progress and summary |
+| GET | `/api/routes/{id}/events` | readonly | Server-Sent Events |
+| GET | `/api/routes/{id}/result` | readonly | route as GeoJSON |
+| GET | `/api/routes/{id}/skeleton` | readonly | coarse corridor skeleton as GeoJSON |
+| GET | `/api/routes/{id}/signalk` | readonly | Signal K Resources API route record |
+| POST | `/api/routes/{id}/cancel` | readwrite | cancel a queued or running job |
+| POST | `/api/routes/{id}/publish` | readwrite | save the route to the Resources API |
+| DELETE | `/api/routes/{id}` | readwrite | delete a job |
+
+#### Job lifecycle
+
+| Status | Meaning |
+|---|---|
+| `queued` | accepted, waiting for the route worker |
+| `running` | being computed; only one job runs at a time |
+| `done` | finished; `summary`, the result, the skeleton (when one was found) and the Signal K record are available |
+| `failed` | finished with an error; `error` holds the message. A request the worker rejects (see below) also ends here |
+| `cancelled` | cancelled by `/cancel`; `error` is `"cancelled"` |
+
+- The queue holds at most 16 waiting jobs; a 17th is refused with `429`.
+- Finished jobs (`done`, `failed`, `cancelled`) are saved to disk
+  (`jobs/<id>.json` in the plugin data directory) and survive a restart.
+  Only the newest are kept: the `routing.keepJobs` setting ("finished
+  routes kept", default 50, 1–500); older ones are deleted.
+- A job that was `queued` or `running` when the plugin stopped is
+  loaded as `failed` with `error` "plugin restarted while the job was in
+  progress". If the route worker crashes or exits, the running job fails
+  with a message that says so.
+- The job's event log keeps its last 500 events; `progress` in the job
+  status carries the last 20 progress entries.
+
+#### POST /api/routes
+
+Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
+
+| Field | Type | Unit | Default | Limits and notes |
+|---|---|---|---|---|
+| `start` | `{lat, lon}` | degrees | required | both numbers |
+| `end` | `{lat, lon}` | degrees | required | both numbers; always reached exactly |
+| `waypoints` | array of `{lat, lon, radius_m?}` | degrees, m | none | at most 20; each ends one leg and starts the next ([Waypoints](#waypoints-legs)). `radius_m` 0..5000, overrides `arrival_radius_m` for that waypoint, and must be > 0 with `"approximate"` |
+| `precision` | `"precise"` or `"approximate"` | | `"precise"` | `precise`: each leg ends exactly on its waypoint; `approximate`: a leg ends on entering the waypoint's circle |
+| `arrival_radius_m` | number | m | 200 | 0..5000; must be > 0 with `"approximate"`. Ignored in precise mode and for the destination |
+| `departure` | string | ISO 8601 | now | an empty string also means now |
+| `mode` | `"sail_max"`, `"fastest"` or `"motor"` | | `"sail_max"` | mode policy. `motor`: always motor, and no forecast is used; `fastest`: sail when the polar speed beats the motor speed; `sail_max`: sail when the polar speed is at or above `sail_thresh_ms`, otherwise motor (`src/engine/legsim.ts`). The parent routePlanning server also sails above 0.25 m/s VMG or 1.0 m/s whatever the threshold; this plugin does not |
+| `stages` | number | count | setting `routing.stages` (20) | 4..200; isochrone stages per leg |
+| `sail_thresh_ms` | number | m/s | setting `routing.sailThreshold` | ≥ 0 |
+| `simplify_m` | number | m | setting `routing.simplify` | 0..5000; route simplification tolerance, 0 = off |
+| `smoother` | boolean | | setting `routing.smoother` | run the shortcut smoother |
+| `smoother_tolerance` | number | ratio | setting `routing.smootherTolerance` | 0..0.5; how much slower a shortcut may be (0.05 = 5%) |
+| `name` | string | | `<prefix> <lat>,<lon> → <lat>,<lon>` | name of the Signal K route record (trimmed). The default uses the `publish.routeNamePrefix` setting (`WRP`) and the start and end to two decimals |
+| `publish` | boolean | | setting `publish.toResources` (on) | save the finished route to the Resources API |
+| `no_forecast` | boolean | | false | route with calm wind |
+| `no_currents` | boolean | | false | ignore every current source |
+| `vessel` | object | | the vessel settings | per-route overrides; absent keys use the settings ([Configuration](#configuration)) |
+| `vessel.name` | string | | setting | |
+| `vessel.draught` | number | m | setting (1.8) | 0..30 |
+| `vessel.air_draft` | number | m | setting (16) | 0..100 |
+| `vessel.loa` | number | m | setting (11) | 0.1..500 |
+| `vessel.beam` | number | m | setting (3.7) | 0.1..100 |
+| `vessel.motor_speed_ms` | number | m/s | setting (3.087) | 0.01..50 |
+| `vessel.under_keel_clearance` | number | m | setting (0.5) | 0..20 |
+| `vessel.tack_penalty_s` | number | s | setting (30) | 0..600; time lost per tack or gybe |
+| `vessel.polar_performance` | number | ratio | setting (1) | 0.3..1.2; see below |
+| `vessel.polar` | string | | the configured `polarFile` | a token from `GET /api/polars`, at most 200 characters; see below |
+
+`vessel.polar` is a token from `GET /api/polars`. A file name such as
 `a_boat.pol` resolves only inside the configured `polarsDir`. Use
-`"default"`, or omit the field, for the configured `polarFile`.
+`"default"`, or omit the field, for the configured `polarFile`. Without
+any polar every route is motor-only.
 
 `vessel.polar_performance` (ratio, 0.3..1.2) is the share of the polar's
 boat speeds the boat makes under sail; it overrides the vessel setting
@@ -624,61 +901,816 @@ usually race predictions (flat water, racing sails, full crew), so a
 loaded cruising boat is slower than its polar. The job summary carries
 `polar_performance` when a polar was used.
 
-`POST …/api/polar-from-specs` (readwrite) takes `{name, specs, overwrite?}`
-with the routing server's boat-spec fields (`loa_m`, `lwl_m`, `beam_m`,
-`draft_m`, `displacement_kg`, `sail_area_upwind_m2`, optional `ballast_kg`,
-`sail_area_downwind_m2` (not used: no spinnaker is assumed), `mast_height_m`,
-`rig_type`, `keel_type`, `hull_type`). It runs the physics polar calculator
-(`src/vessel/vpp_physics.ts`: ORC 2026 sail forces, Delft hull resistance,
-a heeling limit; see `docs/plans/vpp-physics.md`), writes
-`<polarsDir>/user/<slug>.csv` in the routing server's CSV layout and returns
-`{path, label, warnings, polar}`, where `path` (`user/<slug>.csv`) is a
-`vessel.polar` token. 400: invalid specs, bad name, or no `polarsDir`;
-409: the file exists and `overwrite` is not true; 422: a multihull, which
-the calculator does not model. Against 441 ORC 2026 non-spinnaker
-certificates it was not fitted on, its median error is 3.3% upwind, 3.2%
-reaching and 3.3% running (6–20 kn). ORC's speeds are race predictions;
-use the polar performance setting for a cruising boat. In the webapp, use "Create polar from
-boat specs…" under the polar picker.
+Validation happens in two places:
 
-```
+- **At submission** (`400 {"error": …}`, no job is created): a missing
+  or non-object body; `start`/`end`/`waypoints` items that are not
+  `{lat, lon}` numbers; more than 20 waypoints; `precision`,
+  `arrival_radius_m`, `radius_m`, `mode`, `departure`, `stages`,
+  `sail_thresh_ms`, `simplify_m`, `smoother`, `smoother_tolerance`,
+  `name`, `vessel`, `vessel.tack_penalty_s`, `vessel.polar_performance`
+  and `vessel.polar` outside the limits above. The message names the
+  field, e.g. `"stages must be 4..200"`.
+- **When the job runs** (the job ends `failed` with the message):
+  coordinates outside latitude −90..90 or longitude −180..360;
+  the other `vessel.*` ranges above (the message uses the internal
+  name, e.g. `vessel.airDraft must be a number in [0, 100] (got 120)`);
+  a `vessel.polar` token that is not in the library.
 
-GET  …/api/routes/{id}          status, progress, summary
-GET  …/api/routes/{id}/events   SSE: status, progress, route, done, error (Last-Event-ID honoured)
-GET  …/api/routes/{id}/result   GeoJSON FeatureCollection (LineString + one Point per waypoint)
-GET  …/api/routes/{id}/signalk  Signal K route record
-POST …/api/routes/{id}/cancel
-POST …/api/routes/{id}/publish
-GET  …/api/forecast?lat=&lon=   forecast metadata and a time series at a position (every step)
-GET  …/api/settings             web-app settings {values, schema} (SI)
-PUT  …/api/settings             change some settings (readwrite)
-GET  …/api/polars               polar library: the configured default + every .pol/.csv in the polars directory
-GET  …/api/polar-angles?path=   best upwind/downwind VMG angles per TWS (point-of-sail bucketing)
-GET  …/api/polars/table?path=   polar speed table in m/s for drawing
-POST …/api/polar-from-specs     generate a polar from boat specs (physics calculator) → <polarsDir>/user/<slug>.csv
-GET  …/api/legends              colour ramps (SI stops) for every overlay
-GET  …/api/field?layer=&bbox=&time=&res=      JSON grid for a heatmap layer (wind, waves, msl, temperature, sst, precip, sea_state, current, tide → tide_m in m above MSL)
-GET  …/api/wind-points?bbox=&time=&res=       barb points
-GET  …/api/currents?bbox=&time=&res=          current arrow points
-GET  …/api/pressure?bbox=&time=&interval=     isobars + H/L as GeoJSON
-GET  …/api/conditions?lon=&lat=&from=&hours=  72-hour conditions series at a point, with tide_m / water_level_m / surge_m /
-                                              tide_extrapolated / tide_tendency per row and `tides` {highs, lows, range_m, …}
-GET  …/api/land-mask?bbox=&w=&h=               land mask at screen resolution: gzip bytes, one per pixel (1 = land), row 0 north
-POST …/api/forecast/refresh      check for a new cycle (?force=true decodes the current one again from the GRIB cache)
-GET  …/api/status               forecast: decoded run (decoded_dir, decoded_bytes, decoded_disk_bytes, grib_cache_bytes, source disk|grib,
-                                last_decode) and memory actually held (memory.data_worker_held_bytes, route_worker_held_bytes, …); process_rss_bytes
-```
+| Status | Body |
+|---|---|
+| 202 | `{id, status: "queued", links}`; header `Location: <links.self>` |
+| 400 | `{error}`: invalid request (above) |
+| 429 | `{error: "job queue is full"}`: 16 jobs are already waiting |
 
-All values are in Signal K SI units: metres, m/s, Pa, K, seconds, degrees
-true. Dimensionless quantities are plain ratios or indices: relative
-humidity is 0..1 (`rh`), Beaufort and Douglas are integers with a label,
-and the sea-state index is a number to one decimal place with a label. Precipitation is a depth rate in m/s
-(`precip_rate_ms`); ECMWF's kg m⁻² s⁻¹ is converted once, when the field
-enters the forecast store, so every endpoint agrees. The Weather API
-omits precipitation volume, because only the instantaneous rate is fetched.
-Nothing is sent in percent, knots or mm/h; the client converts.
-On Signal K 2.31+ reads are open to `readonly` users and writes to
-`readwrite`; older servers keep every plugin route admin-only.
+`links` has `self`, `events`, `result`, `skeleton`, `cancel` and
+`publish`, each an absolute path under the base path.
+
+#### GET /api/routes
+
+List jobs, newest first (by creation time). Access: readonly.
+
+| Query | Type | Default | Limits |
+|---|---|---|---|
+| `limit` | integer | 50 | clamped to 1..500 |
+
+`200`: an array of job status objects (next section).
+
+#### GET /api/routes/{id}
+
+Job status. Access: readonly. `200`: the job; `404 {error: "job not
+found"}`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | string | job id (a UUID) |
+| `status` | string | `queued`, `running`, `done`, `failed` or `cancelled` |
+| `request` | object | the route request as submitted |
+| `created_at` | string | ISO 8601 |
+| `started_at` | string | when it started running; absent before |
+| `finished_at` | string | when it finished; absent before |
+| `progress` | array | the last 20 progress entries `{time, stage, total, message}` |
+| `summary` | object | `done` only; see below |
+| `error` | string | `failed` / `cancelled` only |
+| `resource_id` | string | Resources API id once published (equal to the job id) |
+| `publish_error` | string | the last publishing error, when publishing failed |
+| `links` | object | as in the `202` of `POST /api/routes` |
+
+Progress entry:
+
+| Field | Type | Notes |
+|---|---|---|
+| `time` | string | ISO 8601, when the entry was recorded |
+| `stage` | number | current isochrone stage; 0 for messages outside the stage loop |
+| `total` | number | planned stages (it can grow while the route runs); 0 when not known |
+| `message` | string | human-readable text for display, not a stable format. With waypoints it is prefixed with the leg: `leg 2/4: …` for the leg's start line and errors, `leg 2/4 …` for its per-stage messages |
+
+`summary` (a `RouteSummary`; values are not rounded):
+
+| Field | Type | Unit | Notes |
+|---|---|---|---|
+| `total_distance_m` | number | m | |
+| `total_time_s` | number | s | |
+| `sailing_time_s` | number | s | |
+| `motoring_time_s` | number | s | |
+| `waypoint_count` | number | count | points in the route line |
+| `warnings` | number | count | entries in the GeoJSON `warnings` |
+| `departure` | string | ISO 8601 | time at the first point |
+| `arrival` | string | ISO 8601 | time at the last point |
+| `forecast_cycle` | string | ISO 8601 | forecast cycle used; absent without a forecast |
+| `current_sources` | string[] | | current sources stacked for the route; absent when none or `no_currents` |
+| `polar` | string or null | | file name of the polar used; null when motor-only |
+| `polar_performance` | number | ratio | present when a polar was used |
+| `auto_vias` | `[{name, width_m}]` | m | automatic vias at narrow passages ([Routing engine](#routing-engine)); not route waypoints |
+| `legs` | number | count | routes with waypoints only |
+| `precision` | string | | routes with waypoints only |
+
+#### GET /api/routes/{id}/events
+
+Server-Sent Events for one job. Access: readonly. `404 {error: "job not
+found"}` for an unknown id. Headers: `Content-Type: text/event-stream`,
+`Cache-Control: no-cache`, `X-Accel-Buffering: no`.
+
+Each event has a numeric `id` (increasing per job, from 1), an `event`
+name and JSON `data`:
+
+| Event | `data` | When |
+|---|---|---|
+| `status` | `{status: "queued", position}` | job accepted; `position` in the queue (1 = next) |
+| `status` | `{status: "running"}` | job started |
+| `progress` | `{time, stage, total, message}` | progress entry (as in the job status) |
+| `route` | the route GeoJSON FeatureCollection | job done, just before `done` |
+| `done` | `{status: "done", summary}` | job done |
+| `error` | `{status: "failed" or "cancelled", message}` | job failed or was cancelled |
+| `status` | `{status, resource_id, publish_error}` | after a publish attempt (automatic or `/publish`) |
+
+Behaviour:
+
+- On connect the stream first replays the logged events whose `id` is
+  greater than the request's `Last-Event-ID` header (all of them without
+  the header).
+- If the job has already finished, the stream ends after the replay.
+  Otherwise it stays open, sends new events as they happen, and ends
+  after `done` or `error`.
+- A comment line `: keepalive` is sent every 15 s.
+- A browser `EventSource` reconnects when the server ends the stream;
+  close it yourself on `done` or `error`.
+- Automatic publishing runs after `done`, so its `status` event comes
+  after the live stream has ended. Read `resource_id` / `publish_error`
+  from `GET /api/routes/{id}`, or reconnect with `Last-Event-ID`.
+
+#### GET /api/routes/{id}/result
+
+The route as a GeoJSON FeatureCollection: one LineString feature with
+the route's properties, then one Point feature per route point.
+Access: readonly.
+
+| Status | Body |
+|---|---|
+| 200 | FeatureCollection |
+| 404 | `{error: "job not found"}` |
+| 409 | `{error: "job is <status>", status, message}`: not `done`; `message` is the job's `error`, if any |
+
+LineString `properties`:
+
+| Property | Type | Unit | Notes |
+|---|---|---|---|
+| `total_distance_m` | number | m | 0.1 m |
+| `total_time_s` | number | s | 0.1 s |
+| `motoring_time_s` | number | s | |
+| `sailing_time_s` | number | s | |
+| `departure` | string | ISO 8601 | |
+| `arrival` | string | ISO 8601 | |
+| `waypoint_count` | number | count | route points |
+| `validated` | boolean | | |
+| `repairs_applied` | number | count | always 0 |
+| `smoother_drops` | number | count | points the shortcut smoother removed |
+| `forecast_cycle` | string | ISO 8601 | when a forecast was used |
+| `auto_vias` | `[{name, lat, lon, width_m, radius_m}]` | degrees, m | automatic vias; present when any |
+| `forecast_horizon_exceeded_s` | number | s | present when the route arrives after the last forecast step |
+| `forecast_horizon_note` | string | | explains the above: conditions beyond the last step are held at it |
+| `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired}`, `violation` `"leg_crosses_land"` or `"leg_too_shallow"`, `from`/`to` `[lon, lat]` |
+| `land_crossings` | number | count | present when a warning is `leg_crosses_land` |
+| `has_land_crossing` | boolean | | `true` when `land_crossings` is present |
+| `max_swh_m` | number | m | highest significant wave height at a route point; present when wave data was sampled |
+| `avg_swh_m` | number | m | mean of the same |
+
+Point `properties` (one feature per route point, in order):
+
+| Property | Type | Unit | Notes |
+|---|---|---|---|
+| `lon`, `lat` | number | degrees | 6 decimals |
+| `time` | string | ISO 8601 | time at the point |
+| `sog_ms` | number | m/s | speed over ground into the point (0 at the start) |
+| `cog_deg` | number | degrees true | course over ground into the point |
+| `depth_m` | null | | always null |
+| `mode` | string | | `"sailing"` or `"motoring"` on the leg into the point |
+| `twa_deg` | integer | degrees | true wind angle, 0..180; when wind was sampled |
+| `wind_ms` | number | m/s | wind speed |
+| `wind_dir_deg` | integer | degrees true | wind direction FROM |
+| `swh_m` | number | m | significant wave height |
+| `mwp_s` | number | s | mean wave period |
+| `mwd_deg` | integer | degrees true | mean wave direction FROM |
+| `current_ms` | number | m/s | current speed |
+| `current_dir_deg` | integer | degrees true | current set (flows TO) |
+| `current_u_ms`, `current_v_ms` | number | m/s | current east and north components |
+| `leg` | string | | engine that produced the waypoint; always `"ocean"` in this plugin (kept for compatibility with the routePlanning server, which also uses other values) |
+| `role` | string | | `"via"` on the junction point of each request waypoint |
+| `leg_distance_m` | number | m | distance to the next point; absent on the last point |
+| `leg_time_s` | number | s | time to the next point; absent on the last point |
+
+The optional point properties are present only when the value was
+sampled and is finite. Property names match the routePlanning server's
+GeoJSON, so consumers of either can read both.
+
+#### GET /api/routes/{id}/skeleton
+
+The coarse corridor that guided the heading sweep, as a FeatureCollection
+with one LineString whose properties are `{kind: "skeleton", points}`.
+Access: readonly. `404 {error: "job not found"}`, or `404 {error: "no
+skeleton for this job"}` when the job has not finished or no skeleton
+was found.
+
+#### GET /api/routes/{id}/signalk
+
+The route record the plugin saves to the Resources API (format under
+[Resources API publishing](#resources-api-publishing)). Access:
+readonly. `200` the record; `404 {error: "job not found"}`; `409
+{error: "job is <status>"}` when not `done`.
+
+#### POST /api/routes/{id}/cancel
+
+Cancel a job. Access: readwrite. No body.
+
+| Status | Body |
+|---|---|
+| 202 | `{id, status: "cancelling"}` for a queued or running job (a queued job is already `cancelled` when this is returned); `{id, status}` with the unchanged status for a finished job |
+| 404 | `{error: "job not found"}` |
+
+A queued job is cancelled at once. A running job stops at the route
+worker's next cancellation check; it then ends `cancelled` with an
+`error` event. No notification is sent for a cancelled job.
+
+#### POST /api/routes/{id}/publish
+
+Save the finished route to the Signal K Resources API. Access:
+readwrite. No body. Use it when automatic publishing is off or failed.
+
+| Status | Body |
+|---|---|
+| 200 | `{id, resource_id, href}`; `href` is `/signalk/v2/api/resources/routes/<resource_id>` |
+| 404 | `{error: "job not found"}` |
+| 409 | `{error: "job is <status>"}`: not `done` |
+| 502 | `{error}`: the server has no Resources API, or it rejected the route (the message asks whether a routes provider such as `resources-provider` is enabled) |
+
+#### DELETE /api/routes/{id}
+
+Delete a job and its saved file. A queued job is also removed from the
+queue. The route saved in the Resources API is not deleted. Access:
+readwrite.
+
+| Status | Body |
+|---|---|
+| 204 | none |
+| 404 | `{error: "job not found"}` |
+| 409 | `{error: "cancel the running job before deleting it"}` |
+
+### Forecast and conditions
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| GET | `/api/forecast` | readonly | forecast metadata, and a series at a position |
+| POST | `/api/forecast/refresh` | readwrite | check for a new forecast cycle |
+| GET | `/api/conditions` | readonly | conditions time series at a point, with tides |
+| GET | `/api/status` | readonly | plugin, forecast, currents, tides and queue status |
+
+#### GET /api/forecast
+
+| Query | Type | Unit | Default | Notes |
+|---|---|---|---|---|
+| `lat` | number | degrees | none | |
+| `lon` | number | degrees | none | samples are returned only when both are given |
+
+`200`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `cycle` | string | forecast cycle (run time), ISO 8601 |
+| `valid_from` | string | first step's valid time |
+| `valid_to` | string | last step's valid time |
+| `steps` | number[] | forecast step hours of the run |
+| `params` | string[] | ECMWF parameters decoded (e.g. `10u`, `10v`, `msl`, `swh`, `mwp`, `mwd`, plus the extra fields when on) |
+| `coverage` | string | always `"global"` |
+| `samples` | array | with `lat` and `lon`: one row per step, `{time, wind_ms, wind_dir_deg (FROM), msl_pa, swh_m, mwp_s, mwd_deg (FROM)}`; values not rounded, null when missing |
+
+`400 {error}`: `lat`/`lon` not numbers, no forecast loaded yet (`forecast
+not loaded yet`, or `forecast unavailable: …` after a failed download),
+or a position outside the forecast.
+
+#### POST /api/forecast/refresh
+
+Ask the data worker to check for a new cycle. Access: readwrite.
+
+| Query | Type | Default | Notes |
+|---|---|---|---|
+| `force` | `true` / `1` | false | decode the current cycle again from the GRIB cache |
+
+`202 {status: "refresh requested"}`. The check runs in the background;
+watch `/api/status` for the result.
+
+#### GET /api/conditions
+
+A time series of every conditions field at a point, with tide height,
+total water level and surge, and the high and low waters. This is what
+the webapp's 72-hour conditions popup draws. Access: readonly.
+
+| Query | Type | Unit | Default | Limits |
+|---|---|---|---|---|
+| `lat` | number | degrees | required | −90..90 |
+| `lon` | number | degrees | required | −180..360 |
+| `from` | string | ISO 8601 | the current UTC hour | |
+| `hours` | number | h | 72 | 1..240 |
+| `step_h` | number | h | 1 | 1..24 |
+
+The series is cut to the forecast's valid range (then `truncated` is
+true) and to at most 1000 rows. `400 {error}` for bad parameters (`lon
+and lat are required numbers`, `hours must be a number in [1, 240]`, …).
+
+`200`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `lon`, `lat` | number | as requested |
+| `is_land` | boolean | the point is on land |
+| `from` | string | first row's time (after truncation) |
+| `hours`, `step_h` | number | as requested |
+| `forecast_time_range` | `[string, string]` or null | valid range of the forecast |
+| `truncated` | boolean | rows were cut to the forecast range or the row limit |
+| `series` | array | rows (below) |
+| `tides` | object or null | high and low waters (below); null when tides are off or have no data here |
+| `tides_error` | string or null | why `tides` is null when tides are on |
+| `sources` | object | `{forecast_cycle, currents: [names], tides}`; `tides` is the source name and run, or null |
+
+Row fields (null when the value is not available, e.g. an extra field
+that is switched off):
+
+| Field | Unit | Notes |
+|---|---|---|
+| `time` | ISO 8601 | |
+| `wind_ms` | m/s | 10 m wind speed, 2 decimals |
+| `wind_dir_deg` | degrees true | FROM |
+| `swh_m` | m | significant wave height |
+| `mwp_s` | s | mean wave period |
+| `mwd_deg` | degrees true | mean wave direction FROM |
+| `current_ms` | m/s | current speed (the stacked current sources) |
+| `current_dir_deg` | degrees true | current set (TO) |
+| `msl_pa` | Pa | mean sea-level pressure |
+| `t2m_k` | K | 2 m air temperature (extra fields) |
+| `skt_k` | K | skin (sea surface) temperature (extra fields) |
+| `precip_rate_ms` | m/s | precipitation depth rate (extra fields) |
+| `precip_type` | code | ECMWF precipitation type (WMO table 4.201) |
+| `precip_type_label` | string | `none`, `rain`, `freezing rain`, `snow`, `wet snow`, `rain and snow`, `ice pellets`, `freezing drizzle` or `other` |
+| `dewpoint_k` | K | 2 m dew point (extra fields) |
+| `rh` | ratio | relative humidity 0..1 |
+| `feels_like_k` | K | apparent temperature |
+| `feels_like_basis` | string | `air`, `wind_chill` or `heat_index` |
+| `wind_chill_k` | K | |
+| `heat_index_k` | K | |
+| `beaufort` | integer | Beaufort force 0..12 |
+| `douglas` | integer | Douglas sea state 0..9 |
+| `douglas_label` | string | `calm (glassy)` … `phenomenal` |
+| `sea_state_index` | number | combined wind/current/swell roughness index, one decimal |
+| `sea_state` | string | band: `smooth`, `good`, `slight`, `choppy`, `rough`, `extreme` |
+| `sea_state_partial` | boolean | the index was computed without wave data |
+| `tide_m` | m | tide height above mean sea level (Copernicus Marine `ocean_tide`, FES2014) |
+| `water_level_m` | m | total water level above local mean sea level |
+| `surge_m` | m | non-tidal residual (water level − tide) |
+| `tide_extrapolated` | boolean | a bilinear corner is model land and took the value of valid cells within 2 cells (~18 km) |
+| `tide_tendency` | string | `rising`, `falling` or `steady` (within ±2 cm/h) |
+
+The tide fields are null when tides are off or there is no model water
+within 2 cells. Tide heights are relative to mean sea level, not chart
+datum: do not use them for under-keel clearance.
+
+`tides` object:
+
+| Field | Type | Notes |
+|---|---|---|
+| `highs`, `lows` | `[{time, height_m, water_level_m}]` | high and low waters of the tide height, refined with a parabola through the hourly samples; `water_level_m` may be null |
+| `range_m` | number or null | mean of consecutive high − low differences (null with fewer than two extrema) |
+| `max_range_m` | number or null | largest such difference |
+| `of` | string | always `"tide_m"` |
+| `source` | string | source and dataset name |
+| `run` | string | source run |
+| `datum` | string | `"mean sea level"` |
+| `msl_offset_m` | number or null | mean of total sea level − tide over `mean_window`, removed from the total level |
+| `mean_window` | `{from, to, samples}` | window of that mean |
+| `extrapolated` | boolean | any value in the window came from the coastal fill |
+| `doi` | string | dataset DOI |
+
+#### GET /api/status
+
+Plugin, forecast, currents, tides and queue status. Access: readonly.
+`200`:
+
+| Field | Notes |
+|---|---|
+| `plugin` | `"signalk-weather-router-plus"` |
+| `started` | the plugin is running |
+| `workers` | `{data, route}`: each worker is ready |
+| `forecast` | null until a decoded run is ready; see below |
+| `process_rss_bytes` | resident memory of the Signal K process, bytes |
+| `forecast_error` | last forecast refresh error, or null |
+| `currents` | the data worker's current sources in priority order: `{name, priority, resolutionM, bbox, validFrom, validTo}`; the CMEMS SMOC entry adds `smoc` (run, resident and on-demand areas, memory, downloads) |
+| `currents_route_worker` | the same for the route worker |
+| `rtofs_run` | RTOFS run in use, or null |
+| `tides` | Copernicus Marine sea-level source status (run, resident and on-demand areas, point cache, memory, downloads), or null when off or not loaded |
+| `tides_enabled` | the tides setting, or null before start |
+| `tides_error` | last tide source error, or null |
+| `overlay_land` | overlay land-raster cache: `{entries, cells, bytes, index_bytes, builds, hits, last_build_ms}`, or null |
+| `weather_provider_registered` | the Weather API provider is registered |
+| `jobs` | `{running: id or null, queued, total}`, or null before start |
+| `vessel`, `polar`, `land`, `harmonic_dir`, `extra_fields` | the resolved configuration: vessel parameters (internal camelCase names), default polar file, coastline shapefiles, tidal-harmonic directory, extra fields on/off |
+
+`forecast` fields: `cycle`, `valid_from`, `valid_to`, `steps` (number of
+steps), `params`, `coverage` (`"global"`), `storage`
+(`"decoded-on-disk"`), `loaded_at`, `has_waves`, `source` (`"disk"`: a
+complete decoded run was already on disk; `"grib"`: decoded from the
+GRIB cache or download), `ready_ms`, `fields_downloaded`, `decoded_dir`,
+`decoded_bytes` (this run on disk), `decoded_at`, `decode_ms`,
+`decoded_disk_bytes` (all decoded runs kept), `grib_cache_bytes`,
+`last_decode` (`{at, cycle, ms, stepBlockBytes, writtenBytes,
+downloaded}` or null), and `memory`: `{data_worker_held_bytes,
+data_worker_largest_recent_window, route_worker_held_bytes,
+route_worker_largest_recent_window, decoding_block_bytes}`. The decoded
+forecast is never resident; `memory` is what requests hold now (a
+route's corridor store while it runs, a query's window while it is
+answered). The OpenAPI document's description of `/api/status` lists the
+nested `smoc` and `tides` fields in full.
+
+### Map layers
+
+| Method | Path | Access | Returns |
+|---|---|---|---|
+| GET | `/api/field` | readonly | JSON value grid for one layer |
+| GET | `/api/wind-points` | readonly | wind barb points |
+| GET | `/api/currents` | readonly | current arrow points |
+| GET | `/api/pressure` | readonly | isobars and highs/lows as GeoJSON |
+| GET | `/api/land-mask` | readonly | binary land mask at screen resolution |
+| GET | `/api/legends` | readonly | colour ramps for every layer |
+
+**Common parameters.**
+
+| Query | Format | Default | Limits |
+|---|---|---|---|
+| `bbox` | `west,south,east,north`, degrees | required | south < north, both in −90..90; west and east in −180..360; east − west ≤ 360. `east` < `west` crosses the antimeridian |
+| `time` | ISO 8601 | now | forecast layers are interpolated at this time |
+
+Invalid values give `400` with messages such as `bbox must be w,s,e,n`,
+`bbox latitudes invalid`, `time "x" is not ISO 8601` or `res must be a
+number in [0.002, 2]`.
+
+**Caching.** `/api/field`, `/api/wind-points`, `/api/currents` and
+`/api/pressure` send `Cache-Control: public, max-age=86400` when `time`
+is more than an hour in the past, else `public, max-age=1800`.
+
+#### GET /api/field
+
+A regular grid of values for one layer over `bbox` at `time`, for
+drawing a colour layer (heatmap) or streamlines.
+
+| Query | Type | Unit | Default | Limits |
+|---|---|---|---|---|
+| `layer` | string | | required | one of the layers below |
+| `bbox`, `time` | | | | common parameters |
+| `res` | number | degrees | 0.25 | 0.002..2; lattice spacing |
+
+The lattice is snapped to multiples of `res`. If it would have more than
+40 000 cells, `res` is doubled until it fits; the response's `res` is
+the spacing used.
+
+`200`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `layer` | string | as requested |
+| `time` | string | ISO 8601 |
+| `bbox` | `[west, south, east, north]` | as requested |
+| `res` | number | spacing used, degrees |
+| `lons` | number[] | column longitudes, normalised to −180..180 |
+| `lats` | number[] | row latitudes, ascending (south first) |
+| `fields` | `{name: rows}` | one grid per field: `rows[i][j]` is at `lats[i]`, `lons[j]`; values rounded to 4 decimals (precipitation rate to 5 significant digits); null = no data |
+| `land` | number[][] | same layout; 1 = land, 0 = water |
+| `units` | `{name: unit}` | unit of each field |
+
+| `layer` | `fields` (unit) | Notes |
+|---|---|---|
+| `wind` | `speed_ms` (m/s), `dir_from` (deg) | 10 m wind |
+| `waves` | `swh` (m), `mwp` (s), `mwd` (deg, FROM) | 400 when the forecast has no wave data |
+| `msl` | `msl` (Pa) | mean sea-level pressure |
+| `temperature` | `t2m` (K) | 2 m air temperature; needs the extra fields |
+| `sst` | `skt` (K) | skin temperature; needs the extra fields |
+| `precip` | `rate` (m/s), `ptype` (code, when loaded) | precipitation depth rate; needs the extra fields |
+| `sea_state` | `index` (dimensionless), `signal` (0..1) | roughness index from wind, current and swell; `signal` is its strength, used by the webapp for opacity |
+| `current` | `speed_ms` (m/s), `dir_to` (deg) | display values: gridded model currents (CMEMS SMOC, RTOFS) extended up to 2 source-grid cells into the cells the model leaves empty at the coast, for clipping with `/api/land-mask`. Null where the current is exactly zero. Outside the resident SMOC area the area is loaded on demand first (at most 60 s wait). 400 when no current source is loaded |
+| `tide` | `tide_m` (m) | tide height above MEAN SEA LEVEL (not chart datum) from Copernicus Marine `ocean_tide` (FES2014) at the hour (linear between hourly steps), with the same 2-cell coastal extension. Outside the resident tide area the hour is loaded on demand (1/3° grid for `res` ≥ 0.25°). 400 when tides are off |
+
+Forecast layers (all but `current` and `tide`) report null outside the
+area the forecast covers.
+
+#### GET /api/wind-points
+
+Wind barb points on a lattice.
+
+| Query | Type | Unit | Default | Limits |
+|---|---|---|---|---|
+| `bbox`, `time` | | | | common parameters |
+| `res` | number | degrees | 0.5 | 0.02..5; coarsened (doubled) to at most 20 000 points |
+
+`200`: `[{lon, lat, speed_ms, dir_deg}]`, `dir_deg` the direction the
+wind comes FROM (degrees true, 1 decimal). Points without a forecast
+value are left out.
+
+#### GET /api/currents
+
+Current arrow points on a lattice (display values, extended to the coast
+as for `/api/field?layer=current`).
+
+| Query | Type | Unit | Default | Limits |
+|---|---|---|---|---|
+| `bbox`, `time` | | | | common parameters |
+| `res` | number | degrees | 0.05 | 0.005..5; coarsened (doubled) to at most 20 000 points |
+
+`200`: `[{lon, lat, u_ms, v_ms, speed_ms, dir_deg}]`: east and north
+components and speed in m/s, `dir_deg` the direction the current flows
+TO (degrees true, 1 decimal). Land points and points slower than
+0.005 m/s are left out. An empty array when no current source is
+loaded.
+
+#### GET /api/pressure
+
+Isobars and pressure centres as a GeoJSON FeatureCollection, contoured
+from the 0.25° forecast grid around `bbox`.
+
+| Query | Type | Unit | Default | Limits |
+|---|---|---|---|---|
+| `bbox`, `time` | | | | common parameters |
+| `interval` | number | hPa | 4 | 1..20; isobar spacing |
+
+| Feature | Geometry | `properties` |
+|---|---|---|
+| isobar | LineString | `{kind: "isobar", hpa, pa, bold}`; `bold` is true every 20 hPa and at 1000 hPa |
+| label | Point | `{kind: "label", hpa, pa}`: where to write the isobar's value |
+| high | Point | `{kind: "high", hpa, pa}` |
+| low | Point | `{kind: "low", hpa, pa}` |
+
+`hpa` is in hPa (whole numbers on isobars and labels), `pa` the same in
+Pa. Coordinates are `[lon, lat]`, 5 decimals.
+
+#### GET /api/land-mask
+
+A land mask at screen resolution for clipping drawn layers to the
+coastline, independent of the data grid.
+
+| Query | Type | Unit | Default | Limits |
+|---|---|---|---|---|
+| `bbox` | | | required | common parameter |
+| `w` | integer | pixels | 1024 | 16..2048 (rounded) |
+| `h` | integer | pixels | 1024 | 16..2048 (rounded) |
+
+`200` with `Content-Type: application/octet-stream`, `Content-Encoding:
+gzip`, `X-Mask-Width: <w>`, `X-Mask-Height: <h>` and `Cache-Control:
+public, max-age=86400`. After gzip decoding (browsers and most HTTP
+clients do this themselves), the body is `w × h` bytes, one per pixel,
+1 = land and 0 = water, row by row from row 0 at the north edge. Pixel
+`(x, y)` is centred at longitude `west + (x + 0.5) × (east − west) / w`
+and latitude `north − (y + 0.5) × (north − south) / h`. The raster
+follows the pixel size (finest 0.002°). `400 {error: "no coastline
+configured"}` without coastline shapefiles.
+
+#### GET /api/legends
+
+Colour ramps for the colour layers, in SI. Sent with `Cache-Control:
+public, max-age=3600`. `200`: `{key: entry}` for the keys `wind`,
+`current`, `waves`, `precip`, `temperature`, `sst`, `sea_state` and
+`tide`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `title` | string | e.g. `"Significant wave height"` |
+| `quantity` | string | `speed`, `wave_height`, `precip_depth_rate`, `temperature`, `index` or `sea_level` |
+| `category` | string or null | Signal K unit-preference category to format the stop values with (`speed`, `depth`, `temperature`); null for the sea-state index and the precipitation rate |
+| `si_unit` | string | `m/s`, `m`, `K`, or `""` for the index |
+| `kind` | string | `gradient`, or `bands` for `sea_state` |
+| `stops` | `[[value, colour]]` | ascending SI values and CSS colours |
+| `bands` | `[[value, label]]` | `sea_state` only: band lower bounds and names |
+
+The `tide` ramp is diverging over −3..+3 m; values beyond take the end
+colours.
+
+### Polars
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| GET | `/api/polars` | readonly | polar library |
+| GET | `/api/polar-angles` | readonly | best upwind and downwind VMG angles per wind speed |
+| GET | `/api/polars/table` | readonly | polar speed table in m/s |
+| POST | `/api/polar-from-specs` | readwrite | generate a polar from boat specs |
+
+A polar is named by a token. `default` is the configured `polarFile`;
+any other token is a `.pol` or `.csv` file name relative to `polarsDir`
+(for example `a_boat.pol`, `user/my_boat.csv` or
+`user/<account>/<file>`). Tokens outside the library are refused.
+
+#### GET /api/polars
+
+`200`: `[{path, label, source}]`. `path` is the token, `label` the name
+to show (`"<name> (default)"` for the default, `"user: <name>"` for
+user polars), and `source` is `"default"` or `"library"`. The list
+holds the default polar, then every `.pol`/`.csv` in `polarsDir`, then
+those in `polarsDir/user/` and in each `polarsDir/user/<account>/`; a
+file that is the same as one already listed is left out.
+
+#### GET /api/polar-angles
+
+| Query | Default | Notes |
+|---|---|---|
+| `path` | the default polar | a token |
+
+`200`: `{tws_ms[], beat_deg[], run_deg[]}`: for each true wind speed of
+the polar (m/s), the true wind angle of best upwind VMG (scanned
+20°–89°, 1° steps) and best downwind VMG (90°–179°).
+
+#### GET /api/polars/table
+
+| Query | Default | Notes |
+|---|---|---|
+| `path` | `default` | a token |
+
+`200`: `{path, twa_deg[], tws_ms[], speeds_ms[][]}`. `speeds_ms[i][k]`
+is the boat speed (m/s, 4 decimals) at `twa_deg[i]` and `tws_ms[k]`.
+
+Errors for both: `404 {error: "polar not found…"}` for a token not in
+the library; `400 {error}` when no polar is configured (`no polar
+configured`, `no default polar is configured`) or the plugin is not
+started.
+
+#### POST /api/polar-from-specs
+
+Generate a polar with the physics polar calculator
+(`src/vessel/vpp_physics.ts`: ORC 2026 sail forces, Delft hull
+resistance, a heeling limit; see `docs/plans/vpp-physics.md`), write it
+to `<polarsDir>/user/<slug>.csv` in the routing server's CSV layout, and
+return it. Access: readwrite.
+
+Body `{name, specs, overwrite?}`:
+
+| Field | Type | Unit | Default | Limits |
+|---|---|---|---|---|
+| `name` | string | | required | 1–60 characters. Slugified to the file name: lower case, spaces to `_`, only `[a-z0-9_-]` kept; must keep at least one letter or digit |
+| `overwrite` | boolean | | false | replace an existing polar of that name |
+| `specs.loa_m` | number | m | required | 3..50 |
+| `specs.lwl_m` | number | m | required | 2..50, and not more than `loa_m` + 0.01 |
+| `specs.beam_m` | number | m | required | 0.5..15 |
+| `specs.draft_m` | number | m | required | 0.1..8 |
+| `specs.displacement_kg` | number | kg | required | 50..500000 |
+| `specs.sail_area_upwind_m2` | number | m² | required | > 0 (main + 100% jib) |
+| `specs.ballast_kg` | number or null | kg | null | |
+| `specs.sail_area_downwind_m2` | number | m² | 0 | accepted but not used: no spinnaker is assumed (a value > 0 adds a warning) |
+| `specs.mast_height_m` | number or null | m | null | |
+| `specs.rig_type` | string | | `sloop` | `sloop`, `cutter`, `ketch`, `yawl`, `cat` |
+| `specs.keel_type` | string | | `fin` | `fin`, `bulb`, `wing`, `full`, `centerboard`, `swing` |
+| `specs.hull_type` | string | | `monohull` | `monohull`, `catamaran`, `trimaran` (only monohulls are modelled) |
+
+| Status | Body |
+|---|---|
+| 200 | `{path, label, warnings, polar}`: `path` is `user/<slug>.csv`, a `vessel.polar` token; `label` is `"user: <name>"`; `warnings` lists specs outside typical ranges (displacement-length ratio outside 50–400, SA/D outside 8–30, an unused downwind sail area); `polar` is `{path, twa_deg[], tws_ms[], speeds_ms[][]}` as served by `/api/polars/table` |
+| 400 | `{error}`: invalid specs or name, or no `polarsDir` configured |
+| 409 | `{error}`: the file exists and `overwrite` is not true |
+| 422 | `{error}`: a multihull, which the calculator does not model |
+| 500 | `{error: "VPP failed: …"}`: the calculation failed |
+
+Against 441 ORC 2026 non-spinnaker certificates it was not fitted on,
+the calculator's median error is 3.3% upwind, 3.2% reaching and 3.3%
+running (6–20 kn). ORC's speeds are race predictions; use the polar
+performance setting for a cruising boat. In the webapp, use "Create
+polar from boat specs…" under the polar picker.
+
+### Settings
+
+| Method | Path | Access | Purpose |
+|---|---|---|---|
+| GET | `/api/settings` | readonly | web-app settings and their schema |
+| PUT | `/api/settings` | readwrite | change some settings |
+
+The settings, their groups and defaults are listed under
+[Configuration](#configuration). They are stored in `settings.json` in
+the plugin data directory and shared by every client. Values on the
+wire are SI (m, m/s, s; degrees for the heading increment); a client
+shows them in the Signal K user's unit preferences.
+
+#### GET /api/settings
+
+Sent with `Cache-Control: no-store`. `200`: `{values, schema}`.
+`503 {error: "plugin not started"}` when the plugin is not running.
+
+- `values`: `{group: {key: value}}` for the groups `vessel`,
+  `forecast`, `currents`, `tides`, `routing` and `publish`.
+- `schema.groups`: `[{id, label, help}]`.
+- `schema.settings`: one entry per setting:
+
+| Field | Notes |
+|---|---|
+| `key` | `group.key`, e.g. `vessel.draught` |
+| `group` | group id |
+| `label`, `help` | text for display |
+| `type` | `number`, `integer`, `boolean`, `string` or `enum` |
+| `unit` | SI unit of the value (`m`, `m/s`, `s`, `deg`); absent for dimensionless values |
+| `quantity` | display quantity for unit conversion: `speed`, `depth`, `wave_height`, `short_distance`, `ratio`, `megabytes`, `hours`, `minutes`, `seconds`, `angle` or `count` |
+| `min`, `max` | range |
+| `multipleOf` | value must be a whole multiple of this (e.g. 3600 s) |
+| `oneOf` | value must be one of these (e.g. `[3600, 10800]`) |
+| `default` | default value |
+| `nullable` | null is allowed (e.g. no maximum wave height) |
+| `enum` | allowed strings |
+| `maxLength` | for strings |
+| `reload` | what a change re-does: `forecast`, `currents`, `tides`, `refresh_timer`, `jobs`, `next_job` (nothing now; the next route uses it) or `cache` (used at the next cache prune) |
+
+#### PUT /api/settings
+
+Body: only the keys to change, nested by group, in SI, e.g.
+`{"vessel": {"draught": 1.9}}`. Every key is validated (type, range,
+enum); either all are saved and applied, or none.
+
+| Status | Body |
+|---|---|
+| 200 | `{values, changed, reloaded}`: all values after the change; `changed` lists the `group.key` names whose value changed; `reloaded` is `{forecast, currents, tides, refresh_timer, jobs}`, each true when the change re-did it |
+| 400 | `{error, errors}`: `errors` is `{"group.key": message}` (or `{group: message}` for an unknown or non-object group, `{"": message}` for a non-object body); nothing is saved |
+| 503 | `{error}`: plugin not started |
+| 500 | `{error}`: any other failure |
+
+What a change re-does: a new forecast horizon, extra-fields choice or
+"memory kept free" reloads the forecast; SMOC and RTOFS settings reload
+currents; tide settings reload tides only; the check interval restarts
+the refresh timer; "finished routes kept" trims the job list; everything
+else applies to the next route. A forecast change that the device
+cannot hold (memory for one decode step, disk for the decoded run) is
+refused with `400` before anything is saved, with the reason under the
+setting's key. Per-route values in a route request (`vessel.*`,
+`stages`, `sail_thresh_ms`, `simplify_m`, `smoother`,
+`smoother_tolerance`, `publish`) take precedence over the settings.
+
+### Signal K integration
+
+#### Weather API provider
+
+When the Signal K plugin configuration has `weatherProvider.enabled`
+(the default) and the server has the Weather API, the plugin registers
+as a Weather API provider named "Weather Router Plus (ECMWF open data)"
+once the first forecast run is ready. `/api/status` reports
+`weather_provider_registered`. The server answers
+`/signalk/v2/api/weather/…` requests through its registered providers.
+
+| Weather API method | Result |
+|---|---|
+| point forecasts (`/signalk/v2/api/weather/forecasts/point?lat=&lon=`) | one entry per forecast step, anywhere on the globe |
+| daily forecasts | empty list |
+| observations | empty list |
+| warnings | empty list |
+
+For point forecasts the server passes the options `startDate` and
+`maxCount`, from the Weather API query parameters `date` and `count`
+(beside `lat`, `lon` and `provider`; upstream
+`src/api/weather/index.ts`, `parseQueryOptions`). Steps that ended more than 3 hours before `startDate` (or
+now, without it) are skipped, and at most `maxCount` entries are
+returned. A position outside the forecast is an error.
+
+Each entry (Signal K units: m/s, rad, Pa, K, m, s, ratio):
+
+| Field | Source | Notes |
+|---|---|---|
+| `date` | step valid time | ISO 8601 |
+| `type` | | `"point"` |
+| `description` | | `"ECMWF IFS 0.25° open data, cycle <ISO>, +<h> h"` |
+| `wind.speedTrue` | 10 m wind | m/s |
+| `wind.directionTrue` | 10 m wind direction FROM | rad |
+| `outside.pressure` | `msl` | Pa |
+| `outside.temperature` | `2t` | K; extra fields only |
+| `outside.dewPointTemperature` | `2d` | K; extra fields only |
+| `outside.relativeHumidity` | from `2t` and `2d` | ratio 0..1; extra fields only |
+| `water.temperature` | `skt` | K; extra fields only |
+| `water.waveSignificantHeight` | `swh` | m |
+| `water.wavePeriod` | `mwp` | s |
+| `water.waveDirection` | `mwd` (FROM) | rad |
+| `water.level` | Copernicus Marine hourly sea level | m, total water level (tide + surge) relative to local mean sea level, not chart datum; tides on only |
+| `water.levelTendency` | same | `increasing`, `decreasing` or `steady` (within ±2 cm/h), `not available` |
+
+A field is left out when its value is not available. The Weather API
+omits precipitation volume, because only the instantaneous rate is
+fetched. When the water-level series cannot be fetched, the two
+`water.level*` fields are left out and the rest is returned.
+
+#### Resources API publishing
+
+When a job finishes and publishing is on (the request's `publish`, else
+the `publish.toResources` setting, default on), the plugin saves the
+route with the server's Resources API as
+`/signalk/v2/api/resources/routes/{jobId}`: the resource id is the job
+id. This needs a routes provider such as `resources-provider`. A failure
+is logged and recorded in the job's `publish_error`; `POST
+/api/routes/{id}/publish` retries. `GET /api/routes/{id}/signalk`
+returns the same record.
+
+| Field | Notes |
+|---|---|
+| `name` | the request's `name`, or the default name (see `POST /api/routes`) |
+| `description` | `"Weather route, <nm> nm, <h> h"` (one decimal each) |
+| `distance` | total distance, m |
+| `start`, `end` | departure and arrival times, ISO 8601 |
+| `feature` | GeoJSON Feature with a LineString of `[lon, lat]` |
+| `feature.properties.source` | `"signalk-weather-router-plus"` |
+| `feature.properties.total_time_s`, `motoring_time_s`, `sailing_time_s` | s |
+| `feature.properties.departure`, `arrival` | ISO 8601 |
+| `feature.properties.coordinatesMeta` | one item per coordinate, in order: `name` (`"Start"`, `"WP1"`, `"WP2"`, …, `"End"`) plus the point properties of the GeoJSON result (`lon`, `lat`, `time`, `sog_ms`, `cog_deg`, `depth_m`, `mode`, and the wind, wave, current, `leg` and `role` fields when present; not `leg_distance_m` / `leg_time_s`) |
+
+#### Notifications
+
+When the `publish.notifications` setting is on (default), the plugin
+sends a delta for the own vessel on the path
+`notifications.weatherRouterPlus.<jobId>`:
+
+| When | `state` | `message` |
+|---|---|---|
+| route done | `normal` | `route ready: <nm> nm, <h> h` |
+| route failed | `alert` | `route failed: <error>` |
+
+The value is `{state, method: [], message, timestamp}`. Cancelled jobs
+send no notification. The plugin emits no other deltas.
+
+#### OpenAPI
+
+The plugin gives its OpenAPI document to the server (`getOpenApi()`)
+and serves it at `GET /api/openapi.json` (readonly).
 
 ## CLI
 

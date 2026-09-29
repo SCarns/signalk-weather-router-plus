@@ -6,7 +6,13 @@
  * Mode policy:
  *  - motor:    always motor
  *  - fastest:  sail when sail speed > motor speed
- *  - sail_max: sail when any of (sail >= sailThreshMs, vmg > 0.25, sail >= 1.0)
+ *  - sail_max: sail when the polar speed is at least sailThreshMs, else motor
+ *
+ * Deviation from the reference (2026-09-29, user decision): leg_sim.py's
+ * sail_max also sails when vmg > 0.25 m/s or sail >= 1.0 m/s. With the
+ * heading on the leg bearing vmg equals the polar speed, so those tests
+ * made the boat sail above 0.25 m/s whatever the threshold; the
+ * threshold alone decides here.
  */
 
 import { haversineBearing, haversineDistanceM, projectAlongBearing, DEG } from '../geo/geodesy';
@@ -31,11 +37,10 @@ export interface SimOptions {
   simStepM: number;
 }
 
-function selectSpeed(sailSpeed: number, motorSpeed: number, vmg: number, policy: ModePolicy, sailThreshMs: number): [number, boolean] {
+function selectSpeed(sailSpeed: number, motorSpeed: number, policy: ModePolicy, sailThreshMs: number): [number, boolean] {
   if (policy === 'motor') return [motorSpeed, false];
   if (policy === 'fastest') return sailSpeed > motorSpeed ? [sailSpeed, true] : [motorSpeed, false];
-  if (sailSpeed >= sailThreshMs || vmg > 0.25 || sailSpeed >= 1.0) return [sailSpeed, true];
-  return [motorSpeed, false];
+  return sailSpeed >= sailThreshMs ? [sailSpeed, true] : [motorSpeed, false];
 }
 
 /** Simulate traversal of the straight line a→c starting at aTime. */
@@ -73,14 +78,12 @@ export function simulateLegTime(
     const [ws, wd] = wind.at(lon, lat, t);
     const [cu, cv] = current.at(lon, lat, t);
     let sailSpeed = 0;
-    let vmg = 0;
     if (polar && Number.isFinite(ws)) {
       let twa = (((bearingDeg - wd) % 360) + 360) % 360;
       if (twa > 180) twa = 360 - twa;
       sailSpeed = polar.boatSpeed(twa, ws);
-      vmg = sailSpeed; // heading equals leg bearing
     }
-    const [waterSpeed, sailUsed] = selectSpeed(sailSpeed, motor, vmg, opts.modePolicy, opts.sailThreshMs);
+    const [waterSpeed, sailUsed] = selectSpeed(sailSpeed, motor, opts.modePolicy, opts.sailThreshMs);
     const sogU = waterSpeed * headingU + (Number.isFinite(cu) ? cu : 0);
     const sogV = waterSpeed * headingV + (Number.isFinite(cv) ? cv : 0);
     const progress = sogU * headingU + sogV * headingV;
@@ -197,8 +200,7 @@ export function scoreCandidatesFromParent(
         if (twa > 180) twa = 360 - twa;
         sailSpeed = polar.boatSpeed(twa, ws);
       }
-      const vmg = sailSpeed;
-      const [waterSpeed, sailUsed] = selectSpeed(sailSpeed, motor, vmg, opts.modePolicy, opts.sailThreshMs);
+      const [waterSpeed, sailUsed] = selectSpeed(sailSpeed, motor, opts.modePolicy, opts.sailThreshMs);
       const sogU = waterSpeed * headingU[i] + cu;
       const sogV = waterSpeed * headingV[i] + cv;
       const progress = sogU * headingU[i] + sogV * headingV[i];
