@@ -93,7 +93,7 @@ test('per-constituent calls agree with the batched call (order independence)', (
 
 test('m2 at MJD 61310.0 (2026-09-27T00:00Z): pu≈0.019970, pf≈0.968808, G≈346.7789', () => {
   const { pu, pf, G } = tidalArguments(61310.0, ['m2']);
-  assert.ok(Math.abs(pu[0] - 0.019970) < 1e-6, `pu ${pu[0]}`);
+  assert.ok(Math.abs(pu[0] - 0.01997) < 1e-6, `pu ${pu[0]}`);
   assert.ok(Math.abs(pf[0] - 0.968808) < 1e-6, `pf ${pf[0]}`);
   assert.ok(Math.abs(G[0] - 346.7789) < 1e-4, `G ${G[0]}`);
 });

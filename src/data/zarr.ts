@@ -273,7 +273,7 @@ export class ZarrHttpStore {
   /** One array's metadata from `.zarray` + `.zattrs` (for unconsolidated stores). */
   async arrayMeta(name: string): Promise<ZarrArrayMeta> {
     const za = (await this.getJson(`${name}/.zarray`)).doc as Record<string, unknown>;
-    let attrs: Record<string, unknown> = {};
+    let attrs: Record<string, unknown>;
     try {
       attrs = (await this.getJson(`${name}/.zattrs`)).doc as Record<string, unknown>;
     } catch {

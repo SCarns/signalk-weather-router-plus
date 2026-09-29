@@ -67,7 +67,9 @@ export function availableMemory(): { bytes: number; source: string } {
       bytes = Number(m[1]) * 1024;
       source = 'MemAvailable';
     }
-  } catch { /* not Linux */ }
+  } catch {
+    /* not Linux */
+  }
   if (process.platform === 'darwin' && source === 'os.freemem') {
     const mac = darwinAvailable();
     if (mac !== null) {
@@ -143,8 +145,13 @@ export function availableDisk(dir: string): number | null {
  * spare? `available` / `disk` default to live readings (tests pass their own).
  */
 export function checkDecodeResources(
-  horizonHours: number, extraFields: boolean, headroomBytes: number, dir: string | null,
-  available: { bytes: number; source: string } = availableMemory(), disk: number | null = dir ? availableDisk(dir) : null, now = new Date(),
+  horizonHours: number,
+  extraFields: boolean,
+  headroomBytes: number,
+  dir: string | null,
+  available: { bytes: number; source: string } = availableMemory(),
+  disk: number | null = dir ? availableDisk(dir) : null,
+  now = new Date()
 ): MemoryCheck {
   const need = streamingDecodeBytes(fieldsPerStep(extraFields));
   const runBytes = forecastBytes(horizonHours, extraFields, now);
@@ -160,8 +167,14 @@ export function checkDecodeResources(
     if (extraFields && fits(horizonHours, false)) options.push('turn off the extra fields');
     for (const h of [120, 96, 72, 48, 24, 12]) {
       if (h >= horizonHours) continue;
-      if (fits(h, extraFields)) { options.push(`shorten the forecast horizon to ${h} h`); break; }
-      if (extraFields && fits(h, false)) { options.push(`shorten the horizon to ${h} h with the extra fields off`); break; }
+      if (fits(h, extraFields)) {
+        options.push(`shorten the forecast horizon to ${h} h`);
+        break;
+      }
+      if (extraFields && fits(h, false)) {
+        options.push(`shorten the horizon to ${h} h with the extra fields off`);
+        break;
+      }
     }
     options.push(`free disk space (${mb(DISK_RESERVE_BYTES)} must stay free)`);
     message = `not enough disk space: ${message}. To fit: ${options.join(', or ')}.`;
@@ -171,7 +184,9 @@ export function checkDecodeResources(
 
 /** Can a route's corridor store of `needBytes` be read, leaving `headroomBytes` free? */
 export function checkRouteForecastMemory(
-  needBytes: number, headroomBytes: number, available: { bytes: number; source: string } = availableMemory(),
+  needBytes: number,
+  headroomBytes: number,
+  available: { bytes: number; source: string } = availableMemory()
 ): MemoryCheck {
   const ok = needBytes + headroomBytes <= available.bytes;
   const message = ok
@@ -190,7 +205,8 @@ export const WATER_GRID_BUILD_BYTES = 400e6;
 
 /** Can a water grid rebuild run now, leaving `headroomBytes` free? */
 export function checkWaterGridBuildMemory(
-  headroomBytes: number, available: { bytes: number; source: string } = availableMemory(),
+  headroomBytes: number,
+  available: { bytes: number; source: string } = availableMemory()
 ): MemoryCheck {
   const need = WATER_GRID_BUILD_BYTES;
   const ok = need + headroomBytes <= available.bytes;

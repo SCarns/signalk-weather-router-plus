@@ -181,13 +181,26 @@ function parseMessage(m: Uint8Array, absOffset: number): Grib2Message {
     const secNum = u8(m, p + 4);
     if (secLen < 5) throw new Grib2Error(`section ${secNum} at ${absOffset + p} has length ${secLen}`);
     switch (secNum) {
-      case 1: sec.s1 = p; break;
-      case 2: break; // local use, ignored
-      case 3: sec.s3 = p; break;
-      case 4: sec.s4 = p; break;
-      case 5: sec.s5 = p; break;
-      case 6: sec.s6 = p; break;
-      case 7: sec.s7 = p; break;
+      case 1:
+        sec.s1 = p;
+        break;
+      case 2:
+        break; // local use, ignored
+      case 3:
+        sec.s3 = p;
+        break;
+      case 4:
+        sec.s4 = p;
+        break;
+      case 5:
+        sec.s5 = p;
+        break;
+      case 6:
+        sec.s6 = p;
+        break;
+      case 7:
+        sec.s7 = p;
+        break;
       default:
         throw new Grib2Error(`unknown section number ${secNum} at ${absOffset + p}`);
     }
@@ -240,7 +253,15 @@ function parseMessage(m: Uint8Array, absOffset: number): Grib2Message {
   if (scanningMode & 0x10) throw new Grib2Error('boustrophedonic scanning not supported');
   if (scanningMode & 0x0f) throw new Grib2Error(`scanning mode 0x${scanningMode.toString(16)} not supported`);
   const grid: Grib2Grid = {
-    ni, nj, la1, lo1, la2, lo2, di, dj, scanningMode,
+    ni,
+    nj,
+    la1,
+    lo1,
+    la2,
+    lo2,
+    di,
+    dj,
+    scanningMode,
     jScansPositively: (scanningMode & 0x40) !== 0,
     iScansPositively: (scanningMode & 0x80) === 0,
   };
@@ -261,8 +282,12 @@ function parseMessage(m: Uint8Array, absOffset: number): Grib2Message {
   const typeOfFirstFixedSurface = u8(m, q + 23);
   const forecastHours = forecastTime * timeUnitHours(timeUnit);
   const product: Grib2Product = {
-    discipline, parameterCategory, parameterNumber,
-    productDefinitionTemplate: pdt, typeOfFirstFixedSurface, forecastHours,
+    discipline,
+    parameterCategory,
+    parameterNumber,
+    productDefinitionTemplate: pdt,
+    typeOfFirstFixedSurface,
+    forecastHours,
   };
 
   // ---- Section 5: data representation
@@ -307,20 +332,36 @@ function parseMessage(m: Uint8Array, absOffset: number): Grib2Message {
   const decode = (scratch?: DecodeScratch): Float64Array => unpack(data, packing, bitmap, numberOfDataPoints, scratch);
 
   return {
-    offset: absOffset, length, discipline, centre, referenceTime, grid, product, packing,
-    numberOfDataPoints, hasBitmap: bitmap !== null, decode,
+    offset: absOffset,
+    length,
+    discipline,
+    centre,
+    referenceTime,
+    grid,
+    product,
+    packing,
+    numberOfDataPoints,
+    hasBitmap: bitmap !== null,
+    decode,
   };
 }
 
 function timeUnitHours(code: number): number {
   switch (code) {
-    case 0: return 1 / 60;
-    case 1: return 1;
-    case 2: return 24;
-    case 10: return 3;
-    case 11: return 6;
-    case 12: return 12;
-    case 13: return 1 / 3600;
+    case 0:
+      return 1 / 60;
+    case 1:
+      return 1;
+    case 2:
+      return 24;
+    case 10:
+      return 3;
+    case 11:
+      return 6;
+    case 12:
+      return 12;
+    case 13:
+      return 1 / 3600;
     default:
       throw new Grib2Error(`time range unit ${code} not supported`);
   }
@@ -364,7 +405,7 @@ function unpack(
   packing: Grib2Packing,
   bitmap: Uint8Array | null,
   numberOfDataPoints: number,
-  scratch?: DecodeScratch,
+  scratch?: DecodeScratch
 ): Float64Array {
   const n = packing.numberOfValues;
   if (scratch && (!scratch.x || scratch.x.length < n)) scratch.x = new Uint32Array(n);
@@ -375,12 +416,18 @@ function unpack(
     if (packing.bitsPerValue === 0) {
       x = scratch ? scratch.x!.subarray(0, n).fill(0) : new Uint32Array(n);
     } else {
-      x = aecDecode(data, {
-        bitsPerSample: packing.bitsPerValue,
-        blockSize: c.blockSize,
-        rsi: c.rsi,
-        flags: c.flags,
-      }, n, undefined, scratch?.x);
+      x = aecDecode(
+        data,
+        {
+          bitsPerSample: packing.bitsPerValue,
+          blockSize: c.blockSize,
+          rsi: c.rsi,
+          flags: c.flags,
+        },
+        n,
+        undefined,
+        scratch?.x
+      );
     }
   } else {
     x = unpackSimple(data, packing.bitsPerValue, n, scratch?.x);

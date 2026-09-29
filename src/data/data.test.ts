@@ -81,7 +81,7 @@ test('nanFillLimited fills near valid cells and leaves distant NaN', () => {
 });
 
 test('ForecastStore blends steps in time and reports wind FROM direction', () => {
-  const mk = (u: number, v: number): FieldGrid => ({ lat0: 0, lon0: 0, dLat: 1, dLon: 1, nLat: 2, nLon: 2, values: Float32Array.from([u, u, u, u]) });
+  const mk = (u: number, _v: number): FieldGrid => ({ lat0: 0, lon0: 0, dLat: 1, dLon: 1, nLat: 2, nLon: 2, values: Float32Array.from([u, u, u, u]) });
   const t0 = Date.UTC(2026, 0, 1, 0);
   const t1 = t0 + 3 * 3600_000;
   const steps = [
@@ -143,11 +143,9 @@ function tmpDir(): string {
 test('EcmwfClient retries 429 with backoff, honours Retry-After, then falls back to the next mirror', async () => {
   const calls: string[] = [];
   const sleeps: number[] = [];
-  let n = 0;
   const fetchImpl = (async (url: string | URL | Request) => {
     const u = String(url);
     calls.push(u);
-    n++;
     if (u.startsWith('https://primary')) {
       return new Response('', { status: 429, headers: { 'retry-after': '5' } });
     }

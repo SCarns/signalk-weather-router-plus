@@ -10,8 +10,18 @@ import type { CurrentStack } from '../currents/stack';
 import type { OverlayLand } from '../geo/landcache';
 import { bboxWidth, type BBox } from '../geo/geodesy';
 import {
-  beaufort, douglas, douglasLabel, feelsLike, heatIndexK, precipType, relativeHumidity, rnd,
-  seaStateBand, seaStateIndex, windChillK, roughnessIndex,
+  beaufort,
+  douglas,
+  douglasLabel,
+  feelsLike,
+  heatIndexK,
+  precipType,
+  relativeHumidity,
+  rnd,
+  seaStateBand,
+  seaStateIndex,
+  windChillK,
+  roughnessIndex,
 } from '../engine/conditions';
 import { buildIsobarFeatures, type IsobarFeature } from '../engine/isobars';
 import { tideRowAt, tideSummary, SL_NAME, type TidePointSeries, type TideRowFields, type TideSummary } from '../tides/sealevel';
@@ -41,7 +51,8 @@ function lattice(bbox: BBox, res: number, maxCells: number): { lons: number[]; l
   const lons: number[] = [];
   const lats: number[] = [];
   const lonStart = Math.ceil(bbox.west / r) * r;
-  for (let x = lonStart; x <= bbox.west + width + 1e-9; x += r) lons.push(Math.round((((x + 180) % 360 + 360) % 360 - 180) * 1e6) / 1e6);
+  for (let x = lonStart; x <= bbox.west + width + 1e-9; x += r)
+    lons.push(Math.round((((((x + 180) % 360) + 360) % 360) - 180) * 1e6) / 1e6);
   const latStart = Math.ceil(bbox.south / r) * r;
   for (let y = latStart; y <= bbox.north + 1e-9; y += r) lats.push(Math.round(y * 1e6) / 1e6);
   return { lons, lats, res: r };
@@ -72,7 +83,7 @@ export interface OverlaySources {
 export function fieldGrid(src: OverlaySources, layer: FieldLayer, bbox: BBox, time: Date, res: number): FieldGridResponse {
   const { lons, lats, res: r } = lattice(bbox, res, 40_000);
   const lm = src.land ? src.land.forBBox(bbox, r) : null;
-  const land = lats.map((lat) => lons.map((lon) => (lm && lm.isLand(lon, lat) ? 1 : 0)));
+  const land = lats.map(lat => lons.map(lon => (lm && lm.isLand(lon, lat) ? 1 : 0)));
   const fields: Record<string, (number | null)[][]> = {};
   const units: Record<string, string> = {};
   const f = src.forecast;
@@ -80,7 +91,7 @@ export function fieldGrid(src: OverlaySources, layer: FieldLayer, bbox: BBox, ti
     if (!f) throw new Error('no forecast loaded');
     return f;
   };
-  const rowsOf = (fn: (lon: number, lat: number) => number): (number | null)[][] => lats.map((lat) => lons.map((lon) => nz(fn(lon, lat))));
+  const rowsOf = (fn: (lon: number, lat: number) => number): (number | null)[][] => lats.map(lat => lons.map(lon => nz(fn(lon, lat))));
   switch (layer) {
     case 'wind': {
       const s = need();
@@ -156,7 +167,7 @@ export function fieldGrid(src: OverlaySources, layer: FieldLayer, bbox: BBox, ti
       const s = need();
       if (!s.has('tprate')) throw new Error('tprate not loaded (enable extra fields)');
       // Already a depth rate in m/s: the store converts tprate at ingestion.
-      fields.rate = lats.map((lat) => lons.map((lon) => nzSig(s.paramAt('tprate', lon, lat, time))));
+      fields.rate = lats.map(lat => lons.map(lon => nzSig(s.paramAt('tprate', lon, lat, time))));
       units.rate = 'm/s';
       if (s.has('ptype')) {
         fields.ptype = rowsOf((lon, lat) => s.paramAt('ptype', lon, lat, time));
@@ -273,9 +284,12 @@ export function currentPoints(src: OverlaySources, bbox: BBox, time: Date, res: 
       const sp = Math.hypot(u, v);
       if (sp < 0.005) continue;
       out.push({
-        lon: Math.round(lon * 1e6) / 1e6, lat: Math.round(lat * 1e6) / 1e6,
-        u_ms: Math.round(u * 1e4) / 1e4, v_ms: Math.round(v * 1e4) / 1e4,
-        speed_ms: Math.round(sp * 1e4) / 1e4, dir_deg: Math.round((((Math.atan2(u, v) * 180) / Math.PI + 360) % 360) * 10) / 10,
+        lon: Math.round(lon * 1e6) / 1e6,
+        lat: Math.round(lat * 1e6) / 1e6,
+        u_ms: Math.round(u * 1e4) / 1e4,
+        v_ms: Math.round(v * 1e4) / 1e4,
+        speed_ms: Math.round(sp * 1e4) / 1e4,
+        dir_deg: Math.round((((Math.atan2(u, v) * 180) / Math.PI + 360) % 360) * 10) / 10,
       });
     }
   }
@@ -299,7 +313,12 @@ export function windPoints(src: OverlaySources, bbox: BBox, time: Date, res: num
       if (!src.forecast.covers(lon, lat)) continue;
       const [ws, wd] = src.forecast.at(lon, lat, time);
       if (!Number.isFinite(ws)) continue;
-      out.push({ lon: Math.round(lon * 1e6) / 1e6, lat: Math.round(lat * 1e6) / 1e6, speed_ms: Math.round(ws * 1000) / 1000, dir_deg: Math.round(wd * 10) / 10 });
+      out.push({
+        lon: Math.round(lon * 1e6) / 1e6,
+        lat: Math.round(lat * 1e6) / 1e6,
+        speed_ms: Math.round(ws * 1000) / 1000,
+        dir_deg: Math.round(wd * 10) / 10,
+      });
     }
   }
   return out;
@@ -447,7 +466,15 @@ export interface ConditionsTide {
 
 const CONDITIONS_MAX_ROWS = 1000;
 
-export function conditionsSeries(src: OverlaySources, lon: number, lat: number, from: Date, hours: number, stepH: number, tide: ConditionsTide | null = null): ConditionsSeries {
+export function conditionsSeries(
+  src: OverlaySources,
+  lon: number,
+  lat: number,
+  from: Date,
+  hours: number,
+  stepH: number,
+  tide: ConditionsTide | null = null
+): ConditionsSeries {
   if (!Number.isFinite(stepH) || stepH <= 0) throw new Error('step_h must be > 0');
   const f = src.forecast;
   let start = from.getTime();
@@ -469,25 +496,33 @@ export function conditionsSeries(src: OverlaySources, lon: number, lat: number, 
   const series: ConditionsSeriesRow[] = [];
   const ts = tide?.series ?? null;
   let t = start;
-  for (; t <= end + 1 && series.length < CONDITIONS_MAX_ROWS; t += stepH * 3600_000) series.push({ ...sampleConditions(src, lon, lat, new Date(t)), ...tideRowAt(ts, t) });
+  for (; t <= end + 1 && series.length < CONDITIONS_MAX_ROWS; t += stepH * 3600_000)
+    series.push({ ...sampleConditions(src, lon, lat, new Date(t)), ...tideRowAt(ts, t) });
   if (t <= end + 1) truncated = true; // stopped by the row limit
   let tides: TideSummary | null = null;
   let tidesError = tide?.error ?? null;
   if (ts && series.length) {
     tides = tideSummary(ts, Date.parse(series[0].time), Date.parse(series[series.length - 1].time));
-    if (!series.some((r) => r.tide_m !== null)) {
+    if (!series.some(r => r.tide_m !== null)) {
       tides = null;
       tidesError = tidesError ?? 'no model sea level within 2 grid cells (~18 km) of this point';
     }
   }
   return {
-    lon, lat,
+    lon,
+    lat,
     is_land: !!src.land && src.land.isLandAt(lon, lat),
-    from: new Date(start).toISOString(), hours, step_h: stepH,
-    forecast_time_range: range, truncated, series, tides, tides_error: tidesError,
+    from: new Date(start).toISOString(),
+    hours,
+    step_h: stepH,
+    forecast_time_range: range,
+    truncated,
+    series,
+    tides,
+    tides_error: tidesError,
     sources: {
       forecast_cycle: f ? f.meta.cycleTime.toISOString() : null,
-      currents: src.currents ? src.currents.sources.map((s) => s.name) : [],
+      currents: src.currents ? src.currents.sources.map(s => s.name) : [],
       tides: ts ? `${SL_NAME}, run ${ts.run}` : null,
     },
   };
@@ -514,7 +549,7 @@ export function landMaskImage(src: OverlaySources, bbox: BBox, w: number, h: num
     const lat = bbox.north - (y + 0.5) * dy;
     const row = y * w;
     for (let x = 0; x < w; x++) {
-      const lon = ((bbox.west + (x + 0.5) * dx + 180) % 360 + 360) % 360 - 180;
+      const lon = ((((bbox.west + (x + 0.5) * dx + 180) % 360) + 360) % 360) - 180;
       if (lm.isLand(lon, lat)) out[row + x] = 1;
     }
   }
@@ -522,7 +557,12 @@ export function landMaskImage(src: OverlaySources, bbox: BBox, w: number, h: num
 }
 
 /** Isobar GeoJSON for a bbox at a time (interval in hPa). */
-export function pressureFeatures(src: OverlaySources, bbox: BBox, time: Date, intervalHpa: number): { type: 'FeatureCollection'; features: IsobarFeature[] } {
+export function pressureFeatures(
+  src: OverlaySources,
+  bbox: BBox,
+  time: Date,
+  intervalHpa: number
+): { type: 'FeatureCollection'; features: IsobarFeature[] } {
   const f = src.forecast;
   if (!f) throw new Error('no forecast loaded');
   if (!f.has('msl')) throw new Error('msl not loaded');
@@ -543,7 +583,7 @@ export function pressureFeatures(src: OverlaySources, bbox: BBox, time: Date, in
   const field = new Float64Array(nx * ny);
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      field[j * nx + i] = f.mslAt(((lons[i] + 180) % 360 + 360) % 360 - 180, lats[j], time) * 0.01;
+      field[j * nx + i] = f.mslAt(((((lons[i] + 180) % 360) + 360) % 360) - 180, lats[j], time) * 0.01;
     }
   }
   return { type: 'FeatureCollection', features: buildIsobarFeatures(field, lons, lats, intervalHpa) };

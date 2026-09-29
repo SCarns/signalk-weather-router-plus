@@ -61,16 +61,25 @@ export interface ApiDeps {
   /** Polar library configuration (null before the plugin has started). */
   polarLibrary: () => { polarFile: string | null; polarsDir: string | null } | null;
   /** Web-app settings; throws when the plugin is not started. */
-  getSettings: () => { values: AppSettings; schema: { groups: { id: SettingsGroup; label: string; help: string }[]; settings: readonly SettingSpec[] } };
+  getSettings: () => {
+    values: AppSettings;
+    schema: { groups: { id: SettingsGroup; label: string; help: string }[]; settings: readonly SettingSpec[] };
+  };
   /** Validate, persist and apply a partial settings update. */
-  updateSettings: (partial: unknown) => { values: AppSettings; changed: string[]; reloaded: { forecast: boolean; currents: boolean; tides: boolean; refresh_timer: boolean; jobs: boolean } };
+  updateSettings: (partial: unknown) => {
+    values: AppSettings;
+    changed: string[];
+    reloaded: { forecast: boolean; currents: boolean; tides: boolean; refresh_timer: boolean; jobs: boolean };
+  };
 }
 
 type AccessRouter = IRouter & { access?: (level: 'readonly' | 'readwrite') => IRouter };
 
 function parseBBox(s: unknown): BBox {
-  const parts = String(s ?? '').split(',').map(Number);
-  if (parts.length !== 4 || parts.some((v) => !Number.isFinite(v))) throw new Error('bbox must be w,s,e,n');
+  const parts = String(s ?? '')
+    .split(',')
+    .map(Number);
+  if (parts.length !== 4 || parts.some(v => !Number.isFinite(v))) throw new Error('bbox must be w,s,e,n');
   const [west, south, east, north] = parts;
   if (south >= north || south < -90 || north > 90) throw new Error('bbox latitudes invalid');
   if (west < -180 || west > 360 || east < -180 || east > 360) throw new Error('bbox longitudes must be in [-180, 360]');
@@ -84,8 +93,6 @@ function parseTime(s: unknown): Date {
   if (Number.isNaN(d.getTime())) throw new Error(`time "${String(s)}" is not ISO 8601`);
   return d;
 }
-
-
 
 function num(s: unknown, def: number, min: number, max: number, name: string): number {
   if (s === undefined || s === '') return def;
@@ -118,7 +125,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
         const s = `${f}:${st.size}:${Math.floor(st.mtimeMs)}`;
         for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
       }
-    } catch { /* fall back to a constant tag */ }
+    } catch {
+      /* fall back to a constant tag */
+    }
     return (h >>> 0).toString(36);
   };
   const servePublic = (rel: string, req: Request, res: Response): void => {
@@ -130,7 +139,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     if (rel === 'index.html') {
       try {
         const v = publicVersion();
-        const html = fs.readFileSync(file, 'utf8').replace(/(<(?:script|link)[^>]+(?:src|href)=")((?:ol|rp-[a-z]+)\.(?:js|css))"/g, `$1$2?v=${v}"`);
+        const html = fs
+          .readFileSync(file, 'utf8')
+          .replace(/(<(?:script|link)[^>]+(?:src|href)=")((?:ol|rp-[a-z]+)\.(?:js|css))"/g, `$1$2?v=${v}"`);
         res.setHeader('Cache-Control', 'no-cache');
         res.type('html').send(html);
       } catch {
@@ -241,7 +252,8 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   ro.get('/api/field', async (req: Request, res: Response) => {
     try {
       const layer = String(req.query.layer ?? '');
-      if (!['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current', 'tide'].includes(layer)) throw new Error('layer must be one of wind, waves, msl, temperature, sst, precip, sea_state, current, tide');
+      if (!['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current', 'tide'].includes(layer))
+        throw new Error('layer must be one of wind, waves, msl, temperature, sst, precip, sea_state, current, tide');
       const bbox = parseBBox(req.query.bbox);
       const time = parseTime(req.query.time);
       const resDeg = num(req.query.res, 0.25, 0.002, 2, 'res');
@@ -261,7 +273,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const bbox = parseBBox(req.query.bbox);
       const w = Math.round(num(req.query.w, 1024, 16, 2048, 'w'));
       const h = Math.round(num(req.query.h, 1024, 16, 2048, 'h'));
-      const out = await deps.query('land_mask', { bbox, w, h }) as Uint8Array;
+      const out = (await deps.query('land_mask', { bbox, w, h })) as Uint8Array;
       const body = zlib.gzipSync(Buffer.from(out.buffer, out.byteOffset, out.byteLength));
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Encoding', 'gzip');
@@ -318,8 +330,12 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     try {
       const lon = Number(req.query.lon);
       const lat = Number(req.query.lat);
-      if (!Number.isFinite(lon) || !Number.isFinite(lat) || lat < -90 || lat > 90 || lon < -180 || lon > 360) throw new Error('lon and lat are required numbers');
-      const from = req.query.from !== undefined && req.query.from !== '' ? parseTime(req.query.from) : new Date(Math.floor(Date.now() / 3600_000) * 3600_000);
+      if (!Number.isFinite(lon) || !Number.isFinite(lat) || lat < -90 || lat > 90 || lon < -180 || lon > 360)
+        throw new Error('lon and lat are required numbers');
+      const from =
+        req.query.from !== undefined && req.query.from !== ''
+          ? parseTime(req.query.from)
+          : new Date(Math.floor(Date.now() / 3600_000) * 3600_000);
       const hours = num(req.query.hours, 72, 1, 240, 'hours');
       const stepH = num(req.query.step_h, 1, 1, 24, 'step_h');
       const out = await deps.query('conditions', { lon, lat, fromMs: from.getTime(), hours, stepH });
@@ -351,7 +367,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
 
   ro.get('/api/routes', (req: Request, res: Response) => {
     const limit = Math.min(500, Math.max(1, Number(req.query.limit ?? 50) || 50));
-    json(res, 200, deps.jobs.list(limit).map((j) => deps.jobs.toPublic(j)));
+    json(
+      res,
+      200,
+      deps.jobs.list(limit).map(j => deps.jobs.toPublic(j))
+    );
   });
 
   ro.get('/api/routes/:id', (req: Request, res: Response) => {
@@ -502,14 +522,29 @@ function validateRequestShape(b: RouteRequest): string | null {
   if (b.mode !== undefined && !['sail_max', 'fastest', 'motor'].includes(b.mode)) return 'mode must be sail_max, fastest or motor';
   if (b.departure !== undefined && b.departure !== '' && Number.isNaN(Date.parse(b.departure))) return 'departure must be ISO 8601';
   if (b.stages !== undefined && (typeof b.stages !== 'number' || b.stages < 4 || b.stages > 200)) return 'stages must be 4..200';
-  if (b.sail_thresh_ms !== undefined && (typeof b.sail_thresh_ms !== 'number' || b.sail_thresh_ms < 0)) return 'sail_thresh_ms must be >= 0';
-  if (b.simplify_m !== undefined && (typeof b.simplify_m !== 'number' || !(b.simplify_m >= 0 && b.simplify_m <= 5000))) return 'simplify_m must be 0..5000';
+  if (b.sail_thresh_ms !== undefined && (typeof b.sail_thresh_ms !== 'number' || b.sail_thresh_ms < 0))
+    return 'sail_thresh_ms must be >= 0';
+  if (b.simplify_m !== undefined && (typeof b.simplify_m !== 'number' || !(b.simplify_m >= 0 && b.simplify_m <= 5000)))
+    return 'simplify_m must be 0..5000';
   if (b.smoother !== undefined && typeof b.smoother !== 'boolean') return 'smoother must be true or false';
-  if (b.smoother_tolerance !== undefined && (typeof b.smoother_tolerance !== 'number' || !(b.smoother_tolerance >= 0 && b.smoother_tolerance <= 0.5))) return 'smoother_tolerance must be 0..0.5';
+  if (
+    b.smoother_tolerance !== undefined &&
+    (typeof b.smoother_tolerance !== 'number' || !(b.smoother_tolerance >= 0 && b.smoother_tolerance <= 0.5))
+  )
+    return 'smoother_tolerance must be 0..0.5';
   if (b.name !== undefined && typeof b.name !== 'string') return 'name must be a string';
   if (b.vessel !== undefined && (b.vessel === null || typeof b.vessel !== 'object')) return 'vessel must be an object';
-  if (b.vessel?.tack_penalty_s !== undefined && (typeof b.vessel.tack_penalty_s !== 'number' || b.vessel.tack_penalty_s < 0 || b.vessel.tack_penalty_s > 600)) return 'vessel.tack_penalty_s must be 0..600';
-  if (b.vessel?.polar_performance !== undefined && (typeof b.vessel.polar_performance !== 'number' || !(b.vessel.polar_performance >= 0.3 && b.vessel.polar_performance <= 1.2))) return 'vessel.polar_performance must be 0.3..1.2';
-  if (b.vessel?.polar !== undefined && (typeof b.vessel.polar !== 'string' || b.vessel.polar.length > 200)) return 'vessel.polar must be a polar token from /api/polars';
+  if (
+    b.vessel?.tack_penalty_s !== undefined &&
+    (typeof b.vessel.tack_penalty_s !== 'number' || b.vessel.tack_penalty_s < 0 || b.vessel.tack_penalty_s > 600)
+  )
+    return 'vessel.tack_penalty_s must be 0..600';
+  if (
+    b.vessel?.polar_performance !== undefined &&
+    (typeof b.vessel.polar_performance !== 'number' || !(b.vessel.polar_performance >= 0.3 && b.vessel.polar_performance <= 1.2))
+  )
+    return 'vessel.polar_performance must be 0.3..1.2';
+  if (b.vessel?.polar !== undefined && (typeof b.vessel.polar !== 'string' || b.vessel.polar.length > 200))
+    return 'vessel.polar must be a polar token from /api/polars';
   return null;
 }

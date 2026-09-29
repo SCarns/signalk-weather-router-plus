@@ -9,15 +9,47 @@
 
 /** Beaufort force lower bounds (m/s) for forces 1..12; force 0 below 0.3. */
 export const BEAUFORT_LOWER_MS = [0.3, 1.6, 3.4, 5.5, 8.0, 10.8, 13.9, 17.2, 20.8, 24.5, 28.5, 32.7];
-export const BEAUFORT_NAMES = ['calm', 'light air', 'light breeze', 'gentle breeze', 'moderate breeze', 'fresh breeze', 'strong breeze', 'near gale', 'gale', 'strong gale', 'storm', 'violent storm', 'hurricane'];
+export const BEAUFORT_NAMES = [
+  'calm',
+  'light air',
+  'light breeze',
+  'gentle breeze',
+  'moderate breeze',
+  'fresh breeze',
+  'strong breeze',
+  'near gale',
+  'gale',
+  'strong gale',
+  'storm',
+  'violent storm',
+  'hurricane',
+];
 /** Douglas sea-state lower bounds (m) for states 1..9. */
 export const DOUGLAS_LOWER_M = [0.0001, 0.1, 0.5, 1.25, 2.5, 4.0, 6.0, 9.0, 14.0];
-export const DOUGLAS_LABEL = ['calm (glassy)', 'calm (rippled)', 'smooth', 'slight', 'moderate', 'rough', 'very rough', 'high', 'very high', 'phenomenal'];
+export const DOUGLAS_LABEL = [
+  'calm (glassy)',
+  'calm (rippled)',
+  'smooth',
+  'slight',
+  'moderate',
+  'rough',
+  'very rough',
+  'high',
+  'very high',
+  'phenomenal',
+];
 export const SEA_STATE_CUTS = [35.0, 50.0, 75.0, 100.0, 150.0];
 export const SEA_STATE_LABEL = ['smooth', 'good', 'slight', 'choppy', 'rough', 'extreme'];
 /** WMO code table 4.201 as ECMWF publishes it. */
 export const PTYPE_LABEL: Record<number, string> = {
-  0: 'none', 1: 'rain', 3: 'freezing rain', 5: 'snow', 6: 'wet snow', 7: 'rain and snow', 8: 'ice pellets', 12: 'freezing drizzle',
+  0: 'none',
+  1: 'rain',
+  3: 'freezing rain',
+  5: 'snow',
+  6: 'wet snow',
+  7: 'rain and snow',
+  8: 'ice pellets',
+  12: 'freezing drizzle',
 };
 
 export function finite(x: number | null | undefined): number | null {
@@ -63,7 +95,13 @@ const SWH_FADE_M = 0.5;
  * `_roughness_index`; all angles degrees, speeds m/s.
  */
 export function roughnessIndex(
-  W: number, C: number, windFromDeg: number, currentToDeg: number, swh: number, mwp: number, mwdFromDeg: number,
+  W: number,
+  C: number,
+  windFromDeg: number,
+  currentToDeg: number,
+  swh: number,
+  mwp: number,
+  mwdFromDeg: number
 ): { idx: number; signal: number } {
   const windTo = (windFromDeg + 180) % 360;
   let theta = Math.abs(windTo - currentToDeg);
@@ -94,8 +132,13 @@ export function roughnessIndex(
  * true when wave data was missing and the wind-only term is used.
  */
 export function seaStateIndex(
-  windMs: number | null, windFromDeg: number | null, currentMs: number | null, currentToDeg: number | null,
-  swhM: number | null, mwpS: number | null, mwdFromDeg: number | null,
+  windMs: number | null,
+  windFromDeg: number | null,
+  currentMs: number | null,
+  currentToDeg: number | null,
+  swhM: number | null,
+  mwpS: number | null,
+  mwdFromDeg: number | null
 ): { index: number | null; partial: boolean } {
   const W = finite(windMs);
   const wd = finite(windFromDeg);
@@ -148,9 +191,16 @@ export function heatIndexC(tC: number, rh: number): number {
   const t = (tC * 9) / 5 + 32;
   let hi = 0.5 * (t + 61 + (t - 68) * 1.2 + rh * 0.094);
   if ((hi + t) / 2 >= 80) {
-    hi = -42.379 + 2.04901523 * t + 10.14333127 * rh - 0.22475541 * t * rh
-      - 6.83783e-3 * t * t - 5.481717e-2 * rh * rh + 1.22874e-3 * t * t * rh
-      + 8.5282e-4 * t * rh * rh - 1.99e-6 * t * t * rh * rh;
+    hi =
+      -42.379 +
+      2.04901523 * t +
+      10.14333127 * rh -
+      0.22475541 * t * rh -
+      6.83783e-3 * t * t -
+      5.481717e-2 * rh * rh +
+      1.22874e-3 * t * t * rh +
+      8.5282e-4 * t * rh * rh -
+      1.99e-6 * t * t * rh * rh;
     if (rh < 13 && t >= 80 && t <= 112) hi -= ((13 - rh) / 4) * Math.sqrt((17 - Math.abs(t - 95)) / 17);
     else if (rh > 85 && t >= 80 && t <= 87) hi += ((rh - 85) / 10) * ((87 - t) / 5);
   }
@@ -177,7 +227,11 @@ export function heatIndexK(t2mK: number | null, rh: number | null): number | nul
 }
 
 /** Apparent temperature (K): wind chill when cold and windy, heat index when hot and humid, else air. `rh` is a ratio. */
-export function feelsLike(t2mK: number | null, windMs: number | null, rh: number | null): { k: number | null; basis: 'air' | 'wind_chill' | 'heat_index' | null } {
+export function feelsLike(
+  t2mK: number | null,
+  windMs: number | null,
+  rh: number | null
+): { k: number | null; basis: 'air' | 'wind_chill' | 'heat_index' | null } {
   const t = finite(t2mK);
   if (t === null) return { k: null, basis: null };
   const tc = t - 273.15;

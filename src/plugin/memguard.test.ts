@@ -1,14 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkDecodeResources, checkRouteForecastMemory, forecastBytes, FIELD_STEP_BYTES, availableMemory, DISK_RESERVE_BYTES } from './memguard';
+import {
+  checkDecodeResources,
+  checkRouteForecastMemory,
+  forecastBytes,
+  FIELD_STEP_BYTES,
+  availableMemory,
+  DISK_RESERVE_BYTES,
+} from './memguard';
 import { streamingDecodeBytes } from '../data/loader';
 
 const NOW = new Date('2026-09-28T00:30:00Z'); // 00z cycle: oper stream, 3-hourly to 144 h
 
 test('forecastBytes (a decoded run on disk) is steps × fields × one global grid', () => {
   assert.equal(FIELD_STEP_BYTES, 4_152_960);
-  assert.equal(forecastBytes(72, false, NOW), 25 * 6 * FIELD_STEP_BYTES);   // 622,944,000
-  assert.equal(forecastBytes(72, true, NOW), 25 * 11 * FIELD_STEP_BYTES);   // 1,142,064,000 (matches the measured store)
+  assert.equal(forecastBytes(72, false, NOW), 25 * 6 * FIELD_STEP_BYTES); // 622,944,000
+  assert.equal(forecastBytes(72, true, NOW), 25 * 11 * FIELD_STEP_BYTES); // 1,142,064,000 (matches the measured store)
 });
 
 test('update check: memory for one decode step, disk for the decoded run', () => {
@@ -49,7 +56,8 @@ test('availableMemory returns a positive figure and its source', () => {
 
 test('parseVmStat sums free, inactive, speculative and purgeable pages', async () => {
   const { parseVmStat } = await import('./memguard');
-  const text = 'Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                3785.\nPages active:                            188296.\nPages inactive:                          187679.\nPages speculative:                          245.\nPages throttled:                              0.\nPages wired down:                        203849.\nPages purgeable:                              2.\n';
+  const text =
+    'Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                3785.\nPages active:                            188296.\nPages inactive:                          187679.\nPages speculative:                          245.\nPages throttled:                              0.\nPages wired down:                        203849.\nPages purgeable:                              2.\n';
   assert.equal(parseVmStat(text), (3785 + 187679 + 245 + 2) * 16384);
   assert.equal(parseVmStat('nonsense'), null);
 });

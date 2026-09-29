@@ -125,7 +125,7 @@ export class OnDemandLand implements OverlayLand {
   private index(): ShapefileIndex[] {
     if (!this.indexes) {
       const t = Date.now();
-      this.indexes = this.paths.map((p) => ShapefileIndex.open(p));
+      this.indexes = this.paths.map(p => ShapefileIndex.open(p));
       const n = this.indexes.reduce((a, i) => a + i.count, 0);
       const kb = this.indexes.reduce((a, i) => a + i.bytes(), 0) / 1024;
       this.log(`land index: ${n} records from ${this.paths.length} file(s), ${kb.toFixed(0)} kB, ${Date.now() - t} ms`);
@@ -151,19 +151,21 @@ export class OnDemandLand implements OverlayLand {
     // coordinates) that are never held together.
     let polygons = 0;
     const indexes = this.index();
-    const mask = LandMask.rasterStreamed(snapped, res, (add) => {
+    const mask = LandMask.rasterStreamed(snapped, res, add => {
       for (const ix of indexes) polygons += ix.forEach(snapped, add);
     });
     this.lastBuildMs = Date.now() - t;
     this.builds++;
-    this.log(`overlay land raster ${snapped.west}..${snapped.east} × ${snapped.south}..${snapped.north} at ${res}°: ${mask.nx}x${mask.ny}, ${polygons} polygons, ${this.lastBuildMs} ms`);
+    this.log(
+      `overlay land raster ${snapped.west}..${snapped.east} × ${snapped.south}..${snapped.north} at ${res}°: ${mask.nx}x${mask.ny}, ${polygons} polygons, ${this.lastBuildMs} ms`
+    );
     this.entries.push({ key: `${res}|${snapped.west},${snapped.south},${snapped.east},${snapped.north}`, bbox: snapped, res, mask });
     while (this.entries.length > this.maxEntries) this.entries.shift();
     return mask;
   }
 
   isLandAt(lon: number, lat: number): boolean {
-    const l = (((lon + 180) % 360) + 360) % 360 - 180;
+    const l = ((((lon + 180) % 360) + 360) % 360) - 180;
     for (const ix of this.index()) {
       for (const x of [l, l + 360, l - 360]) if (ix.containsPoint(x, lat)) return true;
     }
@@ -174,9 +176,13 @@ export class OnDemandLand implements OverlayLand {
   stats(): { entries: number; cells: number; bytes: number; index_bytes: number; builds: number; hits: number; last_build_ms: number } {
     const cells = this.entries.reduce((a, e) => a + e.mask.nx * e.mask.ny, 0);
     return {
-      entries: this.entries.length, cells, bytes: cells,
+      entries: this.entries.length,
+      cells,
+      bytes: cells,
       index_bytes: this.indexes ? this.indexes.reduce((a, i) => a + i.bytes(), 0) : 0,
-      builds: this.builds, hits: this.hits, last_build_ms: this.lastBuildMs,
+      builds: this.builds,
+      hits: this.hits,
+      last_build_ms: this.lastBuildMs,
     };
   }
 }

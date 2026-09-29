@@ -35,7 +35,15 @@ import { EcmwfClient, ECMWF_MIRRORS, availableSteps, latestExpectedCycle, cycleF
 import { ForecastStore } from '../data/forecast';
 import { decodeForecastToDisk, loadForecastForBBox, requestedParams, resolveCycle, type ResolvedCycle } from '../data/loader';
 import {
-  cycleName, DECODED_DIR, DecodedRun, DecodedRunWriter, dirBytes, openDecodedRun, pruneDecodedRuns, listDecodedRuns, type WindowOptions,
+  cycleName,
+  DECODED_DIR,
+  DecodedRun,
+  DecodedRunWriter,
+  dirBytes,
+  openDecodedRun,
+  pruneDecodedRuns,
+  listDecodedRuns,
+  type WindowOptions,
 } from '../data/decoded';
 import { checkDecodeResources, checkRouteForecastMemory, checkWaterGridBuildMemory } from './memguard';
 import { bboxFromLonLat, bboxWidth, bboxHeight, type BBox } from '../geo/geodesy';
@@ -58,16 +66,42 @@ import { CurrentStack } from '../currents/stack';
 import { RtofsClient, RtofsCurrentSource, loadRtofsSteps, rtofsRunFor, type RtofsRun } from '../currents/rtofs';
 import type { CurrentSourceLike } from '../currents/types';
 import {
-  alignedSteps, loadResident, residentStale, SMOC_DEFAULT_BUDGET_BYTES, SmocClient, SmocCurrentSource, type SmocRun, type SmocSettings,
+  alignedSteps,
+  loadResident,
+  residentStale,
+  SMOC_DEFAULT_BUDGET_BYTES,
+  SmocClient,
+  SmocCurrentSource,
+  type SmocRun,
+  type SmocSettings,
 } from '../currents/smoc';
 import { loadTideResident, SeaLevelClient, TIDE_DEFAULT_BUDGET_BYTES, TideSource, type TideSettings } from '../tides/sealevel';
 import type { ArcoRun } from '../data/arco';
 import { type ConditionsTide } from './overlays';
-import { conditionsSeries, currentPoints, fieldGrid, pressureFeatures, windPoints, type FieldLayer, type OverlaySources, landMaskImage } from './overlays';
+import {
+  conditionsSeries,
+  currentPoints,
+  fieldGrid,
+  pressureFeatures,
+  windPoints,
+  type FieldLayer,
+  type OverlaySources,
+  landMaskImage,
+} from './overlays';
 import { pointForecasts, POINT_FORECAST_PARAMS } from './weather';
 import { routeVessel, type ResolvedConfig } from './config';
 import type {
-  DataStatus, ForecastMemory, ForecastRunInfo, MainToWorker, QueryArgs, RouteRequest, RouteSummary, TideSeriesResult, VesselPosition, WorkerRole, WorkerToMain,
+  DataStatus,
+  ForecastMemory,
+  ForecastRunInfo,
+  MainToWorker,
+  QueryArgs,
+  RouteRequest,
+  RouteSummary,
+  TideSeriesResult,
+  VesselPosition,
+  WorkerRole,
+  WorkerToMain,
 } from './protocol';
 
 if (!parentPort) throw new Error('worker.ts must run as a worker thread');
@@ -148,7 +182,10 @@ function landMaskFor(bbox: BBox, maxCells: number, shapefiles: string[]): LandMa
   }
   const t = Date.now();
   const mask = LandMask.fromShapefiles(shapefiles, bbox, { resolutionDeg: res });
-  log('info', `land mask: ${mask.shapes.length} polygons, ${mask.nx}x${mask.ny} cells at ${res}° (${((mask.nx * mask.ny) / 1e6).toFixed(1)}M), ${Date.now() - t} ms`);
+  log(
+    'info',
+    `land mask: ${mask.shapes.length} polygons, ${mask.nx}x${mask.ny} cells at ${res}° (${((mask.nx * mask.ny) / 1e6).toFixed(1)}M), ${Date.now() - t} ms`
+  );
   landCache = { key, mask };
   return mask;
 }
@@ -164,9 +201,15 @@ function prepareWaterGrid(cfg: ResolvedConfig): void {
   for (const n of choice.notes) log('info', `water grid: ${n}`);
   waterGrid = choice.grid;
   if (waterGrid) {
-    log('info', `water grid: loaded ${choice.file} in ${Date.now() - t} ms, ${(waterGrid.bytes() / 1e6).toFixed(1)} MB resident, ${waterGrid.chokepoints.length} narrow passages, ${waterGrid.splits.length} split cells`);
+    log(
+      'info',
+      `water grid: loaded ${choice.file} in ${Date.now() - t} ms, ${(waterGrid.bytes() / 1e6).toFixed(1)} MB resident, ${waterGrid.chokepoints.length} narrow passages, ${waterGrid.splits.length} split cells`
+    );
   } else {
-    log('error', 'water grid: none available; routes use the per-route skeleton (limited to the box around start, end and waypoints) until one is built');
+    log(
+      'error',
+      'water grid: none available; routes use the per-route skeleton (limited to the box around start, end and waypoints) until one is built'
+    );
   }
   if (choice.needsRebuild) startGridRebuild(cfg, choice.rebuildPath);
 }
@@ -194,13 +237,16 @@ function startGridRebuild(cfg: ResolvedConfig, outFile: string): void {
         const g = WaterGrid.load(m.file);
         g.setCanalsAllowed(waterGrid?.canalsAreAllowed ?? false);
         waterGrid = g;
-        log('info', `water grid: rebuilt in ${m.seconds.toFixed(0)} s, ${(m.bytes / 1e6).toFixed(2)} MB on disk, now in use (${(g.bytes() / 1e6).toFixed(1)} MB resident; process peak RSS ${(m.peakRssBytes / 1e6).toFixed(0)} MB)`);
+        log(
+          'info',
+          `water grid: rebuilt in ${m.seconds.toFixed(0)} s, ${(m.bytes / 1e6).toFixed(2)} MB on disk, now in use (${(g.bytes() / 1e6).toFixed(1)} MB resident; process peak RSS ${(m.peakRssBytes / 1e6).toFixed(0)} MB)`
+        );
       } catch (err) {
         log('error', `water grid: cannot load the rebuilt grid: ${(err as Error).message}`);
       }
     }
   });
-  w.on('error', (err) => log('error', `water grid rebuild crashed: ${err.message}`));
+  w.on('error', err => log('error', `water grid rebuild crashed: ${err.message}`));
   w.on('exit', () => {
     gridBuilder = null;
   });
@@ -214,16 +260,24 @@ function rebuildStack(): void {
 }
 
 function currentsStatus(): DataStatus['currents'] {
-  return stack.sources.map((s) => {
+  return stack.sources.map(s => {
     if (s instanceof SmocCurrentSource) {
       const st = s.status();
       return {
-        name: s.name, priority: s.priority, resolutionM: s.resolutionM, bbox: st.resident ? st.resident.bbox : s.bbox,
-        validFrom: st.resident?.valid_from ?? undefined, validTo: st.resident?.valid_to ?? undefined, smoc: st,
+        name: s.name,
+        priority: s.priority,
+        resolutionM: s.resolutionM,
+        bbox: st.resident ? st.resident.bbox : s.bbox,
+        validFrom: st.resident?.valid_from ?? undefined,
+        validTo: st.resident?.valid_to ?? undefined,
+        smoc: st,
       };
     }
     return {
-      name: s.name, priority: s.priority, resolutionM: s.resolutionM, bbox: s.bbox,
+      name: s.name,
+      priority: s.priority,
+      resolutionM: s.resolutionM,
+      bbox: s.bbox,
       validFrom: s instanceof RtofsCurrentSource ? s.validRange[0].toISOString() : undefined,
       validTo: s instanceof RtofsCurrentSource ? s.validRange[1].toISOString() : undefined,
     };
@@ -231,16 +285,26 @@ function currentsStatus(): DataStatus['currents'] {
 }
 
 function sendCurrents(): void {
-  send({ type: 'currents', status: currentsStatus(), rtofsRun: rtofs ? new Date(rtofs.runMs).toISOString().slice(0, 10) : null, rtofs: null });
+  send({
+    type: 'currents',
+    status: currentsStatus(),
+    rtofsRun: rtofs ? new Date(rtofs.runMs).toISOString().slice(0, 10) : null,
+    rtofs: null,
+  });
 }
 
 function smocSettings(cfg: ResolvedConfig): SmocSettings {
-  return { stepHours: cfg.currents.smocStepHours, horizonHours: cfg.currents.smocHorizonHours, halfWidthDeg: cfg.currents.smocHalfWidthDeg, budgetBytes: SMOC_DEFAULT_BUDGET_BYTES };
+  return {
+    stepHours: cfg.currents.smocStepHours,
+    horizonHours: cfg.currents.smocHorizonHours,
+    halfWidthDeg: cfg.currents.smocHalfWidthDeg,
+    budgetBytes: SMOC_DEFAULT_BUDGET_BYTES,
+  };
 }
 
 function makeSmocClient(cfg: ResolvedConfig): SmocClient | null {
   if (!cfg.currents.smocEnabled) return null;
-  return new SmocClient({ cacheDir: path.join(cacheRoot, 'smoc'), log: (m) => log('debug', m) });
+  return new SmocClient({ cacheDir: path.join(cacheRoot, 'smoc'), log: m => log('debug', m) });
 }
 
 /** data worker → main → route worker: the run and the resident area (shared memory). */
@@ -265,14 +329,21 @@ async function refreshSmoc(): Promise<void> {
     return;
   }
   const settings = smocSettings(cfg);
-  let run: SmocRun | null = null;
+  let run: SmocRun | null;
   try {
     const probed = await smocClient.probe(smoc?.run ?? null);
     if (probed.settled || !smoc) {
       run = probed;
-      if (!probed.settled) log('info', `smoc: the store update is still being written (STAC updated ${probed.stacUpdated ?? '?'}, metadata ${probed.metadataModified ?? '?'}); using run ${probed.key} provisionally`);
+      if (!probed.settled)
+        log(
+          'info',
+          `smoc: the store update is still being written (STAC updated ${probed.stacUpdated ?? '?'}, metadata ${probed.metadataModified ?? '?'}); using run ${probed.key} provisionally`
+        );
     } else {
-      log('info', `smoc: store update in progress (STAC updated ${probed.stacUpdated ?? '?'}, metadata ${probed.metadataModified ?? '?'}); keeping run ${smoc.run.key}`);
+      log(
+        'info',
+        `smoc: store update in progress (STAC updated ${probed.stacUpdated ?? '?'}, metadata ${probed.metadataModified ?? '?'}); keeping run ${smoc.run.key}`
+      );
       run = smoc.run;
     }
   } catch (err) {
@@ -288,7 +359,7 @@ async function refreshSmoc(): Promise<void> {
   const newRun = !smoc || smoc.run.key !== run.key || provisionalReplaced;
   const now = Date.now();
   const steps = alignedSteps(run, now, now + settings.horizonHours * 3600_000, settings.stepHours);
-  const src = newRun ? new SmocCurrentSource(run, settings, smocClient, (m) => log('info', m)) : smoc!;
+  const src = newRun ? new SmocCurrentSource(run, settings, smocClient, m => log('info', m)) : smoc!;
   if (!newRun) src.expire(now);
   if (provisionalReplaced) smocClient.dropRun(run.key);
   if (newRun) smocClient.saveRun(run);
@@ -297,12 +368,15 @@ async function refreshSmoc(): Promise<void> {
   if (pos && (newRun || residentStale(src, pos, steps))) {
     try {
       const t = Date.now();
-      const res = await loadResident(smocClient, run, settings, pos, steps, { log: (m) => log('info', m) });
+      const res = await loadResident(smocClient, run, settings, pos, steps, { log: m => log('info', m) });
       if (res) {
         src.setResident(res.area, pos);
         src.noteDownload('resident area', res.stats);
         changed = true;
-        log('info', `smoc: run ${run.key}: resident ${res.area.nRows}×${res.area.nCols} cells × ${steps.length} steps, ${(src.memoryBytes() / 1e6).toFixed(1)} MB resident, downloaded ${(res.stats.bytes / 1e6).toFixed(1)} MB in ${((Date.now() - t) / 1000).toFixed(1)} s`);
+        log(
+          'info',
+          `smoc: run ${run.key}: resident ${res.area.nRows}×${res.area.nCols} cells × ${steps.length} steps, ${(src.memoryBytes() / 1e6).toFixed(1)} MB resident, downloaded ${(res.stats.bytes / 1e6).toFixed(1)} MB in ${((Date.now() - t) / 1000).toFixed(1)} s`
+        );
       }
     } catch (err) {
       log('error', `smoc: resident area load failed: ${(err as Error).message}`);
@@ -328,7 +402,7 @@ function tideSettings(cfg: ResolvedConfig): TideSettings {
 
 function makeSeaLevelClient(cfg: ResolvedConfig): SeaLevelClient | null {
   if (role !== 'data' || !cfg.tides.enabled) return null;
-  return new SeaLevelClient({ cacheDir: path.join(cacheRoot, 'sealevel'), log: (m) => log('debug', m) });
+  return new SeaLevelClient({ cacheDir: path.join(cacheRoot, 'sealevel'), log: m => log('debug', m) });
 }
 
 /**
@@ -347,12 +421,16 @@ async function refreshTides(): Promise<void> {
     return;
   }
   const settings = tideSettings(cfg);
-  let run: ArcoRun | null = null;
+  let run: ArcoRun | null;
   try {
     const probed = await seaLevelClient.probe(tides?.run ?? null);
     if (probed.settled || !tides) {
       run = probed;
-      if (!probed.settled) log('info', `tides: the store update is still being written (STAC updated ${probed.stacUpdated ?? '?'}); using run ${probed.key} provisionally`);
+      if (!probed.settled)
+        log(
+          'info',
+          `tides: the store update is still being written (STAC updated ${probed.stacUpdated ?? '?'}); using run ${probed.key} provisionally`
+        );
     } else {
       log('info', `tides: store update in progress (STAC updated ${probed.stacUpdated ?? '?'}); keeping run ${tides.run.key}`);
       run = tides.run;
@@ -368,7 +446,7 @@ async function refreshTides(): Promise<void> {
   const provisionalReplaced = !!tides && tides.run.key === run.key && !tides.run.settled && run.settled;
   const newRun = !tides || tides.run.key !== run.key || provisionalReplaced;
   const now = Date.now();
-  const src = newRun ? new TideSource(run, settings, seaLevelClient, (m) => log('info', m)) : tides!;
+  const src = newRun ? new TideSource(run, settings, seaLevelClient, m => log('info', m)) : tides!;
   if (!newRun) src.expire(now);
   if (provisionalReplaced) seaLevelClient.dropRun(run.key);
   if (newRun) seaLevelClient.saveRun(run);
@@ -377,11 +455,14 @@ async function refreshTides(): Promise<void> {
   if (pos && (newRun || src.residentStale(pos, steps))) {
     try {
       const t = Date.now();
-      const res = await loadTideResident(seaLevelClient, run, settings, pos, steps, { log: (m) => log('info', m) });
+      const res = await loadTideResident(seaLevelClient, run, settings, pos, steps, { log: m => log('info', m) });
       if (res) {
         src.setResident(res.area, pos);
         src.noteDownload('resident tide area', res.stats);
-        log('info', `tides: run ${run.key}: resident ${res.area.nRows}×${res.area.nCols} cells × ${steps.length} hourly steps, ${(src.memoryBytes() / 1e6).toFixed(1)} MB, downloaded ${(res.stats.bytes / 1e6).toFixed(1)} MB in ${((Date.now() - t) / 1000).toFixed(1)} s`);
+        log(
+          'info',
+          `tides: run ${run.key}: resident ${res.area.nRows}×${res.area.nCols} cells × ${steps.length} hourly steps, ${(src.memoryBytes() / 1e6).toFixed(1)} MB, downloaded ${(res.stats.bytes / 1e6).toFixed(1)} MB in ${((Date.now() - t) / 1000).toFixed(1)} s`
+        );
       }
     } catch (err) {
       tidesError = `resident tide area load failed: ${(err as Error).message}`;
@@ -440,7 +521,15 @@ async function conditionsTide(a: QueryArgs['conditions']): Promise<ConditionsTid
 
 /** Point series for the Weather API (structured-cloneable). */
 async function tideSeriesQuery(a: QueryArgs['tide_series']): Promise<TideSeriesResult> {
-  const empty = (error: string): TideSeriesResult => ({ run: null, t0Ms: 0, stepMs: 3600_000, waterLevel: new Float64Array(0), tide: new Float64Array(0), surge: new Float64Array(0), error });
+  const empty = (error: string): TideSeriesResult => ({
+    run: null,
+    t0Ms: 0,
+    stepMs: 3600_000,
+    waterLevel: new Float64Array(0),
+    tide: new Float64Array(0),
+    surge: new Float64Array(0),
+    error,
+  });
   if (!config?.tides.enabled) return empty('tides are turned off');
   if (!tides) return empty(tidesError ?? 'tide data not loaded yet');
   const p = tides.pointSeries(a.lat, a.lon, a.fromMs, a.fromMs + a.hours * 3600_000, { reason: 'Weather API' });
@@ -457,8 +546,8 @@ async function tideSeriesQuery(a: QueryArgs['tide_series']): Promise<TideSeriesR
 async function prepareSmocForQuery(kind: string, args: QueryArgs[keyof QueryArgs]): Promise<void> {
   if (!smoc || !config?.currents.smocEnabled) return;
   const src = smoc;
-  let bbox: BBox | null = null;
-  let steps: number[] = [];
+  let bbox: BBox | null;
+  let steps: number[];
   let coarseOk = false;
   switch (kind) {
     case 'field': {
@@ -497,9 +586,12 @@ async function prepareSmocForQuery(kind: string, args: QueryArgs[keyof QueryArgs
 function loadHarmonic(dir: string | null): void {
   harmonic = [];
   if (!dir) return;
-  let files: string[] = [];
+  let files: string[];
   try {
-    files = fs.readdirSync(dir).filter((f) => f.toLowerCase().endsWith('.npz')).sort();
+    files = fs
+      .readdirSync(dir)
+      .filter(f => f.toLowerCase().endsWith('.npz'))
+      .sort();
   } catch (err) {
     log('error', `currents: cannot read harmonic directory ${dir}: ${(err as Error).message}`);
     return;
@@ -510,7 +602,10 @@ function loadHarmonic(dir: string | null): void {
       const t = Date.now();
       const s = new HarmonicCurrentSource(p);
       harmonic.push(s);
-      log('info', `currents: ${s.name}: ${s.constituents.length} constituents${s.dropped.length ? ` (dropped ${s.dropped.join(', ')})` : ''}, ${s.lats.length}×${s.lons.length} grid, priority ${s.priority}, ${(s.blockBytes() / 1e6).toFixed(1)} MB shared, ${Date.now() - t} ms`);
+      log(
+        'info',
+        `currents: ${s.name}: ${s.constituents.length} constituents${s.dropped.length ? ` (dropped ${s.dropped.join(', ')})` : ''}, ${s.lats.length}×${s.lons.length} grid, priority ${s.priority}, ${(s.blockBytes() / 1e6).toFixed(1)} MB shared, ${Date.now() - t} ms`
+      );
     } catch (err) {
       log('error', `currents: failed to load ${p}: ${(err as Error).message}`);
     }
@@ -521,8 +616,8 @@ async function refreshRtofs(networkAllowed: boolean): Promise<void> {
   const { config: cfg } = requireInit();
   if (!cfg.currents.rtofsEnabled || !rtofsClient) return;
   const horizon = cfg.currents.rtofsHorizonHours;
-  let run: RtofsRun | null = null;
-  const cachedRuns = rtofsClient.cachedRuns().filter((r) => rtofsClient!.runFullyCached(r, horizon));
+  let run: RtofsRun | null;
+  const cachedRuns = rtofsClient.cachedRuns().filter(r => rtofsClient!.runFullyCached(r, horizon));
   if (networkAllowed) {
     // Fresh enough already? The daily run appears during the morning;
     // if today's run is cached there is nothing to do.
@@ -547,13 +642,16 @@ async function refreshRtofs(networkAllowed: boolean): Promise<void> {
   try {
     const t = Date.now();
     // The whole configured RTOFS product (cfg.currents.rtofsRegion), uncropped.
-    const steps = await loadRtofsSteps(rtofsClient, run, null, horizon, cfg.currents.rtofsStepHours, { log: (m) => log('debug', m) });
+    const steps = await loadRtofsSteps(rtofsClient, run, null, horizon, cfg.currents.rtofsStepHours, { log: m => log('debug', m) });
     if (steps.length === 0) throw new Error(`run ${run.yyyymmdd} has no steps in product ${rtofsClient.region}`);
     const g = steps[0].u;
     const extent = { south: g.lat0, west: g.lon0, north: g.lat0 + (g.nLat - 1) * g.dLat, east: g.lon0 + (g.nLon - 1) * g.dLon };
     rtofs = new RtofsCurrentSource(`RTOFS-${rtofsClient.region}`, run.time.getTime(), extent, steps);
     rebuildStack();
-    log('info', `rtofs: run ${run.yyyymmdd}, ${steps.length} steps, ${(rtofs.bytes() / 1e6).toFixed(1)} MB resident, ${((Date.now() - t) / 1000).toFixed(1)} s`);
+    log(
+      'info',
+      `rtofs: run ${run.yyyymmdd}, ${steps.length} steps, ${(rtofs.bytes() / 1e6).toFixed(1)} MB resident, ${((Date.now() - t) / 1000).toFixed(1)} s`
+    );
     if (networkAllowed) rtofsClient.pruneCache([run, ...cachedRuns.slice(0, 1)]);
   } catch (err) {
     log('error', `rtofs: load failed: ${(err as Error).message}`);
@@ -570,8 +668,12 @@ function runFitsConfig(r: DecodedRun, cfg: ResolvedConfig): boolean {
   const want = wantedParams(cfg);
   const have = r.index.request.params;
   const steps = availableSteps(cycleFor(r.cycleTime).atmStream, cfg.forecast.horizonHours);
-  return want.length === have.length && want.every((p, i) => p === have[i])
-    && steps.length === r.index.stepHours.length && steps.every((h, i) => h === r.index.stepHours[i]);
+  return (
+    want.length === have.length &&
+    want.every((p, i) => p === have[i]) &&
+    steps.length === r.index.stepHours.length &&
+    steps.every((h, i) => h === r.index.stepHours[i])
+  );
 }
 
 /** Is the run in use this cycle (or newer) and made for the current settings? */
@@ -593,7 +695,10 @@ function decodedRunOnDisk(cfg: ResolvedConfig, c: Cycle): DecodedRun | null {
     return null;
   }
   if (!runFitsConfig(r, cfg)) {
-    log('info', `forecast: decoded run ${path.basename(dir)} was made for other settings (${r.index.request.horizonHours} h, ${r.index.request.params.join('/')}); decoding again`);
+    log(
+      'info',
+      `forecast: decoded run ${path.basename(dir)} was made for other settings (${r.index.request.horizonHours} h, ${r.index.request.params.join('/')}); decoding again`
+    );
     return null;
   }
   return r;
@@ -617,7 +722,10 @@ function adoptRun(r: DecodedRun, source: 'disk' | 'grib', readyMs: number, downl
   run = r;
   runInfo = { dir: r.dir, index: r.index, loadedAtMs: Date.now(), source, readyMs, downloaded };
   const c = r.cycleTime;
-  log('info', `forecast global: cycle ${c.toISOString().slice(0, 10).replace(/-/g, '')} ${c.toISOString().slice(11, 13)}z${source === 'disk' ? ' (decoded run on disk)' : downloaded === 0 ? ' (from disk cache)' : ''}, ${r.index.steps.length} steps, ${r.index.request.params.join('/')}, ${(r.index.bytes / 1e6).toFixed(1)} MB decoded on disk, 0 MB resident, ${(readyMs / 1000).toFixed(1)} s`);
+  log(
+    'info',
+    `forecast global: cycle ${c.toISOString().slice(0, 10).replace(/-/g, '')} ${c.toISOString().slice(11, 13)}z${source === 'disk' ? ' (decoded run on disk)' : downloaded === 0 ? ' (from disk cache)' : ''}, ${r.index.steps.length} steps, ${r.index.request.params.join('/')}, ${(r.index.bytes / 1e6).toFixed(1)} MB decoded on disk, 0 MB resident, ${(readyMs / 1000).toFixed(1)} s`
+  );
   send({ type: 'forecast', run: runInfo });
 }
 
@@ -629,7 +737,7 @@ function pruneForecastCaches(cfg: ResolvedConfig, cl: EcmwfClient, current: Cycl
     log('error', `cache prune failed: ${(err as Error).message}`);
   }
   try {
-    const names = keep.map((c) => cycleName(c.time));
+    const names = keep.map(c => cycleName(c.time));
     if (run) names.push(path.basename(run.dir));
     const removed = pruneDecodedRuns(decodedRoot(), names);
     if (removed.length) log('info', `forecast: removed decoded run(s) ${removed.join(', ')}`);
@@ -687,7 +795,7 @@ async function refreshForecast(force: boolean): Promise<void> {
   }
   let resolved: ResolvedCycle;
   try {
-    resolved = await resolveCycle(cl, horizon, { extraAtmParams: extraParams(cfg), log: (m) => log('info', `forecast: ${m}`) });
+    resolved = await resolveCycle(cl, horizon, { extraAtmParams: extraParams(cfg), log: m => log('info', `forecast: ${m}`) });
   } catch (err) {
     // Offline with no complete GRIB cycle: a decoded run on disk still serves.
     const fallback = !run ? newestDecodedRun(cfg) : null;
@@ -726,8 +834,10 @@ async function refreshForecast(force: boolean): Promise<void> {
     writer = new DecodedRunWriter(decodedRoot(), cycleName(cycle.time));
     decodingBlockBytes = res.needBytes;
     const out = await decodeForecastToDisk(cl, writer, {
-      horizonHours: horizon, cycle, extraAtmParams: extraParams(cfg),
-      log: (m) => log('debug', `forecast: ${m}`),
+      horizonHours: horizon,
+      cycle,
+      extraAtmParams: extraParams(cfg),
+      log: m => log('debug', `forecast: ${m}`),
       onStep: (done, total) => {
         if (done === 1 || done % 5 === 0 || done === total) log('debug', `forecast: decoded and wrote step ${done}/${total}`);
       },
@@ -735,7 +845,12 @@ async function refreshForecast(force: boolean): Promise<void> {
     const opened = openDecodedRun(writer.finalDir);
     if (!opened.run) throw new Error(`the decoded run just written is not usable: ${opened.problem}`);
     lastDecode = {
-      at: new Date().toISOString(), cycle: out.index.cycle, ms: out.index.decodeMs, stepBlockBytes: out.stepBlockBytes, writtenBytes: out.index.bytes, downloaded: out.downloaded,
+      at: new Date().toISOString(),
+      cycle: out.index.cycle,
+      ms: out.index.decodeMs,
+      stepBlockBytes: out.stepBlockBytes,
+      writtenBytes: out.index.bytes,
+      downloaded: out.downloaded,
     };
     decodingBlockBytes = null;
     // Let the one-step block and the decode buffers go now.
@@ -795,7 +910,8 @@ function validateRequest(r: RouteRequest): void {
   pt(r.start, 'start');
   pt(r.end, 'end');
   (r.waypoints ?? []).forEach((w, i) => pt(w, `waypoints[${i}]`));
-  if (r.mode && !['sail_max', 'fastest', 'motor'].includes(r.mode)) throw new Error(`mode must be sail_max, fastest or motor (got ${r.mode})`);
+  if (r.mode && !['sail_max', 'fastest', 'motor'].includes(r.mode))
+    throw new Error(`mode must be sail_max, fastest or motor (got ${r.mode})`);
   if (r.departure && Number.isNaN(Date.parse(r.departure))) throw new Error(`departure "${r.departure}" is not an ISO 8601 date`);
   const legErr = validateLegOptions(r.precision, r.arrival_radius_m, r.waypoints);
   if (legErr) throw new Error(legErr);
@@ -813,7 +929,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
     // Waypoints are leg ends (engine/multileg.ts): each leg is its own route.
     const stops: Stop[] = [
       { lon: start[0], lat: start[1] },
-      ...(request.waypoints ?? []).map((w) => ({ lon: w.lon, lat: w.lat, radiusM: w.radius_m })),
+      ...(request.waypoints ?? []).map(w => ({ lon: w.lon, lat: w.lat, radiusM: w.radius_m })),
       { lon: end[0], lat: end[1] },
     ];
     const multi = stops.length > 2;
@@ -856,14 +972,27 @@ async function route(id: string, request: RouteRequest): Promise<void> {
           const store = await readWindow(`job ${id} ${what}`, opts);
           routeWindow = store;
           send({ type: 'forecast-memory', memory: { ...forecastMemory } });
-          progress(0, 0, `forecast: read the ${what} (${bboxWidth(area).toFixed(1)}° × ${bboxHeight(area).toFixed(1)}°, ${store.steps.length} steps, ${store.meta.params.join('/')}) from the decoded run: ${(store.bytes() / 1e6).toFixed(1)} MB in ${Date.now() - t0} ms`);
+          progress(
+            0,
+            0,
+            `forecast: read the ${what} (${bboxWidth(area).toFixed(1)}° × ${bboxHeight(area).toFixed(1)}°, ${store.steps.length} steps, ${store.meta.params.join('/')}) from the decoded run: ${(store.bytes() / 1e6).toFixed(1)} MB in ${Date.now() - t0} ms`
+          );
           wind = store;
         } else {
           // No decoded run yet (first boot, the data worker is still decoding).
           progress(0, 0, 'no decoded forecast run yet; decoding a route-specific forecast crop from the GRIB disk cache');
-          const cycle = (await resolveCycle(cl, cfg.forecast.horizonHours, { extraAtmParams: extraParams(cfg), log: (m) => log('info', `job ${id} forecast: ${m}`) })).cycle;
+          const cycle = (
+            await resolveCycle(cl, cfg.forecast.horizonHours, {
+              extraAtmParams: extraParams(cfg),
+              log: m => log('info', `job ${id} forecast: ${m}`),
+            })
+          ).cycle;
           const store = await loadForecastForBBox(cl, area, {
-            horizonHours: cfg.forecast.horizonHours, cycle, extraAtmParams: extraParams(cfg), shouldCancel, log: (m) => log('debug', `job ${id} forecast: ${m}`),
+            horizonHours: cfg.forecast.horizonHours,
+            cycle,
+            extraAtmParams: extraParams(cfg),
+            shouldCancel,
+            log: m => log('debug', `job ${id} forecast: ${m}`),
           });
           forecastMemory.heldBytes += store.bytes();
           routeWindow = store;
@@ -882,7 +1011,11 @@ async function route(id: string, request: RouteRequest): Promise<void> {
             await src.ensure(bbox, steps, { reason: `job ${id} ${what}`, shouldCancel });
           } catch (err) {
             if (shouldCancel()) throw new RouteCancelled();
-            progress(0, 0, `WARNING: CMEMS SMOC not loaded for the ${what} (${(err as Error).message}); lower-priority current sources are used there`);
+            progress(
+              0,
+              0,
+              `WARNING: CMEMS SMOC not loaded for the ${what} (${(err as Error).message}); lower-priority current sources are used there`
+            );
           }
           rebuildStack();
         }
@@ -905,7 +1038,8 @@ async function route(id: string, request: RouteRequest): Promise<void> {
       try {
         return await legRoute(plan, legStart, legDeparture);
       } catch (err) {
-        if (multi && err instanceof Error && !(err instanceof RouteCancelled) && !shouldCancel()) err.message = `leg ${plan.index + 1}/${plan.count}: ${err.message}`;
+        if (multi && err instanceof Error && !(err instanceof RouteCancelled) && !shouldCancel())
+          err.message = `leg ${plan.index + 1}/${plan.count}: ${err.message}`;
         throw err;
       }
     };
@@ -921,16 +1055,27 @@ async function route(id: string, request: RouteRequest): Promise<void> {
         progress(0, 0, `${tag}corridor: searching the global 0.02° water grid (canals ${cfg.routing.allowCanals ? 'allowed' : 'blocked'})`);
         try {
           corridor = planCorridor(waterGrid, chain, {
-            landFor: (b) => landMaskFor(b, cfg.routing.landRasterMaxCells, cfg.landShapefiles),
-            stages, onProgress: (m) => progress(0, 0, `${tag}corridor: ${m}`), shouldCancel,
+            landFor: b => landMaskFor(b, cfg.routing.landRasterMaxCells, cfg.landShapefiles),
+            stages,
+            onProgress: m => progress(0, 0, `${tag}corridor: ${m}`),
+            shouldCancel,
           });
           const st = corridor.stats;
-          progress(0, 0, `${tag}corridor: ${(corridor.lengthM / 1852).toFixed(1)} nm, A* ${st.astarMs} ms (${st.expanded} cells), ${st.refines} local refinement(s), ${st.reroutes} re-route(s)`);
-          for (const v of corridor.autoVias) progress(0, 0, `${tag}corridor: auto via at ${v.name}, width ${(v.widthM / 1000).toFixed(1)} km`);
+          progress(
+            0,
+            0,
+            `${tag}corridor: ${(corridor.lengthM / 1852).toFixed(1)} nm, A* ${st.astarMs} ms (${st.expanded} cells), ${st.refines} local refinement(s), ${st.reroutes} re-route(s)`
+          );
+          for (const v of corridor.autoVias)
+            progress(0, 0, `${tag}corridor: auto via at ${v.name}, width ${(v.widthM / 1000).toFixed(1)} km`);
         } catch (err) {
           if (shouldCancel()) throw new RouteCancelled();
           if (!(err instanceof CorridorError) || err.fatal) throw err;
-          progress(0, 0, `WARNING: ${tag}corridor search failed (${err.message}); using the per-route skeleton inside the box around ${multi ? 'the leg\'s ends' : 'start and end'}`);
+          progress(
+            0,
+            0,
+            `WARNING: ${tag}corridor search failed (${err.message}); using the per-route skeleton inside the box around ${multi ? "the leg's ends" : 'start and end'}`
+          );
           corridor = null;
         }
       }
@@ -938,7 +1083,11 @@ async function route(id: string, request: RouteRequest): Promise<void> {
       if (corridor) {
         bbox = corridor.bbox;
       } else {
-        bbox = bboxFromLonLat(chain.map((p) => p[0]), chain.map((p) => p[1]), 1.0);
+        bbox = bboxFromLonLat(
+          chain.map(p => p[0]),
+          chain.map(p => p[1]),
+          1.0
+        );
         if (bboxWidth(bbox) > 120 || bboxHeight(bbox) > 90) throw new Error('route bounding box is too large (max 120° × 90°)');
       }
       const land = corridor ? corridor.land : landMaskFor(bbox, cfg.routing.landRasterMaxCells, cfg.landShapefiles);
@@ -947,17 +1096,26 @@ async function route(id: string, request: RouteRequest): Promise<void> {
       // one area for all legs, and at most the same memory).
       await loadAreas(bbox, multi ? `${tag}area` : 'route area');
       const current: CurrentSource = request.no_currents || stack.isEmpty ? new NoCurrent() : stack;
-      if (!stack.isEmpty && !request.no_currents && plan.index === 0) progress(0, 0, `currents: ${stack.sources.map((s) => s.name).join(' > ')}`);
+      if (!stack.isEmpty && !request.no_currents && plan.index === 0)
+        progress(0, 0, `currents: ${stack.sources.map(s => s.name).join(' > ')}`);
 
       const prop = new OceanPropagator(land, {
-        stages, subsectors: cfg.routing.subsectors, headings: cfg.routing.headings, headingIncrementDeg: cfg.routing.headingIncrementDeg,
+        stages,
+        subsectors: cfg.routing.subsectors,
+        headings: cfg.routing.headings,
+        headingIncrementDeg: cfg.routing.headingIncrementDeg,
       });
       const t = Date.now();
       const autoVias = corridor ? mergeVias([], corridor.autoVias) : [];
       const legWind: ForecastStore | null = wind;
       const legArgs = {
-        start: legStart, end: legEnd, departureTime: legDeparture, vessel, polar: routePolar,
-        wind: legWind ?? undefined, current,
+        start: legStart,
+        end: legEnd,
+        departureTime: legDeparture,
+        vessel,
+        polar: routePolar,
+        wind: legWind ?? undefined,
+        current,
         modePolicy: request.mode ?? 'sail_max',
         sailThreshMs: request.sail_thresh_ms ?? cfg.routing.sailThreshMs,
         simStepM: cfg.routing.simStepM,
@@ -965,7 +1123,8 @@ async function route(id: string, request: RouteRequest): Promise<void> {
         corridor: corridor ? { skeleton: corridor.skeleton, widthM: corridor.widthM } : undefined,
         arrivalRadiusM: plan.arrivalRadiusM,
         snapToExact: plan.snapToExact,
-        onProgress: multi ? (st: number, tot: number, m: string) => progress(st, tot, `${tag}${m}`) : progress, shouldCancel,
+        onProgress: multi ? (st: number, tot: number, m: string) => progress(st, tot, `${tag}${m}`) : progress,
+        shouldCancel,
       };
       let r: Route;
       try {
@@ -975,68 +1134,109 @@ async function route(id: string, request: RouteRequest): Promise<void> {
         // finds another passage (e.g. The Race instead of the gap past
         // Gardiners Island) no branch crosses them. Retry without them.
         if (!(err instanceof ViasNotCrossedError) || !autoVias.length) throw err;
-        progress(0, 0, `${tag}no branch went through the auto via(s) at ${autoVias.map((v) => v.name ?? 'a narrow passage').join(', ')}; routing again without them`);
+        progress(
+          0,
+          0,
+          `${tag}no branch went through the auto via(s) at ${autoVias.map(v => v.name ?? 'a narrow passage').join(', ')}; routing again without them`
+        );
         r = prop.computeRoute({ ...legArgs, vias: undefined });
       }
       // Simplification (parent order: RDP, then the shortcut smoother).
       const simplifyM = request.simplify_m ?? cfg.routing.simplifyM;
       const nRdp = rdpSimplify(r, land, simplifyM);
       if (nRdp) recomputeTotals(r);
-      const nSm = (request.smoother ?? cfg.routing.smoother)
-        ? shortcutSmoother(r, {
-          land, vessel, polar: routePolar, wind: legWind ?? new NoWind(), current,
-          sim: { modePolicy: legArgs.modePolicy, sailThreshMs: legArgs.sailThreshMs, simStepM: legArgs.simStepM },
-          tolerancePct: (request.smoother_tolerance ?? cfg.routing.smootherTolerance) * 100,
-        })
-        : 0;
+      const nSm =
+        (request.smoother ?? cfg.routing.smoother)
+          ? shortcutSmoother(r, {
+              land,
+              vessel,
+              polar: routePolar,
+              wind: legWind ?? new NoWind(),
+              current,
+              sim: { modePolicy: legArgs.modePolicy, sailThreshMs: legArgs.sailThreshMs, simStepM: legArgs.simStepM },
+              tolerancePct: (request.smoother_tolerance ?? cfg.routing.smootherTolerance) * 100,
+            })
+          : 0;
       if (nSm) r.smootherDrops = nSm;
       if (nRdp || nSm) {
         enrichWaypoints(r.waypoints, legWind ?? new NoWind(), current);
         recomputePerWaypointMetadata(r);
         revalidateLand(r, land);
-        progress(0, 0, `${tag}simplified: ${nRdp} waypoint(s) within ${simplifyM} m of a straight line, ${nSm} replaced by straight shortcuts; ${r.waypoints.length} left`);
+        progress(
+          0,
+          0,
+          `${tag}simplified: ${nRdp} waypoint(s) within ${simplifyM} m of a straight line, ${nSm} replaced by straight shortcuts; ${r.waypoints.length} left`
+        );
       }
       if (legWind) {
         const lastValid = legWind.validRange[1].getTime();
         const arrival = r.waypoints[r.waypoints.length - 1].time.getTime();
         if (arrival > lastValid) {
           r.forecastHorizonExceededS = (arrival - lastValid) / 1000;
-          progress(0, 0, `WARNING: ${multi ? `leg ${plan.index + 1} ` : ''}arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`);
+          progress(
+            0,
+            0,
+            `WARNING: ${multi ? `leg ${plan.index + 1} ` : ''}arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`
+          );
         }
       }
-      if (current instanceof CurrentStack) r.currentSources = current.sources.map((s) => s.name);
-      if (multi) log('info', `job ${id}: ${tag}${r.waypoints.length} waypoints, ${(r.totalDistanceM / 1852).toFixed(1)} nm, ${(r.totalTimeS / 3600).toFixed(1)} h, ${Date.now() - t} ms`);
+      if (current instanceof CurrentStack) r.currentSources = current.sources.map(s => s.name);
+      if (multi)
+        log(
+          'info',
+          `job ${id}: ${tag}${r.waypoints.length} waypoints, ${(r.totalDistanceM / 1852).toFixed(1)} nm, ${(r.totalTimeS / 3600).toFixed(1)} h, ${Date.now() - t} ms`
+        );
       if (multi) releaseAreas();
       return r;
     };
 
     const t = Date.now();
     const result = await routeMultiLeg({
-      stops, departureTime: new Date(departureMs),
-      precision: request.precision, arrivalRadiusM: request.arrival_radius_m,
+      stops,
+      departureTime: new Date(departureMs),
+      precision: request.precision,
+      arrivalRadiusM: request.arrival_radius_m,
       runLeg: legOne,
-      onProgress: (m) => progress(0, 0, m),
+      onProgress: m => progress(0, 0, m),
     });
     if (cycleLabel) result.forecastCycle = cycleLabel;
-    if (!request.no_currents && !stack.isEmpty) result.currentSources = stack.sources.map((s) => s.name);
-    const name = request.name && request.name.trim()
-      ? request.name.trim()
-      : `${cfg.publish.routeNamePrefix} ${request.start.lat.toFixed(2)},${request.start.lon.toFixed(2)} → ${request.end.lat.toFixed(2)},${request.end.lon.toFixed(2)}`;
+    if (!request.no_currents && !stack.isEmpty) result.currentSources = stack.sources.map(s => s.name);
+    const name =
+      request.name && request.name.trim()
+        ? request.name.trim()
+        : `${cfg.publish.routeNamePrefix} ${request.start.lat.toFixed(2)},${request.start.lon.toFixed(2)} → ${request.end.lat.toFixed(2)},${request.end.lon.toFixed(2)}`;
     const wps = result.waypoints;
     const summary: RouteSummary = {
-      total_distance_m: result.totalDistanceM, total_time_s: result.totalTimeS, sailing_time_s: result.sailingTimeS, motoring_time_s: result.motoringTimeS,
-      waypoint_count: wps.length, warnings: result.warnings?.length ?? 0,
-      departure: wps[0].time.toISOString(), arrival: wps[wps.length - 1].time.toISOString(),
-      forecast_cycle: cycleLabel, current_sources: result.currentSources, polar: polarLabel,
+      total_distance_m: result.totalDistanceM,
+      total_time_s: result.totalTimeS,
+      sailing_time_s: result.sailingTimeS,
+      motoring_time_s: result.motoringTimeS,
+      waypoint_count: wps.length,
+      warnings: result.warnings?.length ?? 0,
+      departure: wps[0].time.toISOString(),
+      arrival: wps[wps.length - 1].time.toISOString(),
+      forecast_cycle: cycleLabel,
+      current_sources: result.currentSources,
+      polar: polarLabel,
       polar_performance: routePolar ? vessel.polarPerformance : undefined,
-      auto_vias: result.autoVias?.map((v) => ({ name: v.name, width_m: Math.round(v.widthM) })),
+      auto_vias: result.autoVias?.map(v => ({ name: v.name, width_m: Math.round(v.widthM) })),
     };
     if (multi) {
       summary.legs = stops.length - 1;
       summary.precision = request.precision ?? DEFAULT_PRECISION;
     }
-    log('info', `job ${id}: ${wps.length} waypoints, ${(result.totalDistanceM / 1852).toFixed(1)} nm, ${(result.totalTimeS / 3600).toFixed(1)} h, ${Date.now() - t} ms`);
-    send({ type: 'done', id, geojson: routeToGeoJSON(result), skRoute: routeToSignalKRoute(result, name), skeleton: skeletonToGeoJSON(result), summary });
+    log(
+      'info',
+      `job ${id}: ${wps.length} waypoints, ${(result.totalDistanceM / 1852).toFixed(1)} nm, ${(result.totalTimeS / 3600).toFixed(1)} h, ${Date.now() - t} ms`
+    );
+    send({
+      type: 'done',
+      id,
+      geojson: routeToGeoJSON(result),
+      skRoute: routeToSignalKRoute(result, name),
+      skeleton: skeletonToGeoJSON(result),
+      summary,
+    });
   } catch (err) {
     if (err instanceof RouteCancelled || shouldCancel()) send({ type: 'error', id, message: 'cancelled', cancelled: true });
     else send({ type: 'error', id, message: (err as Error).message });
@@ -1078,8 +1278,15 @@ function overlaySources(forecast: ForecastStore | null): OverlaySources {
 
 /** Parameters each forecast map layer reads (none: the layer does not use the forecast). */
 const LAYER_PARAMS: Record<string, string[]> = {
-  wind: ['10u', '10v'], waves: ['swh', 'mwp', 'mwd'], msl: ['msl'], temperature: ['2t'], sst: ['skt'], precip: ['tprate', 'ptype'],
-  sea_state: ['10u', '10v', 'swh', 'mwp', 'mwd'], current: [], tide: [],
+  wind: ['10u', '10v'],
+  waves: ['swh', 'mwp', 'mwd'],
+  msl: ['msl'],
+  temperature: ['2t'],
+  sst: ['skt'],
+  precip: ['tprate', 'ptype'],
+  sea_state: ['10u', '10v', 'swh', 'mwp', 'mwd'],
+  current: [],
+  tide: [],
 };
 /** Every parameter conditionsSeries samples. */
 const CONDITIONS_PARAMS = ['10u', '10v', 'swh', 'mwp', 'mwd', 'msl', '2t', 'skt', 'tprate', '2d', 'ptype'];
@@ -1188,12 +1395,20 @@ async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs])
         if (!win) throw new Error('no forecast loaded yet');
         const f = win;
         if (!f.covers(a.lon, a.lat)) throw new Error('position outside the forecast');
-        result = f.steps.map((s) => {
+        result = f.steps.map(s => {
           const t = new Date(s.validMs);
           const [ws, wd] = f.at(a.lon, a.lat, t);
           const wave = f.wavesAt(a.lon, a.lat, t);
           const msl = f.mslAt(a.lon, a.lat, t);
-          return { time: t.toISOString(), wind_ms: ws, wind_dir_deg: wd, msl_pa: Number.isFinite(msl) ? msl : null, swh_m: wave?.swh ?? null, mwp_s: wave?.mwp ?? null, mwd_deg: wave?.mwd ?? null };
+          return {
+            time: t.toISOString(),
+            wind_ms: ws,
+            wind_dir_deg: wd,
+            msl_pa: Number.isFinite(msl) ? msl : null,
+            swh_m: wave?.swh ?? null,
+            mwp_s: wave?.mwp ?? null,
+            mwd_deg: wave?.mwd ?? null,
+          };
         });
         break;
       }
@@ -1210,7 +1425,15 @@ async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs])
     // …or SMOC loaded an on-demand area.
     const smocRev = smoc ? smoc.revision : -1;
     const tidesRev = tides ? tides.revision : -1;
-    if ((overlayLand && overlayLand.builds !== reportedLandBuilds) || smocRev !== reportedSmocRev || tidesRev !== reportedTidesRev || kind === 'conditions' || kind === 'tide_series' || kind === 'field' || kind === 'weather_point') {
+    if (
+      (overlayLand && overlayLand.builds !== reportedLandBuilds) ||
+      smocRev !== reportedSmocRev ||
+      tidesRev !== reportedTidesRev ||
+      kind === 'conditions' ||
+      kind === 'tide_series' ||
+      kind === 'field' ||
+      kind === 'weather_point'
+    ) {
       reportedLandBuilds = overlayLand ? overlayLand.builds : 0;
       send({ type: 'data-status', status: dataStatus() });
     }
@@ -1225,12 +1448,24 @@ function dataStatus(): DataStatus {
   reportedTidesRev = tides ? tides.revision : -1;
   const r = run;
   return {
-    forecast: r && runInfo ? {
-      cycle: r.cycleTime.toISOString(), validFrom: r.validRange[0].toISOString(), validTo: r.validRange[1].toISOString(),
-      steps: r.index.steps.length, params: r.index.request.params, hasWaves: r.hasWaves, loadedAt: new Date(runInfo.loadedAtMs).toISOString(),
-      source: runInfo.source, readyMs: runInfo.readyMs, decodedDir: r.dir, decodedBytes: r.index.bytes,
-      decodedDiskBytes: diskBytes.decoded, gribCacheBytes: diskBytes.grib,
-    } : null,
+    forecast:
+      r && runInfo
+        ? {
+            cycle: r.cycleTime.toISOString(),
+            validFrom: r.validRange[0].toISOString(),
+            validTo: r.validRange[1].toISOString(),
+            steps: r.index.steps.length,
+            params: r.index.request.params,
+            hasWaves: r.hasWaves,
+            loadedAt: new Date(runInfo.loadedAtMs).toISOString(),
+            source: runInfo.source,
+            readyMs: runInfo.readyMs,
+            decodedDir: r.dir,
+            decodedBytes: r.index.bytes,
+            decodedDiskBytes: diskBytes.decoded,
+            gribCacheBytes: diskBytes.grib,
+          }
+        : null,
     lastDecode,
     decodingBlockBytes,
     forecastMemory: { ...forecastMemory },
@@ -1250,20 +1485,21 @@ async function handle(msg: MainToWorker): Promise<void> {
       client = new EcmwfClient({
         baseUrl: ECMWF_MIRRORS[config.forecast.mirror] ?? ECMWF_MIRRORS.ecmwf,
         cacheDir: path.join(msg.cacheDir, 'ecmwf'),
-        log: (m) => log('debug', `ecmwf: ${m}`),
+        log: m => log('debug', `ecmwf: ${m}`),
       });
       rtofsClient = config.currents.rtofsEnabled
-        ? new RtofsClient({ cacheDir: path.join(msg.cacheDir, 'rtofs'), region: config.currents.rtofsRegion, log: (m) => log('debug', m) })
+        ? new RtofsClient({ cacheDir: path.join(msg.cacheDir, 'rtofs'), region: config.currents.rtofsRegion, log: m => log('debug', m) })
         : null;
       polar = null;
       if (config.polarFile) {
         polar = PolarDiagram.load(config.polarFile);
-        if (role === 'route') log('info', `polar loaded: ${config.polarFile} (${polar.twa.length} TWA rows × ${polar.tws.length} TWS columns)`);
+        if (role === 'route')
+          log('info', `polar loaded: ${config.polarFile} (${polar.twa.length} TWA rows × ${polar.tws.length} TWS columns)`);
       } else if (role === 'route') {
         log('info', 'no polar configured: routes will be motor-only');
       }
       if (config.landShapefiles.length === 0) throw new Error('no land shapefile configured');
-      overlayLand = role === 'data' ? new OnDemandLand(config.landShapefiles, { log: (m) => log('debug', m) }) : null;
+      overlayLand = role === 'data' ? new OnDemandLand(config.landShapefiles, { log: m => log('debug', m) }) : null;
       smocClient = makeSmocClient(config);
       smoc = null;
       seaLevelClient = makeSeaLevelClient(config);
@@ -1273,7 +1509,7 @@ async function handle(msg: MainToWorker): Promise<void> {
       // shared constituent blocks; the route worker adopts them ('harmonic').
       if (role === 'data') {
         loadHarmonic(config.currents.harmonicDir);
-        send({ type: 'harmonic', sources: harmonic.map((s) => s.serialize()) });
+        send({ type: 'harmonic', sources: harmonic.map(s => s.serialize()) });
       } else harmonic = [];
       rebuildStack();
       if (role === 'route') {
@@ -1297,7 +1533,11 @@ async function handle(msg: MainToWorker): Promise<void> {
       if (role !== 'route') return;
       run = msg.run ? new DecodedRun(msg.run.dir, msg.run.index) : null;
       runInfo = msg.run;
-      if (run) log('info', `forecast: routes read from the decoded run ${run.dir} (cycle ${run.cycleTime.toISOString().slice(0, 13)}Z, ${run.index.steps.length} steps, ${(run.index.bytes / 1e6).toFixed(1)} MB on disk)`);
+      if (run)
+        log(
+          'info',
+          `forecast: routes read from the decoded run ${run.dir} (cycle ${run.cycleTime.toISOString().slice(0, 13)}Z, ${run.index.steps.length} steps, ${(run.index.bytes / 1e6).toFixed(1)} MB on disk)`
+        );
       return;
     }
     case 'config': {
@@ -1305,7 +1545,11 @@ async function handle(msg: MainToWorker): Promise<void> {
       config = msg.config;
       if (msg.reload.currents) {
         rtofsClient = config.currents.rtofsEnabled
-          ? new RtofsClient({ cacheDir: rtofsClient?.cacheDir ?? path.join(cacheRoot, 'rtofs'), region: config.currents.rtofsRegion, log: (m) => log('debug', m) })
+          ? new RtofsClient({
+              cacheDir: rtofsClient?.cacheDir ?? path.join(cacheRoot, 'rtofs'),
+              region: config.currents.rtofsRegion,
+              log: m => log('debug', m),
+            })
           : null;
         rtofs = null;
         smocClient = makeSmocClient(config);
@@ -1319,7 +1563,10 @@ async function handle(msg: MainToWorker): Promise<void> {
         }
         await refreshRtofs(role === 'data');
         sendCurrents();
-        log('info', `currents reloaded for the new settings (SMOC ${config.currents.smocEnabled ? `${config.currents.smocStepHours} h steps, ${config.currents.smocHorizonHours} h, ±${config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${config.currents.rtofsEnabled ? config.currents.rtofsRegion : 'off'})`);
+        log(
+          'info',
+          `currents reloaded for the new settings (SMOC ${config.currents.smocEnabled ? `${config.currents.smocStepHours} h steps, ${config.currents.smocHorizonHours} h, ±${config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${config.currents.rtofsEnabled ? config.currents.rtofsRegion : 'off'})`
+        );
       }
       if (msg.reload.tides && role === 'data') {
         if (msg.position !== undefined) vesselPos = msg.position;
@@ -1329,10 +1576,16 @@ async function handle(msg: MainToWorker): Promise<void> {
         tides = null;
         tidesError = null;
         await refreshTides();
-        log('info', `tides reloaded for the new settings (${config.tides.enabled ? `map area ±${config.tides.halfWidthDeg}°, ${config.tides.horizonHours} h` : 'off'})`);
+        log(
+          'info',
+          `tides reloaded for the new settings (${config.tides.enabled ? `map area ±${config.tides.halfWidthDeg}°, ${config.tides.horizonHours} h` : 'off'})`
+        );
       }
       if (msg.reload.forecast && role === 'data') {
-        log('info', `forecast settings changed (horizon ${prev.forecast.horizonHours} → ${config.forecast.horizonHours} h, extra fields ${prev.forecast.extraFields} → ${config.forecast.extraFields}); reloading`);
+        log(
+          'info',
+          `forecast settings changed (horizon ${prev.forecast.horizonHours} → ${config.forecast.horizonHours} h, extra fields ${prev.forecast.extraFields} → ${config.forecast.extraFields}); reloading`
+        );
         await refreshForecast(false);
       }
       if (role === 'data') send({ type: 'data-status', status: dataStatus() });
@@ -1352,10 +1605,13 @@ async function handle(msg: MainToWorker): Promise<void> {
     case 'harmonic': {
       // Route worker: the data worker's tidal-harmonic sources (shared constituent blocks).
       if (role !== 'route') return;
-      harmonic = msg.sources.map((s) => new HarmonicCurrentSource(s));
+      harmonic = msg.sources.map(s => new HarmonicCurrentSource(s));
       rebuildStack();
       sendCurrents();
-      log('info', `currents: adopted ${harmonic.length} tidal-harmonic source(s) from the data worker (${(harmonic.reduce((a, s) => a + s.blockBytes(), 0) / 1e6).toFixed(1)} MB shared, no copy)`);
+      log(
+        'info',
+        `currents: adopted ${harmonic.length} tidal-harmonic source(s) from the data worker (${(harmonic.reduce((a, s) => a + s.blockBytes(), 0) / 1e6).toFixed(1)} MB shared, no copy)`
+      );
       return;
     }
     case 'smoc': {
@@ -1364,11 +1620,21 @@ async function handle(msg: MainToWorker): Promise<void> {
       const s = msg.smoc;
       const cfgNow = requireInit().config;
       if (!s || !cfgNow.currents.smocEnabled) smoc = null;
-      else if (smoc && smoc.run.key === s.run.key && smoc.run.settled === s.run.settled && JSON.stringify(smoc.settings) === JSON.stringify(s.settings)) smoc.setResident(s.resident, s.centre);
-      else smoc = SmocCurrentSource.fromSerialized(s, smocClient, (m) => log('info', m));
+      else if (
+        smoc &&
+        smoc.run.key === s.run.key &&
+        smoc.run.settled === s.run.settled &&
+        JSON.stringify(smoc.settings) === JSON.stringify(s.settings)
+      )
+        smoc.setResident(s.resident, s.centre);
+      else smoc = SmocCurrentSource.fromSerialized(s, smocClient, m => log('info', m));
       rebuildStack();
       sendCurrents();
-      if (smoc) log('debug', `smoc: adopted run ${smoc.run.key}${smoc.resident ? `, resident ${(smoc.memoryBytes() / 1e6).toFixed(1)} MB ${smoc.resident.u.buffer instanceof SharedArrayBuffer ? 'shared (no copy)' : 'copied'}` : ', nothing resident'}`);
+      if (smoc)
+        log(
+          'debug',
+          `smoc: adopted run ${smoc.run.key}${smoc.resident ? `, resident ${(smoc.memoryBytes() / 1e6).toFixed(1)} MB ${smoc.resident.u.buffer instanceof SharedArrayBuffer ? 'shared (no copy)' : 'copied'}` : ', nothing resident'}`
+        );
       return;
     }
     case 'shutdown':
@@ -1379,10 +1645,12 @@ async function handle(msg: MainToWorker): Promise<void> {
 
 let chain: Promise<void> = Promise.resolve();
 port.on('message', (msg: MainToWorker) => {
-  chain = chain.then(() => handle(msg)).catch((err) => {
-    log('error', `worker: ${(err as Error).stack ?? (err as Error).message}`);
-    if (msg.type === 'route') send({ type: 'error', id: msg.id, message: (err as Error).message });
-    if (msg.type === 'refresh') send({ type: 'refresh-error', message: (err as Error).message });
-    if (msg.type === 'query') send({ type: 'query-error', id: msg.id, message: (err as Error).message });
-  });
+  chain = chain
+    .then(() => handle(msg))
+    .catch(err => {
+      log('error', `worker: ${(err as Error).stack ?? (err as Error).message}`);
+      if (msg.type === 'route') send({ type: 'error', id: msg.id, message: (err as Error).message });
+      if (msg.type === 'refresh') send({ type: 'refresh-error', message: (err as Error).message });
+      if (msg.type === 'query') send({ type: 'query-error', id: msg.id, message: (err as Error).message });
+    });
 });

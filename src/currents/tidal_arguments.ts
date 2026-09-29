@@ -78,7 +78,7 @@ export interface TidalArguments {
 function npMod(a: number, b: number): number {
   let mod = a % b;
   if (mod !== 0) {
-    if ((b < 0) !== (mod < 0)) mod += b;
+    if (b < 0 !== mod < 0) mod += b;
   } else {
     // numpy returns copysign(0, b)
     mod = b < 0 ? -0 : 0;
@@ -186,7 +186,10 @@ interface NodalContext {
  * pyTMD `astro.schureman_arguments(P, N)`: I, xi, nu, Qa, Qu, Ra, Ru, nu', nu''.
  * P and N in radians.
  */
-function schuremanArguments(P: number, N: number): Pick<NodalContext, 'II' | 'xi' | 'nu' | 'Qa' | 'Qu' | 'Ra' | 'Ru' | 'nuPrime' | 'nuSec'> {
+function schuremanArguments(
+  P: number,
+  N: number
+): Pick<NodalContext, 'II' | 'xi' | 'nu' | 'Qa' | 'Qu' | 'Ra' | 'Ru' | 'nuPrime' | 'nuSec'> {
   // inclination of the moon's orbit to Earth's equator (Schureman p. 156)
   const I = Math.acos(0.913694997 - 0.035692561 * Math.cos(N));
   // longitude in the moon's orbit of lunar intersection
@@ -290,8 +293,8 @@ function nodalUF(c: string, ctx: NodalContext): UF {
     // Schureman: Table 2 Page 165; Page 25 Eq. 78 (f from m2, u = -u(m2))
     return [-(2.0 * xi - 2.0 * nu), Math.pow(cosHalfII, 4.0) / 0.9154];
   } else if (c === 'mst') {
-    const term1 = -0.380 * sin2p - 0.413 * sinn - 0.037 * sin2n;
-    const term2 = 1.0 + 0.380 * cos2p + 0.413 * cosn + 0.037 * cos2n;
+    const term1 = -0.38 * sin2p - 0.413 * sinn - 0.037 * sin2n;
+    const term2 = 1.0 + 0.38 * cos2p + 0.413 * cosn + 0.037 * cos2n;
     return linear(term1, term2);
   } else if (c === 'o1' || c === 'so3' || c === 'op2' || c === '2q1' || c === 'q1' || c === 'rho1' || c === 'sigma1') {
     // Schureman: Table 2 Page 164; Page 25 Eq. 75
@@ -328,10 +331,21 @@ function nodalUF(c: string, ctx: NodalContext): UF {
     return [-nuPrime, Math.sqrt(temp1 + temp2 + 0.1006)];
   } else if (c === 'oo1' || c === 'ups1') {
     // Schureman: Table 2 Page 164; Page 25 Eq. 77
-    return [-2.0 * xi - nu, (sinII * Math.pow(Math.sin(II / 2.0), 2.0)) / 0.01640];
+    return [-2.0 * xi - nu, (sinII * Math.pow(Math.sin(II / 2.0), 2.0)) / 0.0164];
   } else if (
-    c === 'm2' || c === '2n2' || c === 'mu2' || c === 'n2' || c === 'nu2' || c === 'lambda2' || c === 'ms4' ||
-    c === 'eps2' || c === '2sm6' || c === '2sn6' || c === 'mp1' || c === 'mp3' || c === 'sn4'
+    c === 'm2' ||
+    c === '2n2' ||
+    c === 'mu2' ||
+    c === 'n2' ||
+    c === 'nu2' ||
+    c === 'lambda2' ||
+    c === 'ms4' ||
+    c === 'eps2' ||
+    c === '2sm6' ||
+    c === '2sn6' ||
+    c === 'mp1' ||
+    c === 'mp3' ||
+    c === 'sn4'
   ) {
     // Schureman: Table 2 Page 165; Page 25 Eq. 78
     return [2.0 * xi - 2.0 * nu, Math.pow(cosHalfII, 4.0) / 0.9154];
@@ -424,10 +438,28 @@ function nodalUF(c: string, ctx: NodalContext): UF {
   } else if (c === 'k3') {
     return compound(ctx, ['k1', 'k2'], (u, f) => [u[0] + u[1], f[0] * f[1]]);
   } else if (
-    c === 'm4' || c === 'mn4' || c === 'mns2' || c === '2ms2' || c === 'mnus2' || c === 'mmus2' || c === '2ns2' ||
-    c === 'n4' || c === 'mnu4' || c === 'mmu4' || c === '2mt6' || c === '2ms6' || c === 'msn6' || c === 'mns6' ||
-    c === '2mr6' || c === 'msmu6' || c === '2mp3' || c === '2ms3' || c === '2mp5' || c === '2msp7' ||
-    c === '2(ms)8' || c === '2ms8'
+    c === 'm4' ||
+    c === 'mn4' ||
+    c === 'mns2' ||
+    c === '2ms2' ||
+    c === 'mnus2' ||
+    c === 'mmus2' ||
+    c === '2ns2' ||
+    c === 'n4' ||
+    c === 'mnu4' ||
+    c === 'mmu4' ||
+    c === '2mt6' ||
+    c === '2ms6' ||
+    c === 'msn6' ||
+    c === 'mns6' ||
+    c === '2mr6' ||
+    c === 'msmu6' ||
+    c === '2mp3' ||
+    c === '2ms3' ||
+    c === '2mp5' ||
+    c === '2msp7' ||
+    c === '2(ms)8' ||
+    c === '2ms8'
   ) {
     return compound(ctx, ['m2'], (u, f) => [2.0 * u[0], npIntPow(f[0], 2)]);
   } else if (c === 'msn2' || c === 'snm2' || c === 'nsm2') {
@@ -437,14 +469,36 @@ function nodalUF(c: string, ctx: NodalContext): UF {
   } else if (c === '2sm2') {
     return compound(ctx, ['m2'], (u, f) => [-u[0], f[0]]);
   } else if (
-    c === 'm6' || c === '2mn6' || c === '2mnu6' || c === '2mmu6' || c === '2nm6' || c === 'mnnu6' || c === 'mnmu6' ||
-    c === '3ms8' || c === '3mp7' || c === '2msn8' || c === '3ms5' || c === '3mp5' || c === '3ms4' || c === '3m2s2' ||
-    c === '3m2s10' || c === '2mn2s2'
+    c === 'm6' ||
+    c === '2mn6' ||
+    c === '2mnu6' ||
+    c === '2mmu6' ||
+    c === '2nm6' ||
+    c === 'mnnu6' ||
+    c === 'mnmu6' ||
+    c === '3ms8' ||
+    c === '3mp7' ||
+    c === '2msn8' ||
+    c === '3ms5' ||
+    c === '3mp5' ||
+    c === '3ms4' ||
+    c === '3m2s2' ||
+    c === '3m2s10' ||
+    c === '2mn2s2'
   ) {
     return compound(ctx, ['m2'], (u, f) => [3.0 * u[0], npIntPow(f[0], 3)]);
   } else if (
-    c === 'm8' || c === 'ma8' || c === '3mn8' || c === '3mnu8' || c === '3mmu8' || c === '2mn8' || c === '2(mn):8' ||
-    c === '3msn10' || c === '4ms10' || c === '2(mn)S10' || c === '4m2s12'
+    c === 'm8' ||
+    c === 'ma8' ||
+    c === '3mn8' ||
+    c === '3mnu8' ||
+    c === '3mmu8' ||
+    c === '2mn8' ||
+    c === '2(mn):8' ||
+    c === '3msn10' ||
+    c === '4ms10' ||
+    c === '2(mn)S10' ||
+    c === '4m2s12'
   ) {
     return compound(ctx, ['m2'], (u, f) => [4.0 * u[0], npIntPow(f[0], 4)]);
   } else if (c === 'm10' || c === '4mn10' || c === '5ms12' || c === '4msn12' || c === '4mns12') {

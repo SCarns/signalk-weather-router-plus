@@ -13,7 +13,7 @@ export const RAD = 180 / Math.PI;
 
 /** Wrap a longitude into [-180, 180). */
 export function wrapLon(lon: number): number {
-  let x = ((lon + 180) % 360 + 360) % 360 - 180;
+  let x = ((((lon + 180) % 360) + 360) % 360) - 180;
   if (x === 180) x = -180;
   return x;
 }
@@ -35,16 +35,14 @@ export function haversineBearing(lon1: number, lat1: number, lon2: number, lat2:
   const dlon = (lon2 - lon1) * DEG;
   const x = Math.sin(dlon) * Math.cos(la2);
   const y = Math.cos(la1) * Math.sin(la2) - Math.sin(la1) * Math.cos(la2) * Math.cos(dlon);
-  return ((Math.atan2(x, y) * RAD) % 360 + 360) % 360;
+  return (((Math.atan2(x, y) * RAD) % 360) + 360) % 360;
 }
 
 /**
  * Advance (lon, lat) along a great circle by `distanceM` on `bearingDeg`.
  * Returns [lon, lat] with the longitude wrapped to [-180, 180).
  */
-export function projectAlongBearing(
-  lon: number, lat: number, bearingDeg: number, distanceM: number,
-): [number, number] {
+export function projectAlongBearing(lon: number, lat: number, bearingDeg: number, distanceM: number): [number, number] {
   const la1 = lat * DEG;
   const lo1 = lon * DEG;
   const brg = bearingDeg * DEG;
@@ -58,7 +56,7 @@ export function projectAlongBearing(
   const y = Math.sin(brg) * sinAng * cosLat1;
   const x = cosAng - sinLat1 * sinLat2;
   let lon2 = lo1 + Math.atan2(y, x);
-  lon2 = ((lon2 + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
+  lon2 = ((((lon2 + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
   return [lon2 * RAD, lat2 * RAD];
 }
 
@@ -68,9 +66,7 @@ export function projectAlongBearing(
  * right (the standard cross-track formula's sign). Only consistency
  * matters to the caller, which bins by this value.
  */
-export function perpendicularOffsetM(
-  sLon: number, sLat: number, eLon: number, eLat: number, lon: number, lat: number,
-): number {
+export function perpendicularOffsetM(sLon: number, sLat: number, eLon: number, eLat: number, lon: number, lat: number): number {
   const bearingRef = haversineBearing(sLon, sLat, eLon, eLat) * DEG;
   const sLatR = sLat * DEG;
   const sLonR = sLon * DEG;
@@ -91,9 +87,7 @@ export function perpendicularOffsetM(
  * of (vLon, vLat)? Segment test, not endpoint test: cross-track plus
  * along-track, with the endpoints checked first.
  */
-export function segmentWithinDisc(
-  lon1: number, lat1: number, lon2: number, lat2: number, vLon: number, vLat: number, rM: number,
-): boolean {
+export function segmentWithinDisc(lon1: number, lat1: number, lon2: number, lat2: number, vLon: number, vLat: number, rM: number): boolean {
   const d1 = haversineDistanceM(lon1, lat1, vLon, vLat);
   if (d1 <= rM) return true;
   const d2 = haversineDistanceM(lon2, lat2, vLon, vLat);
@@ -120,8 +114,14 @@ export function segmentWithinDisc(
  * provided arrays starting at `offset`. Handles antimeridian crossing.
  */
 export function slerpSamples(
-  lon1: number, lat1: number, lon2: number, lat2: number, n: number,
-  outLon: Float64Array, outLat: Float64Array, offset: number,
+  lon1: number,
+  lat1: number,
+  lon2: number,
+  lat2: number,
+  n: number,
+  outLon: Float64Array,
+  outLat: Float64Array,
+  offset: number
 ): void {
   const la1 = lat1 * DEG;
   const lo1 = lon1 * DEG;
@@ -179,7 +179,7 @@ export function bboxHeight(b: BBox): number {
 
 /** Offset of `lon` east of the box's west edge, in [0, 360). */
 export function lonOffsetFromWest(b: BBox, lon: number): number {
-  return ((lon - b.west) % 360 + 360) % 360;
+  return (((lon - b.west) % 360) + 360) % 360;
 }
 
 export function bboxContains(b: BBox, lon: number, lat: number): boolean {
@@ -199,7 +199,7 @@ export function bboxFromLonLat(lons: number[], lats: number[], padLon = 0, padLa
   let wmin = Infinity;
   let wmax = -Infinity;
   for (const L of lons) {
-    const shifted = ((L - ref + 180) % 360 + 360) % 360 - 180 + ref;
+    const shifted = ((((L - ref + 180) % 360) + 360) % 360) - 180 + ref;
     if (shifted < wmin) wmin = shifted;
     if (shifted > wmax) wmax = shifted;
   }

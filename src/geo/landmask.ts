@@ -69,7 +69,13 @@ export class LandMask {
   /** Mark cells crossed by polygon edges (conservative raster). */
   private edgeCells = true;
 
-  private constructor(shapes: ShapePolygon[], bbox: BBox, resolutionDeg: number, raster?: Uint8Array, dims?: { nx?: number; ny?: number; edgeCells?: boolean }) {
+  private constructor(
+    shapes: ShapePolygon[],
+    bbox: BBox,
+    resolutionDeg: number,
+    raster?: Uint8Array,
+    dims?: { nx?: number; ny?: number; edgeCells?: boolean }
+  ) {
     this.shapes = shapes;
     this.bbox = bbox;
     this.resolutionDeg = resolutionDeg;
@@ -80,7 +86,7 @@ export class LandMask {
     if (cells > 400_000_000) {
       throw new Error(
         `LandMask raster of ${this.nx}x${this.ny} = ${(cells / 1e6).toFixed(0)}M cells is too large; ` +
-        'use a coarser resolution or a smaller bbox',
+          'use a coarser resolution or a smaller bbox'
       );
     }
     if (raster) {
@@ -153,10 +159,13 @@ export class LandMask {
    * are kept (isLandExact is unavailable).
    */
   static rasterStreamed(
-    bbox: BBox, resolutionDeg: number, feed: (add: (s: ShapePolygon) => void) => void, opts: RasterStreamOptions = {},
+    bbox: BBox,
+    resolutionDeg: number,
+    feed: (add: (s: ShapePolygon) => void) => void,
+    opts: RasterStreamOptions = {}
   ): LandMask {
     const m = new LandMask([], bbox, resolutionDeg, undefined, { nx: opts.nx, ny: opts.ny, edgeCells: opts.edgeCells });
-    feed((s) => m.rasterizeShape(s));
+    feed(s => m.rasterizeShape(s));
     return m;
   }
 
@@ -188,7 +197,12 @@ export class LandMask {
     const nx = (x1 - x0) * k;
     const ny = (y1 - y0) * k;
     if (nx * ny > maxCells) throw new Error(`LandMask.refine: patch ${nx}x${ny} exceeds ${maxCells} cells`);
-    const pb: BBox = { west: ((west + 540) % 360) - 180, south, east: (((west + (x1 - x0) * res0) + 540) % 360) - 180, north: south + (y1 - y0) * res0 };
+    const pb: BBox = {
+      west: ((west + 540) % 360) - 180,
+      south,
+      east: ((west + (x1 - x0) * res0 + 540) % 360) - 180,
+      north: south + (y1 - y0) * res0,
+    };
     for (const p of this.patches) {
       if (p.resolutionDeg <= res * 1.0001 && bboxCovers(p.bbox, pb)) return null;
     }
@@ -296,10 +310,24 @@ export class LandMask {
    * raster, plus conservative marking of every cell an edge passes through.
    */
   private fillShape(
-    rings: Float64Array[], shift: number, rowLo: number, rowHi: number,
-    nx: number, res: number, south: number, raster: Uint8Array, width: number,
+    rings: Float64Array[],
+    shift: number,
+    rowLo: number,
+    rowHi: number,
+    nx: number,
+    res: number,
+    south: number,
+    raster: Uint8Array,
+    width: number
   ): void {
-    interface Edge { x0: number; y0: number; x1: number; y1: number; rowStart: number; rowEnd: number; }
+    interface Edge {
+      x0: number;
+      y0: number;
+      x1: number;
+      y1: number;
+      rowStart: number;
+      rowEnd: number;
+    }
     const buckets = new Map<number, Edge[]>();
     let edgeCount = 0;
     for (const xs of rings) {
@@ -349,7 +377,7 @@ export class LandMask {
         active = [];
         continue;
       }
-      if (row % 64 === 0) active = active.filter((e) => row <= e.rowEnd);
+      if (row % 64 === 0) active = active.filter(e => row <= e.rowEnd);
       xsRow.sort((a, b) => a - b);
       const base = row * nx;
       for (let k = 0; k + 1 < xsRow.length; k += 2) {
@@ -370,8 +398,15 @@ export class LandMask {
    * boundary inside it (isLandExact relies on this).
    */
   private markEdgeCells(
-    xa: number, ya: number, xb: number, yb: number,
-    nx: number, res: number, south: number, raster: Uint8Array, width: number,
+    xa: number,
+    ya: number,
+    xb: number,
+    yb: number,
+    nx: number,
+    res: number,
+    south: number,
+    raster: Uint8Array,
+    width: number
   ): void {
     const ny = this.ny;
     // Quick reject when the edge is entirely outside the raster.
@@ -494,9 +529,11 @@ export class LandMask {
    * sample spaced ≤ stepM apart (endpoints included)?
    */
   legsCrossLandBulk(
-    lonsA: ArrayLike<number>, latsA: ArrayLike<number>,
-    lonsB: ArrayLike<number>, latsB: ArrayLike<number>,
-    stepM = 200,
+    lonsA: ArrayLike<number>,
+    latsA: ArrayLike<number>,
+    lonsB: ArrayLike<number>,
+    latsB: ArrayLike<number>,
+    stepM = 200
   ): Uint8Array {
     if (!(stepM > 0)) throw new Error(`legsCrossLandBulk: stepM must be > 0 (got ${stepM})`);
     const n = lonsA.length;

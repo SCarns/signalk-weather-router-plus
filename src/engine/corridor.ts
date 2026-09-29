@@ -90,7 +90,15 @@ export interface Corridor {
   autoVias: AutoVia[];
   /** Raw grid path (for diagnostics). */
   cells: GridNode[];
-  stats: { astarMs: number; expanded: number; windowCells: number; reroutes: number; refines: number; blockedCells: number; verifyMs: number };
+  stats: {
+    astarMs: number;
+    expanded: number;
+    windowCells: number;
+    reroutes: number;
+    refines: number;
+    blockedCells: number;
+    verifyMs: number;
+  };
 }
 
 export class CorridorError extends Error {
@@ -123,7 +131,7 @@ const SKELETON_SPACING_M = 2000;
 function endpointNodes(grid: WaterGrid, lon: number, lat: number, radius: number): { nodes: GridSource[]; radiusM: number } {
   const [r0, c0] = grid.cellOf(lon, lat);
   const own = grid.nodeComponents(r0, c0);
-  if (own.length) return { nodes: own.map((comp) => ({ r: r0, c: c0, comp, cost: 0 })), radiusM: 0 };
+  if (own.length) return { nodes: own.map(comp => ({ r: r0, c: c0, comp, cost: 0 })), radiusM: 0 };
   const nodes: GridSource[] = [];
   let radiusM = 0;
   for (let rad = 1; rad <= radius && nodes.length === 0; rad++) {
@@ -147,7 +155,13 @@ function probeComponent(grid: WaterGrid, nodes: GridNode[], cap: number): { smal
   const seen = new Set<number>();
   const st: GridNode[] = [];
   const key = (r: number, c: number, comp: number): number => (r * grid.nx + grid.wrapCol(c)) * 16 + comp;
-  for (const n of nodes) { const k = key(n.r, n.c, n.comp); if (!seen.has(k)) { seen.add(k); st.push(n); } }
+  for (const n of nodes) {
+    const k = key(n.r, n.c, n.comp);
+    if (!seen.has(k)) {
+      seen.add(k);
+      st.push(n);
+    }
+  }
   while (st.length) {
     if (seen.size > cap) return { small: false, cells: seen };
     const n = st.pop()!;
@@ -166,20 +180,38 @@ function probeComponent(grid: WaterGrid, nodes: GridNode[], cap: number): { smal
  * returned path are unwrapped continuously from the leg's start cell.
  */
 function legAstar(
-  grid: WaterGrid, a: [number, number], b: [number, number], blocked: Set<number>, maxWindowCells: number,
-  progress: (m: string) => void, shouldCancel?: () => boolean,
+  grid: WaterGrid,
+  a: [number, number],
+  b: [number, number],
+  blocked: Set<number>,
+  maxWindowCells: number,
+  progress: (m: string) => void,
+  shouldCancel?: () => boolean
 ): { path: GridNode[]; expanded: number; windowCells: number } {
   let src = endpointNodes(grid, a[0], a[1], 5);
   let dst = endpointNodes(grid, b[0], b[1], 5);
-  if (!src.nodes.length) throw new CorridorError(`no water within 5 grid cells (≈10 km) of (${a[1].toFixed(4)}, ${a[0].toFixed(4)}): the point is on land`, true);
-  if (!dst.nodes.length) throw new CorridorError(`no water within 5 grid cells (≈10 km) of (${b[1].toFixed(4)}, ${b[0].toFixed(4)}): the point is on land`, true);
+  if (!src.nodes.length)
+    throw new CorridorError(
+      `no water within 5 grid cells (≈10 km) of (${a[1].toFixed(4)}, ${a[0].toFixed(4)}): the point is on land`,
+      true
+    );
+  if (!dst.nodes.length)
+    throw new CorridorError(
+      `no water within 5 grid cells (≈10 km) of (${b[1].toFixed(4)}, ${b[0].toFixed(4)}): the point is on land`,
+      true
+    );
   // An endpoint in a small enclosed pocket of the grid (a marina basin the
   // 0.02° grid closes): aim for the nearest open water instead.
   const PROBE_CAP = 50_000;
-  const fix = (ep: { nodes: GridSource[]; radiusM: number }, lonlat: [number, number], other: GridSource[], which: string): { nodes: GridSource[]; radiusM: number } => {
+  const fix = (
+    ep: { nodes: GridSource[]; radiusM: number },
+    lonlat: [number, number],
+    other: GridSource[],
+    which: string
+  ): { nodes: GridSource[]; radiusM: number } => {
     const pr = probeComponent(grid, ep.nodes, PROBE_CAP);
     if (!pr.small) return ep;
-    const otherIn = other.some((o) => pr.cells.has((o.r * grid.nx + grid.wrapCol(o.c)) * 16 + o.comp));
+    const otherIn = other.some(o => pr.cells.has((o.r * grid.nx + grid.wrapCol(o.c)) * 16 + o.comp));
     if (otherIn) return ep;
     const [r0, c0] = grid.cellOf(lonlat[0], lonlat[1]);
     const alt: GridSource[] = [];
@@ -200,7 +232,10 @@ function legAstar(
       }
       if (alt.length) break;
     }
-    if (!alt.length) throw new CorridorError(`the ${which} (${lonlat[1].toFixed(4)}, ${lonlat[0].toFixed(4)}) is in water enclosed at the 0.02° grid resolution with no open water within 10 km`);
+    if (!alt.length)
+      throw new CorridorError(
+        `the ${which} (${lonlat[1].toFixed(4)}, ${lonlat[0].toFixed(4)}) is in water enclosed at the 0.02° grid resolution with no open water within 10 km`
+      );
     progress(`${which} is in a pocket the 0.02° grid closes; corridor starts from open water ${(radiusM / 1000).toFixed(1)} km away`);
     return { nodes: alt, radiusM };
   };
@@ -210,18 +245,24 @@ function legAstar(
   // Unwrapped goal column nearest the start (short way round).
   const sR = src.nodes[0].r;
   const sC = src.nodes[0].c;
-  const goalNodes = dst.nodes.map((n) => {
+  const goalNodes = dst.nodes.map(n => {
     let c = n.c;
     while (c - sC > grid.nx / 2) c -= grid.nx;
     while (c - sC < -grid.nx / 2) c += grid.nx;
     return { r: n.r, c, comp: n.comp };
   });
-  const rMin = Math.min(sR, ...goalNodes.map((n) => n.r));
-  const rMax = Math.max(sR, ...goalNodes.map((n) => n.r));
-  const cMin = Math.min(sC, ...goalNodes.map((n) => n.c));
-  const cMax = Math.max(sC, ...goalNodes.map((n) => n.c));
+  const rMin = Math.min(sR, ...goalNodes.map(n => n.r));
+  const rMax = Math.max(sR, ...goalNodes.map(n => n.r));
+  const cMin = Math.min(sC, ...goalNodes.map(n => n.c));
+  const cMax = Math.max(sC, ...goalNodes.map(n => n.c));
   const span = Math.max(rMax - rMin, cMax - cMin);
-  const margins = [Math.max(100, Math.round(span * 0.25)), Math.max(300, Math.round(span * 0.75)), Math.max(750, span * 2), Math.max(2000, span * 5), grid.nx];
+  const margins = [
+    Math.max(100, Math.round(span * 0.25)),
+    Math.max(300, Math.round(span * 0.75)),
+    Math.max(750, span * 2),
+    Math.max(2000, span * 5),
+    grid.nx,
+  ];
   let expanded = 0;
   let lastErr: GridAstarError | null = null;
   for (const m of margins) {
@@ -238,14 +279,18 @@ function legAstar(
       // Shrink the margin to fit the cell budget (the minimal box must fit).
       const w0 = cMax - cMin + 1;
       const h0 = rMax - rMin + 1;
-      if (w0 * h0 > maxWindowCells) throw new CorridorError(`route too long for the grid search: ${w0}×${h0} cells exceed ${maxWindowCells} (add intermediate waypoints)`);
+      if (w0 * h0 > maxWindowCells)
+        throw new CorridorError(
+          `route too long for the grid search: ${w0}×${h0} cells exceed ${maxWindowCells} (add intermediate waypoints)`
+        );
       let lo = 0;
       let hi = m;
       while (lo < hi) {
         const mid = Math.ceil((lo + hi) / 2);
         const cw = Math.min(grid.nx, w0 + 2 * mid);
         const ch = Math.min(grid.ny, h0 + 2 * mid);
-        if (cw * ch <= maxWindowCells) lo = mid; else hi = mid - 1;
+        if (cw * ch <= maxWindowCells) lo = mid;
+        else hi = mid - 1;
       }
       r0 = Math.max(0, rMin - lo);
       r1 = Math.min(grid.ny - 1, rMax + lo);
@@ -255,7 +300,11 @@ function legAstar(
     }
     const win = { r0, r1, c0, c1 };
     try {
-      const res = gridAstar(grid, win, src.nodes, goalNodes, b, dst.radiusM, { blocked, shouldCancel, heuristicWeight: ASTAR_HEURISTIC_WEIGHT });
+      const res = gridAstar(grid, win, src.nodes, goalNodes, b, dst.radiusM, {
+        blocked,
+        shouldCancel,
+        heuristicWeight: ASTAR_HEURISTIC_WEIGHT,
+      });
       expanded += res.expanded;
       return { path: unwrapPath(grid, res.path), expanded, windowCells: cells };
     } catch (err) {
@@ -264,15 +313,19 @@ function legAstar(
       expanded += err.expanded;
       lastErr = err;
       if (cells >= maxWindowCells || (c1 - c0 + 1 >= grid.nx && r0 === 0 && r1 === grid.ny - 1)) break;
-      progress(`no water path inside a ${((c1 - c0 + 1) * grid.res).toFixed(0)}°×${((r1 - r0 + 1) * grid.res).toFixed(0)}° window; widening`);
+      progress(
+        `no water path inside a ${((c1 - c0 + 1) * grid.res).toFixed(0)}°×${((r1 - r0 + 1) * grid.res).toFixed(0)}° window; widening`
+      );
     }
   }
-  throw new CorridorError(`no water path between (${a[1].toFixed(4)}, ${a[0].toFixed(4)}) and (${b[1].toFixed(4)}, ${b[0].toFixed(4)}) on the global water grid${lastErr ? ` (${lastErr.message})` : ''}`);
+  throw new CorridorError(
+    `no water path between (${a[1].toFixed(4)}, ${a[0].toFixed(4)}) and (${b[1].toFixed(4)}, ${b[0].toFixed(4)}) on the global water grid${lastErr ? ` (${lastErr.message})` : ''}`
+  );
 }
 
 /** Make consecutive columns differ by at most 1 (a full-width window may wrap). */
 function unwrapPath(grid: WaterGrid, path: GridNode[]): GridNode[] {
-  const out = path.map((p) => ({ ...p }));
+  const out = path.map(p => ({ ...p }));
   for (let i = 1; i < out.length; i++) {
     let c = out[i].c;
     while (c - out[i - 1].c > grid.nx / 2) c -= grid.nx;
@@ -302,11 +355,16 @@ interface BandCell {
  * are one node. Returns ok, or the last corridor index the fill reached.
  */
 export function verifyCorridor(
-  land: LandMask, gridRes: number, path: GridNode[], start: [number, number], end: [number, number], band = BAND,
+  land: LandMask,
+  gridRes: number,
+  path: GridNode[],
+  start: [number, number],
+  end: [number, number],
+  band = BAND
 ): { ok: true } | { ok: false; reachedIndex: number } {
-  const rMin = Math.min(...path.map((p) => p.r)) - band;
-  const cMin = Math.min(...path.map((p) => p.c)) - band;
-  const cMax = Math.max(...path.map((p) => p.c)) + band;
+  const rMin = Math.min(...path.map(p => p.r)) - band;
+  const cMin = Math.min(...path.map(p => p.c)) - band;
+  const cMax = Math.max(...path.map(p => p.c)) + band;
   const Wb = cMax - cMin + 1;
   const idxOf = new Map<number, number>();
   const cells: BandCell[] = [];
@@ -318,7 +376,7 @@ export function verifyCorridor(
     for (const p of land.patches) {
       if (p.resolutionDeg >= res) continue;
       const pw = p.bbox.west;
-      let off = ((lonW - pw) % 360 + 360) % 360;
+      let off = (((lonW - pw) % 360) + 360) % 360;
       if (off > 180) off -= 360;
       const pWidth = p.nx * p.resolutionDeg;
       if (off + gridRes <= 0 || off >= pWidth) continue;
@@ -339,7 +397,10 @@ export function verifyCorridor(
     for (let y = 0; y < s; y++) {
       const lat = latS + (y + 0.5) * sub;
       for (let x = 0; x < s; x++) {
-        if (land.isLand(wrapLon(lonW + (x + 0.5) * sub), lat)) { bits[y * s + x] = 1; any++; }
+        if (land.isLand(wrapLon(lonW + (x + 0.5) * sub), lat)) {
+          bits[y * s + x] = 1;
+          any++;
+        }
       }
     }
     idxOf.set(k, cells.length);
@@ -378,15 +439,22 @@ export function verifyCorridor(
     if (b === undefined) return null;
     const cell = cells[b];
     if (cell.clear) return { b, sub: -1 };
-    const fx = Math.min(cell.s - 1, Math.max(0, Math.floor(((wrapLon(lon) + 180) / gridRes - Math.floor((wrapLon(lon) + 180) / gridRes)) * cell.s)));
+    const fx = Math.min(
+      cell.s - 1,
+      Math.max(0, Math.floor(((wrapLon(lon) + 180) / gridRes - Math.floor((wrapLon(lon) + 180) / gridRes)) * cell.s))
+    );
     const fy = Math.min(cell.s - 1, Math.max(0, Math.floor(((lat + 90) / gridRes - r) * cell.s)));
     let best = -1;
     let bestD = Infinity;
-    for (let y = 0; y < cell.s; y++) for (let x = 0; x < cell.s; x++) {
-      if (cell.land![y * cell.s + x]) continue;
-      const d = (x - fx) ** 2 + (y - fy) ** 2;
-      if (d < bestD) { bestD = d; best = y * cell.s + x; }
-    }
+    for (let y = 0; y < cell.s; y++)
+      for (let x = 0; x < cell.s; x++) {
+        if (cell.land![y * cell.s + x]) continue;
+        const d = (x - fx) ** 2 + (y - fy) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = y * cell.s + x;
+        }
+      }
     return best >= 0 ? { b, sub: best } : null;
   };
   const s0 = cellAt(start[0], start[1], path[0].c);
@@ -403,7 +471,10 @@ export function verifyCorridor(
   // Border sub-cells of cell b2 facing direction (dr, dc) as seen from the neighbour, within span [lo, hi) of 0..1.
   const enterBorder = (b2: number, dr: number, dc: number, lo: number, hi: number): void => {
     const c2 = cells[b2];
-    if (c2.clear) { visit(b2, -1); return; }
+    if (c2.clear) {
+      visit(b2, -1);
+      return;
+    }
     const s2 = c2.s;
     const k0 = Math.floor(lo * s2 + 1e-9);
     const k1 = Math.min(s2 - 1, Math.ceil(hi * s2 - 1e-9) - 1);
@@ -414,7 +485,12 @@ export function verifyCorridor(
       visit(b2, y * s2 + x);
     }
   };
-  const DIRS: [number, number][] = [[0, 1], [0, -1], [1, 0], [-1, 0]];
+  const DIRS: [number, number][] = [
+    [0, 1],
+    [0, -1],
+    [1, 0],
+    [-1, 0],
+  ];
   while (qh < qt) {
     const b = qb[qh];
     const sub = qs[qh];
@@ -547,9 +623,9 @@ function gridBBox(grid: WaterGrid, path: GridNode[], extra: [number, number][], 
 
 function bboxInside(inner: BBox, outer: BBox): boolean {
   if (inner.south < outer.south || inner.north > outer.north) return false;
-  const ow = ((outer.east - outer.west) % 360 + 360) % 360 || 360;
-  const iw = ((inner.east - inner.west) % 360 + 360) % 360 || 360;
-  const off = ((inner.west - outer.west) % 360 + 360) % 360;
+  const ow = (((outer.east - outer.west) % 360) + 360) % 360 || 360;
+  const iw = (((inner.east - inner.west) % 360) + 360) % 360 || 360;
+  const off = (((inner.west - outer.west) % 360) + 360) % 360;
   return off + iw <= ow + 1e-9;
 }
 
@@ -582,8 +658,8 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
   const stats = { astarMs: 0, expanded: 0, windowCells: 0, reroutes: 0, refines: 0, blockedCells: 0, verifyMs: 0 };
   let land: LandMask | null = null;
   let landBox: BBox | null = null;
-  let path: GridNode[] = [];
-  let segStart: number[] = [];
+  let path: GridNode[];
+  let segStart: number[];
   for (let attempt = 0; ; attempt++) {
     // 1. A* leg by leg.
     const t0 = Date.now();
@@ -600,7 +676,7 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
         let shift = 0;
         while (legPath[0].c + shift - last.c > grid.nx / 2) shift -= grid.nx;
         while (legPath[0].c + shift - last.c < -grid.nx / 2) shift += grid.nx;
-        legPath = legPath.map((p) => ({ ...p, c: p.c + shift }));
+        legPath = legPath.map(p => ({ ...p, c: p.c + shift }));
         segStart.push(path.length - 1);
         const same = legPath[0].r === last.r && legPath[0].c === last.c && legPath[0].comp === last.comp;
         path.push(...(same ? legPath.slice(1) : legPath));
@@ -612,9 +688,11 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
     stats.astarMs += Date.now() - t0;
     // 2. Route raster over the corridor.
     const box = gridBBox(grid, path, chain, CORRIDOR_MARGIN_DEG);
-    const w = ((box.east - box.west) % 360 + 360) % 360 || 360;
+    const w = (((box.east - box.west) % 360) + 360) % 360 || 360;
     if (w > 120 || box.north - box.south > 90) {
-      throw new CorridorError(`the corridor's bounding box (${w.toFixed(0)}° × ${(box.north - box.south).toFixed(0)}°) is too large (max 120° × 90°); add intermediate waypoints`);
+      throw new CorridorError(
+        `the corridor's bounding box (${w.toFixed(0)}° × ${(box.north - box.south).toFixed(0)}°) is too large (max 120° × 90°); add intermediate waypoints`
+      );
     }
     if (!land || !landBox || !bboxInside(box, landBox)) {
       land = opts.landFor(box);
@@ -644,7 +722,9 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
       const patch = land.refine(pb, next);
       if (!patch) break;
       stats.refines++;
-      progress(`route raster refined to ${(next * 1000).toFixed(2)} m° (${Math.round(next * M_PER_DEG)} m) around ${clat.toFixed(3)}, ${clon.toFixed(3)} where the corridor passes a narrow passage`);
+      progress(
+        `route raster refined to ${(next * 1000).toFixed(2)} m° (${Math.round(next * M_PER_DEG)} m) around ${clat.toFixed(3)}, ${clon.toFixed(3)} where the corridor passes a narrow passage`
+      );
       verdict = verifyCorridor(land, grid.res, path, chain[0], chain[chain.length - 1]);
     }
     stats.verifyMs += Date.now() - tv;
@@ -656,24 +736,36 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
       throw new CorridorError(
         p >= path.length - 2
           ? `the destination is not connected to the corridor on the route's land raster (closed near ${lat.toFixed(3)}, ${lon.toFixed(3)}); move it into open water`
-          : `the water corridor keeps passing channels too narrow for the route raster (last near ${lat.toFixed(3)}, ${lon.toFixed(3)}); add a waypoint to choose the passage`,
+          : `the water corridor keeps passing channels too narrow for the route raster (last near ${lat.toFixed(3)}, ${lon.toFixed(3)}); add a waypoint to choose the passage`
       );
     }
-    const chainCells = new Set(chain.map(([lon, lat]) => { const [r, c] = grid.cellOf(lon, lat); return r * grid.nx + c; }));
+    const chainCells = new Set(
+      chain.map(([lon, lat]) => {
+        const [r, c] = grid.cellOf(lon, lat);
+        return r * grid.nx + c;
+      })
+    );
     let added = 0;
     for (let i = p + 1; i <= Math.min(path.length - 2, p + 3); i++) {
       const k = path[i].r * grid.nx + grid.wrapCol(path[i].c);
       if (chainCells.has(k)) continue;
-      if (!blocked.has(k)) { blocked.add(k); added++; }
+      if (!blocked.has(k)) {
+        blocked.add(k);
+        added++;
+      }
     }
     if (!added) {
       const [lon, lat] = grid.cellCentre(path[p].r, path[p].c);
-      throw new CorridorError(`the corridor is closed on the route raster near ${lat.toFixed(3)}, ${lon.toFixed(3)} next to a route point; move the point into open water`);
+      throw new CorridorError(
+        `the corridor is closed on the route raster near ${lat.toFixed(3)}, ${lon.toFixed(3)} next to a route point; move the point into open water`
+      );
     }
     stats.reroutes++;
     stats.blockedCells = blocked.size;
     const [lon, lat] = grid.cellCentre(path[p + 1].r, path[p + 1].c);
-    progress(`passage near ${lat.toFixed(3)}, ${lon.toFixed(3)} is closed on the route raster even at ${Math.round(MIN_PATCH_RES * M_PER_DEG)} m; re-routing around it`);
+    progress(
+      `passage near ${lat.toFixed(3)}, ${lon.toFixed(3)} is closed on the route raster even at ${Math.round(MIN_PATCH_RES * M_PER_DEG)} m; re-routing around it`
+    );
   }
   if (!land || !landBox) throw new CorridorError('internal: no route raster');
 
@@ -684,7 +776,10 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
     const a = segStart[sgi];
     const b = sgi + 1 < segStart.length ? segStart[sgi + 1] : path.length - 1;
     const legSmooth = smoothGridPath(grid, path.slice(a, b + 1), 150, blocked);
-    const legPts = legSmooth.map((n) => { const [lon, lat] = grid.cellCentre(n.r, n.c); return { lon, lat }; });
+    const legPts = legSmooth.map(n => {
+      const [lon, lat] = grid.cellCentre(n.r, n.c);
+      return { lon, lat };
+    });
     legPts[0] = { lon: chain[sgi][0], lat: chain[sgi][1] };
     if (legPts.length === 1) legPts.push({ lon: chain[sgi + 1][0], lat: chain[sgi + 1][1] });
     else legPts[legPts.length - 1] = { lon: chain[sgi + 1][0], lat: chain[sgi + 1][1] };
@@ -692,7 +787,8 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
   }
   const skeleton = densify(pts, SKELETON_SPACING_M);
   let lengthM = 0;
-  for (let i = 1; i < skeleton.length; i++) lengthM += haversineDistanceM(skeleton[i - 1].lon, skeleton[i - 1].lat, skeleton[i].lon, skeleton[i].lat);
+  for (let i = 1; i < skeleton.length; i++)
+    lengthM += haversineDistanceM(skeleton[i - 1].lon, skeleton[i - 1].lat, skeleton[i].lon, skeleton[i].lat);
   let widthM = widthProfile(land, skeleton);
   // Room to manoeuvre: a passage only a few raster cells wide (the
   // conservative raster loses up to a cell on each bank) leaves the
@@ -700,7 +796,9 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
   const refined = refineNarrowStretches(land, skeleton, widthM, grid.res);
   if (refined.patches) {
     stats.refines += refined.patches;
-    progress(`route raster refined to ${Math.round(refined.finestDeg * M_PER_DEG)} m in ${refined.patches} narrow stretch${refined.patches === 1 ? '' : 'es'} (passages under ${PATCH_CELLS_ACROSS} raster cells wide)`);
+    progress(
+      `route raster refined to ${Math.round(refined.finestDeg * M_PER_DEG)} m in ${refined.patches} narrow stretch${refined.patches === 1 ? '' : 'es'} (passages under ${PATCH_CELLS_ACROSS} raster cells wide)`
+    );
     widthM = widthProfile(land, skeleton);
   }
   // Narrow stretches: the grid's 2 km cells cannot place the skeleton inside
@@ -711,7 +809,8 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
     progress(`skeleton re-traced on the route raster through ${traced.stretches} narrow stretch${traced.stretches === 1 ? '' : 'es'}`);
     widthM = widthProfile(land, skeleton);
     lengthM = 0;
-    for (let i = 1; i < skeleton.length; i++) lengthM += haversineDistanceM(skeleton[i - 1].lon, skeleton[i - 1].lat, skeleton[i].lon, skeleton[i].lat);
+    for (let i = 1; i < skeleton.length; i++)
+      lengthM += haversineDistanceM(skeleton[i - 1].lon, skeleton[i - 1].lat, skeleton[i].lon, skeleton[i].lat);
   }
 
   // 5. Automatic vias.
@@ -728,7 +827,9 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
  * fails keeps its grid skeleton.
  */
 export function traceNarrowStretches(
-  land: LandMask, pts: { lon: number; lat: number }[], widthM: Float64Array,
+  land: LandMask,
+  pts: { lon: number; lat: number }[],
+  widthM: Float64Array
 ): { skeleton: { lon: number; lat: number }[]; stretches: number } {
   const out: { lon: number; lat: number }[] = [];
   let stretches = 0;
@@ -737,7 +838,11 @@ export function traceNarrowStretches(
   // out = (finished part) + pts[lastEnd .. i-1] copied as they are.
   let lastEnd = 0;
   while (i < n) {
-    if (!(widthM[i] < FINE_SKELETON_WIDTH_M)) { out.push(pts[i]); i++; continue; }
+    if (!(widthM[i] < FINE_SKELETON_WIDTH_M)) {
+      out.push(pts[i]);
+      i++;
+      continue;
+    }
     let j = i;
     while (j + 1 < n && widthM[j + 1] < FINE_SKELETON_WIDTH_M) j++;
     // Anchor a little outside the stretch (in wider water).
@@ -770,12 +875,17 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
     let x = p.lon;
     while (x - first.lon > 180) x -= 360;
     while (x - first.lon < -180) x += 360;
-    west = Math.min(west, x); east = Math.max(east, x);
-    south = Math.min(south, p.lat); north = Math.max(north, p.lat);
+    west = Math.min(west, x);
+    east = Math.max(east, x);
+    south = Math.min(south, p.lat);
+    north = Math.max(north, p.lat);
     res = Math.min(res, land.resolutionAt(p.lon, p.lat));
   }
   const pad = 0.05;
-  west -= pad; east += pad; south -= pad; north += pad;
+  west -= pad;
+  east += pad;
+  south -= pad;
+  north += pad;
   const nx = Math.ceil((east - west) / res);
   const ny = Math.ceil((north - south) / res);
   if (nx * ny > 6_000_000) return null;
@@ -793,12 +903,13 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
     const cy = Math.min(ny - 1, Math.max(0, Math.floor((p.lat - south) / res)));
     // Nearest water cell.
     for (let r = 0; r < 40; r++) {
-      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-        const xx = cx + dx;
-        const yy = cy + dy;
-        if (xx >= 0 && yy >= 0 && xx < nx && yy < ny && water[yy * nx + xx]) return yy * nx + xx;
-      }
+      for (let dy = -r; dy <= r; dy++)
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const xx = cx + dx;
+          const yy = cy + dy;
+          if (xx >= 0 && yy >= 0 && xx < nx && yy < ny && water[yy * nx + xx]) return yy * nx + xx;
+        }
     }
     return -1;
   };
@@ -814,7 +925,8 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
   const heapV: number[] = [];
   const push = (k: number, v: number): void => {
     let i = heapK.length;
-    heapK.push(k); heapV.push(v);
+    heapK.push(k);
+    heapV.push(v);
     while (i > 0) {
       const p = (i - 1) >> 1;
       if (heapK[p] <= heapK[i]) break;
@@ -828,7 +940,8 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
     const lk = heapK.pop()!;
     const lv = heapV.pop()!;
     if (heapK.length) {
-      heapK[0] = lk; heapV[0] = lv;
+      heapK[0] = lk;
+      heapV[0] = lv;
       let i = 0;
       for (;;) {
         const l = 2 * i + 1;
@@ -848,13 +961,25 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
   const h = (c: number): number => Math.hypot(((c % nx) - ex) * cosL, Math.floor(c / nx) - ey);
   g[s0] = 0;
   push(h(s0), s0);
-  const DIRS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+  const DIRS: [number, number][] = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+    [1, 1],
+    [1, -1],
+    [-1, 1],
+    [-1, -1],
+  ];
   let found = false;
   while (heapK.length) {
     const c = pop();
     if (done[c]) continue;
     done[c] = 1;
-    if (c === e0) { found = true; break; }
+    if (c === e0) {
+      found = true;
+      break;
+    }
     const cx = c % nx;
     const cy = (c - cx) / nx;
     for (const [dx, dy] of DIRS) {
@@ -867,7 +992,11 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
       const step = Math.hypot(dx * cosL, dy);
       const pen = 1 + 3 * Math.max(0, 1 - clear[k] / 4);
       const ng = g[c] + step * pen;
-      if (ng < g[k]) { g[k] = ng; par[k] = c; push(ng + h(k), k); }
+      if (ng < g[k]) {
+        g[k] = ng;
+        par[k] = c;
+        push(ng + h(k), k);
+      }
     }
   }
   if (!found) return null;
@@ -876,8 +1005,10 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
   cells.reverse();
   // Line of sight on the raster (every sampled cell water with ≥ 1 cell clearance).
   const los = (a: number, b: number): boolean => {
-    const ax = a % nx; const ay = Math.floor(a / nx);
-    const bx = b % nx; const by = Math.floor(b / nx);
+    const ax = a % nx;
+    const ay = Math.floor(a / nx);
+    const bx = b % nx;
+    const by = Math.floor(b / nx);
     const steps = Math.ceil(Math.max(Math.abs(bx - ax), Math.abs(by - ay)) * 2);
     for (let q = 0; q <= steps; q++) {
       const x = Math.round(ax + ((bx - ax) * q) / steps);
@@ -892,12 +1023,15 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
   while (ai < cells.length - 1) {
     let best = ai + 1;
     for (let q = Math.min(cells.length - 1, ai + 400); q > ai + 1; q--) {
-      if (los(cells[ai], cells[q])) { best = q; break; }
+      if (los(cells[ai], cells[q])) {
+        best = q;
+        break;
+      }
     }
     kept.push(cells[best]);
     ai = best;
   }
-  const poly = kept.map((c) => ({ lon: wrapLon(west + ((c % nx) + 0.5) * res), lat: south + (Math.floor(c / nx) + 0.5) * res }));
+  const poly = kept.map(c => ({ lon: wrapLon(west + ((c % nx) + 0.5) * res), lat: south + (Math.floor(c / nx) + 0.5) * res }));
   poly[0] = first;
   poly[poly.length - 1] = last;
   return densify(poly, 300);
@@ -907,7 +1041,12 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
  * Add finer patches along stretches of the skeleton where the passage is
  * narrower than PATCH_CELLS_ACROSS cells of the raster there.
  */
-function refineNarrowStretches(land: LandMask, pts: { lon: number; lat: number }[], widthM: Float64Array, padDeg: number): { patches: number; finestDeg: number } {
+function refineNarrowStretches(
+  land: LandMask,
+  pts: { lon: number; lat: number }[],
+  widthM: Float64Array,
+  padDeg: number
+): { patches: number; finestDeg: number } {
   let patches = 0;
   let finestDeg = Infinity;
   if (!land.hasPolygons) return { patches, finestDeg };
@@ -922,7 +1061,10 @@ function refineNarrowStretches(land: LandMask, pts: { lon: number; lat: number }
   let i = 0;
   while (i < pts.length) {
     const r0 = needs(i);
-    if (!r0) { i++; continue; }
+    if (!r0) {
+      i++;
+      continue;
+    }
     let res = r0;
     let j = i;
     let west = pts[i].lon;
@@ -940,7 +1082,10 @@ function refineNarrowStretches(land: LandMask, pts: { lon: number; lat: number }
       const ns = Math.min(south, pts[j + 1].lat);
       const nn = Math.max(north, pts[j + 1].lat);
       if (ne - nw > MAX_SPAN_DEG || nn - ns > MAX_SPAN_DEG) break;
-      west = nw; east = ne; south = ns; north = nn;
+      west = nw;
+      east = ne;
+      south = ns;
+      north = nn;
       res = Math.min(res, r);
       j++;
     }
@@ -960,7 +1105,12 @@ function refineNarrowStretches(land: LandMask, pts: { lon: number; lat: number }
 
 /** Chokepoints whose gate the corridor crosses, narrower than AUTO_VIA_WIDTH_RATIO × stepM. */
 export function findAutoVias(
-  grid: WaterGrid, path: GridNode[], segStart: number[], chain: [number, number][], stepM: number, land: LandMask | null,
+  grid: WaterGrid,
+  path: GridNode[],
+  segStart: number[],
+  chain: [number, number][],
+  stepM: number,
+  land: LandMask | null
 ): AutoVia[] {
   const cp = grid.chokepoints;
   if (!cp.length || path.length < 2) return [];
@@ -993,7 +1143,10 @@ export function findAutoVias(
     let prev = toXY(path[0].r, path[0].c);
     for (let i = 1; i < path.length; i++) {
       const cur = toXY(path[i].r, path[i].c);
-      if (Math.abs(cur[0]) > 200_000 || Math.abs(cur[1]) > 200_000) { prev = cur; continue; }
+      if (Math.abs(cur[0]) > 200_000 || Math.abs(cur[1]) > 200_000) {
+        prev = cur;
+        continue;
+      }
       const sa = prev[0] * ax + prev[1] * ay;
       const sb = cur[0] * ax + cur[1] * ay;
       if ((sa <= 0 && sb > 0) || (sa >= 0 && sb < 0)) {
@@ -1001,7 +1154,10 @@ export function findAutoVias(
         const x = prev[0] + f * (cur[0] - prev[0]);
         const y = prev[1] + f * (cur[1] - prev[1]);
         const across = Math.abs(x * ay - y * ax);
-        if (across <= widthM / 2 + slack) { hit = i; break; }
+        if (across <= widthM / 2 + slack) {
+          hit = i;
+          break;
+        }
       }
       prev = cur;
     }
@@ -1025,7 +1181,7 @@ export function findAutoVias(
   // Drop near-duplicates (keep the narrower).
   const kept: AutoVia[] = [];
   for (const v of out) {
-    const dup = kept.findIndex((q) => haversineDistanceM(q.lon, q.lat, v.lon, v.lat) < Math.max(1000, Math.min(q.radiusM, v.radiusM)));
+    const dup = kept.findIndex(q => haversineDistanceM(q.lon, q.lat, v.lon, v.lat) < Math.max(1000, Math.min(q.radiusM, v.radiusM)));
     if (dup < 0) kept.push(v);
     else if (v.widthM < kept[dup].widthM) kept[dup] = v;
   }

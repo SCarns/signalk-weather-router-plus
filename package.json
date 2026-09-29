@@ -12,7 +12,14 @@
     "test": "node --test --import tsx 'src/**/*.test.ts'",
     "test:corpus": "node --import tsx tools/verify_grib_corpus.ts",
     "build:water-grid": "node --import tsx tools/build_water_grid.ts",
-    "check:water-grid": "node --import tsx tools/check_water_grid.ts"
+    "check:water-grid": "node --import tsx tools/check_water_grid.ts",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "lint": "eslint \"src/**/*.ts\"",
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"*.json\" --ignore-unknown",
+    "format:check": "prettier --check \"src/**/*.ts\" \"*.json\" --ignore-unknown",
+    "coverage": "c8 --reporter=text --reporter=lcov npm test",
+    "ci": "npm run format:check && npm run lint"
   },
   "keywords": [
     "signalk-node-server-plugin",
@@ -28,11 +35,18 @@
   "engines": {
     "node": ">=20.10"
   },
-  "dependencies": {},
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@signalk/server-api": "^2.24.0",
     "@types/express": "^4.17.21",
     "@types/node": "^20.11.0",
+    "@typescript-eslint/eslint-plugin": "^8.71.0",
+    "@typescript-eslint/parser": "^8.71.0",
+    "c8": "^12.0.0",
+    "eslint": "^10.11.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-prettier": "^5.5.6",
+    "prettier": "^3.9.9",
     "tsx": "^4.7.0",
     "typescript": "^5.4.0"
   },

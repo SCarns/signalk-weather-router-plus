@@ -118,8 +118,18 @@ function interp(xs: readonly number[], ys: readonly number[], x: number): number
 }
 
 interface Hull {
-  lwl: number; bwl: number; tc: number; t: number; vc: number; disp: number;
-  sc: number; sWet: number; aw: number; lcbFpp: number; lcfFpp: number; bmax: number;
+  lwl: number;
+  bwl: number;
+  tc: number;
+  t: number;
+  vc: number;
+  disp: number;
+  sc: number;
+  sWet: number;
+  aw: number;
+  lcbFpp: number;
+  lcfFpp: number;
+  bmax: number;
   te0: number; // effective span before the Fn factor
 }
 
@@ -135,8 +145,15 @@ function hullFrom(s: BoatSpecs, a: PhysicsAssumptions): Hull {
   const r = tc / t;
   const te0 = t * (TE0[0] * r + TE0[1] * r * r + TE0[2] * (bwl / tc) + TE0[3] * a.keelTaper);
   return {
-    lwl, bwl, tc, t, vc, disp: s.displacement_kg, bmax,
-    sc, sWet: sc * (1 + a.appendageFraction),
+    lwl,
+    bwl,
+    tc,
+    t,
+    vc,
+    disp: s.displacement_kg,
+    bmax,
+    sc,
+    sWet: sc * (1 + a.appendageFraction),
     aw: HULL_MEDIAN.Cw * lwl * bwl,
     lcbFpp: lwl * (0.5 + HULL_MEDIAN.lcbAftOfMid),
     lcfFpp: lwl * (0.5 + HULL_MEDIAN.lcfAftOfMid),
@@ -148,8 +165,15 @@ function hullFrom(s: BoatSpecs, a: PhysicsAssumptions): Hull {
 function residuary(h: Hull, v: number): number {
   const fn = v / Math.sqrt(G * h.lwl);
   const coef = (row: number[]): number =>
-    row[0] + (h.vc ** (1 / 3) / h.lwl) * (row[1] * h.lcbFpp / h.lwl + row[2] * HULL_MEDIAN.Cp + row[3] * h.vc ** (2 / 3) / h.aw
-      + row[4] * h.bwl / h.lwl + row[5] * h.lcbFpp / h.lcfFpp + row[6] * h.bwl / h.tc + row[7] * HULL_MEDIAN.Cm);
+    row[0] +
+    (h.vc ** (1 / 3) / h.lwl) *
+      ((row[1] * h.lcbFpp) / h.lwl +
+        row[2] * HULL_MEDIAN.Cp +
+        (row[3] * h.vc ** (2 / 3)) / h.aw +
+        (row[4] * h.bwl) / h.lwl +
+        (row[5] * h.lcbFpp) / h.lcfFpp +
+        (row[6] * h.bwl) / h.tc +
+        row[7] * HULL_MEDIAN.Cm);
   let c: number;
   if (fn <= RR_FN[0]) c = coef(RR_A[0]) * (fn / RR_FN[0]);
   else if (fn >= RR_FN[RR_FN.length - 1]) c = coef(RR_A[RR_A.length - 1]);
@@ -169,7 +193,12 @@ function friction(h: Hull, v: number): number {
   return 0.5 * RHO_W * v * v * h.sWet * cf;
 }
 
-interface Sails { am: number; aj: number; aref: number; spanK: number }
+interface Sails {
+  am: number;
+  aj: number;
+  aref: number;
+  spanK: number;
+}
 
 /** Sail force coefficients at apparent wind angle beta (deg), flat, reef. */
 function sailCoef(s: Sails, beta: number, flat: number, reef: number): { cl: number; cd: number; aref: number } {
@@ -197,7 +226,12 @@ export interface PhysicsModel {
   vMax: number;
 }
 
-export function buildModel(specs: BoatSpecs, fit: PhysicsFit = DEFAULT_FIT, a: PhysicsAssumptions = DEFAULT_ASSUMPTIONS, sailSplit?: { main: number; jib: number }): PhysicsModel {
+export function buildModel(
+  specs: BoatSpecs,
+  fit: PhysicsFit = DEFAULT_FIT,
+  a: PhysicsAssumptions = DEFAULT_ASSUMPTIONS,
+  sailSplit?: { main: number; jib: number }
+): PhysicsModel {
   const hull = hullFrom(specs, a);
   const sa = specs.sail_area_upwind_m2;
   const sails: Sails = sailSplit
@@ -246,7 +280,10 @@ function solveSpeed(m: PhysicsModel, twa: number, tws: number, flat: number, ree
   let lo = -1;
   for (let k = N; k >= 1; k--) {
     const v = (m.vMax * k) / N;
-    if (forces(m, twa, tws, v, flat, reef).net > 0) { lo = v; break; }
+    if (forces(m, twa, tws, v, flat, reef).net > 0) {
+      lo = v;
+      break;
+    }
   }
   if (lo < 0) return { v: 0, side: 0 };
   let hi = Math.min(m.vMax, lo + m.vMax / N);
@@ -298,11 +335,15 @@ const KT = 0.5144444444;
  * POLAR_TWS_KT), for the polar generator. No spinnaker: downwind uses the
  * upwind sails. Throws UnsupportedHull for multihulls.
  */
-export function computePhysicsTable(specs: BoatSpecs, fit: PhysicsFit = DEFAULT_FIT, a: PhysicsAssumptions = DEFAULT_ASSUMPTIONS): VppTable {
+export function computePhysicsTable(
+  specs: BoatSpecs,
+  fit: PhysicsFit = DEFAULT_FIT,
+  a: PhysicsAssumptions = DEFAULT_ASSUMPTIONS
+): VppTable {
   const hull = specs.hull_type ?? 'monohull';
   if (hull !== 'monohull') throw new UnsupportedHull(`The polar calculator handles monohulls only; got '${hull}'.`);
   const m = buildModel(specs, fit, a);
-  const tws_ms = POLAR_TWS_KT.map((k) => k * KT);
-  const speeds_ms = POLAR_TWA_DEG.map((twa) => tws_ms.map((t) => (twa < 30 ? 0 : boatSpeed(m, twa, t))));
+  const tws_ms = POLAR_TWS_KT.map(k => k * KT);
+  const speeds_ms = POLAR_TWA_DEG.map(twa => tws_ms.map(t => (twa < 30 ? 0 : boatSpeed(m, twa, t))));
   return { twa_deg: [...POLAR_TWA_DEG], tws_ms, speeds_ms };
 }

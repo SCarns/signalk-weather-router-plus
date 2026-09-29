@@ -52,7 +52,11 @@ export interface GridAstarResult {
 }
 
 export class GridAstarError extends Error {
-  constructor(message: string, readonly exhausted: boolean, readonly expanded: number) {
+  constructor(
+    message: string,
+    readonly exhausted: boolean,
+    readonly expanded: number
+  ) {
     super(message);
     this.name = 'GridAstarError';
   }
@@ -65,7 +69,7 @@ const M_PER_DEG = R_EARTH_M * DEG;
 /** Coast penalty factor for a Chebyshev distance to land in cells (1 = adjacent). */
 export function coastFactor(d: number): number {
   if (d > COAST_RADIUS) return 1;
-  return 1 + COAST_MAX_PENALTY * (COAST_RADIUS + 1 - d) / COAST_RADIUS;
+  return 1 + (COAST_MAX_PENALTY * (COAST_RADIUS + 1 - d)) / COAST_RADIUS;
 }
 
 class Heap {
@@ -74,17 +78,23 @@ class Heap {
   size = 0;
   push(key: number, val: number): void {
     if (this.size === this.k.length) {
-      const k2 = new Float64Array(this.k.length * 2); k2.set(this.k); this.k = k2;
-      const v2 = new Float64Array(this.v.length * 2); v2.set(this.v); this.v = v2;
+      const k2 = new Float64Array(this.k.length * 2);
+      k2.set(this.k);
+      this.k = k2;
+      const v2 = new Float64Array(this.v.length * 2);
+      v2.set(this.v);
+      this.v = v2;
     }
     let i = this.size++;
     while (i > 0) {
       const p = (i - 1) >> 1;
       if (this.k[p] <= key) break;
-      this.k[i] = this.k[p]; this.v[i] = this.v[p];
+      this.k[i] = this.k[p];
+      this.v[i] = this.v[p];
       i = p;
     }
-    this.k[i] = key; this.v[i] = val;
+    this.k[i] = key;
+    this.v[i] = val;
   }
   pop(): number {
     const top = this.v[0];
@@ -97,10 +107,12 @@ class Heap {
       const r = l + 1;
       const m = r < this.size && this.k[r] < this.k[l] ? r : l;
       if (this.k[m] >= lastK) break;
-      this.k[i] = this.k[m]; this.v[i] = this.v[m];
+      this.k[i] = this.k[m];
+      this.v[i] = this.v[m];
       i = m;
     }
-    this.k[i] = lastK; this.v[i] = lastV;
+    this.k[i] = lastK;
+    this.v[i] = lastV;
     return top;
   }
 }
@@ -125,8 +137,13 @@ export interface GridAstarOptions {
  * (`exhausted` = the reachable set was fully explored).
  */
 export function gridAstar(
-  grid: WaterGrid, win: GridWindow, sources: GridSource[], goals: GridNode[], goalLonLat: [number, number], goalRadiusM: number,
-  opts: GridAstarOptions = {},
+  grid: WaterGrid,
+  win: GridWindow,
+  sources: GridSource[],
+  goals: GridNode[],
+  goalLonLat: [number, number],
+  goalRadiusM: number,
+  opts: GridAstarOptions = {}
 ): GridAstarResult {
   const W = win.c1 - win.c0 + 1;
   const H = win.r1 - win.r0 + 1;
@@ -169,14 +186,17 @@ export function gridAstar(
       for (let dr = -rad; dr <= rad; dr++) {
         const step = Math.abs(dr) === rad ? 1 : 2 * rad;
         for (let dc = -rad; dc <= rad; dc += step) {
-          if (!grid.isWater(r + dr, c + dc)) { d = rad; break outer; }
+          if (!grid.isWater(r + dr, c + dc)) {
+            d = rad;
+            break outer;
+          }
         }
       }
     }
     coast[l] = d;
     return d;
   };
-  const getG = (k: number): number => (k % 16 === 0 ? g[k / 16] : splitG.get(k) ?? Infinity);
+  const getG = (k: number): number => (k % 16 === 0 ? g[k / 16] : (splitG.get(k) ?? Infinity));
   const heap = new Heap();
   for (const s0 of sources) {
     const s = { ...s0, c: norm(s0.c) };
@@ -185,7 +205,13 @@ export function gridAstar(
     const l = li(s.r, s.c);
     const k = key(l, s.comp);
     if (s.cost < getG(k)) {
-      if (s.comp === 0) { g[l] = s.cost; dir[l] = 0x7f; } else { splitG.set(k, s.cost); splitPar.set(k, -1); }
+      if (s.comp === 0) {
+        g[l] = s.cost;
+        dir[l] = 0x7f;
+      } else {
+        splitG.set(k, s.cost);
+        splitPar.set(k, -1);
+      }
       heap.push(s.cost + heuristic(s.r, s.c), k);
     }
   }
@@ -196,8 +222,17 @@ export function gridAstar(
     const k = heap.pop();
     const comp = k % 16;
     const l = (k - comp) / 16;
-    if (comp === 0) { if (closed[l]) continue; closed[l] = 1; } else { if (splitClosed.has(k)) continue; splitClosed.add(k); }
-    if (goalSet.has(k)) { found = k; break; }
+    if (comp === 0) {
+      if (closed[l]) continue;
+      closed[l] = 1;
+    } else {
+      if (splitClosed.has(k)) continue;
+      splitClosed.add(k);
+    }
+    if (goalSet.has(k)) {
+      found = k;
+      break;
+    }
     if (++expanded > maxExp) throw new GridAstarError(`search stopped after ${maxExp} expansions`, false, expanded);
     if ((expanded & 0xffff) === 0 && opts.shouldCancel?.()) throw new GridAstarError('cancelled', false, expanded);
     const r = win.r0 + Math.floor(l / W);
@@ -284,14 +319,17 @@ export function gridLineOfSight(grid: WaterGrid, a: GridNode, b: GridNode, block
   const tDy = dy !== 0 ? Math.abs(1 / dy) : Infinity;
   let tMaxX = dx !== 0 ? 0.5 * tDx : Infinity;
   let tMaxY = dy !== 0 ? 0.5 * tDy : Infinity;
-  const bad = (r: number, c: number): boolean => grid.isSplit(r, c) || !grid.isWater(r, c) || (!!blocked && blocked.has(r * grid.nx + grid.wrapCol(c)));
+  const bad = (r: number, c: number): boolean =>
+    grid.isSplit(r, c) || !grid.isWater(r, c) || (!!blocked && blocked.has(r * grid.nx + grid.wrapCol(c)));
   let guard = 0;
   while ((cx !== b.c || cy !== b.r) && guard++ < 100_000) {
     if (Math.abs(tMaxX - tMaxY) < 1e-12) {
       if (!grid.diagOpen(cy, cx, sy, sx)) return false;
       if (bad(cy, cx + sx) || bad(cy + sy, cx)) return false;
-      cx += sx; cy += sy;
-      tMaxX += tDx; tMaxY += tDy;
+      cx += sx;
+      cy += sy;
+      tMaxX += tDx;
+      tMaxY += tDy;
     } else if (tMaxX < tMaxY) {
       if (!grid.orthOpen(cy, cx, 0, sx)) return false;
       cx += sx;
@@ -319,7 +357,10 @@ export function smoothGridPath(grid: WaterGrid, path: GridNode[], maxCells = 150
     let best = i + 1;
     for (let j = path.length - 1; j > i + 1; j--) {
       if (Math.max(Math.abs(path[j].r - path[i].r), Math.abs(path[j].c - path[i].c)) > maxCells) continue;
-      if (gridLineOfSight(grid, path[i], path[j], blocked)) { best = j; break; }
+      if (gridLineOfSight(grid, path[i], path[j], blocked)) {
+        best = j;
+        break;
+      }
     }
     out.push(path[best]);
     i = best;

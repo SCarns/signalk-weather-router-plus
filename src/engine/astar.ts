@@ -39,10 +39,22 @@ export class AstarError extends Error {
 }
 
 const NEIGHBORS_16: ReadonlyArray<readonly [number, number]> = [
-  [-1, 0], [1, 0], [0, -1], [0, 1],
-  [-1, -1], [-1, 1], [1, -1], [1, 1],
-  [-2, -1], [-2, 1], [2, -1], [2, 1],
-  [-1, -2], [-1, 2], [1, -2], [1, 2],
+  [-1, 0],
+  [1, 0],
+  [0, -1],
+  [0, 1],
+  [-1, -1],
+  [-1, 1],
+  [1, -1],
+  [1, 1],
+  [-2, -1],
+  [-2, 1],
+  [2, -1],
+  [2, 1],
+  [-1, -2],
+  [-1, 2],
+  [1, -2],
+  [1, 2],
 ];
 
 // ---------------------------------------------------------------------
@@ -57,10 +69,10 @@ function edt1d(f: Float64Array, n: number, d: Float64Array, v: Int32Array, z: Fl
   z[0] = -Infinity;
   z[1] = Infinity;
   for (let q = 1; q < n; q++) {
-    let s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+    let s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
     while (s <= z[k]) {
       k--;
-      s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+      s = (f[q] + q * q - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
     }
     k++;
     v[k] = q;
@@ -133,10 +145,22 @@ export function maximumFilter(src: Float32Array, ny: number, nx: number, size: n
   };
   for (let i = 0; i < ny; i++) {
     const base = i * nx;
-    win(nx, (k) => src[base + k], (k, val) => { tmp[base + k] = val; });
+    win(
+      nx,
+      k => src[base + k],
+      (k, val) => {
+        tmp[base + k] = val;
+      }
+    );
   }
   for (let j = 0; j < nx; j++) {
-    win(ny, (k) => tmp[k * nx + j], (k, val) => { out[k * nx + j] = val; });
+    win(
+      ny,
+      k => tmp[k * nx + j],
+      (k, val) => {
+        out[k * nx + j] = val;
+      }
+    );
   }
   return out;
 }
@@ -241,7 +265,7 @@ export function astarRoute(
   startLonLat: [number, number],
   endLonLat: [number, number],
   motorSpeedMs: number,
-  shoreCost?: Float32Array,
+  shoreCost?: Float32Array
 ): AstarResult {
   const spec = grid.spec;
   const { nx, ny } = spec;
@@ -269,8 +293,7 @@ export function astarRoute(
   // Cell (i, j) geographic position: cell centre, consistent with ijToLonLat.
   const cellLon = (j: number): number => west + (j + 0.5) * res;
   const cellLat = (i: number): number => south + (i + 0.5) * res;
-  const heuristic = (i: number, j: number): number =>
-    haversineDistanceM(cellLon(j), cellLat(i), endLon, endLat) / motorSpeedMs;
+  const heuristic = (i: number, j: number): number => haversineDistanceM(cellLon(j), cellLat(i), endLon, endLat) / motorSpeedMs;
 
   const startIdx = si * nx + sj;
   const endIdx = ei * nx + ej;
@@ -328,7 +351,7 @@ export function astarRoute(
       c = cameFrom[c];
     }
     cells.reverse();
-    return cells.map((idx) => {
+    return cells.map(idx => {
       const i = Math.floor(idx / nx);
       const j = idx - i * nx;
       const [lon, lat] = spec.ijToLonLat(i, j);
@@ -352,7 +375,7 @@ export function astarRoute(
     }
     throw new AstarError(
       `no passable path between start and end on the coarse grid (closest approach ${(bestD / 1000).toFixed(1)} km, ${cellsVisited} cells explored)`,
-      best >= 0 ? walk(best) : [],
+      best >= 0 ? walk(best) : []
     );
   }
 

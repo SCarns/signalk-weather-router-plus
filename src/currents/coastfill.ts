@@ -19,7 +19,11 @@ import type { FieldGrid } from '../data/forecast';
 
 export const FILL_RADIUS_CELLS = 2;
 
-interface Offset { dr: number; dc: number; w: number }
+interface Offset {
+  dr: number;
+  dc: number;
+  w: number;
+}
 
 /** Neighbour offsets within the radius (excluding the cell itself), with IDW² weights. */
 const OFFSETS: Offset[] = (() => {
@@ -123,7 +127,12 @@ export function bilinearFilled(g: PairGrid, x: number, y: number): [number, numb
     // (so a point exactly on a filled node or edge keeps its value).
     let su = 0;
     let sv = 0;
-    const corners: [number, number, number][] = [[(1 - tx) * (1 - ty), u00, v00], [tx * (1 - ty), u01, v01], [(1 - tx) * ty, u10, v10], [tx * ty, u11, v11]];
+    const corners: [number, number, number][] = [
+      [(1 - tx) * (1 - ty), u00, v00],
+      [tx * (1 - ty), u01, v01],
+      [(1 - tx) * ty, u10, v10],
+      [tx * ty, u11, v11],
+    ];
     for (const [w, cu, cv] of corners) {
       if (w === 0) continue;
       if (!Number.isFinite(cu)) return [NaN, NaN];
@@ -149,9 +158,9 @@ export function sampleFieldPairFilled(fu: FieldGrid, fv: FieldGrid, lon: number,
   const g: PairGrid = { nRows: nLat, nCols: nLon, wrap: !!fu.wrapLon, u: fu.values, v: fv.values, offset: 0 };
   let x: number;
   if (fu.wrapLon) {
-    x = (((lon - fu.lon0) % 360) + 360) % 360 / fu.dLon;
+    x = ((((lon - fu.lon0) % 360) + 360) % 360) / fu.dLon;
   } else {
-    const offLon = ((lon - fu.lon0) % 360 + 360) % 360;
+    const offLon = (((lon - fu.lon0) % 360) + 360) % 360;
     x = offLon > 180 ? (offLon - 360) / fu.dLon : offLon / fu.dLon;
     if (x < 0) x = 0;
     if (x > nLon - 1) x = nLon - 1;
@@ -222,7 +231,12 @@ export function bilinearFilledScalar(g: ScalarGrid, x: number, y: number): { val
   const ty = g.nRows === 1 ? 0 : y - r;
   const c1 = g.wrap ? (c + 1 === g.nCols ? 0 : c + 1) : Math.min(g.nCols - 1, c + 1);
   const r1 = Math.min(g.nRows - 1, r + 1);
-  const corners: [number, number, number][] = [[(1 - tx) * (1 - ty), r, c], [tx * (1 - ty), r, c1], [(1 - tx) * ty, r1, c], [tx * ty, r1, c1]];
+  const corners: [number, number, number][] = [
+    [(1 - tx) * (1 - ty), r, c],
+    [tx * (1 - ty), r, c1],
+    [(1 - tx) * ty, r1, c],
+    [tx * ty, r1, c1],
+  ];
   let s = 0;
   let filled = false;
   for (const [w, rr, cc] of corners) {

@@ -104,7 +104,8 @@ export interface RouteSummary {
   precision?: 'precise' | 'approximate';
 }
 
-export type QueryKind = 'field' | 'currents' | 'wind_points' | 'conditions' | 'pressure' | 'land_mask' | 'tide_series' | 'weather_point' | 'forecast_info';
+export type QueryKind =
+  'field' | 'currents' | 'wind_points' | 'conditions' | 'pressure' | 'land_mask' | 'tide_series' | 'weather_point' | 'forecast_info';
 
 export interface QueryArgs {
   field: { layer: string; bbox: BBox; timeMs: number; res: number };
@@ -169,10 +170,18 @@ export interface LandCacheStatus {
 
 export interface DataStatus {
   forecast: {
-    cycle: string; validFrom: string; validTo: string; steps: number; params: string[]; hasWaves: boolean; loadedAt: string;
-    source: 'disk' | 'grib'; readyMs: number;
+    cycle: string;
+    validFrom: string;
+    validTo: string;
+    steps: number;
+    params: string[];
+    hasWaves: boolean;
+    loadedAt: string;
+    source: 'disk' | 'grib';
+    readyMs: number;
     /** Directory and bytes of the run in use. */
-    decodedDir: string; decodedBytes: number;
+    decodedDir: string;
+    decodedBytes: number;
     /** Bytes of every decoded run kept on disk (keepCycles). */
     decodedDiskBytes: number;
     /** Bytes of the GRIB message cache. */
@@ -185,7 +194,12 @@ export interface DataStatus {
   /** Forecast memory the data worker holds (query windows). */
   forecastMemory: ForecastMemory;
   currents: {
-    name: string; priority: number; resolutionM: number; bbox: { south: number; west: number; north: number; east: number }; validFrom?: string; validTo?: string;
+    name: string;
+    priority: number;
+    resolutionM: number;
+    bbox: { south: number; west: number; north: number; east: number };
+    validFrom?: string;
+    validTo?: string;
     /** CMEMS SMOC only: run, resident / on-demand areas, memory, downloads. */
     smoc?: SmocStatus;
   }[];
@@ -212,7 +226,12 @@ export type MainToWorker =
   /** route worker: the decoded run to read route areas from (null: none yet). */
   | { type: 'forecast'; run: ForecastRunInfo | null }
   /** Settings changed: new config; reload what `reload` names (data worker: forecast, currents and tides; route worker: currents from disk). */
-  | { type: 'config'; config: ResolvedConfig; reload: { forecast: boolean; currents: boolean; tides?: boolean }; position?: VesselPosition | null }
+  | {
+      type: 'config';
+      config: ResolvedConfig;
+      reload: { forecast: boolean; currents: boolean; tides?: boolean };
+      position?: VesselPosition | null;
+    }
   | { type: 'route'; id: string; request: RouteRequest }
   | { type: 'query'; id: number; kind: QueryKind; args: QueryArgs[QueryKind] }
   | { type: 'shutdown' };
@@ -233,7 +252,14 @@ export type WorkerToMain =
   /** data worker: tidal-harmonic sources loaded (shared constituent blocks). */
   | { type: 'harmonic'; sources: SerializedHarmonic[] }
   | { type: 'progress'; id: string; stage: number; total: number; message: string }
-  | { type: 'done'; id: string; geojson: Record<string, unknown>; skRoute: Record<string, unknown>; skeleton: Record<string, unknown> | null; summary: RouteSummary }
+  | {
+      type: 'done';
+      id: string;
+      geojson: Record<string, unknown>;
+      skRoute: Record<string, unknown>;
+      skeleton: Record<string, unknown> | null;
+      summary: RouteSummary;
+    }
   | { type: 'error'; id: string; message: string; cancelled?: boolean }
   | { type: 'query-result'; id: number; result: unknown }
   | { type: 'query-error'; id: number; message: string };

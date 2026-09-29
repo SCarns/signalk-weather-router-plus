@@ -35,7 +35,11 @@ try {
   });
   const bytes = grid.save(data.outFile);
   port.postMessage({
-    type: 'done', file: data.outFile, bytes, seconds: (Date.now() - t0) / 1000, peakRssBytes: process.resourceUsage().maxRSS * 1024,
+    type: 'done',
+    file: data.outFile,
+    bytes,
+    seconds: (Date.now() - t0) / 1000,
+    peakRssBytes: process.resourceUsage().maxRSS * 1024,
   } satisfies GridBuilderMessage);
 } catch (err) {
   port.postMessage({ type: 'error', message: (err as Error).message } satisfies GridBuilderMessage);

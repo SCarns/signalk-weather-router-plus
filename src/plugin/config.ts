@@ -146,7 +146,8 @@ export const CONFIG_SCHEMA = {
     landShapefiles: {
       type: 'string',
       title: 'Coastline shapefile(s)',
-      description: 'Absolute path(s) to polygon land shapefiles, comma-separated. GSHHG GSHHS_f_L1.shp is recommended (add GSHHS_f_L6.shp for Antarctica).',
+      description:
+        'Absolute path(s) to polygon land shapefiles, comma-separated. GSHHG GSHHS_f_L1.shp is recommended (add GSHHS_f_L6.shp for Antarctica).',
     },
     polarFile: {
       type: 'string',
@@ -156,7 +157,7 @@ export const CONFIG_SCHEMA = {
     polarsDir: {
       type: 'string',
       title: 'Polar library directory',
-      description: 'Directory of .pol/.csv polars offered in the web app\'s vessel picker.',
+      description: "Directory of .pol/.csv polars offered in the web app's vessel picker.",
     },
     currents: {
       type: 'object',
@@ -193,9 +194,13 @@ export const CONFIG_SCHEMA = {
  */
 export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettings): ResolvedConfig {
   const c = raw ?? {};
-  const land = (c.landShapefiles ?? '').split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+  const land = (c.landShapefiles ?? '')
+    .split(/[,\n]/)
+    .map(s => s.trim())
+    .filter(Boolean);
   const mirror = c.forecast?.mirror ?? 'ecmwf';
-  if (!(MIRRORS as readonly string[]).includes(mirror)) throw new Error(`config forecast.mirror: ${String(mirror)} is not one of ${MIRRORS.join(', ')}`);
+  if (!(MIRRORS as readonly string[]).includes(mirror))
+    throw new Error(`config forecast.mirror: ${String(mirror)} is not one of ${MIRRORS.join(', ')}`);
   const harmonicDir = c.currents?.harmonicDir;
   const v = settings.vessel;
   const f = settings.forecast;

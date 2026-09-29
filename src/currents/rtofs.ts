@@ -30,8 +30,17 @@ import { bboxContains, type CurrentSourceLike, type SourceBBox } from './types';
 import { sampleFieldPairFilled } from './coastfill';
 
 export const RTOFS_REGIONS = [
-  'west_atl', 'west_conus', 'alaska', 'arctic', 'bering', 'guam', 'gulf_alaska',
-  'honolulu', 'hudson_baffin', 'samoa', 'trop_paci_lowres',
+  'west_atl',
+  'west_conus',
+  'alaska',
+  'arctic',
+  'bering',
+  'guam',
+  'gulf_alaska',
+  'honolulu',
+  'hudson_baffin',
+  'samoa',
+  'trop_paci_lowres',
 ] as const;
 export type RtofsRegion = (typeof RTOFS_REGIONS)[number];
 
@@ -70,7 +79,7 @@ export interface RtofsClientOptions {
   sleepImpl?: (ms: number) => Promise<void>;
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
 
 export class RtofsClient {
   readonly cacheDir: string;
@@ -128,7 +137,9 @@ export class RtofsClient {
       }
       if (attempt === this.retries) break;
       const backoff = Math.min(60_000, 2000 * 2 ** (attempt - 1)) + Math.random() * 500;
-      this.log(`rtofs: retry ${attempt}/${this.retries - 1} for ${url} after ${(backoff / 1000).toFixed(1)} s: ${(lastErr as Error).message}`);
+      this.log(
+        `rtofs: retry ${attempt}/${this.retries - 1} for ${url} after ${(backoff / 1000).toFixed(1)} s: ${(lastErr as Error).message}`
+      );
       await this.sleepImpl(backoff);
     }
     throw lastErr instanceof Error ? lastErr : new Error(`request failed: ${url}`);
@@ -146,7 +157,7 @@ export class RtofsClient {
     const out: { name: string; hours: number[] }[] = [];
     for (const f of RTOFS_FILES) {
       if (f.hours[0] > horizonHours) break;
-      out.push({ name: f.name, hours: f.hours.filter((h) => h <= horizonHours) });
+      out.push({ name: f.name, hours: f.hours.filter(h => h <= horizonHours) });
     }
     return out;
   }
@@ -167,19 +178,22 @@ export class RtofsClient {
   }
 
   runFullyCached(run: RtofsRun, horizonHours: number): boolean {
-    return RtofsClient.filesFor(horizonHours).every((f) => this.hasCached(run, f.name));
+    return RtofsClient.filesFor(horizonHours).every(f => this.hasCached(run, f.name));
   }
 
   /** Runs present in the cache, newest first. */
   cachedRuns(): RtofsRun[] {
-    let entries: string[] = [];
+    let entries: string[];
     try {
       entries = fs.readdirSync(this.cacheDir);
     } catch {
       return [];
     }
-    return entries.filter((e) => /^\d{8}$/.test(e)).sort().reverse()
-      .map((e) => rtofsRunFor(new Date(Date.UTC(+e.slice(0, 4), +e.slice(4, 6) - 1, +e.slice(6, 8)))));
+    return entries
+      .filter(e => /^\d{8}$/.test(e))
+      .sort()
+      .reverse()
+      .map(e => rtofsRunFor(new Date(Date.UTC(+e.slice(0, 4), +e.slice(4, 6) - 1, +e.slice(6, 8)))));
   }
 
   /**
@@ -216,7 +230,7 @@ export class RtofsClient {
   }
 
   pruneCache(keep: RtofsRun[]): void {
-    const keepSet = new Set(keep.map((r) => r.yyyymmdd));
+    const keepSet = new Set(keep.map(r => r.yyyymmdd));
     for (const r of this.cachedRuns()) {
       if (!keepSet.has(r.yyyymmdd)) fs.rmSync(path.join(this.cacheDir, r.yyyymmdd), { recursive: true, force: true });
     }
@@ -245,14 +259,18 @@ const VBARO = { discipline: 10, category: 1, number: 195 };
  * (bit-mapped) cells become NaN.
  */
 export async function loadRtofsSteps(
-  client: RtofsClient, run: RtofsRun, bbox: BBox | null, horizonHours: number, stepHours: number,
-  opts: { log?: (m: string) => void; shouldCancel?: () => boolean } = {},
+  client: RtofsClient,
+  run: RtofsRun,
+  bbox: BBox | null,
+  horizonHours: number,
+  stepHours: number,
+  opts: { log?: (m: string) => void; shouldCancel?: () => boolean } = {}
 ): Promise<RtofsStep[]> {
   const wanted = new Set<number>();
   for (let h = stepHours; h <= horizonHours; h += stepHours) wanted.add(h);
   const steps: RtofsStep[] = [];
   for (const f of RtofsClient.filesFor(horizonHours)) {
-    if (!f.hours.some((h) => wanted.has(h))) continue;
+    if (!f.hours.some(h => wanted.has(h))) continue;
     if (opts.shouldCancel?.()) throw new Error('rtofs load cancelled');
     const buf = await client.fetchFile(run, f.name);
     const byHour = new Map<number, { u?: FieldGrid; v?: FieldGrid; validMs: number }>();
@@ -266,7 +284,12 @@ export async function loadRtofsSteps(
       const g = msg.grid;
       const grid = bbox
         ? cropField(g, msg.decode(), bbox, 1)
-        : cropField(g, msg.decode(), { west: g.lo1, east: g.lo1 + (g.ni - 1) * g.di, south: Math.min(g.la1, g.la2), north: Math.max(g.la1, g.la2) }, 0);
+        : cropField(
+            g,
+            msg.decode(),
+            { west: g.lo1, east: g.lo1 + (g.ni - 1) * g.di, south: Math.min(g.la1, g.la2), north: Math.max(g.la1, g.la2) },
+            0
+          );
       const entry = byHour.get(h) ?? { validMs: msg.referenceTime.getTime() + h * 3600_000 };
       if (isU) entry.u = grid;
       else entry.v = grid;
@@ -276,10 +299,12 @@ export async function loadRtofsSteps(
       if (!e.u || !e.v) throw new Error(`rtofs ${f.name}: hour ${h} lacks ubaro or vbaro`);
       steps.push({ validMs: e.validMs, u: e.u, v: e.v });
     }
-    await new Promise((r) => setImmediate(r));
+    await new Promise(r => setImmediate(r));
   }
   steps.sort((a, b) => a.validMs - b.validMs);
-  opts.log?.(`rtofs: ${steps.length} steps decoded for run ${run.yyyymmdd} (${steps.length ? new Date(steps[0].validMs).toISOString() : '-'} .. ${steps.length ? new Date(steps[steps.length - 1].validMs).toISOString() : '-'})`);
+  opts.log?.(
+    `rtofs: ${steps.length} steps decoded for run ${run.yyyymmdd} (${steps.length ? new Date(steps[0].validMs).toISOString() : '-'} .. ${steps.length ? new Date(steps[steps.length - 1].validMs).toISOString() : '-'})`
+  );
   return steps;
 }
 

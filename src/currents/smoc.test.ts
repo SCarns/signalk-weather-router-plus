@@ -4,8 +4,21 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
-  alignedSteps, AREA_MARGIN_CELLS, chooseLayout, isSettled, loadArea, parseStac, regionContains, regionForBBox, residentStale,
-  SmocClient, SmocCurrentSource, timeIndex, SMOC_PRIORITY, type SmocRun, type SmocSettings,
+  alignedSteps,
+  AREA_MARGIN_CELLS,
+  chooseLayout,
+  isSettled,
+  loadArea,
+  parseStac,
+  regionContains,
+  regionForBBox,
+  residentStale,
+  SmocClient,
+  SmocCurrentSource,
+  timeIndex,
+  SMOC_PRIORITY,
+  type SmocRun,
+  type SmocSettings,
 } from './smoc';
 import { CurrentStack } from './stack';
 import { FILL_RADIUS_CELLS, filledCell, sampleFieldPairFilled } from './coastfill';
@@ -39,7 +52,10 @@ function isLand(lat: number, lon: number): boolean {
   return (lat >= 40 && lat <= 45 && lon >= 10 && lon <= 20) || lat < -64.5;
 }
 
-interface MockLayout { d: number; chunks: [number, number, number, number] }
+interface MockLayout {
+  d: number;
+  chunks: [number, number, number, number];
+}
 const LAYOUTS: Record<string, MockLayout> = {
   time: { d: 1, chunks: [1, 1, 64, 128] },
   geo: { d: 1, chunks: [48, 1, 16, 8] },
@@ -55,13 +71,26 @@ function layoutMeta(name: string): { nLat: number; nLon: number; zmeta: unknown 
   const nLat = Math.round(170 / L.d) + 1;
   const nLon = Math.round(360 / L.d);
   const comp = null;
-  const arr = (shape: number[], chunks: number[], fill: unknown) => ({ chunks, compressor: comp, dtype: '<f4', fill_value: fill, filters: null, order: 'C', shape, zarr_format: 2 });
+  const arr = (shape: number[], chunks: number[], fill: unknown) => ({
+    chunks,
+    compressor: comp,
+    dtype: '<f4',
+    fill_value: fill,
+    filters: null,
+    order: 'C',
+    shape,
+    zarr_format: 2,
+  });
   const md: Record<string, unknown> = {
     '.zattrs': { credit: 'E.U. Copernicus Marine Service Information (CMEMS)' },
-    'latitude/.zarray': arr([nLat], [nLat], 'NaN'), 'latitude/.zattrs': { _ARRAY_DIMENSIONS: ['latitude'] },
-    'longitude/.zarray': arr([nLon], [nLon], 'NaN'), 'longitude/.zattrs': { _ARRAY_DIMENSIONS: ['longitude'] },
-    'time/.zarray': arr([NT], [64], 'NaN'), 'time/.zattrs': { _ARRAY_DIMENSIONS: ['time'], calendar: 'gregorian', units: 'hours since 1950-01-01' },
-    'elevation/.zarray': arr([1], [1], 'NaN'), 'elevation/.zattrs': { _ARRAY_DIMENSIONS: ['elevation'] },
+    'latitude/.zarray': arr([nLat], [nLat], 'NaN'),
+    'latitude/.zattrs': { _ARRAY_DIMENSIONS: ['latitude'] },
+    'longitude/.zarray': arr([nLon], [nLon], 'NaN'),
+    'longitude/.zattrs': { _ARRAY_DIMENSIONS: ['longitude'] },
+    'time/.zarray': arr([NT], [64], 'NaN'),
+    'time/.zattrs': { _ARRAY_DIMENSIONS: ['time'], calendar: 'gregorian', units: 'hours since 1950-01-01' },
+    'elevation/.zarray': arr([1], [1], 'NaN'),
+    'elevation/.zattrs': { _ARRAY_DIMENSIONS: ['elevation'] },
   };
   for (const v of ['utotal', 'vtotal', 'uo', 'vo']) {
     md[`${v}/.zarray`] = arr([NT, 1, nLat, nLon], L.chunks, FILL);
@@ -70,7 +99,13 @@ function layoutMeta(name: string): { nLat: number; nLon: number; zmeta: unknown 
   return { nLat, nLon, zmeta: { metadata: md, zarr_consolidated_format: 1 } };
 }
 
-interface Mock { fetch: typeof fetch; counts: Map<string, number>; total: () => number; stacUpdating: boolean; stacUpdated: string }
+interface Mock {
+  fetch: typeof fetch;
+  counts: Map<string, number>;
+  total: () => number;
+  stacUpdating: boolean;
+  stacUpdated: string;
+}
 
 function makeMock(): Mock {
   const counts = new Map<string, number>();
@@ -84,7 +119,15 @@ function makeMock(): Mock {
       counts.set(url, (counts.get(url) ?? 0) + 1);
       const headers = { 'last-modified': 'Mon, 28 Sep 2026 08:16:14 GMT', etag: '"abc"' };
       if (url.endsWith('dataset.stac.json')) {
-        return new Response(JSON.stringify({ properties: { admp_updated_data: mock.stacUpdated, admp_updating_start_date: mock.stacUpdating ? '2026-09-28T08:00:00Z' : null } }), { status: 200 });
+        return new Response(
+          JSON.stringify({
+            properties: {
+              admp_updated_data: mock.stacUpdated,
+              admp_updating_start_date: mock.stacUpdating ? '2026-09-28T08:00:00Z' : null,
+            },
+          }),
+          { status: 200 }
+        );
       }
       const m = /\/(time|geo|ds4)\.zarr\/(.+)$/.exec(url);
       if (!m) return new Response('no', { status: 404 });
@@ -128,7 +171,12 @@ function makeMock(): Mock {
   return mock;
 }
 
-const URLS = { time: 'https://mock/time.zarr', geo: 'https://mock/geo.zarr', ds4: 'https://mock/ds4.zarr', stac: 'https://mock/dataset.stac.json' };
+const URLS = {
+  time: 'https://mock/time.zarr',
+  geo: 'https://mock/geo.zarr',
+  ds4: 'https://mock/ds4.zarr',
+  stac: 'https://mock/dataset.stac.json',
+};
 const SETTINGS: SmocSettings = { stepHours: 3, horizonHours: 24, halfWidthDeg: 10, budgetBytes: 64 * 1024 * 1024 };
 
 function tmpDir(): string {
@@ -151,7 +199,7 @@ function node(lat: number, lon: number, ti: number): [number, number] {
 
 /** Direct bilinear on the stored 1° grid (longitude wrapping). */
 function directBilinear(lat: number, lon: number, ti: number): [number, number] {
-  const x = ((lon + 180) % 360 + 360) % 360;
+  const x = (((lon + 180) % 360) + 360) % 360;
   const y = lat + 80;
   const c = Math.floor(x);
   const r = Math.floor(y);
@@ -195,13 +243,19 @@ test('zarr: real SMOC .zmetadata parses (shapes, chunks, fill, dims, CF time uni
   assert.equal(parseCfTimeUnits('seconds since 1970-01-01 00:00:00').epochMs, 0);
   assert.equal(parseCfTimeUnits('days since 2000-01-01T12:00:00Z').epochMs, Date.UTC(2000, 0, 1, 12));
   assert.throws(() => parseCfTimeUnits('hours since 1950-01-01', 'noleap'), /calendar/);
-  assert.throws(() => parseArrayMeta({ zarr_format: 2, shape: [2], chunks: [2], dtype: '<f4', compressor: { id: 'zstd' }, fill_value: 0 }), /zstd/);
+  assert.throws(
+    () => parseArrayMeta({ zarr_format: 2, shape: [2], chunks: [2], dtype: '<f4', compressor: { id: 'zstd' }, fill_value: 0 }),
+    /zstd/
+  );
   assert.throws(() => parseArrayMeta({ zarr_format: 3, shape: [2], chunks: [2], dtype: '<f4', fill_value: 0 }), /zarr_format/);
 });
 
 test('zarr: a real blosc chunk decodes to float32 with the fill value mapped to NaN', () => {
   const dir = path.join(__dirname, '..', '..', 'test-data', 'blosc');
-  const ref = JSON.parse(fs.readFileSync(path.join(dir, 'smoc_utotal_51780.0.3.2.ref.json'), 'utf8')) as { fill_count: number; samples: [number, number, number][] };
+  const ref = JSON.parse(fs.readFileSync(path.join(dir, 'smoc_utotal_51780.0.3.2.ref.json'), 'utf8')) as {
+    fill_count: number;
+    samples: [number, number, number][];
+  };
   const doc = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'test-data', 'smoc', 'timeChunked.zmetadata'), 'utf8'));
   const meta = parseConsolidated(doc).arrays.get('utotal')!;
   const vals = decodeChunk(meta, new Uint8Array(fs.readFileSync(path.join(dir, 'smoc_utotal_51780.0.3.2.blosc'))));
@@ -247,16 +301,40 @@ test('smoc: probe derives the grid, time axis and run from the store', async () 
 
 test('smoc: settledness from STAC and aligned steps', async () => {
   assert.equal(isSettled(null, 0), true);
-  assert.equal(isSettled(parseStac({ properties: { admp_updated_data: '2026-09-28T10:42:54Z', admp_updating_start_date: null } }), Date.parse('2026-09-28T08:16:14Z')), true);
-  assert.equal(isSettled(parseStac({ properties: { admp_updated_data: '2026-09-27T10:42:54Z' } }), Date.parse('2026-09-28T08:16:14Z')), false);
-  assert.equal(isSettled(parseStac({ properties: { admp_updated_data: '2026-09-28T10:42:54Z', admp_updating_start_date: '2026-09-28T11:00:00Z' } }), null), false);
+  assert.equal(
+    isSettled(
+      parseStac({ properties: { admp_updated_data: '2026-09-28T10:42:54Z', admp_updating_start_date: null } }),
+      Date.parse('2026-09-28T08:16:14Z')
+    ),
+    true
+  );
+  assert.equal(
+    isSettled(parseStac({ properties: { admp_updated_data: '2026-09-27T10:42:54Z' } }), Date.parse('2026-09-28T08:16:14Z')),
+    false
+  );
+  assert.equal(
+    isSettled(
+      parseStac({ properties: { admp_updated_data: '2026-09-28T10:42:54Z', admp_updating_start_date: '2026-09-28T11:00:00Z' } }),
+      null
+    ),
+    false
+  );
   const { run } = await setup();
   // Aligned to whole multiples of the step: first at or before, last at or after.
   const s3 = alignedSteps(run, T0 + 4 * H + 1000, T0 + 10 * H, 3);
-  assert.deepEqual(s3.map((t) => (t - T0) / H), [3, 6, 9, 12]);
-  assert.deepEqual(alignedSteps(run, T0 + 4 * H, T0 + 6 * H, 1).map((t) => (t - T0) / H), [4, 5, 6]);
+  assert.deepEqual(
+    s3.map(t => (t - T0) / H),
+    [3, 6, 9, 12]
+  );
+  assert.deepEqual(
+    alignedSteps(run, T0 + 4 * H, T0 + 6 * H, 1).map(t => (t - T0) / H),
+    [4, 5, 6]
+  );
   // Only instants on the store time axis.
-  assert.deepEqual(alignedSteps(run, T0 + (NT - 2) * H, T0 + (NT + 10) * H, 3).map((t) => (t - T0) / H), [198]);
+  assert.deepEqual(
+    alignedSteps(run, T0 + (NT - 2) * H, T0 + (NT + 10) * H, 3).map(t => (t - T0) / H),
+    [198]
+  );
 });
 
 // ───────────── area loading and sampling ─────────────
@@ -287,7 +365,14 @@ test('smoc: time- and geo-chunked loads give identical areas equal to the stored
   assert.ok(a.u.buffer instanceof SharedArrayBuffer);
   // The layout choice follows the chunk volume: many steps over a small box → geo; one step over a wide box → time.
   const small = regionForBBox(run.levels.time.grid, { west: 0, east: 2, south: 0, north: 2 }, 3)!;
-  assert.equal(chooseLayout(run, small, Array.from({ length: 40 }, (_, i) => i)), 'geo');
+  assert.equal(
+    chooseLayout(
+      run,
+      small,
+      Array.from({ length: 40 }, (_, i) => i)
+    ),
+    'geo'
+  );
   const wide = regionForBBox(run.levels.time.grid, { west: -100, east: 60, south: -40, north: 60 }, 3)!;
   assert.equal(chooseLayout(run, wide, [10]), 'time');
 });
@@ -296,10 +381,20 @@ test('smoc: bilinear in space and linear in time match a direct decode; antimeri
   const { client, run } = await setup();
   const src = new SmocCurrentSource(run, SETTINGS, client);
   const steps = src.stepsBetween(T0 + 3 * H, T0 + 9 * H);
-  assert.deepEqual(steps.map((t) => (t - T0) / H), [3, 6, 9]);
+  assert.deepEqual(
+    steps.map(t => (t - T0) / H),
+    [3, 6, 9]
+  );
   // Box across the antimeridian.
   assert.equal(await src.ensure({ west: 170, east: -170, south: -10, north: 10 }, steps, { reason: 'test' }), true);
-  const pts: [number, number][] = [[179.3, 0.4], [-179.6, -3.25], [179.99, 5.5], [-180, 2], [175.25, -7.75], [-172.5, 8.1]];
+  const pts: [number, number][] = [
+    [179.3, 0.4],
+    [-179.6, -3.25],
+    [179.99, 5.5],
+    [-180, 2],
+    [175.25, -7.75],
+    [-172.5, 8.1],
+  ];
   for (const [lon, lat] of pts) {
     for (const hOff of [3, 4.5, 6, 7.25, 9]) {
       const t = T0 + hOff * H;
@@ -332,7 +427,10 @@ test('smoc: on-demand areas are cached (memory and disk), deduplicated, evicted 
   const { client, run, mock, dir } = await setup();
   const src = new SmocCurrentSource(run, { ...SETTINGS, budgetBytes: 40 * 1024 }, client);
   const steps = src.bracketSteps(T0 + 7 * H);
-  assert.deepEqual(steps.map((t) => (t - T0) / H), [6, 9]);
+  assert.deepEqual(
+    steps.map(t => (t - T0) / H),
+    [6, 9]
+  );
   const n0 = mock.total();
   const [a, b] = await Promise.all([
     src.ensure({ west: -10, east: 0, south: 45, north: 55 }, steps, { reason: 'overlay' }),
@@ -352,7 +450,8 @@ test('smoc: on-demand areas are cached (memory and disk), deduplicated, evicted 
   assert.deepEqual(src2.at(-5, 50, new Date(T0 + 7 * H)), src.at(-5, 50, new Date(T0 + 7 * H)));
   // Budget: loading more areas evicts the oldest.
   const rev = src.revision;
-  for (let k = 0; k < 6; k++) await src.ensure({ west: 30 + 12 * k, east: 40 + 12 * k, south: -30, north: 30 }, steps, { reason: 'overlay' });
+  for (let k = 0; k < 6; k++)
+    await src.ensure({ west: 30 + 12 * k, east: 40 + 12 * k, south: -30, north: 30 }, steps, { reason: 'overlay' });
   assert.ok(src.onDemandBytes() <= 40 * 1024);
   assert.ok(src.revision > rev);
   assert.equal(src.contains(-5, 50), false, 'first area evicted');
@@ -369,7 +468,7 @@ test('smoc: on-demand areas are cached (memory and disk), deduplicated, evicted 
   await south.ensure({ west: 0, east: 1, south: -79, north: -78 }, longSteps, { reason: 'conditions' });
   assert.equal(south.onDemandAreas[0].layout, 'geo');
   assert.deepEqual(south.at(0.5, -78.5, new Date(T0 + 30 * H)), [0, 0]);
-  const markers = fs.readdirSync(path.join(dir, run.key, 'geo', 'utotal')).filter((f) => f.endsWith('.none'));
+  const markers = fs.readdirSync(path.join(dir, run.key, 'geo', 'utotal')).filter(f => f.endsWith('.none'));
   assert.ok(markers.length > 0);
 });
 
@@ -378,7 +477,10 @@ test('smoc: resident area, serialization (shared memory) and staleness', async (
   const src = new SmocCurrentSource(run, SETTINGS, client);
   const now = T0 + 20 * H + 1234;
   const steps = src.windowSteps(now);
-  assert.deepEqual(steps.map((t) => (t - T0) / H), [18, 21, 24, 27, 30, 33, 36, 39, 42, 45]);
+  assert.deepEqual(
+    steps.map(t => (t - T0) / H),
+    [18, 21, 24, 27, 30, 33, 36, 39, 42, 45]
+  );
   const pos = { lat: 50, lon: -3 };
   assert.equal(residentStale(src, pos, steps), true);
   assert.equal(residentStale(src, null, steps), false);
@@ -427,14 +529,19 @@ test('coastal fill: never changes valid values, fills only within 2 cells, routi
         assert.deepEqual(disp, [raw[0], raw[1]], `${lat},${lon}`);
         // Routing: the raw bilinear value, which is the node's value when its whole stencil is water
         // and no data (0, 0) when a stencil corner is land (the model's coastal gap).
-        const stencilWet = [[0, 1], [1, 0], [1, 1]].every(([dr, dc]) => !Number.isNaN(node(lat + dr, lon + dc, 6)[0]));
+        const stencilWet = [
+          [0, 1],
+          [1, 0],
+          [1, 1],
+        ].every(([dr, dc]) => !Number.isNaN(node(lat + dr, lon + dc, 6)[0]));
         assert.deepEqual(at, stencilWet ? [raw[0], raw[1]] : [0, 0], `${lat},${lon} routing`);
         continue;
       }
       assert.deepEqual(at, [0, 0], 'routing sees no data on land');
       // Distance (cells) to the nearest valid node.
       let dmin = Infinity;
-      for (let dr = -3; dr <= 3; dr++) for (let dc = -3; dc <= 3; dc++) if (!Number.isNaN(node(lat + dr, lon + dc, 6)[0])) dmin = Math.min(dmin, Math.hypot(dr, dc));
+      for (let dr = -3; dr <= 3; dr++)
+        for (let dc = -3; dc <= 3; dc++) if (!Number.isNaN(node(lat + dr, lon + dc, 6)[0])) dmin = Math.min(dmin, Math.hypot(dr, dc));
       if (dmin <= FILL_RADIUS_CELLS) {
         assert.notDeepEqual(disp, [0, 0], `${lat},${lon} within ${dmin} cells should be filled`);
         // IDW² over the valid neighbours within the radius.
@@ -504,17 +611,28 @@ test('stack: NECOFS 10 > SMOC 3 > RTOFS 2 > FES 0, with (0, 0) falling through; 
   const { client, run } = await setup();
   const smoc = new SmocCurrentSource(run, SETTINGS, client);
   await smoc.ensure({ west: -10, east: 10, south: 30, north: 50 }, smoc.bracketSteps(T0 + 6 * H), { reason: 'test' });
-  const fake = (name: string, priority: number, val: [number, number], box = { south: -90, west: -180, north: 90, east: 180 }): CurrentSourceLike => ({
-    name, priority, resolutionM: 1000, bbox: box,
+  const fake = (
+    name: string,
+    priority: number,
+    val: [number, number],
+    box = { south: -90, west: -180, north: 90, east: 180 }
+  ): CurrentSourceLike => ({
+    name,
+    priority,
+    resolutionM: 1000,
+    bbox: box,
     contains: (lon, lat) => lat >= box.south && lat <= box.north && lon >= box.west && lon <= box.east,
     at: () => val,
-    atMany: (lons) => ({ u: new Float64Array(lons.length).fill(val[0]), v: new Float64Array(lons.length).fill(val[1]) }),
+    atMany: lons => ({ u: new Float64Array(lons.length).fill(val[0]), v: new Float64Array(lons.length).fill(val[1]) }),
   });
   const necofs = fake('NECOFS', 10, [9, 9], { south: 41, west: -2, north: 42, east: -1 });
   const rtofs = fake('RTOFS', 2, [2, 2]);
   const fes = fake('FES', 0, [0.5, 0.5]);
   const stack = new CurrentStack([fes, rtofs, smoc, necofs]);
-  assert.deepEqual(stack.sources.map((s) => s.name), ['NECOFS', 'CMEMS-SMOC', 'RTOFS', 'FES']);
+  assert.deepEqual(
+    stack.sources.map(s => s.name),
+    ['NECOFS', 'CMEMS-SMOC', 'RTOFS', 'FES']
+  );
   assert.equal(SMOC_PRIORITY, 3);
   const t = new Date(T0 + 6 * H);
   assert.deepEqual(stack.at(-1.5, 41.5, t), [9, 9]);

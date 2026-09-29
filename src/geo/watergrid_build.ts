@@ -28,8 +28,17 @@ import { LandMask } from './landmask';
 import { ShapefileIndex } from './shapefile';
 import { CANALS, type CanalDef } from './watergrid_canals';
 import {
-  Chokepoints, SplitCells, WaterGrid, WG_FINE_PER_CELL, WG_NX, WG_NY, WG_RES, WG_VERSION, sourceFingerprints,
-  type CanalRecord, type WaterGridHeader,
+  Chokepoints,
+  SplitCells,
+  WaterGrid,
+  WG_FINE_PER_CELL,
+  WG_NX,
+  WG_NY,
+  WG_RES,
+  WG_VERSION,
+  sourceFingerprints,
+  type CanalRecord,
+  type WaterGridHeader,
 } from './watergrid';
 
 /** Metres per degree of latitude. */
@@ -116,14 +125,20 @@ export function coarseBitsFromFine(fine: Uint8Array, fnx: number, fny: number, k
         const xa = fx0 + k - 1;
         for (let dy = 0; dy < k; dy++) {
           const row = (fy0 + dy) * fnx;
-          if (!fine[row + xa] && !fine[row + xa + 1]) { east[ci] = 1; break; }
+          if (!fine[row + xa] && !fine[row + xa + 1]) {
+            east[ci] = 1;
+            break;
+          }
         }
       }
       if (cy + 1 < cny) {
         const ya = (fy0 + k - 1) * fnx;
         const yb = ya + fnx;
         for (let dx = 0; dx < k; dx++) {
-          if (!fine[ya + fx0 + dx] && !fine[yb + fx0 + dx]) { north[ci] = 1; break; }
+          if (!fine[ya + fx0 + dx] && !fine[yb + fx0 + dx]) {
+            north[ci] = 1;
+            break;
+          }
         }
       }
     }
@@ -136,7 +151,16 @@ export function coarseBitsFromFine(fine: Uint8Array, fnx: number, fny: number, k
  * the block border, return its split record (labels along the sides and
  * the crossing masks to the neighbouring fine cells), else null.
  */
-function splitRecord(fine: Uint8Array, fnx: number, fny: number, k: number, fx0: number, fy0: number, lab: Int8Array, stack: number[]): SplitRecord | null {
+function splitRecord(
+  fine: Uint8Array,
+  fnx: number,
+  fny: number,
+  k: number,
+  fx0: number,
+  fy0: number,
+  lab: Int8Array,
+  stack: number[]
+): SplitRecord | null {
   const isW = (x: number, y: number): boolean => fine[(fy0 + y) * fnx + fx0 + x] === 0;
   lab.fill(0);
   let comps = 0;
@@ -151,10 +175,22 @@ function splitRecord(fine: Uint8Array, fnx: number, fny: number, k: number, fx0:
       const t = stack.pop()!;
       const tx = t % k;
       const ty = Math.floor(t / k);
-      if (tx + 1 < k && !lab[t + 1] && isW(tx + 1, ty)) { lab[t + 1] = comps; stack.push(t + 1); }
-      if (tx > 0 && !lab[t - 1] && isW(tx - 1, ty)) { lab[t - 1] = comps; stack.push(t - 1); }
-      if (ty + 1 < k && !lab[t + k] && isW(tx, ty + 1)) { lab[t + k] = comps; stack.push(t + k); }
-      if (ty > 0 && !lab[t - k] && isW(tx, ty - 1)) { lab[t - k] = comps; stack.push(t - k); }
+      if (tx + 1 < k && !lab[t + 1] && isW(tx + 1, ty)) {
+        lab[t + 1] = comps;
+        stack.push(t + 1);
+      }
+      if (tx > 0 && !lab[t - 1] && isW(tx - 1, ty)) {
+        lab[t - 1] = comps;
+        stack.push(t - 1);
+      }
+      if (ty + 1 < k && !lab[t + k] && isW(tx, ty + 1)) {
+        lab[t + k] = comps;
+        stack.push(t + k);
+      }
+      if (ty > 0 && !lab[t - k] && isW(tx, ty - 1)) {
+        lab[t - k] = comps;
+        stack.push(t - k);
+      }
     }
   }
   if (comps < 2) return null;
@@ -207,10 +243,10 @@ function edt1d(f: Float64Array, n: number, h: number, d: Float64Array, v: Int32A
       continue;
     }
     const xq = q * h;
-    let s = ((f[q] + xq * xq) - (f[v[k]] + (v[k] * h) ** 2)) / (2 * (xq - v[k] * h));
+    let s = (f[q] + xq * xq - (f[v[k]] + (v[k] * h) ** 2)) / (2 * (xq - v[k] * h));
     while (s <= z[k]) {
       k--;
-      s = ((f[q] + xq * xq) - (f[v[k]] + (v[k] * h) ** 2)) / (2 * (xq - v[k] * h));
+      s = (f[q] + xq * xq - (f[v[k]] + (v[k] * h) ** 2)) / (2 * (xq - v[k] * h));
     }
     k++;
     v[k] = q;
@@ -283,7 +319,10 @@ export function coarseClearance(dist: Float32Array, fnx: number, fny: number, k:
         const base = (cy * k + dy) * fnx + cx * k;
         for (let dx = 0; dx < k; dx++) {
           const val = dist[base + dx];
-          if (val > best) { best = val; at = base + dx; }
+          if (val > best) {
+            best = val;
+            at = base + dx;
+          }
         }
       }
       clear[cy * cnx + cx] = best;
@@ -312,10 +351,14 @@ export interface SaddleEvent {
  * whose cell lies in the core box [x0, x1) × [y0, y1) are returned.
  */
 export function mergeTreeSaddles(
-  clear: Float32Array, east: Uint8Array, north: Uint8Array, nx: number, ny: number,
+  clear: Float32Array,
+  east: Uint8Array,
+  north: Uint8Array,
+  nx: number,
+  ny: number,
   win: { x0: number; y0: number; x1: number; y1: number },
   core: { x0: number; y0: number; x1: number; y1: number },
-  params: ChokepointParams = DEFAULT_CHOKEPOINT_PARAMS,
+  params: ChokepointParams = DEFAULT_CHOKEPOINT_PARAMS
 ): SaddleEvent[] {
   if (win.x0 < 0 || win.y0 < 0 || win.x1 > nx || win.y1 > ny) throw new Error('mergeTreeSaddles: window outside the grid');
   const ww = win.x1 - win.x0;
@@ -364,7 +407,12 @@ export function mergeTreeSaddles(
     if (dy === 1) return y + 1 < wh && north[gy * nx + gx] === 1;
     return y > 0 && north[(gy - 1) * nx + gx] === 1;
   };
-  const DIRS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  const DIRS: [number, number][] = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ];
   // Short steepest ascent from a cell (for the passage axis).
   const ascend = (from: number, steps: number): number => {
     let cur = from;
@@ -375,7 +423,10 @@ export function mergeTreeSaddles(
         if (!open(cur, dx, dy)) continue;
         const nb = cur + dx + dy * ww;
         const c = cl(nb);
-        if (c > bestC) { bestC = c; best = nb; }
+        if (c > bestC) {
+          bestC = c;
+          best = nb;
+        }
       }
       if (best === cur) break;
       cur = best;
@@ -401,13 +452,26 @@ export function mergeTreeSaddles(
         const m1 = mx[root];
         const m2 = mx[r];
         const lo = Math.min(m1, m2);
-        const gx = x % ww + win.x0;
+        const gx = (x % ww) + win.x0;
         const gy = Math.floor(x / ww) + win.y0;
-        if (s <= params.maxClearanceM && lo >= params.ratio * s && lo >= s + params.minDiffM && lo >= params.minBasinClearanceM
-          && gx >= core.x0 && gx < core.x1 && gy >= core.y0 && gy < core.y1) {
+        if (
+          s <= params.maxClearanceM &&
+          lo >= params.ratio * s &&
+          lo >= s + params.minDiffM &&
+          lo >= params.minBasinClearanceM &&
+          gx >= core.x0 &&
+          gx < core.x1 &&
+          gy >= core.y0 &&
+          gy < core.y1
+        ) {
           const a = ascend(firstNb >= 0 ? firstNb : x, 8);
           const b = ascend(nb, 8);
-          events.push({ cell: gy * nx + gx, clearanceM: s, a: (Math.floor(a / ww) + win.y0) * nx + (a % ww) + win.x0, b: (Math.floor(b / ww) + win.y0) * nx + (b % ww) + win.x0 });
+          events.push({
+            cell: gy * nx + gx,
+            clearanceM: s,
+            a: (Math.floor(a / ww) + win.y0) * nx + (a % ww) + win.x0,
+            b: (Math.floor(b / ww) + win.y0) * nx + (b % ww) + win.x0,
+          });
         }
       } else {
         firstNb = nb;
@@ -434,7 +498,15 @@ export function mergeTreeSaddles(
  * cellIndex * 2 + (0 east | 1 north). At an exact corner crossing all four
  * edges of the two L-paths are returned, so the cut blocks diagonal moves.
  */
-export function edgesCrossedBySegment(lon1: number, lat1: number, lon2: number, lat2: number, res = WG_RES, nx = WG_NX, ny = WG_NY): number[] {
+export function edgesCrossedBySegment(
+  lon1: number,
+  lat1: number,
+  lon2: number,
+  lat2: number,
+  res = WG_RES,
+  nx = WG_NX,
+  ny = WG_NY
+): number[] {
   let dl = lon2 - lon1;
   while (dl > 180) dl -= 360;
   while (dl < -180) dl += 360;
@@ -456,8 +528,8 @@ export function edgesCrossedBySegment(lon1: number, lat1: number, lon2: number, 
   const sy = dy > 0 ? 1 : -1;
   const tDx = dx !== 0 ? Math.abs(1 / dx) : Infinity;
   const tDy = dy !== 0 ? Math.abs(1 / dy) : Infinity;
-  let tMaxX = dx !== 0 ? ((sx > 0 ? cx + 1 - x1 : x1 - cx) * tDx) : Infinity;
-  let tMaxY = dy !== 0 ? ((sy > 0 ? cy + 1 - y1 : y1 - cy) * tDy) : Infinity;
+  let tMaxX = dx !== 0 ? (sx > 0 ? cx + 1 - x1 : x1 - cx) * tDx : Infinity;
+  let tMaxY = dy !== 0 ? (sy > 0 ? cy + 1 - y1 : y1 - cy) * tDy : Infinity;
   let guard = 0;
   while ((cx !== ex || cy !== ey) && guard++ < 1_000_000) {
     if (Math.min(tMaxX, tMaxY) > 1) break;
@@ -483,12 +555,12 @@ export function edgesCrossedBySegment(lon1: number, lat1: number, lon2: number, 
       tMaxY += tDy;
     }
   }
-  return [...out].filter((id) => Math.floor(id / 2 / nx) >= 0 && Math.floor(id / 2 / nx) < ny);
+  return [...out].filter(id => Math.floor(id / 2 / nx) >= 0 && Math.floor(id / 2 / nx) < ny);
 }
 
 /** Canal records for a grid: the currently open edges crossed by each canal's cuts. */
 export function canalRecords(grid: WaterGrid, canals: readonly CanalDef[] = CANALS): CanalRecord[] {
-  return canals.map((c) => {
+  return canals.map(c => {
     const edges = new Set<number>();
     for (const [a, b] of c.cuts) {
       for (const e of edgesCrossedBySegment(a[1], a[0], b[1], b[0], grid.res, grid.nx, grid.ny)) {
@@ -538,7 +610,7 @@ export function buildWaterGrid(shapefiles: string[], opts: BuildOptions = {}): W
   if (MARGIN_C > HALO_C) throw new Error('halo must be at least the chokepoint window margin (1°)');
   const params = opts.chokepoints ?? DEFAULT_CHOKEPOINT_PARAMS;
   const capM = Math.max(params.maxClearanceM * 3, 60_000);
-  const indexes = shapefiles.map((p) => ShapefileIndex.open(p));
+  const indexes = shapefiles.map(p => ShapefileIndex.open(p));
   const grid = WaterGrid.empty();
   const { water, east, north } = grid;
   const cpLat: number[] = [];
@@ -554,7 +626,7 @@ export function buildWaterGrid(shapefiles: string[], opts: BuildOptions = {}): W
       if (opts.region) {
         const r = opts.region;
         if (lat0 + TILE <= r.south || lat0 >= r.north) continue;
-        const rw = ((r.east - r.west) % 360 + 360) % 360 || 360;
+        const rw = (((r.east - r.west) % 360) + 360) % 360 || 360;
         const off = (((lon0 - r.west) % 360) + 360) % 360;
         const off2 = (((r.west - lon0) % 360) + 360) % 360;
         if (!(off < rw || off2 < TILE)) continue;
@@ -572,9 +644,14 @@ export function buildWaterGrid(shapefiles: string[], opts: BuildOptions = {}): W
     const south = lat0 - haloS * FINE;
     const north_ = lat0 + TILE + haloN * FINE;
     const bbox: BBox = { west: wrapLon(lon0 - HALO_F * FINE), east: wrapLon(lon0 + TILE + HALO_F * FINE), south, north: north_ };
-    const mask = LandMask.rasterStreamed(bbox, FINE, (add) => {
-      for (const ix of indexes) ix.forEach(bbox, add);
-    }, { edgeCells: false, nx: fnx, ny: fny });
+    const mask = LandMask.rasterStreamed(
+      bbox,
+      FINE,
+      add => {
+        for (const ix of indexes) ix.forEach(bbox, add);
+      },
+      { edgeCells: false, nx: fnx, ny: fny }
+    );
     const fine = mask.raster;
     let land = 0;
     for (let i = 0; i < fine.length; i++) land += fine[i];
@@ -623,16 +700,29 @@ export function buildWaterGrid(shapefiles: string[], opts: BuildOptions = {}): W
       const { clear, argmax } = coarseClearance(dist, fnx, fny, K);
       for (let by = 0; by < TILE_C / CORE_C; by++) {
         for (let bx = 0; bx < TILE_C / CORE_C; bx++) {
-          const core = { x0: coreX0 + bx * CORE_C, y0: coreY0 + by * CORE_C, x1: coreX0 + (bx + 1) * CORE_C, y1: coreY0 + (by + 1) * CORE_C };
+          const core = {
+            x0: coreX0 + bx * CORE_C,
+            y0: coreY0 + by * CORE_C,
+            x1: coreX0 + (bx + 1) * CORE_C,
+            y1: coreY0 + (by + 1) * CORE_C,
+          };
           let any = false;
           for (let y = core.y0; y < core.y1 && !any; y++) {
             for (let x = core.x0; x < core.x1; x++) {
               const c = clear[y * cnx + x];
-              if (c > 0 && c <= params.maxClearanceM) { any = true; break; }
+              if (c > 0 && c <= params.maxClearanceM) {
+                any = true;
+                break;
+              }
             }
           }
           if (!any) continue;
-          const win = { x0: Math.max(0, core.x0 - MARGIN_C), y0: Math.max(0, core.y0 - MARGIN_C), x1: Math.min(cnx, core.x1 + MARGIN_C), y1: Math.min(bits.cny, core.y1 + MARGIN_C) };
+          const win = {
+            x0: Math.max(0, core.x0 - MARGIN_C),
+            y0: Math.max(0, core.y0 - MARGIN_C),
+            x1: Math.min(cnx, core.x1 + MARGIN_C),
+            y1: Math.min(bits.cny, core.y1 + MARGIN_C),
+          };
           for (const ev of mergeTreeSaddles(clear, bits.east, bits.north, cnx, bits.cny, win, core, params)) {
             const fi = argmax[ev.cell];
             const fy = Math.floor(fi / fnx);
@@ -656,7 +746,11 @@ export function buildWaterGrid(shapefiles: string[], opts: BuildOptions = {}): W
       }
     }
     done++;
-    opts.onProgress?.(done, tiles.length, `tile ${lat0 >= 0 ? 'N' : 'S'}${Math.abs(lat0)} ${lon0 >= 0 ? 'E' : 'W'}${Math.abs(lon0)}${land === 0 ? ' (all water)' : land === fine.length ? ' (all land)' : ''}`);
+    opts.onProgress?.(
+      done,
+      tiles.length,
+      `tile ${lat0 >= 0 ? 'N' : 'S'}${Math.abs(lat0)} ${lon0 >= 0 ? 'E' : 'W'}${Math.abs(lon0)}${land === 0 ? ' (all water)' : land === fine.length ? ' (all land)' : ''}`
+    );
   }
   for (let i = 0; i < water.length; i++) {
     stats.waterCells += popcount8(water[i]);
@@ -684,7 +778,11 @@ export function buildWaterGrid(shapefiles: string[], opts: BuildOptions = {}): W
   header.stats!.splitCells = splitCells.length;
   const splitLabels = new Uint8Array(splitCells.length * 16);
   splitCells.forEach((sp, i) => splitLabels.set(sp.labels, i * 16));
-  const splits = new SplitCells(Uint32Array.from(splitCells.map((sp) => sp.cell)), splitLabels, Uint16Array.from(splitCells.map((sp) => sp.cross)));
+  const splits = new SplitCells(
+    Uint32Array.from(splitCells.map(sp => sp.cell)),
+    splitLabels,
+    Uint16Array.from(splitCells.map(sp => sp.cross))
+  );
   const out = new WaterGrid(header, water, east, north, chokepoints, splits);
   header.canals = canalRecords(out);
   header.buildSeconds = Math.round((Date.now() - t0) / 100) / 10;

@@ -39,13 +39,21 @@ export function listPolars(cfg: PolarLibraryConfig): PolarEntry[] {
   const seen = new Set<string>();
   if (cfg.polarFile) {
     out.push({ path: 'default', label: `${label(cfg.polarFile)} (default)`, source: 'default' });
-    try { seen.add(fs.realpathSync(cfg.polarFile)); } catch { /* listed anyway; load will report */ }
+    try {
+      seen.add(fs.realpathSync(cfg.polarFile));
+    } catch {
+      /* listed anyway; load will report */
+    }
   }
   if (cfg.polarsDir) {
     const dir = cfg.polarsDir;
     const addDir = (rel: string, labelPrefix: string): void => {
-      let names: string[] = [];
-      try { names = fs.readdirSync(path.join(dir, rel)); } catch { names = []; }
+      let names: string[];
+      try {
+        names = fs.readdirSync(path.join(dir, rel));
+      } catch {
+        names = [];
+      }
       for (const n of names.sort((a, b) => a.localeCompare(b))) {
         if (n.startsWith('.') || !EXT.has(path.extname(n).toLowerCase())) continue;
         const token = rel ? `${rel}/${n}` : n;
@@ -53,7 +61,9 @@ export function listPolars(cfg: PolarLibraryConfig): PolarEntry[] {
           const real = fs.realpathSync(path.join(dir, token));
           if (!fs.statSync(real).isFile() || seen.has(real)) continue;
           seen.add(real);
-        } catch { continue; }
+        } catch {
+          continue;
+        }
         out.push({ path: token, label: labelPrefix + label(n), source: 'library' });
       }
     };
@@ -61,10 +71,18 @@ export function listPolars(cfg: PolarLibraryConfig): PolarEntry[] {
     // polars in user/ (legacy flat files) and user/<slug>/ (per-account).
     addDir('', '');
     addDir('user', 'user: ');
-    let users: string[] = [];
-    try { users = fs.readdirSync(path.join(dir, 'user')).filter((u) => !u.startsWith('.')); } catch { users = []; }
+    let users: string[];
+    try {
+      users = fs.readdirSync(path.join(dir, 'user')).filter(u => !u.startsWith('.'));
+    } catch {
+      users = [];
+    }
     for (const u of users.sort()) {
-      try { if (!fs.statSync(path.join(dir, 'user', u)).isDirectory()) continue; } catch { continue; }
+      try {
+        if (!fs.statSync(path.join(dir, 'user', u)).isDirectory()) continue;
+      } catch {
+        continue;
+      }
       addDir(`user/${u}`, `${u.replace(/_/g, ' ')}: `);
     }
   }
@@ -129,11 +147,17 @@ export function polarAngles(polar: PolarDiagram): { tws_ms: number[]; beat_deg: 
     let bestRTwa = 150;
     for (let twa = 20; twa < 90; twa += 1) {
       const v = polar.boatSpeed(twa, tws) * Math.cos((twa * Math.PI) / 180);
-      if (v > bestB) { bestB = v; bestBTwa = twa; }
+      if (v > bestB) {
+        bestB = v;
+        bestBTwa = twa;
+      }
     }
     for (let twa = 90; twa < 180; twa += 1) {
       const v = -polar.boatSpeed(twa, tws) * Math.cos((twa * Math.PI) / 180);
-      if (v > bestR) { bestR = v; bestRTwa = twa; }
+      if (v > bestR) {
+        bestR = v;
+        bestRTwa = twa;
+      }
     }
     beat.push(bestBTwa);
     run.push(bestRTwa);
@@ -153,7 +177,6 @@ export function polarTable(polar: PolarDiagram): { twa_deg: number[]; tws_ms: nu
   return { twa_deg: Array.from(polar.twa), tws_ms: Array.from(polar.tws), speeds_ms: rows };
 }
 
-
 // ─────────── POST /api/polar-from-specs (physics calculator) ───────────
 
 /** Result of a polar-from-specs request: an HTTP status and its JSON body. */
@@ -168,7 +191,8 @@ const NAME_MAX = 60;
 function parseSpecsRequest(raw: unknown): { name: string; specs: BoatSpecs; overwrite: boolean } | string {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'JSON body required: {name, specs:{...}, overwrite?}';
   const b = raw as Record<string, unknown>;
-  if (typeof b.name !== 'string' || b.name.length < 1 || b.name.length > NAME_MAX) return `name must be a string of 1-${NAME_MAX} characters`;
+  if (typeof b.name !== 'string' || b.name.length < 1 || b.name.length > NAME_MAX)
+    return `name must be a string of 1-${NAME_MAX} characters`;
   if (b.overwrite !== undefined && typeof b.overwrite !== 'boolean') return 'overwrite must be a boolean';
   const s = b.specs;
   if (!s || typeof s !== 'object' || Array.isArray(s)) return 'specs must be an object';
@@ -182,7 +206,9 @@ function parseSpecsRequest(raw: unknown): { name: string; specs: BoatSpecs; over
   }
   if (o.sail_area_downwind_m2 !== undefined && !isNum(o.sail_area_downwind_m2)) return 'specs.sail_area_downwind_m2 must be a number';
   const oneOf = (k: string, allowed: readonly string[]): string | null =>
-    o[k] === undefined || (typeof o[k] === 'string' && allowed.includes(o[k] as string)) ? null : `specs.${k} must be one of ${allowed.join(', ')}`;
+    o[k] === undefined || (typeof o[k] === 'string' && allowed.includes(o[k] as string))
+      ? null
+      : `specs.${k} must be one of ${allowed.join(', ')}`;
   const enumErr = oneOf('rig_type', RIG_TYPES) ?? oneOf('keel_type', KEEL_TYPES) ?? oneOf('hull_type', HULL_TYPES);
   if (enumErr) return enumErr;
   const specs: BoatSpecs = {

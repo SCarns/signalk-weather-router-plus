@@ -80,5 +80,8 @@ export function straitName(lat: number, lon: number): string | null {
 
 /** "Strait of Gibraltar" or "narrow passage 36.00N 5.60W". */
 export function describePassage(lat: number, lon: number): string {
-  return straitName(lat, lon) ?? `narrow passage ${Math.abs(lat).toFixed(2)}${lat >= 0 ? 'N' : 'S'} ${Math.abs(lon).toFixed(2)}${lon >= 0 ? 'E' : 'W'}`;
+  return (
+    straitName(lat, lon) ??
+    `narrow passage ${Math.abs(lat).toFixed(2)}${lat >= 0 ? 'N' : 'S'} ${Math.abs(lon).toFixed(2)}${lon >= 0 ? 'E' : 'W'}`
+  );
 }

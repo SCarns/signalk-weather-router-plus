@@ -162,7 +162,10 @@ export function validateSpecs(specs: BoatSpecs, opts: { downwindDefault?: boolea
  * Defaults for fields sailboatdata does not always expose (Python
  * `default_specs_for`). Mast height as a fraction of LOA by rig.
  */
-export function defaultSpecsFor(rigType = 'sloop', keelType = 'fin'): { rig_type: string; keel_type: string; hull_type: 'monohull'; mast_factor_of_loa: number } {
+export function defaultSpecsFor(
+  rigType = 'sloop',
+  keelType = 'fin'
+): { rig_type: string; keel_type: string; hull_type: 'monohull'; mast_factor_of_loa: number } {
   const factors: Record<string, number> = { sloop: 1.3, cutter: 1.3, ketch: 1.2, yawl: 1.2, cat: 1.1 };
   return { rig_type: rigType, keel_type: keelType, hull_type: 'monohull', mast_factor_of_loa: factors[rigType] ?? 1.3 };
 }

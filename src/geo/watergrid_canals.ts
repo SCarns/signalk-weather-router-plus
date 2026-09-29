@@ -20,15 +20,67 @@ export interface CanalDef {
 
 export const CANALS: readonly CanalDef[] = [
   // Across the canal at mid-isthmus (canal runs NW–SE, 37.94 N 22.96 E → 37.92 N 23.00 E).
-  { name: 'Corinth Canal', cuts: [[[37.921, 22.972], [37.939, 22.988]]] },
+  {
+    name: 'Corinth Canal',
+    cuts: [
+      [
+        [37.921, 22.972],
+        [37.939, 22.988],
+      ],
+    ],
+  },
   // Between the Bourne and Sagamore bridges (canal runs WSW–ENE).
-  { name: 'Cape Cod Canal', cuts: [[[41.772, -70.577], [41.748, -70.555]]] },
+  {
+    name: 'Cape Cod Canal',
+    cuts: [
+      [
+        [41.772, -70.577],
+        [41.748, -70.555],
+      ],
+    ],
+  },
   // North–south across the canal near Summit (canal runs west–east at ~39.54 N).
-  { name: 'Chesapeake and Delaware Canal', cuts: [[[39.515, -75.70], [39.575, -75.70]]] },
+  {
+    name: 'Chesapeake and Delaware Canal',
+    cuts: [
+      [
+        [39.515, -75.7],
+        [39.575, -75.7],
+      ],
+    ],
+  },
   // North–south across the canal between Rendsburg and Kiel.
-  { name: 'Kiel Canal', cuts: [[[54.28, 9.90], [54.37, 9.90]]] },
+  {
+    name: 'Kiel Canal',
+    cuts: [
+      [
+        [54.28, 9.9],
+        [54.37, 9.9],
+      ],
+    ],
+  },
   // West–east across both channels north of Ismailia (canal runs north–south).
-  { name: 'Suez Canal', cuts: [[[30.80, 32.20], [30.80, 32.42]]] },
+  {
+    name: 'Suez Canal',
+    cuts: [
+      [
+        [30.8, 32.2],
+        [30.8, 32.42],
+      ],
+    ],
+  },
   // West–east across the Pacific approach at Miraflores and the Atlantic approach at Gatun.
-  { name: 'Panama Canal', cuts: [[[9.00, -79.64], [9.00, -79.55]], [[9.27, -79.97], [9.27, -79.88]]] },
+  {
+    name: 'Panama Canal',
+    cuts: [
+      [
+        [9.0, -79.64],
+        [9.0, -79.55],
+      ],
+      [
+        [9.27, -79.97],
+        [9.27, -79.88],
+      ],
+    ],
+  },
 ];

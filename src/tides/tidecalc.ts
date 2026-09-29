@@ -61,7 +61,12 @@ export function parabolicVertex(hm: number, h0: number, hp: number): { dt: numbe
 export function findExtrema(s: RegularSeries, minProminence = MIN_PROMINENCE_M): TideExtremum[] {
   const h = s.values;
   const n = h.length;
-  interface Cand { kind: 'high' | 'low'; i: number; j: number; v: number }
+  interface Cand {
+    kind: 'high' | 'low';
+    i: number;
+    j: number;
+    v: number;
+  }
   const cand: Cand[] = [];
   let i = 1;
   while (i < n - 1) {
@@ -104,7 +109,7 @@ export function findExtrema(s: RegularSeries, minProminence = MIN_PROMINENCE_M):
     if (best < 0 || bestD >= minProminence) break;
     list = merge([...list.slice(0, best), ...list.slice(best + 2)]);
   }
-  return list.map((c) => {
+  return list.map(c => {
     if (c.j === c.i) {
       const p = parabolicVertex(h[c.i - 1], c.v, h[c.i + 1]);
       return { kind: c.kind, timeMs: s.t0Ms + (c.i + p.dt) * s.stepMs, height: p.h };
@@ -145,7 +150,7 @@ export function slopeAt(s: RegularSeries, tMs: number): number | null {
   const a = sampleSeries(s, tMs - s.stepMs);
   const b = sampleSeries(s, tMs + s.stepMs);
   const c = sampleSeries(s, tMs);
-  if (a !== null && b !== null) return (b - a) / (2 * s.stepMs / 1000);
+  if (a !== null && b !== null) return (b - a) / ((2 * s.stepMs) / 1000);
   if (c !== null && b !== null) return (b - c) / (s.stepMs / 1000);
   if (a !== null && c !== null) return (c - a) / (s.stepMs / 1000);
   return null;

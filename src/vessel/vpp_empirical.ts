@@ -32,8 +32,7 @@ const RAD_TO_DEG = 180.0 / Math.PI;
 
 // ── Standard output grid (ORC-IMS inspired) ─────────────────────────
 export const POLAR_TWA_DEG: readonly number[] = [
-  0, 30, 32, 36, 40, 45, 50, 55, 60, 70, 80, 90,
-  100, 110, 120, 130, 135, 140, 150, 160, 170, 180,
+  0, 30, 32, 36, 40, 45, 50, 55, 60, 70, 80, 90, 100, 110, 120, 130, 135, 140, 150, 160, 170, 180,
 ];
 export const POLAR_TWS_KT: readonly number[] = [4, 6, 8, 10, 12, 14, 16, 20, 24, 30];
 
@@ -101,8 +100,14 @@ export function apparentWind(tws_ms: number, twa_deg: number, vs_ms: number): [n
 
 /** Boat speed where sail drive equals hull drag: bisection on [0, vs_max]. */
 export function solveBoatSpeed(
-  twa: number, tws_ms: number, sa_up: number, sa_dn: number,
-  displacement_kg: number, lwl_m: number, beam_m: number, vs_max: number,
+  twa: number,
+  tws_ms: number,
+  sa_up: number,
+  sa_dn: number,
+  displacement_kg: number,
+  lwl_m: number,
+  beam_m: number,
+  vs_max: number
 ): number {
   const netForce = (vsIn: number): number => {
     const vs = vsIn < 0.0 ? 0.0 : vsIn;
@@ -159,7 +164,7 @@ export function computePolarTable(specs: BoatSpecs): VppTable {
       speeds[i][j] = solveBoatSpeed(twa, tws_ms, sa_up, sa_dn, specs.displacement_kg, specs.lwl_m, specs.beam_m, vs_max);
     }
   }
-  return { twa_deg: [...POLAR_TWA_DEG], tws_ms: POLAR_TWS_KT.map((k) => k * VPP_KTS_TO_MS), speeds_ms: speeds };
+  return { twa_deg: [...POLAR_TWA_DEG], tws_ms: POLAR_TWS_KT.map(k => k * VPP_KTS_TO_MS), speeds_ms: speeds };
 }
 
 /** `EmpiricalVPP.compute_polar`. */
@@ -185,11 +190,11 @@ const CSV_KTS_TO_MS = 0.5144444444;
  */
 export function polarCsv(table: VppTable, headerLabel = 'twa/tws'): string {
   const lines: string[] = [];
-  lines.push([csvCell(headerLabel), ...table.tws_ms.map((t) => pyFixed(t / CSV_KTS_TO_MS, 1))].join(','));
+  lines.push([csvCell(headerLabel), ...table.tws_ms.map(t => pyFixed(t / CSV_KTS_TO_MS, 1))].join(','));
   for (let i = 0; i < table.twa_deg.length; i++) {
-    lines.push([pyFixed(table.twa_deg[i], 0), ...table.speeds_ms[i].map((v) => pyFixed(v / CSV_KTS_TO_MS, 2))].join(','));
+    lines.push([pyFixed(table.twa_deg[i], 0), ...table.speeds_ms[i].map(v => pyFixed(v / CSV_KTS_TO_MS, 2))].join(','));
   }
-  return lines.map((l) => l + '\r\n').join('');
+  return lines.map(l => l + '\r\n').join('');
 }
 
 /** Python csv.writer minimal quoting for one cell. */

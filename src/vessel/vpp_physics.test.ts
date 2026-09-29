@@ -15,12 +15,25 @@ import { boatSpeed, buildModel, computePhysicsTable } from './vpp_physics';
 import { UnsupportedHull, type BoatSpecs } from './vpp';
 
 const KT = 0.5144444444;
-interface Pt { twa: number; tws_kt: number; bs_kt: number }
-interface Boat { specs: BoatSpecs; points: Pt[] }
-const held: Boat[] = JSON.parse(fs.readFileSync(path.join(__dirname, '../../test-data/orc-ns-2026.json'), 'utf8')).boats.filter((_: Boat, i: number) => i % 2 === 1);
+interface Pt {
+  twa: number;
+  tws_kt: number;
+  bs_kt: number;
+}
+interface Boat {
+  specs: BoatSpecs;
+  points: Pt[];
+}
+const held: Boat[] = JSON.parse(fs.readFileSync(path.join(__dirname, '../../test-data/orc-ns-2026.json'), 'utf8')).boats.filter(
+  (_: Boat, i: number) => i % 2 === 1
+);
 
-const sector = (twa: number): string | null => (twa >= 30 && twa <= 60 ? 'upwind' : twa >= 70 && twa <= 120 ? 'reaching' : twa >= 135 && twa <= 180 ? 'running' : null);
-const median = (a: number[]): number => { const v = [...a].sort((p, q) => p - q); return v[Math.floor(v.length / 2)]; };
+const sector = (twa: number): string | null =>
+  twa >= 30 && twa <= 60 ? 'upwind' : twa >= 70 && twa <= 120 ? 'reaching' : twa >= 135 && twa <= 180 ? 'running' : null;
+const median = (a: number[]): number => {
+  const v = [...a].sort((p, q) => p - q);
+  return v[Math.floor(v.length / 2)];
+};
 
 test('held-out ORC boats: median error per sector and boats over 30%', () => {
   const meanAbs: Record<string, number[]> = { upwind: [], reaching: [], running: [] };
@@ -51,19 +64,43 @@ test('held-out ORC boats: median error per sector and boats over 30%', () => {
 // heavily depowered model loses ~2% from 20 to 24 kn (ORC shows a flat
 // line there), and up to 0.3 kn from 24 to 30 kn, outside ORC's range.
 test('table: standard grid, zero below 30° TWA, no real speed drop as wind rises (4–24 kn)', () => {
-  const specs: BoatSpecs = { loa_m: 14.6, lwl_m: 11.5, beam_m: 4.3, draft_m: 2.4, displacement_kg: 14000, sail_area_upwind_m2: 95, rig_type: 'ketch', keel_type: 'fin' };
+  const specs: BoatSpecs = {
+    loa_m: 14.6,
+    lwl_m: 11.5,
+    beam_m: 4.3,
+    draft_m: 2.4,
+    displacement_kg: 14000,
+    sail_area_upwind_m2: 95,
+    rig_type: 'ketch',
+    keel_type: 'fin',
+  };
   const t = computePhysicsTable(specs);
   assert.equal(t.twa_deg.length, 22);
   assert.equal(t.tws_ms.length, 10);
-  assert.ok(t.speeds_ms[0].every((v) => v === 0));
+  assert.ok(t.speeds_ms[0].every(v => v === 0));
   for (let i = 1; i < t.twa_deg.length; i++) {
     for (let k = 1; k < t.tws_ms.length; k++) {
       if (t.tws_ms[k] > 24 * KT + 1e-6) continue;
-      assert.ok(t.speeds_ms[i][k] >= t.speeds_ms[i][k - 1] - 0.1, `TWA ${t.twa_deg[i]} drops from ${t.speeds_ms[i][k - 1]} to ${t.speeds_ms[i][k]}`);
+      assert.ok(
+        t.speeds_ms[i][k] >= t.speeds_ms[i][k - 1] - 0.1,
+        `TWA ${t.twa_deg[i]} drops from ${t.speeds_ms[i][k - 1]} to ${t.speeds_ms[i][k]}`
+      );
     }
   }
 });
 
 test('multihulls are rejected', () => {
-  assert.throws(() => computePhysicsTable({ loa_m: 12, lwl_m: 11, beam_m: 6, draft_m: 1.2, displacement_kg: 7000, sail_area_upwind_m2: 90, hull_type: 'catamaran' }), UnsupportedHull);
+  assert.throws(
+    () =>
+      computePhysicsTable({
+        loa_m: 12,
+        lwl_m: 11,
+        beam_m: 6,
+        draft_m: 1.2,
+        displacement_kg: 7000,
+        sail_area_upwind_m2: 90,
+        hull_type: 'catamaran',
+      }),
+    UnsupportedHull
+  );
 });

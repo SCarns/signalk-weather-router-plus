@@ -473,7 +473,7 @@ export class ArcoClient {
 
   /** Cached runs, newest first. */
   cachedRuns(): ArcoRun[] {
-    let entries: string[] = [];
+    let entries: string[];
     try {
       entries = fs.readdirSync(this.cacheDir);
     } catch {
@@ -494,7 +494,7 @@ export class ArcoClient {
   pruneRuns(keep: string[]): string[] {
     const keepSet = new Set(keep);
     const removed: string[] = [];
-    let entries: string[] = [];
+    let entries: string[];
     try {
       entries = fs.readdirSync(this.cacheDir);
     } catch {
@@ -517,7 +517,7 @@ export class ArcoClient {
   cachedBytes(key: string): number {
     let total = 0;
     const walk = (d: string): void => {
-      let es: fs.Dirent[] = [];
+      let es: fs.Dirent[];
       try {
         es = fs.readdirSync(d, { withFileTypes: true });
       } catch {

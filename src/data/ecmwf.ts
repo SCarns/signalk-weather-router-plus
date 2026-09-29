@@ -297,7 +297,7 @@ export class EcmwfClient {
 
   /** Cycles present in the cache directory, newest first. */
   cachedCycles(): Cycle[] {
-    let entries: string[] = [];
+    let entries: string[];
     try {
       entries = fs.readdirSync(this.cacheDir);
     } catch {
@@ -349,7 +349,7 @@ export class EcmwfClient {
   /** Delete cached cycles other than `keep`. */
   pruneCache(keep: Cycle[]): void {
     const keepNames = new Set(keep.map((c) => `${c.yyyymmdd}${c.hh}`));
-    let entries: string[] = [];
+    let entries: string[];
     try {
       entries = fs.readdirSync(this.cacheDir);
     } catch {

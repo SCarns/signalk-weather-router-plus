@@ -88,7 +88,11 @@ function windowStat(src: Float64Array, ny: number, nx: number, size: number, op:
   return out;
 }
 
-export function findExtrema(field: Float64Array, lons: Float64Array, lats: Float64Array): { highs: { lon: number; lat: number; hpa: number }[]; lows: { lon: number; lat: number; hpa: number }[] } {
+export function findExtrema(
+  field: Float64Array,
+  lons: Float64Array,
+  lats: Float64Array
+): { highs: { lon: number; lat: number; hpa: number }[]; lows: { lon: number; lat: number; hpa: number }[] } {
   const ny = lats.length;
   const nx = lons.length;
   const sm = gaussianFilter(field, ny, nx, 1.0);
@@ -140,23 +144,54 @@ export function contourLines(field: Float64Array, lons: Float64Array, lats: Floa
         segs.push([a[0], a[1], b[0], b[1]]);
       };
       switch (c) {
-        case 1: case 14: add(left(), bottom()); break;
-        case 2: case 13: add(bottom(), right()); break;
-        case 3: case 12: add(left(), right()); break;
-        case 4: case 11: add(right(), top()); break;
-        case 6: case 9: add(bottom(), top()); break;
-        case 7: case 8: add(left(), top()); break;
+        case 1:
+        case 14:
+          add(left(), bottom());
+          break;
+        case 2:
+        case 13:
+          add(bottom(), right());
+          break;
+        case 3:
+        case 12:
+          add(left(), right());
+          break;
+        case 4:
+        case 11:
+          add(right(), top());
+          break;
+        case 6:
+        case 9:
+          add(bottom(), top());
+          break;
+        case 7:
+        case 8:
+          add(left(), top());
+          break;
         case 5: {
           const centre = (v00 + v10 + v01 + v11) / 4;
-          if (centre >= level) { add(left(), top()); add(bottom(), right()); } else { add(left(), bottom()); add(right(), top()); }
+          if (centre >= level) {
+            add(left(), top());
+            add(bottom(), right());
+          } else {
+            add(left(), bottom());
+            add(right(), top());
+          }
           break;
         }
         case 10: {
           const centre = (v00 + v10 + v01 + v11) / 4;
-          if (centre >= level) { add(left(), bottom()); add(right(), top()); } else { add(left(), top()); add(bottom(), right()); }
+          if (centre >= level) {
+            add(left(), bottom());
+            add(right(), top());
+          } else {
+            add(left(), top());
+            add(bottom(), right());
+          }
           break;
         }
-        default: break;
+        default:
+          break;
       }
     }
   }
@@ -184,7 +219,10 @@ export function contourLines(field: Float64Array, lons: Float64Array, lats: Floa
   for (let i = 0; i < segs.length; i++) {
     if (used[i]) continue;
     used[i] = 1;
-    const line: [number, number][] = [[segs[i][0], segs[i][1]], [segs[i][2], segs[i][3]]];
+    const line: [number, number][] = [
+      [segs[i][0], segs[i][1]],
+      [segs[i][2], segs[i][3]],
+    ];
     // Extend forward.
     for (;;) {
       const last = line[line.length - 1];
@@ -221,7 +259,8 @@ export function contourLines(field: Float64Array, lons: Float64Array, lats: Floa
 function* labelPointsAlong(coords: [number, number][], spacingDeg: number): Generator<[number, number]> {
   if (coords.length < 2) return;
   const cum = [0];
-  for (let i = 1; i < coords.length; i++) cum.push(cum[i - 1] + Math.hypot(coords[i][0] - coords[i - 1][0], coords[i][1] - coords[i - 1][1]));
+  for (let i = 1; i < coords.length; i++)
+    cum.push(cum[i - 1] + Math.hypot(coords[i][0] - coords[i - 1][0], coords[i][1] - coords[i - 1][1]));
   const total = cum[cum.length - 1];
   if (total < spacingDeg * 0.5) return;
   const n = Math.max(1, Math.floor(total / spacingDeg));
@@ -259,14 +298,32 @@ export function buildIsobarFeatures(fieldHpa: Float64Array, lons: Float64Array, 
     const bold = hpaInt % BOLD_MULTIPLE === 0 || hpaInt === 1000;
     for (const line of contourLines(fieldHpa, lons, lats, level)) {
       if (line.length < 2) continue;
-      out.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: line.map(([x, y]) => [r5(x), r5(y)]) }, properties: { kind: 'isobar', hpa: hpaInt, pa: hpaInt * 100, bold } });
+      out.push({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: line.map(([x, y]) => [r5(x), r5(y)]) },
+        properties: { kind: 'isobar', hpa: hpaInt, pa: hpaInt * 100, bold },
+      });
       for (const [lon, lat] of labelPointsAlong(line, LABEL_SPACING_DEG)) {
-        out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [r5(lon), r5(lat)] }, properties: { kind: 'label', hpa: hpaInt, pa: hpaInt * 100 } });
+        out.push({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [r5(lon), r5(lat)] },
+          properties: { kind: 'label', hpa: hpaInt, pa: hpaInt * 100 },
+        });
       }
     }
   }
   const { highs, lows } = findExtrema(fieldHpa, lons, lats);
-  for (const h of highs) out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [r5(h.lon), r5(h.lat)] }, properties: { kind: 'high', hpa: h.hpa, pa: Math.round(h.hpa * 100) } });
-  for (const l of lows) out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [r5(l.lon), r5(l.lat)] }, properties: { kind: 'low', hpa: l.hpa, pa: Math.round(l.hpa * 100) } });
+  for (const h of highs)
+    out.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [r5(h.lon), r5(h.lat)] },
+      properties: { kind: 'high', hpa: h.hpa, pa: Math.round(h.hpa * 100) },
+    });
+  for (const l of lows)
+    out.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [r5(l.lon), r5(l.lat)] },
+      properties: { kind: 'low', hpa: l.hpa, pa: Math.round(l.hpa * 100) },
+    });
   return out;
 }

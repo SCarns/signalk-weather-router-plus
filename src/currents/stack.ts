@@ -44,7 +44,7 @@ export class CurrentStack implements CurrentSource {
 
   /** Identifies the data behind the stack (source names and revisions), for response caches. */
   get key(): string {
-    return this.sources.map((s) => (s.revision === undefined ? s.name : `${s.name}#${s.revision}`)).join('+');
+    return this.sources.map(s => (s.revision === undefined ? s.name : `${s.name}#${s.revision}`)).join('+');
   }
 
   atMany(lons: Float64Array, lats: Float64Array, time: Date): { u: Float64Array; v: Float64Array } {
@@ -59,8 +59,8 @@ export class CurrentStack implements CurrentSource {
       const idx: number[] = [];
       for (let k = 0; k < n; k++) if (unfilled[k] && s.contains(lons[k], lats[k])) idx.push(k);
       if (idx.length === 0) continue;
-      const subLon = new Float64Array(idx.map((k) => lons[k]));
-      const subLat = new Float64Array(idx.map((k) => lats[k]));
+      const subLon = new Float64Array(idx.map(k => lons[k]));
+      const subLat = new Float64Array(idx.map(k => lats[k]));
       const r = s.atMany(subLon, subLat, time);
       for (let q = 0; q < idx.length; q++) {
         if (r.u[q] !== 0 || r.v[q] !== 0) {

@@ -6,7 +6,14 @@ import * as path from 'node:path';
 import { KTS_TO_MS } from '../geo/geodesy';
 import { resolveConfig, routeVessel, type LegacyPluginConfig } from './config';
 import {
-  defaultSettings, mergeSettings, migrateLegacy, reloadsFor, SETTINGS_SPEC, settingsSchema, SettingsStore, SettingsValidationError,
+  defaultSettings,
+  mergeSettings,
+  migrateLegacy,
+  reloadsFor,
+  SETTINGS_SPEC,
+  settingsSchema,
+  SettingsStore,
+  SettingsValidationError,
 } from './settings';
 import { registerApi, type ApiDeps } from './api';
 
@@ -16,9 +23,35 @@ const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-settings-')
 const LEGACY: LegacyPluginConfig & Record<string, unknown> = {
   landShapefiles: '/x/GSHHS_f_L1.shp',
   polarFile: '/x/catalina36.csv',
-  vessel: { name: 'Catalina 36', draughtM: 1.0, airDraftM: 16.15, loaM: 10.97, beamM: 3.73, underKeelClearanceM: 2.0, overheadClearanceM: 1.0, motorSpeedKts: 6.0, maxSwhM: 3.0, tackPenaltySeconds: 30 },
-  forecast: { horizonHours: 48, refreshMinutes: 60, mirror: 'ecmwf', region: { west: -75, south: 36, east: -65, north: 45 }, keepCycles: 2 } as LegacyPluginConfig['forecast'],
-  routing: { stages: 20, subsectors: 30, headings: 30, headingIncrementDeg: 1, sailThresholdKts: 4.9, simStepM: 200, landRasterMaxCells: 25000000, keepJobs: 50 },
+  vessel: {
+    name: 'Catalina 36',
+    draughtM: 1.0,
+    airDraftM: 16.15,
+    loaM: 10.97,
+    beamM: 3.73,
+    underKeelClearanceM: 2.0,
+    overheadClearanceM: 1.0,
+    motorSpeedKts: 6.0,
+    maxSwhM: 3.0,
+    tackPenaltySeconds: 30,
+  },
+  forecast: {
+    horizonHours: 48,
+    refreshMinutes: 60,
+    mirror: 'ecmwf',
+    region: { west: -75, south: 36, east: -65, north: 45 },
+    keepCycles: 2,
+  } as LegacyPluginConfig['forecast'],
+  routing: {
+    stages: 20,
+    subsectors: 30,
+    headings: 30,
+    headingIncrementDeg: 1,
+    sailThresholdKts: 4.9,
+    simStepM: 200,
+    landRasterMaxCells: 25000000,
+    keepJobs: 50,
+  },
   publish: { toResources: true, routeNamePrefix: 'WRP', notifications: true },
   weatherProvider: { enabled: true },
 };
@@ -149,7 +182,10 @@ test('SettingsStore: first load migrates and writes settings.json; later loads i
 
 test('SettingsStore: bad stored values fall back per key; unreadable file is kept aside', () => {
   const dir = tmp();
-  fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ version: 1, values: { vessel: { draught: 99, beam: 4 }, forecast: { horizon: 'x' } } }));
+  fs.writeFileSync(
+    path.join(dir, 'settings.json'),
+    JSON.stringify({ version: 1, values: { vessel: { draught: 99, beam: 4 }, forecast: { horizon: 'x' } } })
+  );
   const s = new SettingsStore(dir);
   const r = s.load(LEGACY);
   assert.equal(r.created, false);
@@ -162,11 +198,14 @@ test('SettingsStore: bad stored values fall back per key; unreadable file is kep
   const r2 = s2.load(LEGACY);
   assert.equal(r2.created, true);
   assert.equal(s2.values.vessel.name, 'Catalina 36');
-  assert.ok(fs.readdirSync(dir2).some((f) => f.startsWith('settings.json.corrupt-')));
+  assert.ok(fs.readdirSync(dir2).some(f => f.startsWith('settings.json.corrupt-')));
 });
 
 /** Minimal express-like router capturing handlers. */
-function fakeRouter(): { router: unknown; call: (method: string, p: string, body?: unknown) => Promise<{ status: number; body: unknown }> } {
+function fakeRouter(): {
+  router: unknown;
+  call: (method: string, p: string, body?: unknown) => Promise<{ status: number; body: unknown }>;
+} {
   const routes = new Map<string, (req: unknown, res: unknown) => unknown>();
   const reg = (m: string) => (p: string | string[], h: (req: unknown, res: unknown) => unknown) => {
     for (const x of Array.isArray(p) ? p : [p]) routes.set(`${m} ${x}`, h);
@@ -178,9 +217,17 @@ function fakeRouter(): { router: unknown; call: (method: string, p: string, body
     let status = 200;
     let out: unknown;
     const res = {
-      status(c: number) { status = c; return res; },
-      json(b: unknown) { out = b; return res; },
-      setHeader() { return res; },
+      status(c: number) {
+        status = c;
+        return res;
+      },
+      json(b: unknown) {
+        out = b;
+        return res;
+      },
+      setHeader() {
+        return res;
+      },
     };
     await h({ body, query: {}, params: {} }, res);
     return { status, body: out };
@@ -194,21 +241,36 @@ test('GET/PUT /api/settings: schema + values, partial update, 400 with per-key e
   store.load(undefined);
   const applied: string[][] = [];
   const { router, call } = fakeRouter();
-  registerApi(router as never, {
-    pluginId: 'x', basePath: '/x', publicDir: dir,
-    getSettings: () => ({ values: store.values, schema: settingsSchema() }),
-    updateSettings: (partial: unknown) => {
-      const { values, changed } = store.update(partial);
-      applied.push(changed);
-      const k = reloadsFor(changed);
-      return { values, changed, reloaded: { forecast: k.has('forecast'), currents: k.has('currents'), tides: k.has('tides'), refresh_timer: k.has('refresh_timer'), jobs: k.has('jobs') } };
-    },
-  } as unknown as ApiDeps);
+  registerApi(
+    router as never,
+    {
+      pluginId: 'x',
+      basePath: '/x',
+      publicDir: dir,
+      getSettings: () => ({ values: store.values, schema: settingsSchema() }),
+      updateSettings: (partial: unknown) => {
+        const { values, changed } = store.update(partial);
+        applied.push(changed);
+        const k = reloadsFor(changed);
+        return {
+          values,
+          changed,
+          reloaded: {
+            forecast: k.has('forecast'),
+            currents: k.has('currents'),
+            tides: k.has('tides'),
+            refresh_timer: k.has('refresh_timer'),
+            jobs: k.has('jobs'),
+          },
+        };
+      },
+    } as unknown as ApiDeps
+  );
   const g = await call('GET', '/api/settings');
   assert.equal(g.status, 200);
   const gb = g.body as { values: { vessel: { draught: number } }; schema: { settings: { key: string; unit?: string }[] } };
   assert.equal(gb.values.vessel.draught, 1.8);
-  assert.equal(gb.schema.settings.find((s) => s.key === 'vessel.motorSpeed')!.unit, 'm/s');
+  assert.equal(gb.schema.settings.find(s => s.key === 'vessel.motorSpeed')!.unit, 'm/s');
   const p = await call('PUT', '/api/settings', { forecast: { horizon: 96 * 3600 } });
   assert.equal(p.status, 200);
   const pb = p.body as { values: { forecast: { horizon: number } }; changed: string[]; reloaded: { forecast: boolean } };
@@ -254,7 +316,10 @@ test('CMEMS SMOC settings: defaults in SI, 1 h or 3 h step only, changes reload 
   assert.equal(d.currents.smocHorizon, 72 * 3600);
   assert.equal(d.currents.smocHalfWidth, 15);
   const c = resolveConfig({ landShapefiles: '/a.shp' }, d);
-  assert.deepEqual([c.currents.smocEnabled, c.currents.smocStepHours, c.currents.smocHorizonHours, c.currents.smocHalfWidthDeg], [true, 3, 72, 15]);
+  assert.deepEqual(
+    [c.currents.smocEnabled, c.currents.smocStepHours, c.currents.smocHorizonHours, c.currents.smocHalfWidthDeg],
+    [true, 3, 72, 15]
+  );
   const ok = mergeSettings(d, { currents: { smocStep: 3600, smocHalfWidth: 20, smocHorizon: 120 * 3600 } });
   assert.deepEqual(ok.changed.sort(), ['currents.smocHalfWidth', 'currents.smocHorizon', 'currents.smocStep']);
   assert.deepEqual([...reloadsFor(ok.changed)], ['currents']);
@@ -267,13 +332,16 @@ test('CMEMS SMOC settings: defaults in SI, 1 h or 3 h step only, changes reload 
     assert.match(e['currents.smocHalfWidth'], /\[2, 30\]/);
     assert.match(e['currents.smocHorizon'], /\[21600, 864000\]/);
   }
-  const specs = settingsSchema().settings.filter((s) => s.key.startsWith('currents.smoc'));
-  assert.deepEqual(specs.map((s) => s.key), ['currents.smocEnabled', 'currents.smocHorizon', 'currents.smocStep', 'currents.smocHalfWidth']);
-  assert.deepEqual(SETTINGS_SPEC.find((s) => s.key === 'currents.smocStep')!.oneOf, [3600, 10800]);
+  const specs = settingsSchema().settings.filter(s => s.key.startsWith('currents.smoc'));
+  assert.deepEqual(
+    specs.map(s => s.key),
+    ['currents.smocEnabled', 'currents.smocHorizon', 'currents.smocStep', 'currents.smocHalfWidth']
+  );
+  assert.deepEqual(SETTINGS_SPEC.find(s => s.key === 'currents.smocStep')!.oneOf, [3600, 10800]);
 });
 
 test('allow canals: routing setting, off by default, applies to the next route', () => {
-  const spec = SETTINGS_SPEC.find((s) => s.key === 'routing.allowCanals');
+  const spec = SETTINGS_SPEC.find(s => s.key === 'routing.allowCanals');
   assert.ok(spec);
   assert.equal(spec!.type, 'boolean');
   assert.equal(spec!.default, false);

@@ -55,7 +55,7 @@ test('global store keeps every decoded value at Float32, bit for bit, in shared 
   for (let r = 0; r < g.nj; r++) {
     for (let c = 0; c < g.ni; c++) {
       const want = Math.fround(decoded[(g.nj - 1 - r) * g.ni + c]);
-      const got = f.values[r * g.ni + c];
+      const got: number = f.values[r * g.ni + c];
       if (!Object.is(got, want)) assert.fail(`cell r${r} c${c}: ${got} != ${want}`);
     }
   }

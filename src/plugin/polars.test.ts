@@ -6,7 +6,8 @@ import * as path from 'node:path';
 import { listPolars, loadPolarCached, polarAngles, polarFromSpecs, polarTable, resolvePolarPath } from './polars';
 import { PolarDiagram } from '../vessel/polar';
 
-const CSV = 'twa/tws,6,10,16\n30,0,0,0\n45,3.5,5.2,6.0\n60,4.2,6.0,6.8\n90,4.8,6.6,7.2\n120,4.6,6.9,7.8\n150,3.9,6.2,7.9\n180,3.2,5.4,7.1\n';
+const CSV =
+  'twa/tws,6,10,16\n30,0,0,0\n45,3.5,5.2,6.0\n60,4.2,6.0,6.8\n90,4.8,6.6,7.2\n120,4.6,6.9,7.8\n150,3.9,6.2,7.9\n180,3.2,5.4,7.1\n';
 
 function lib(): { dir: string; def: string } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'polars-'));
@@ -24,7 +25,10 @@ function lib(): { dir: string; def: string } {
 test('listPolars: default first, library files by name, non-polars skipped, default not duplicated', () => {
   const { dir, def } = lib();
   const entries = listPolars({ polarFile: def, polarsDir: dir });
-  assert.deepEqual(entries.map((e) => e.path), ['default', 'a_boat.csv', 'b_boat.pol', 'user/legacy.csv', 'user/someone_example_org/mine.csv']);
+  assert.deepEqual(
+    entries.map(e => e.path),
+    ['default', 'a_boat.csv', 'b_boat.pol', 'user/legacy.csv', 'user/someone_example_org/mine.csv']
+  );
   assert.equal(entries[0].source, 'default');
   assert.equal(entries[1].label, 'a boat');
   assert.equal(entries[3].label, 'user: legacy');
@@ -38,8 +42,21 @@ test('resolvePolarPath refuses anything outside the library', () => {
   assert.equal(resolvePolarPath(cfg, undefined), def);
   assert.equal(resolvePolarPath(cfg, 'default'), def);
   assert.equal(fs.realpathSync(resolvePolarPath(cfg, 'a_boat.csv')!), fs.realpathSync(path.join(dir, 'a_boat.csv')));
-  assert.equal(fs.realpathSync(resolvePolarPath(cfg, 'user/someone_example_org/mine.csv')!), fs.realpathSync(path.join(dir, 'user/someone_example_org/mine.csv')));
-  for (const bad of ['../etc/passwd', '/etc/passwd', 'notes.txt', '.hidden.csv', 'missing.csv', 'sub/x.csv', 'user/../a_boat.csv', 'user/x/y/z.csv', 'user/.x/a.csv']) {
+  assert.equal(
+    fs.realpathSync(resolvePolarPath(cfg, 'user/someone_example_org/mine.csv')!),
+    fs.realpathSync(path.join(dir, 'user/someone_example_org/mine.csv'))
+  );
+  for (const bad of [
+    '../etc/passwd',
+    '/etc/passwd',
+    'notes.txt',
+    '.hidden.csv',
+    'missing.csv',
+    'sub/x.csv',
+    'user/../a_boat.csv',
+    'user/x/y/z.csv',
+    'user/.x/a.csv',
+  ]) {
     assert.throws(() => resolvePolarPath(cfg, bad), /not found/, bad);
   }
   assert.throws(() => resolvePolarPath({ polarFile: null, polarsDir: null }, 'default'), /no default/);
@@ -63,7 +80,19 @@ test('polarAngles and polarTable from a loaded polar', () => {
   assert.ok(Math.abs(t.speeds_ms[5][2] - 7.9 * 0.514444) < 1e-3);
 });
 
-const SPECS = { loa_m: 10.97, lwl_m: 9.14, beam_m: 3.66, draft_m: 1.47, displacement_kg: 6214, ballast_kg: 2722, sail_area_upwind_m2: 55.7, sail_area_downwind_m2: 0, rig_type: 'sloop', keel_type: 'fin', hull_type: 'monohull' };
+const SPECS = {
+  loa_m: 10.97,
+  lwl_m: 9.14,
+  beam_m: 3.66,
+  draft_m: 1.47,
+  displacement_kg: 6214,
+  ballast_kg: 2722,
+  sail_area_upwind_m2: 55.7,
+  sail_area_downwind_m2: 0,
+  rig_type: 'sloop',
+  keel_type: 'fin',
+  hull_type: 'monohull',
+};
 
 test('polarFromSpecs: writes user/<slug>.csv, lists it, resolves it, 409 without overwrite', () => {
   const { dir } = lib();
@@ -79,11 +108,15 @@ test('polarFromSpecs: writes user/<slug>.csv, lists it, resolves it, 409 without
   assert.equal(polar.tws_ms.length, 10);
   const text = fs.readFileSync(path.join(dir, 'user', 'my_catalina_36.csv'), 'utf8');
   assert.ok(text.startsWith('my_catalina_36,4.0,6.0,8.0,10.0,12.0,14.0,16.0,20.0,24.0,30.0\r\n0,0.00,'));
-  const entry = listPolars(cfg).find((e) => e.path === 'user/my_catalina_36.csv');
+  const entry = listPolars(cfg).find(e => e.path === 'user/my_catalina_36.csv');
   assert.ok(entry);
   assert.equal(entry.label, r.body.label);
   assert.equal(resolvePolarPath(cfg, 'user/my_catalina_36.csv'), fs.realpathSync(path.join(dir, 'user', 'my_catalina_36.csv')));
-  assert.deepEqual(polarTable(loadPolarCached(resolvePolarPath(cfg, 'user/my_catalina_36.csv') as string)), { twa_deg: polar.twa_deg, tws_ms: polar.tws_ms, speeds_ms: polar.speeds_ms });
+  assert.deepEqual(polarTable(loadPolarCached(resolvePolarPath(cfg, 'user/my_catalina_36.csv') as string)), {
+    twa_deg: polar.twa_deg,
+    tws_ms: polar.tws_ms,
+    speeds_ms: polar.speeds_ms,
+  });
 
   const again = polarFromSpecs(cfg, { name: 'my catalina 36', specs: SPECS });
   assert.equal(again.status, 409);
@@ -113,7 +146,11 @@ test('PolarDiagram.scaled multiplies every boat speed and keeps the no-go floor'
   const p = PolarDiagram.parse('twa/tws,6,12\n0,0,0\n40,0,5\n90,6,8\n', ',');
   const s = p.scaled(0.8);
   assert.equal(p.scaled(1), p);
-  for (const [twa, tws] of [[90, 3.0867], [90, 6.1733], [60, 5]]) {
+  for (const [twa, tws] of [
+    [90, 3.0867],
+    [90, 6.1733],
+    [60, 5],
+  ]) {
     assert.ok(Math.abs(s.boatSpeed(twa, tws) - 0.8 * p.boatSpeed(twa, tws)) < 1e-12);
   }
   assert.equal(s.boatSpeed(40, 3.0867), 0, 'in irons at 6 kn stays in irons');

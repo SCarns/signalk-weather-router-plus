@@ -31,9 +31,7 @@ export interface SimOptions {
   simStepM: number;
 }
 
-function selectSpeed(
-  sailSpeed: number, motorSpeed: number, vmg: number, policy: ModePolicy, sailThreshMs: number,
-): [number, boolean] {
+function selectSpeed(sailSpeed: number, motorSpeed: number, vmg: number, policy: ModePolicy, sailThreshMs: number): [number, boolean] {
   if (policy === 'motor') return [motorSpeed, false];
   if (policy === 'fastest') return sailSpeed > motorSpeed ? [sailSpeed, true] : [motorSpeed, false];
   if (sailSpeed >= sailThreshMs || vmg > 0.25 || sailSpeed >= 1.0) return [sailSpeed, true];
@@ -42,9 +40,16 @@ function selectSpeed(
 
 /** Simulate traversal of the straight line a→c starting at aTime. */
 export function simulateLegTime(
-  aLon: number, aLat: number, aTime: Date, cLon: number, cLat: number,
-  vessel: VesselParams, polar: PolarDiagram | null, wind: WindSource, current: CurrentSource,
-  opts: SimOptions,
+  aLon: number,
+  aLat: number,
+  aTime: Date,
+  cLon: number,
+  cLat: number,
+  vessel: VesselParams,
+  polar: PolarDiagram | null,
+  wind: WindSource,
+  current: CurrentSource,
+  opts: SimOptions
 ): LegSimResult {
   const totalDistM = haversineDistanceM(aLon, aLat, cLon, cLat);
   if (totalDistM <= 0) {
@@ -70,7 +75,7 @@ export function simulateLegTime(
     let sailSpeed = 0;
     let vmg = 0;
     if (polar && Number.isFinite(ws)) {
-      let twa = ((bearingDeg - wd) % 360 + 360) % 360;
+      let twa = (((bearingDeg - wd) % 360) + 360) % 360;
       if (twa > 180) twa = 360 - twa;
       sailSpeed = polar.boatSpeed(twa, ws);
       vmg = sailSpeed; // heading equals leg bearing
@@ -116,10 +121,16 @@ export interface CandidateScores {
  * motor step time), as in the reference implementation.
  */
 export function scoreCandidatesFromParent(
-  parentLon: number, parentLat: number, parentTime: Date,
-  bearings: Float64Array, legDistM: Float64Array,
-  vessel: VesselParams, polar: PolarDiagram | null, wind: WindSource, current: CurrentSource,
-  opts: SimOptions,
+  parentLon: number,
+  parentLat: number,
+  parentTime: Date,
+  bearings: Float64Array,
+  legDistM: Float64Array,
+  vessel: VesselParams,
+  polar: PolarDiagram | null,
+  wind: WindSource,
+  current: CurrentSource,
+  opts: SimOptions
 ): CandidateScores {
   const n = bearings.length;
   const seconds = new Float64Array(n);
@@ -138,7 +149,7 @@ export function scoreCandidatesFromParent(
   const nSteps = Math.max(1, Math.ceil(maxDist / opts.simStepM));
   const stepPerCand = new Float64Array(n);
   for (let i = 0; i < n; i++) stepPerCand[i] = legDistM[i] / nSteps;
-  const meanDtPerStep = (sumDist / n / nSteps) / Math.max(motor, 0.1);
+  const meanDtPerStep = sumDist / n / nSteps / Math.max(motor, 0.1);
 
   const curLon = new Float64Array(n).fill(parentLon);
   const curLat = new Float64Array(n).fill(parentLat);
@@ -182,7 +193,7 @@ export function scoreCandidatesFromParent(
 
       let sailSpeed = 0;
       if (polar) {
-        let twa = ((bearings[i] - wd) % 360 + 360) % 360;
+        let twa = (((bearings[i] - wd) % 360) + 360) % 360;
         if (twa > 180) twa = 360 - twa;
         sailSpeed = polar.boatSpeed(twa, ws);
       }

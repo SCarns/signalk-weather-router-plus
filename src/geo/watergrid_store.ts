@@ -56,10 +56,14 @@ export function chooseWaterGrid(shapefiles: string[], dataDir: string | null, sh
       continue;
     }
     if (sources.length && grid.matchesSources(sources)) {
-      notes.push(`${file}: built ${grid.header.builtAt} from ${grid.header.sources.map((s) => s.name).join(', ')} (matches the configured coastline)`);
+      notes.push(
+        `${file}: built ${grid.header.builtAt} from ${grid.header.sources.map(s => s.name).join(', ')} (matches the configured coastline)`
+      );
       return { grid, file, matches: true, needsRebuild: false, rebuildPath, sources, notes };
     }
-    notes.push(`${file}: built from ${grid.header.sources.map((s) => `${s.name} (${s.size} bytes)`).join(', ')}, not the configured ${sources.map((s) => `${s.name} (${s.size} bytes)`).join(', ') || 'coastline'}`);
+    notes.push(
+      `${file}: built from ${grid.header.sources.map(s => `${s.name} (${s.size} bytes)`).join(', ')}, not the configured ${sources.map(s => `${s.name} (${s.size} bytes)`).join(', ') || 'coastline'}`
+    );
     if (!fallback) fallback = { grid, file };
   }
   return {

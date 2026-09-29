@@ -87,7 +87,14 @@ function readHeader(fd: number, shpPath: string): { fileLengthBytes: number; sha
  * null for null shapes, shapes with no ring of 3+ points, or (when
  * `clip` is given) shapes whose bounding box misses it.
  */
-function parseRecord(content: Buffer, contentLen: number, recordNumber: number, shapeType: number, shpPath: string, clip?: BBox): ShapePolygon | null {
+function parseRecord(
+  content: Buffer,
+  contentLen: number,
+  recordNumber: number,
+  shapeType: number,
+  shpPath: string,
+  clip?: BBox
+): ShapePolygon | null {
   const type = content.readInt32LE(0);
   if (type === SHAPE_NULL) return null;
   if (type !== shapeType) {
@@ -242,7 +249,8 @@ export class ShapefileIndex {
         if (contentLen < 4) throw new ShapefileError(`${shpPath}: record ${recordNumber} has length ${contentLen}`);
         const type = buf.readInt32LE(o + 8);
         if (type !== SHAPE_NULL && contentLen >= 36 && pos + 8 + 36 <= bufStart + bufLen) {
-          if (type !== shapeType) throw new ShapefileError(`${shpPath}: record ${recordNumber} has shape type ${type}, file says ${shapeType}`);
+          if (type !== shapeType)
+            throw new ShapefileError(`${shpPath}: record ${recordNumber} has shape type ${type}, file says ${shapeType}`);
           if (n === cap) {
             cap *= 2;
             const grow = <T extends Float64Array | Int32Array>(a: T): T => {
@@ -250,8 +258,13 @@ export class ShapefileIndex {
               b.set(a);
               return b;
             };
-            minLon = grow(minLon); minLat = grow(minLat); maxLon = grow(maxLon); maxLat = grow(maxLat);
-            offset = grow(offset); length = grow(length); recNo = grow(recNo);
+            minLon = grow(minLon);
+            minLat = grow(minLat);
+            maxLon = grow(maxLon);
+            maxLat = grow(maxLat);
+            offset = grow(offset);
+            length = grow(length);
+            recNo = grow(recNo);
           }
           minLon[n] = buf.readDoubleLE(o + 12);
           minLat[n] = buf.readDoubleLE(o + 20);
@@ -285,7 +298,7 @@ export class ShapefileIndex {
   /** Decode the records whose bounding box intersects `clip` (file order). */
   read(clip: BBox): ShapePolygon[] {
     const out: ShapePolygon[] = [];
-    this.forEach(clip, (s) => out.push(s));
+    this.forEach(clip, s => out.push(s));
     return out;
   }
 
@@ -331,12 +344,14 @@ export class ShapefileIndex {
       for (const i of hits) {
         const len = this.length[i];
         if (len > content.length) content = Buffer.alloc(len);
-        if (fs.readSync(fd, content, 0, len, this.offset[i]) !== len) throw new ShapefileError(`${this.path}: truncated record ${this.recNo[i]}`);
+        if (fs.readSync(fd, content, 0, len, this.offset[i]) !== len)
+          throw new ShapefileError(`${this.path}: truncated record ${this.recNo[i]}`);
         if (content.readInt32LE(0) === SHAPE_NULL) continue;
         const numParts = content.readInt32LE(36);
         const numPoints = content.readInt32LE(40);
         const pointsOff = 44 + 4 * numParts;
-        if (pointsOff + 16 * numPoints > len) throw new ShapefileError(`${this.path}: record ${this.recNo[i]} declares ${numPoints} points but has ${len} bytes`);
+        if (pointsOff + 16 * numPoints > len)
+          throw new ShapefileError(`${this.path}: record ${this.recNo[i]} declares ${numPoints} points but has ${len} bytes`);
         // Copy the coordinates into an aligned Float64Array (little-endian hosts).
         if (pts.length < 2 * numPoints) pts = new Float64Array(2 * numPoints);
         const bytes = new Uint8Array(pts.buffer, 0, 16 * numPoints);
@@ -349,7 +364,7 @@ export class ShapefileIndex {
           for (let a = start, b = end - 1; a < end; b = a++) {
             const yi = pts[2 * a + 1];
             const yj = pts[2 * b + 1];
-            if ((yi > lat) !== (yj > lat)) {
+            if (yi > lat !== yj > lat) {
               const xi = pts[2 * a];
               const xj = pts[2 * b];
               if (lon < xj + ((lat - yj) * (xi - xj)) / (yi - yj)) inside = !inside;
@@ -366,7 +381,7 @@ export class ShapefileIndex {
 
   private readRecords(idx: number[]): ShapePolygon[] {
     const out: ShapePolygon[] = [];
-    this.eachRecord(idx, (s) => out.push(s));
+    this.eachRecord(idx, s => out.push(s));
     return out;
   }
 
@@ -406,7 +421,7 @@ export function pointInShape(shape: ShapePolygon, lon: number, lat: number): boo
       const yi = c[2 * i + 1];
       const xj = c[2 * j];
       const yj = c[2 * j + 1];
-      if ((yi > lat) !== (yj > lat)) {
+      if (yi > lat !== yj > lat) {
         const xCross = xj + ((lat - yj) * (xi - xj)) / (yi - yj);
         if (lon < xCross) inside = !inside;
       }

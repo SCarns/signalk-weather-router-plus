@@ -132,7 +132,11 @@ export class PolarDiagram {
    */
   scaled(factor: number): PolarDiagram {
     if (factor === 1) return this;
-    return new PolarDiagram(this.twa, this.tws, this.speeds.map((s) => s * factor));
+    return new PolarDiagram(
+      this.twa,
+      this.tws,
+      this.speeds.map(s => s * factor)
+    );
   }
 
   static load(filePath: string): PolarDiagram {
@@ -154,7 +158,7 @@ export class PolarDiagram {
     if (headerIdx >= lines.length) throw new Error(`${label} is empty`);
     const header = splitRow(lines[headerIdx], delimiter);
     if (header.length < 2) throw new Error(`${label} has no TWS columns in header: ${lines[headerIdx]}`);
-    const twsKts = header.slice(1).map((s) => parseNum(s, `${label} header`));
+    const twsKts = header.slice(1).map(s => parseNum(s, `${label} header`));
     const nW = twsKts.length;
     const twa: number[] = [];
     const speeds: number[] = [];
@@ -169,13 +173,17 @@ export class PolarDiagram {
       for (let k = 1; k <= nW; k++) speeds.push(parseNum(row[k], `${label} row ${r + 1}`) * KTS_TO_MS);
     }
     if (twa.length === 0) throw new Error(`${label} has no data rows`);
-    return new PolarDiagram(twa, twsKts.map((k) => k * KTS_TO_MS), speeds);
+    return new PolarDiagram(
+      twa,
+      twsKts.map(k => k * KTS_TO_MS),
+      speeds
+    );
   }
 }
 
 function splitRow(line: string, delimiter: string): string[] {
   const parts = delimiter === '\t' ? line.split(/\t+/) : line.split(delimiter);
-  return parts.map((s) => s.trim()).filter((s, idx, arr) => !(idx === arr.length - 1 && s === ''));
+  return parts.map(s => s.trim()).filter((s, idx, arr) => !(idx === arr.length - 1 && s === ''));
 }
 
 function parseNum(s: string, where: string): number {

@@ -24,7 +24,16 @@ import { registerApi } from './plugin/api';
 import { openApiDocument } from './plugin/openapi';
 import { makeWeatherProvider, startMsOf, type WeatherData } from './plugin/weather';
 import type {
-  DataStatus, ForecastMemory, ForecastRunInfo, MainToWorker, QueryArgs, QueryKind, TideSeriesResult, VesselPosition, WorkerRole, WorkerToMain,
+  DataStatus,
+  ForecastMemory,
+  ForecastRunInfo,
+  MainToWorker,
+  QueryArgs,
+  QueryKind,
+  TideSeriesResult,
+  VesselPosition,
+  WorkerRole,
+  WorkerToMain,
 } from './plugin/protocol';
 import type { SerializedSmoc } from './currents/smoc';
 import type { SerializedHarmonic } from './currents/harmonic';
@@ -121,9 +130,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
   function vesselPosition(): VesselPosition | null {
     try {
       const raw = app.getSelfPath?.('navigation.position') as { value?: unknown; latitude?: unknown; longitude?: unknown } | undefined;
-      const p = (raw && typeof raw === 'object' && 'value' in raw ? raw.value : raw) as { latitude?: unknown; longitude?: unknown } | undefined;
+      const p = (raw && typeof raw === 'object' && 'value' in raw ? raw.value : raw) as
+        { latitude?: unknown; longitude?: unknown } | undefined;
       if (!p || typeof p.latitude !== 'number' || typeof p.longitude !== 'number') return null;
-      if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude) || Math.abs(p.latitude) > 90 || Math.abs(p.longitude) > 180) return null;
+      if (!Number.isFinite(p.latitude) || !Number.isFinite(p.longitude) || Math.abs(p.latitude) > 90 || Math.abs(p.longitude) > 180)
+        return null;
       return { lat: p.latitude, lon: p.longitude };
     } catch {
       return null;
@@ -148,8 +159,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
     if (forecastRun) {
       const ix = forecastRun.index;
       const b = new Date(ix.steps[ix.steps.length - 1].validMs);
-      const cur = dataStatus?.currents.length ? `, currents ${dataStatus.currents.map((c) => c.name).join('/')}` : ', no currents';
-      app.setPluginStatus(`global forecast ${new Date(ix.cycleTimeMs).toISOString().slice(0, 13)}Z to ${b.toISOString().slice(0, 13)}Z (${ix.steps.length} steps, ${(ix.bytes / 1e6).toFixed(0)} MB decoded on disk)${cur}; ${jobsSummary()}${forecastError ? `; reload refused: ${forecastError}` : ''}`);
+      const cur = dataStatus?.currents.length ? `, currents ${dataStatus.currents.map(c => c.name).join('/')}` : ', no currents';
+      app.setPluginStatus(
+        `global forecast ${new Date(ix.cycleTimeMs).toISOString().slice(0, 13)}Z to ${b.toISOString().slice(0, 13)}Z (${ix.steps.length} steps, ${(ix.bytes / 1e6).toFixed(0)} MB decoded on disk)${cur}; ${jobsSummary()}${forecastError ? `; reload refused: ${forecastError}` : ''}`
+      );
     } else if (forecastError) {
       app.setPluginError(`forecast unavailable: ${forecastError}`);
     } else {
@@ -161,7 +174,16 @@ export = function plugin(app: SkApp): SignalKPlugin {
     if (!config?.publish.notifications || !app.handleMessage) return;
     try {
       app.handleMessage(PLUGIN_ID, {
-        updates: [{ values: [{ path: `notifications.weatherRouterPlus.${job.id}`, value: { state, method: [], message, timestamp: new Date().toISOString() } }] }],
+        updates: [
+          {
+            values: [
+              {
+                path: `notifications.weatherRouterPlus.${job.id}`,
+                value: { state, method: [], message, timestamp: new Date().toISOString() },
+              },
+            ],
+          },
+        ],
       });
     } catch (err) {
       app.error(`notification failed: ${(err as Error).message}`);
@@ -181,7 +203,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
     } catch (err) {
       const msg = (err as Error).message || String(err);
       jobs.setPublished(job.id, null, msg);
-      throw new Error(`Resources API rejected the route: ${msg} (is a routes provider such as resources-provider enabled?)`);
+      throw new Error(`Resources API rejected the route: ${msg} (is a routes provider such as resources-provider enabled?)`, {
+        cause: err,
+      });
     }
   }
 
@@ -216,7 +240,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
         registerWeather();
         // The route worker reads route areas from the same run on disk.
         post('route', { type: 'forecast', run: msg.run });
-        log(`forecast ${new Date(msg.run.index.cycleTimeMs).toISOString().slice(0, 13)}Z ready: decoded run ${msg.run.dir} (${(msg.run.index.bytes / 1e6).toFixed(1)} MB on disk; nothing resident)`);
+        log(
+          `forecast ${new Date(msg.run.index.cycleTimeMs).toISOString().slice(0, 13)}Z ready: decoded run ${msg.run.dir} (${(msg.run.index.bytes / 1e6).toFixed(1)} MB on disk; nothing resident)`
+        );
         updateStatus();
         return;
       case 'forecast-memory':
@@ -240,9 +266,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'currents':
         if (role === 'route') routeCurrents = msg.status;
         if (role === 'data') {
-          log(`currents: ${msg.status.length ? msg.status.map((c) => `${c.name} (p${c.priority})`).join(', ') : 'none'}`);
+          log(`currents: ${msg.status.length ? msg.status.map(c => `${c.name} (p${c.priority})`).join(', ') : 'none'}`);
           // New RTOFS on disk (new run or region): the route worker reloads its copy from the cache.
-          const key = `${msg.status.map((c) => c.name).join('+')}|${msg.rtofsRun ?? ''}`;
+          const key = `${msg.status.map(c => c.name).join('+')}|${msg.rtofsRun ?? ''}`;
           if (key !== currentsKey) {
             const first = currentsKey === '';
             currentsKey = key;
@@ -277,9 +303,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
         jobs?.onDone(msg.id, msg.geojson, msg.skRoute, msg.summary, msg.skeleton);
         const job = jobs?.get(msg.id);
         if (job) {
-          notify(job, 'normal', `route ready: ${(msg.summary.total_distance_m / 1852).toFixed(1)} nm, ${(msg.summary.total_time_s / 3600).toFixed(1)} h`);
+          notify(
+            job,
+            'normal',
+            `route ready: ${(msg.summary.total_distance_m / 1852).toFixed(1)} nm, ${(msg.summary.total_time_s / 3600).toFixed(1)} h`
+          );
           const wantPublish = job.request.publish ?? config?.publish.toResources ?? false;
-          if (wantPublish) publish(job.id).catch((err) => app.error((err as Error).message));
+          if (wantPublish) publish(job.id).catch(err => app.error((err as Error).message));
         }
         updateStatus();
         return;
@@ -322,11 +352,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
     });
     workers[role] = { role, worker, ready: false };
     worker.on('message', (m: WorkerToMain) => onWorkerMessage(role, m));
-    worker.on('error', (err) => {
+    worker.on('error', err => {
       app.error(`${role} worker error: ${err.message}`);
       if (role === 'route') jobs?.failRunning(`worker crashed: ${err.message}`);
     });
-    worker.on('exit', (code) => {
+    worker.on('exit', code => {
       workers[role] = { role, worker: null, ready: false };
       if (role === 'data') {
         for (const [id, p] of pendingQueries) {
@@ -364,14 +394,22 @@ export = function plugin(app: SkApp): SignalKPlugin {
       // Water level for point forecasts comes from the data worker's tide point series (on demand).
       const tideSeries = async (lat: number, lon: number, fromMs: number, hours: number): Promise<TideSeriesResult | null> => {
         if (!config?.tides.enabled) return null;
-        return await query('tide_series', { lat, lon, fromMs, hours }) as TideSeriesResult;
+        return (await query('tide_series', { lat, lon, fromMs, hours })) as TideSeriesResult;
       };
       // Point forecasts are read by the data worker from the decoded run (this thread holds no forecast).
-      const points = async (position: { latitude: number; longitude: number }, options?: { startDate?: string; maxCount?: number }): Promise<WeatherData[]> => {
+      const points = async (
+        position: { latitude: number; longitude: number },
+        options?: { startDate?: string; maxCount?: number }
+      ): Promise<WeatherData[]> => {
         if (!forecastRun) throw new Error('no forecast loaded yet');
-        return await query('weather_point', { lat: position.latitude, lon: position.longitude, startMs: startMsOf(options), maxCount: options?.maxCount ?? null }) as WeatherData[];
+        return (await query('weather_point', {
+          lat: position.latitude,
+          lon: position.longitude,
+          startMs: startMsOf(options),
+          maxCount: options?.maxCount ?? null,
+        })) as WeatherData[];
       };
-      app.registerWeatherProvider(makeWeatherProvider(points, PLUGIN_ID, tideSeries, (m) => log(m)));
+      app.registerWeatherProvider(makeWeatherProvider(points, PLUGIN_ID, tideSeries, m => log(m)));
       weatherRegistered = true;
       log('registered as a Weather API provider');
     } catch (err) {
@@ -384,20 +422,40 @@ export = function plugin(app: SkApp): SignalKPlugin {
    * next route uses it); the forecast reloads only for a new horizon or
    * field set, RTOFS only for RTOFS changes.
    */
-  function applySettings(changed: string[]): { forecast: boolean; currents: boolean; tides: boolean; refresh_timer: boolean; jobs: boolean } {
+  function applySettings(changed: string[]): {
+    forecast: boolean;
+    currents: boolean;
+    tides: boolean;
+    refresh_timer: boolean;
+    jobs: boolean;
+  } {
     const kinds = reloadsFor(changed);
-    const out = { forecast: kinds.has('forecast'), currents: kinds.has('currents'), tides: kinds.has('tides'), refresh_timer: kinds.has('refresh_timer'), jobs: kinds.has('jobs') };
-    if (stopped || !settings || changed.length === 0) return { forecast: false, currents: false, tides: false, refresh_timer: false, jobs: false };
+    const out = {
+      forecast: kinds.has('forecast'),
+      currents: kinds.has('currents'),
+      tides: kinds.has('tides'),
+      refresh_timer: kinds.has('refresh_timer'),
+      jobs: kinds.has('jobs'),
+    };
+    if (stopped || !settings || changed.length === 0)
+      return { forecast: false, currents: false, tides: false, refresh_timer: false, jobs: false };
     config = resolveConfig(pluginOptions, settings.values);
     if (out.currents) smocShared = null;
-    post('data', { type: 'config', config, reload: { forecast: out.forecast, currents: out.currents, tides: out.tides }, position: vesselPosition() });
+    post('data', {
+      type: 'config',
+      config,
+      reload: { forecast: out.forecast, currents: out.currents, tides: out.tides },
+      position: vesselPosition(),
+    });
     post('route', { type: 'config', config, reload: { forecast: false, currents: out.currents } });
     if (out.refresh_timer) {
       if (refreshTimer) clearInterval(refreshTimer);
       refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshMinutes * 60_000);
     }
     if (out.jobs) jobs?.setKeepJobs(config.routing.keepJobs);
-    log(`settings changed: ${changed.join(', ')}${out.forecast ? '; reloading the forecast' : ''}${out.currents ? '; reloading currents' : ''}${out.tides ? '; reloading tides' : ''}`);
+    log(
+      `settings changed: ${changed.join(', ')}${out.forecast ? '; reloading the forecast' : ''}${out.currents ? '; reloading currents' : ''}${out.tides ? '; reloading tides' : ''}`
+    );
     updateStatus();
     return out;
   }
@@ -409,7 +467,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
       settings = new SettingsStore(app.getDataDirPath());
       // First start with settings.json absent: migrate the old plugin-config keys.
       const loaded = settings.load(options as LegacyPluginConfig);
-      if (loaded.created) log(`settings.json created; migrated from the plugin config: ${loaded.migrated.length ? loaded.migrated.join(', ') : 'nothing set'}`);
+      if (loaded.created)
+        log(
+          `settings.json created; migrated from the plugin config: ${loaded.migrated.length ? loaded.migrated.join(', ') : 'nothing set'}`
+        );
       for (const p of loaded.problems) app.error(`settings: ${p}`);
       config = resolveConfig(options, settings.values);
     } catch (err) {
@@ -477,28 +538,37 @@ export = function plugin(app: SkApp): SignalKPlugin {
         workers: { data: workers.data.ready, route: workers.route.ready },
         forecast: forecastRun
           ? {
-            cycle: new Date(forecastRun.index.cycleTimeMs).toISOString(),
-            valid_from: new Date(forecastRun.index.steps[0].validMs).toISOString(),
-            valid_to: new Date(forecastRun.index.steps[forecastRun.index.steps.length - 1].validMs).toISOString(),
-            steps: forecastRun.index.steps.length, params: forecastRun.index.request.params, coverage: 'global',
-            storage: 'decoded-on-disk',
-            loaded_at: new Date(forecastRun.loadedAtMs).toISOString(),
-            has_waves: dataStatus?.forecast?.hasWaves ?? forecastRun.index.steps.every((s) => ['swh', 'mwp', 'mwd'].every((p) => s.params.includes(p))),
-            // 'disk': a complete decoded run was found on disk (no decode); 'grib': decoded from the GRIB cache / download.
-            source: forecastRun.source, ready_ms: forecastRun.readyMs, fields_downloaded: forecastRun.downloaded,
-            decoded_dir: forecastRun.dir, decoded_bytes: forecastRun.index.bytes, decoded_at: forecastRun.index.decodedAt, decode_ms: forecastRun.index.decodeMs,
-            decoded_disk_bytes: dataStatus?.forecast?.decodedDiskBytes ?? null,
-            grib_cache_bytes: dataStatus?.forecast?.gribCacheBytes ?? null,
-            last_decode: dataStatus?.lastDecode ?? null,
-            memory: {
-              // Forecast memory actually held now; the decoded run itself is never resident.
-              data_worker_held_bytes: dataStatus?.forecastMemory.heldBytes ?? 0,
-              data_worker_largest_recent_window: dataStatus?.forecastMemory.last ?? null,
-              route_worker_held_bytes: routeForecastMemory?.heldBytes ?? 0,
-              route_worker_largest_recent_window: routeForecastMemory?.last ?? null,
-              decoding_block_bytes: dataStatus?.decodingBlockBytes ?? null,
-            },
-          }
+              cycle: new Date(forecastRun.index.cycleTimeMs).toISOString(),
+              valid_from: new Date(forecastRun.index.steps[0].validMs).toISOString(),
+              valid_to: new Date(forecastRun.index.steps[forecastRun.index.steps.length - 1].validMs).toISOString(),
+              steps: forecastRun.index.steps.length,
+              params: forecastRun.index.request.params,
+              coverage: 'global',
+              storage: 'decoded-on-disk',
+              loaded_at: new Date(forecastRun.loadedAtMs).toISOString(),
+              has_waves:
+                dataStatus?.forecast?.hasWaves ??
+                forecastRun.index.steps.every(s => ['swh', 'mwp', 'mwd'].every(p => s.params.includes(p))),
+              // 'disk': a complete decoded run was found on disk (no decode); 'grib': decoded from the GRIB cache / download.
+              source: forecastRun.source,
+              ready_ms: forecastRun.readyMs,
+              fields_downloaded: forecastRun.downloaded,
+              decoded_dir: forecastRun.dir,
+              decoded_bytes: forecastRun.index.bytes,
+              decoded_at: forecastRun.index.decodedAt,
+              decode_ms: forecastRun.index.decodeMs,
+              decoded_disk_bytes: dataStatus?.forecast?.decodedDiskBytes ?? null,
+              grib_cache_bytes: dataStatus?.forecast?.gribCacheBytes ?? null,
+              last_decode: dataStatus?.lastDecode ?? null,
+              memory: {
+                // Forecast memory actually held now; the decoded run itself is never resident.
+                data_worker_held_bytes: dataStatus?.forecastMemory.heldBytes ?? 0,
+                data_worker_largest_recent_window: dataStatus?.forecastMemory.last ?? null,
+                route_worker_held_bytes: routeForecastMemory?.heldBytes ?? 0,
+                route_worker_largest_recent_window: routeForecastMemory?.last ?? null,
+                decoding_block_bytes: dataStatus?.decodingBlockBytes ?? null,
+              },
+            }
           : null,
         process_rss_bytes: process.memoryUsage().rss,
         forecast_error: forecastError,
@@ -521,14 +591,17 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (!forecastRun) throw new Error(forecastError ? `forecast unavailable: ${forecastError}` : 'forecast not loaded yet');
         const ix = forecastRun.index;
         const out: Record<string, unknown> = {
-          cycle: new Date(ix.cycleTimeMs).toISOString(), valid_from: new Date(ix.steps[0].validMs).toISOString(),
+          cycle: new Date(ix.cycleTimeMs).toISOString(),
+          valid_from: new Date(ix.steps[0].validMs).toISOString(),
           valid_to: new Date(ix.steps[ix.steps.length - 1].validMs).toISOString(),
-          steps: ix.stepHours, params: ix.request.params, coverage: 'global',
+          steps: ix.stepHours,
+          params: ix.request.params,
+          coverage: 'global',
         };
         if (lat !== undefined && lon !== undefined) out.samples = await query('forecast_info', { lat, lon });
         return out;
       },
-      refreshForecast: (force) => requestRefresh(force),
+      refreshForecast: force => requestRefresh(force),
       cancelRunning: () => {
         if (cancelFlag) Atomics.store(cancelFlag, 0, 1);
       },
@@ -546,11 +619,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
         // (memory for one decode step, disk for the decoded run), before
         // saving, so the running forecast and settings stay as they are.
         const prospective = mergeSettings(settings.values, partial);
-        if (prospective.changed.some((k) => k === 'forecast.horizon' || k === 'forecast.extraFields' || k === 'forecast.memoryHeadroom')) {
+        if (prospective.changed.some(k => k === 'forecast.horizon' || k === 'forecast.extraFields' || k === 'forecast.memoryHeadroom')) {
           const f = prospective.values.forecast;
           const mem = checkDecodeResources(f.horizon / 3600, f.extraFields, f.memoryHeadroom, app.getDataDirPath());
           if (!mem.ok) {
-            const key = prospective.changed.find((k) => k.startsWith('forecast.')) ?? 'forecast.horizon';
+            const key = prospective.changed.find(k => k.startsWith('forecast.')) ?? 'forecast.horizon';
             throw new SettingsValidationError({ [key]: mem.message });
           }
         }

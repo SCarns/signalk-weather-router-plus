@@ -57,12 +57,41 @@
 
 import type { BBox } from '../geo/geodesy';
 import {
-  alignedSteps, ArcoAreaSet, ArcoClient, arcoUrls, chooseLayout, loadArcoArea, loadRegion, mod, regionForBBox, residentAreaStale, residentBBox,
-  runLastMs, timeAt, timeIndex,
-  type ArcoArea, type ArcoClientOptions, type ArcoLayout, type ArcoRun, type DownloadNote, type DownloadStats, type GeoBox, type Region,
+  alignedSteps,
+  ArcoAreaSet,
+  ArcoClient,
+  arcoUrls,
+  chooseLayout,
+  loadArcoArea,
+  loadRegion,
+  mod,
+  regionForBBox,
+  residentAreaStale,
+  residentBBox,
+  runLastMs,
+  timeAt,
+  timeIndex,
+  type ArcoArea,
+  type ArcoClientOptions,
+  type ArcoLayout,
+  type ArcoRun,
+  type DownloadNote,
+  type DownloadStats,
+  type GeoBox,
+  type Region,
 } from '../data/arco';
 import { bilinearFilledScalar, FILL_RADIUS_CELLS, type ScalarGrid } from '../currents/coastfill';
-import { derivedLevels, findExtrema, mslOffset, sampleSeries, slopeAt, tendencyOf, tidalRanges, type RegularSeries, type Tendency } from './tidecalc';
+import {
+  derivedLevels,
+  findExtrema,
+  mslOffset,
+  sampleSeries,
+  slopeAt,
+  tendencyOf,
+  tidalRanges,
+  type RegularSeries,
+  type Tendency,
+} from './tidecalc';
 
 export const SL_PRODUCT = 'GLOBAL_ANALYSISFORECAST_PHY_001_024';
 export const SL_DATASET = 'cmems_mod_glo_phy_anfc_merged-sl_PT1H-i_202411';
@@ -151,7 +180,12 @@ export function pointBlock(run: ArcoRun, lat: number, lon: number): { region: Re
  * time chunks covering [fromIdx, toIdx] and the mean window. Returns the
  * indices (ascending) and the mean-window chunk span.
  */
-export function pointTimePlan(run: ArcoRun, chunkT: number, fromIdx: number, toIdx: number): { tIdx: number[]; meanLo: number; meanHi: number } {
+export function pointTimePlan(
+  run: ArcoRun,
+  chunkT: number,
+  fromIdx: number,
+  toIdx: number
+): { tIdx: number[]; meanLo: number; meanHi: number } {
   const lastIdx = run.timeCount - 1;
   const meanFromIdx = Math.max(0, lastIdx - MEAN_WINDOW_DAYS * 24);
   const meanTc0 = Math.floor(meanFromIdx / chunkT);
@@ -168,8 +202,16 @@ export function pointTimePlan(run: ArcoRun, chunkT: number, fromIdx: number, toI
 
 /** Compute the point series from a loaded block (pure; exported for tests). */
 export function seriesFromBlock(
-  run: ArcoRun, lat: number, lon: number, block: { region: Region; xl: number; yl: number }, tIdx: number[], data: Record<string, Float32Array>,
-  meanLo: number, meanHi: number, fromIdx: number, toIdx: number,
+  run: ArcoRun,
+  lat: number,
+  lon: number,
+  block: { region: Region; xl: number; yl: number },
+  tIdx: number[],
+  data: Record<string, Float32Array>,
+  meanLo: number,
+  meanHi: number,
+  fromIdx: number,
+  toIdx: number
 ): Omit<TidePointSeries, 'stats' | 'cached'> {
   const { region, xl, yl } = block;
   const nCells = region.nRows * region.nCols;
@@ -218,8 +260,18 @@ export function seriesFromBlock(
     }
   }
   return {
-    lat, lon, run: run.key, t0Ms: timeAt(run, fromIdx), stepMs: run.timeStepMs, tide, waterLevel, surge, extrapolated,
-    offsetM: offset, offsetSamples: samples, meanWindow: { fromMs: timeAt(run, meanLo), toMs: timeAt(run, meanHi) },
+    lat,
+    lon,
+    run: run.key,
+    t0Ms: timeAt(run, fromIdx),
+    stepMs: run.timeStepMs,
+    tide,
+    waterLevel,
+    surge,
+    extrapolated,
+    offsetM: offset,
+    offsetSamples: samples,
+    meanWindow: { fromMs: timeAt(run, meanLo), toMs: timeAt(run, meanHi) },
   };
 }
 
@@ -241,12 +293,35 @@ export interface TideStatus {
   settled: boolean;
   half_width_deg: number;
   horizon_hours: number;
-  resident: { bbox: GeoBox; centre: { lat: number; lon: number } | null; steps: number; valid_from: string | null; valid_to: string | null; bytes: number; layout: ArcoLayout } | null;
-  on_demand: { areas: number; bytes: number; budget_bytes: number; list: { bbox: GeoBox; res: 'full' | 'ds4'; steps: number; bytes: number; reason: string }[] };
+  resident: {
+    bbox: GeoBox;
+    centre: { lat: number; lon: number } | null;
+    steps: number;
+    valid_from: string | null;
+    valid_to: string | null;
+    bytes: number;
+    layout: ArcoLayout;
+  } | null;
+  on_demand: {
+    areas: number;
+    bytes: number;
+    budget_bytes: number;
+    list: { bbox: GeoBox; res: 'full' | 'ds4'; steps: number; bytes: number; reason: string }[];
+  };
   point_cache: { entries: number; bytes: number; queries: number; hits: number };
   memory_bytes: number;
   last_download: DownloadNote | null;
-  last_point_query: { at: string; lat: number; lon: number; bytes: number; chunks: number; downloaded: number; from_disk: number; seconds: number; cached: boolean } | null;
+  last_point_query: {
+    at: string;
+    lat: number;
+    lon: number;
+    bytes: number;
+    chunks: number;
+    downloaded: number;
+    from_disk: number;
+    seconds: number;
+    cached: boolean;
+  } | null;
   downloaded_bytes_total: number;
   disk_cache_bytes: number | null;
   layouts: ArcoLayout[];
@@ -270,7 +345,13 @@ export class TideSource {
     this.settings = settings;
     this.client = client;
     this.log = log;
-    this.set = new ArcoAreaSet<ArcoArea>(run, client, { vars: TIDE_FIELD_VARS, budgetBytes: settings.budgetBytes, tag: 'tides', log, wrap: (a) => a });
+    this.set = new ArcoAreaSet<ArcoArea>(run, client, {
+      vars: TIDE_FIELD_VARS,
+      budgetBytes: settings.budgetBytes,
+      tag: 'tides',
+      log,
+      wrap: a => a,
+    });
   }
 
   get revision(): number {
@@ -364,7 +445,13 @@ export class TideSource {
    * query lies wholly outside the time axis. Throws when the
    * geoChunked store is unavailable or the download fails.
    */
-  async pointSeries(lat: number, lon: number, fromMs: number, toMs: number, opts: { reason?: string } = {}): Promise<TidePointSeries | null> {
+  async pointSeries(
+    lat: number,
+    lon: number,
+    fromMs: number,
+    toMs: number,
+    opts: { reason?: string } = {}
+  ): Promise<TidePointSeries | null> {
     const block = pointBlock(this.run, lat, lon);
     if (!block) return null;
     const geo = this.run.levels.geo;
@@ -377,21 +464,27 @@ export class TideSource {
     const r = block.region;
     const key = `${this.run.key}|${r.row0},${r.nRows},${r.col0}|${plan.tIdx[0]}-${plan.tIdx[plan.tIdx.length - 1]}`;
     this.queries++;
-    let pr = this.points.find((p) => p.key === key) ?? null;
+    let pr = this.points.find(p => p.key === key) ?? null;
     let cached = !!pr;
     if (pr) {
       this.hits++;
-      this.points = [pr, ...this.points.filter((p) => p !== pr)];
+      this.points = [pr, ...this.points.filter(p => p !== pr)];
     } else {
       let pending = this.pendingPoints.get(key);
       if (!pending) {
         if (!this.client) throw new Error('tides: no client');
         const client = this.client;
-        pending = loadRegion(client, this.run, 'full', r, plan.tIdx, SL_VARS, { reason: opts.reason ?? 'point series', layout: 'geo', unshared: true })
+        pending = loadRegion(client, this.run, 'full', r, plan.tIdx, SL_VARS, {
+          reason: opts.reason ?? 'point series',
+          layout: 'geo',
+          unshared: true,
+        })
           .then(({ data, stats }) => {
             const p: PointRegion = { key, region: r, tIdx: plan.tIdx, data, stats };
-            this.points = [p, ...this.points.filter((q) => q.key !== key)].slice(0, POINT_CACHE_ENTRIES);
-            this.log(`tides: ${opts.reason ?? 'point series'} at ${lat.toFixed(3)},${lon.toFixed(3)}: ${stats.chunks} chunks (${stats.downloaded} downloaded ${(stats.bytes / 1e6).toFixed(2)} MB, ${stats.fromDisk} from disk, ${stats.absent} absent), ${plan.tIdx.length} h × ${r.nRows}×${r.nCols} cells, decode ${stats.decodeMs} ms, ${stats.seconds.toFixed(1)} s`);
+            this.points = [p, ...this.points.filter(q => q.key !== key)].slice(0, POINT_CACHE_ENTRIES);
+            this.log(
+              `tides: ${opts.reason ?? 'point series'} at ${lat.toFixed(3)},${lon.toFixed(3)}: ${stats.chunks} chunks (${stats.downloaded} downloaded ${(stats.bytes / 1e6).toFixed(2)} MB, ${stats.fromDisk} from disk, ${stats.absent} absent), ${plan.tIdx.length} h × ${r.nRows}×${r.nCols} cells, decode ${stats.decodeMs} ms, ${stats.seconds.toFixed(1)} s`
+            );
             return p;
           })
           .finally(() => this.pendingPoints.delete(key));
@@ -402,7 +495,15 @@ export class TideSource {
     const out = seriesFromBlock(this.run, lat, lon, block, pr.tIdx, pr.data, plan.meanLo, plan.meanHi, fromIdx, toIdx);
     const stats = cached ? { chunks: 0, downloaded: 0, fromDisk: 0, absent: 0, bytes: 0, decodeMs: 0, seconds: 0 } : pr.stats;
     this.lastPoint = {
-      at: new Date().toISOString(), lat, lon, bytes: stats.bytes, chunks: stats.chunks, downloaded: stats.downloaded, from_disk: stats.fromDisk, seconds: stats.seconds, cached,
+      at: new Date().toISOString(),
+      lat,
+      lon,
+      bytes: stats.bytes,
+      chunks: stats.chunks,
+      downloaded: stats.downloaded,
+      from_disk: stats.fromDisk,
+      seconds: stats.seconds,
+      cached,
     };
     return { ...out, stats, cached };
   }
@@ -427,19 +528,28 @@ export class TideSource {
       last_point_query: this.lastPoint,
       downloaded_bytes_total: this.client?.totals.downloadedBytes ?? 0,
       disk_cache_bytes: this.client ? this.client.cachedBytes(this.run.key) : null,
-      layouts: (['time', 'geo', 'ds4'] as ArcoLayout[]).filter((l) => this.run.levels[l]),
+      layouts: (['time', 'geo', 'ds4'] as ArcoLayout[]).filter(l => this.run.levels[l]),
       mean_window_days: MEAN_WINDOW_DAYS,
     };
   }
 }
 
 /** Load the resident tide map area for `pos` over `steps` (ocean_tide, full resolution). */
-export async function loadTideResident(client: ArcoClient, run: ArcoRun, settings: TideSettings, pos: { lat: number; lon: number }, steps: number[], opts: { log?: (m: string) => void } = {}): Promise<{ area: ArcoArea; stats: DownloadStats } | null> {
+export async function loadTideResident(
+  client: ArcoClient,
+  run: ArcoRun,
+  settings: TideSettings,
+  pos: { lat: number; lon: number },
+  steps: number[],
+  opts: { log?: (m: string) => void } = {}
+): Promise<{ area: ArcoArea; stats: DownloadStats } | null> {
   const region = regionForBBox(run.levels.time.grid, residentBBox(pos.lat, pos.lon, settings.halfWidthDeg), TIDE_MARGIN_CELLS);
   if (!region || steps.length === 0) return null;
-  const tIdx = steps.map((t) => timeIndex(run, t));
+  const tIdx = steps.map(t => timeIndex(run, t));
   return loadArcoArea(client, run, 'full', region, steps, TIDE_FIELD_VARS, {
-    reason: `resident tide area around ${pos.lat.toFixed(2)},${pos.lon.toFixed(2)} ±${settings.halfWidthDeg}°`, log: opts.log, layout: chooseLayout(run, region, tIdx),
+    reason: `resident tide area around ${pos.lat.toFixed(2)},${pos.lon.toFixed(2)} ±${settings.halfWidthDeg}°`,
+    log: opts.log,
+    layout: chooseLayout(run, region, tIdx),
   });
 }
 
@@ -499,7 +609,9 @@ export function tideRowAt(s: TidePointSeries | null, tMs: number): TideRowFields
   const q = (tMs - s.t0Ms) / s.stepMs;
   const k0 = Math.floor(q);
   const k1 = Math.ceil(q);
-  const ext = (k0 >= 0 && k0 < s.extrapolated.length && s.extrapolated[k0] === 1) || (k1 >= 0 && k1 < s.extrapolated.length && s.extrapolated[k1] === 1);
+  const ext =
+    (k0 >= 0 && k0 < s.extrapolated.length && s.extrapolated[k0] === 1) ||
+    (k1 >= 0 && k1 < s.extrapolated.length && s.extrapolated[k1] === 1);
   const t = sampleSeries(tide, tMs);
   return {
     tide_m: r4(t),
@@ -514,18 +626,24 @@ export function tideRowAt(s: TidePointSeries | null, tMs: number): TideRowFields
 export function tideSummary(s: TidePointSeries, fromMs: number, toMs: number): TideSummary {
   const k0 = Math.max(0, Math.ceil((fromMs - s.t0Ms) / s.stepMs));
   const k1 = Math.min(s.tide.length - 1, Math.floor((toMs - s.t0Ms) / s.stepMs));
-  const sub: RegularSeries = { t0Ms: s.t0Ms + k0 * s.stepMs, stepMs: s.stepMs, values: k1 >= k0 ? s.tide.subarray(k0, k1 + 1) : new Float64Array(0) };
+  const sub: RegularSeries = {
+    t0Ms: s.t0Ms + k0 * s.stepMs,
+    stepMs: s.stepMs,
+    values: k1 >= k0 ? s.tide.subarray(k0, k1 + 1) : new Float64Array(0),
+  };
   const ext = findExtrema(sub);
   const wl = asRegular(s, 'waterLevel');
   const out = (e: { timeMs: number; height: number }): TideExtremumOut => ({
-    time: new Date(Math.round(e.timeMs / 60_000) * 60_000).toISOString(), height_m: r4(e.height) as number, water_level_m: r4(sampleSeries(wl, e.timeMs)),
+    time: new Date(Math.round(e.timeMs / 60_000) * 60_000).toISOString(),
+    height_m: r4(e.height) as number,
+    water_level_m: r4(sampleSeries(wl, e.timeMs)),
   });
   const ranges = tidalRanges(ext);
   let extrap = false;
   for (let k = Math.max(0, k0); k <= k1; k++) if (s.extrapolated[k] === 1 && Number.isFinite(s.tide[k])) extrap = true;
   return {
-    highs: ext.filter((e) => e.kind === 'high').map(out),
-    lows: ext.filter((e) => e.kind === 'low').map(out),
+    highs: ext.filter(e => e.kind === 'high').map(out),
+    lows: ext.filter(e => e.kind === 'low').map(out),
     range_m: ranges.length ? r4(ranges.reduce((a, b) => a + b, 0) / ranges.length) : null,
     max_range_m: ranges.length ? r4(Math.max(...ranges)) : null,
     of: 'tide_m',
@@ -533,7 +651,11 @@ export function tideSummary(s: TidePointSeries, fromMs: number, toMs: number): T
     run: s.run,
     datum: TIDE_DATUM,
     msl_offset_m: r4(s.offsetM),
-    mean_window: { from: new Date(s.meanWindow.fromMs).toISOString(), to: new Date(s.meanWindow.toMs).toISOString(), samples: s.offsetSamples },
+    mean_window: {
+      from: new Date(s.meanWindow.fromMs).toISOString(),
+      to: new Date(s.meanWindow.toMs).toISOString(),
+      samples: s.offsetSamples,
+    },
     extrapolated: extrap,
     doi: SL_DOI,
   };

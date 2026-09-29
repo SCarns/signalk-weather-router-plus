@@ -218,7 +218,7 @@ function isLittleEndian(): boolean {
 
 /** Complete runs under `root`, newest cycle first. */
 export function listDecodedRuns(root: string): string[] {
-  let entries: string[] = [];
+  let entries: string[];
   try {
     entries = fs.readdirSync(root);
   } catch {
@@ -235,7 +235,7 @@ export function listDecodedRuns(root: string): string[] {
 export function pruneDecodedRuns(root: string, keep: string[], activeTmp: string | null = null): string[] {
   const keepSet = new Set(keep);
   const removed: string[] = [];
-  let entries: string[] = [];
+  let entries: string[];
   try {
     entries = fs.readdirSync(root);
   } catch {
@@ -254,7 +254,7 @@ export function pruneDecodedRuns(root: string, keep: string[], activeTmp: string
 /** Bytes of all files below a directory (du, apparent size). */
 export function dirBytes(dir: string): number {
   let total = 0;
-  let entries: fs.Dirent[] = [];
+  let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {

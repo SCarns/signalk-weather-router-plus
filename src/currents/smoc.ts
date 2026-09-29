@@ -47,16 +47,47 @@
 
 import type { BBox } from '../geo/geodesy';
 import {
-  alignedSteps, ArcoAreaSet, ArcoClient, arcoUrls, bilinearCorners, loadArcoArea, residentAreaStale, residentBBox, regionForBBox, runLastMs,
-  type ArcoArea, type ArcoClientOptions, type ArcoGrid, type ArcoLayout, type ArcoLevel, type ArcoResolution, type ArcoRun, type DownloadNote,
-  type DownloadStats, type LoadAreaOptions, type Region, type StacInfo,
+  alignedSteps,
+  ArcoAreaSet,
+  ArcoClient,
+  arcoUrls,
+  bilinearCorners,
+  loadArcoArea,
+  residentAreaStale,
+  residentBBox,
+  regionForBBox,
+  runLastMs,
+  type ArcoArea,
+  type ArcoClientOptions,
+  type ArcoGrid,
+  type ArcoLayout,
+  type ArcoLevel,
+  type ArcoResolution,
+  type ArcoRun,
+  type DownloadNote,
+  type DownloadStats,
+  type LoadAreaOptions,
+  type Region,
+  type StacInfo,
 } from '../data/arco';
 import { bilinearFilled, FILL_RADIUS_CELLS, type PairGrid } from './coastfill';
 import type { CurrentSourceLike, SourceBBox } from './types';
 
 export {
-  alignedSteps, chooseLayout, gridFromCoords, isSettled, layoutCost, LAYOUT_BYTES_PER_ELEMENT, parseStac, planChunks, regionContains, regionForBBox,
-  REQUEST_COST_BYTES, residentBBox, runLastMs, timeIndex,
+  alignedSteps,
+  chooseLayout,
+  gridFromCoords,
+  isSettled,
+  layoutCost,
+  LAYOUT_BYTES_PER_ELEMENT,
+  parseStac,
+  planChunks,
+  regionContains,
+  regionForBBox,
+  REQUEST_COST_BYTES,
+  residentBBox,
+  runLastMs,
+  timeIndex,
 } from '../data/arco';
 export type { DownloadStats, LoadAreaOptions, Region } from '../data/arco';
 
@@ -113,7 +144,14 @@ export class SmocClient extends ArcoClient {
  * Fetch (disk cache or network), decode and crop the chunks covering
  * `region` at the given step times into a new area.
  */
-export async function loadArea(client: ArcoClient, run: SmocRun, res: SmocResolution, region: Region, stepMs: number[], opts: LoadAreaOptions): Promise<{ area: SmocArea; stats: DownloadStats }> {
+export async function loadArea(
+  client: ArcoClient,
+  run: SmocRun,
+  res: SmocResolution,
+  region: Region,
+  stepMs: number[],
+  opts: LoadAreaOptions
+): Promise<{ area: SmocArea; stats: DownloadStats }> {
   const { area, stats } = await loadArcoArea(client, run, res, region, stepMs, SMOC_VARS, opts);
   return { area: asSmocArea(area), stats };
 }
@@ -143,8 +181,21 @@ export interface SmocStatus {
   step_hours: number;
   horizon_hours: number;
   half_width_deg: number;
-  resident: { bbox: SourceBBox; centre: { lat: number; lon: number } | null; steps: number; valid_from: string | null; valid_to: string | null; bytes: number; layout: SmocLayout } | null;
-  on_demand: { areas: number; bytes: number; budget_bytes: number; list: { bbox: SourceBBox; res: SmocResolution; steps: number; bytes: number; reason: string }[] };
+  resident: {
+    bbox: SourceBBox;
+    centre: { lat: number; lon: number } | null;
+    steps: number;
+    valid_from: string | null;
+    valid_to: string | null;
+    bytes: number;
+    layout: SmocLayout;
+  } | null;
+  on_demand: {
+    areas: number;
+    bytes: number;
+    budget_bytes: number;
+    list: { bbox: SourceBBox; res: SmocResolution; steps: number; bytes: number; reason: string }[];
+  };
   memory_bytes: number;
   shared_resident: boolean;
   last_download: DownloadNote | null;
@@ -166,7 +217,13 @@ export class SmocCurrentSource implements CurrentSourceLike {
     this.run = run;
     this.settings = settings;
     this.client = client;
-    this.set = new ArcoAreaSet<SmocArea>(run, client, { vars: SMOC_VARS, budgetBytes: settings.budgetBytes, tag: 'smoc', log, wrap: asSmocArea });
+    this.set = new ArcoAreaSet<SmocArea>(run, client, {
+      vars: SMOC_VARS,
+      budgetBytes: settings.budgetBytes,
+      tag: 'smoc',
+      log,
+      wrap: asSmocArea,
+    });
   }
 
   static fromSerialized(s: SerializedSmoc, client: ArcoClient | null, log?: (m: string) => void): SmocCurrentSource {
@@ -304,7 +361,11 @@ export class SmocCurrentSource implements CurrentSourceLike {
    * Make `bbox` × `steps` resident (on demand); see ArcoAreaSet.ensure.
    * A coarse overlay view (lattice ≥ 1/4°) may take the 1/3° level.
    */
-  ensure(bbox: BBox, steps: number[], opts: { reason: string; deadlineMs?: number; shouldCancel?: () => boolean; coarseOk?: boolean } = { reason: 'on demand' }): Promise<boolean> {
+  ensure(
+    bbox: BBox,
+    steps: number[],
+    opts: { reason: string; deadlineMs?: number; shouldCancel?: () => boolean; coarseOk?: boolean } = { reason: 'on demand' }
+  ): Promise<boolean> {
     return this.set.ensure(bbox, steps, AREA_MARGIN_CELLS, opts);
   }
 
@@ -332,7 +393,7 @@ export class SmocCurrentSource implements CurrentSourceLike {
       last_download: this.set.lastDownload,
       downloaded_bytes_total: this.client?.totals.downloadedBytes ?? 0,
       disk_cache_bytes: this.client ? this.client.cachedBytes(this.run.key) : null,
-      layouts: (['time', 'geo', 'ds4'] as SmocLayout[]).filter((l) => this.run.levels[l]),
+      layouts: (['time', 'geo', 'ds4'] as SmocLayout[]).filter(l => this.run.levels[l]),
     };
   }
 }
@@ -348,8 +409,19 @@ export function residentStale(src: SmocCurrentSource, pos: { lat: number; lon: n
 }
 
 /** Load the resident area for `pos` over `steps`. */
-export async function loadResident(client: ArcoClient, run: SmocRun, settings: SmocSettings, pos: { lat: number; lon: number }, steps: number[], opts: { log?: (m: string) => void; shouldCancel?: () => boolean } = {}): Promise<{ area: SmocArea; stats: DownloadStats } | null> {
+export async function loadResident(
+  client: ArcoClient,
+  run: SmocRun,
+  settings: SmocSettings,
+  pos: { lat: number; lon: number },
+  steps: number[],
+  opts: { log?: (m: string) => void; shouldCancel?: () => boolean } = {}
+): Promise<{ area: SmocArea; stats: DownloadStats } | null> {
   const region = regionForBBox(run.levels.time.grid, residentBBox(pos.lat, pos.lon, settings.halfWidthDeg), AREA_MARGIN_CELLS);
   if (!region || steps.length === 0) return null;
-  return loadArea(client, run, 'full', region, steps, { reason: `resident area around ${pos.lat.toFixed(2)},${pos.lon.toFixed(2)} ±${settings.halfWidthDeg}°`, log: opts.log, shouldCancel: opts.shouldCancel });
+  return loadArea(client, run, 'full', region, steps, {
+    reason: `resident area around ${pos.lat.toFixed(2)},${pos.lon.toFixed(2)} ±${settings.halfWidthDeg}°`,
+    log: opts.log,
+    shouldCancel: opts.shouldCancel,
+  });
 }

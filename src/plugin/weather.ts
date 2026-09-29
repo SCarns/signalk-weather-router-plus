@@ -110,11 +110,16 @@ export function startMsOf(options?: WeatherReqParams): number | null {
   return Number.isNaN(d) ? null : d;
 }
 
-export function makeWeatherProvider(points: PointForecastFn, pluginId: string, tideSeries?: TideSeriesFn, log: (m: string) => void = () => undefined): WeatherProviderLike {
+export function makeWeatherProvider(
+  points: PointForecastFn,
+  pluginId: string,
+  tideSeries?: TideSeriesFn,
+  log: (m: string) => void = () => undefined
+): WeatherProviderLike {
   let lastTideError = '';
   const withWaterLevel = async (position: SkPosition, items: WeatherData[]): Promise<WeatherData[]> => {
     if (!tideSeries || items.length === 0) return items;
-    const times = items.map((i) => Date.parse(i.date));
+    const times = items.map(i => Date.parse(i.date));
     // One step either side for the tendency's central difference.
     const fromMs = Math.min(...times) - 3600_000;
     const hours = Math.ceil((Math.max(...times) - fromMs) / 3600_000) + 1;
@@ -126,7 +131,8 @@ export function makeWeatherProvider(points: PointForecastFn, pluginId: string, t
       lastTideError = '';
     } catch (err) {
       const m = (err as Error).message;
-      if (m !== lastTideError) log(`Weather API: water level unavailable at ${position.latitude.toFixed(3)}, ${position.longitude.toFixed(3)}: ${m}`);
+      if (m !== lastTideError)
+        log(`Weather API: water level unavailable at ${position.latitude.toFixed(3)}, ${position.longitude.toFixed(3)}: ${m}`);
       lastTideError = m;
     }
     return items;
@@ -153,7 +159,13 @@ export const POINT_FORECAST_PARAMS = ['10u', '10v', 'msl', 'swh', 'mwp', 'mwd', 
  * (the data worker passes a window of the decoded run, which samples
  * exactly like the whole global store).
  */
-export function pointForecasts(store: ForecastStore, lon: number, lat: number, startMs: number | null, maxCount: number | null): WeatherData[] {
+export function pointForecasts(
+  store: ForecastStore,
+  lon: number,
+  lat: number,
+  startMs: number | null,
+  maxCount: number | null
+): WeatherData[] {
   if (!store.covers(lon, lat)) {
     throw new Error(`position ${lat.toFixed(3)}, ${lon.toFixed(3)} is outside the forecast`);
   }

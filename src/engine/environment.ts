@@ -48,7 +48,10 @@ export class NoCurrent implements CurrentSource {
 /** Constant wind everywhere (tests). */
 export class ConstantWind implements WindSource {
   readonly hasWaves = false;
-  constructor(private readonly speedMs: number, private readonly dirFromDeg: number) {}
+  constructor(
+    private readonly speedMs: number,
+    private readonly dirFromDeg: number
+  ) {}
   at(): [number, number] {
     return [this.speedMs, this.dirFromDeg];
   }

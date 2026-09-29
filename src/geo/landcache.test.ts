@@ -10,13 +10,19 @@ import { chooseOverlayResolution, OnDemandLand, snapBBox } from './landcache';
 /** Write a minimal polygon shapefile (type 5); each polygon is a list of rings of [lon, lat]. */
 function writeShp(file: string, polys: number[][][][]): void {
   const recs: Buffer[] = [];
-  let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
   polys.forEach((rings, i) => {
     const pts = rings.flat();
-    const xs = pts.map((p) => p[0]);
-    const ys = pts.map((p) => p[1]);
+    const xs = pts.map(p => p[0]);
+    const ys = pts.map(p => p[1]);
     const bb = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-    minX = Math.min(minX, bb[0]); minY = Math.min(minY, bb[1]); maxX = Math.max(maxX, bb[2]); maxY = Math.max(maxY, bb[3]);
+    minX = Math.min(minX, bb[0]);
+    minY = Math.min(minY, bb[1]);
+    maxX = Math.max(maxX, bb[2]);
+    maxY = Math.max(maxY, bb[3]);
     const len = 44 + 4 * rings.length + 16 * pts.length;
     const b = Buffer.alloc(8 + len);
     b.writeInt32BE(i + 1, 0);
@@ -26,9 +32,16 @@ function writeShp(file: string, polys: number[][][][]): void {
     b.writeInt32LE(rings.length, 44);
     b.writeInt32LE(pts.length, 48);
     let start = 0;
-    rings.forEach((r, k) => { b.writeInt32LE(start, 52 + 4 * k); start += r.length; });
+    rings.forEach((r, k) => {
+      b.writeInt32LE(start, 52 + 4 * k);
+      start += r.length;
+    });
     let o = 52 + 4 * rings.length;
-    for (const p of pts) { b.writeDoubleLE(p[0], o); b.writeDoubleLE(p[1], o + 8); o += 16; }
+    for (const p of pts) {
+      b.writeDoubleLE(p[0], o);
+      b.writeDoubleLE(p[1], o + 8);
+      o += 16;
+    }
     recs.push(b);
   });
   const body = Buffer.concat(recs);
@@ -41,7 +54,13 @@ function writeShp(file: string, polys: number[][][][]): void {
   fs.writeFileSync(file, Buffer.concat([h, body]));
 }
 
-const sq = (w: number, s: number, e: number, n: number): number[][] => [[w, s], [e, s], [e, n], [w, n], [w, s]];
+const sq = (w: number, s: number, e: number, n: number): number[][] => [
+  [w, s],
+  [e, s],
+  [e, n],
+  [w, n],
+  [w, s],
+];
 
 function fixture(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-land-'));
@@ -59,21 +78,35 @@ test('ShapefileIndex.read returns what a full scan returns', () => {
   const file = fixture();
   const ix = ShapefileIndex.open(file);
   assert.equal(ix.count, 4);
-  for (const b of [{ west: -72, south: 40, east: -69, north: 43 }, { west: 170, south: -20, east: -170, north: 0 }, { west: -180, south: -90, east: 180, north: 90 }, { west: 0, south: 0, east: 1, north: 1 }]) {
-    const a = readShapefilePolygons(file, b).map((s) => s.recordNumber);
-    const c = ix.read(b).map((s) => s.recordNumber);
+  for (const b of [
+    { west: -72, south: 40, east: -69, north: 43 },
+    { west: 170, south: -20, east: -170, north: 0 },
+    { west: -180, south: -90, east: 180, north: 90 },
+    { west: 0, south: 0, east: 1, north: 1 },
+  ]) {
+    const a = readShapefilePolygons(file, b).map(s => s.recordNumber);
+    const c = ix.read(b).map(s => s.recordNumber);
     assert.deepEqual(c, a, JSON.stringify(b));
   }
-  assert.deepEqual(ix.containing(10.7, 50.7).map((s) => s.recordNumber), [2]);
+  assert.deepEqual(
+    ix.containing(10.7, 50.7).map(s => s.recordNumber),
+    [2]
+  );
   assert.equal(ShapefileIndex.open(file), ix, 'cached per file');
 });
 
 test('streamed rasterisation equals rasterising all polygons at once', () => {
   const file = fixture();
-  for (const [b, res] of [[{ west: -180, south: -90, east: 180, north: 90 }, 0.25], [{ west: 170, south: -20, east: -170, north: 0 }, 0.05], [{ west: 9, south: 49, east: 13, north: 53 }, 0.01]] as const) {
+  for (const [b, res] of [
+    [{ west: -180, south: -90, east: 180, north: 90 }, 0.25],
+    [{ west: 170, south: -20, east: -170, north: 0 }, 0.05],
+    [{ west: 9, south: 49, east: 13, north: 53 }, 0.01],
+  ] as const) {
     const all = LandMask.fromPolygons(readShapefilePolygons(file, b), b, res);
     const ix = ShapefileIndex.open(file);
-    const streamed = LandMask.rasterStreamed(b, res, (add) => { ix.forEach(b, add); });
+    const streamed = LandMask.rasterStreamed(b, res, add => {
+      ix.forEach(b, add);
+    });
     assert.deepEqual(streamed.raster, all.raster, JSON.stringify(b));
     assert.ok(all.landFraction() > 0);
   }
@@ -121,25 +154,43 @@ test('overlay land resolution respects the cell budget and snapping is outward',
 });
 
 const GSHHG = '/Users/mauricetamman/routePlanning/data/land/gshhg/GSHHS_shp/f/GSHHS_f_L1.shp';
-test('real GSHHG full resolution: indexed read equals the full scan; viewport build time', { skip: !fs.existsSync(GSHHG) && 'GSHHG not present' }, () => {
-  const b = { west: -75, south: 36, east: -65, north: 45 };
-  let t = Date.now();
-  const scan = readShapefilePolygons(GSHHG, b);
-  const scanMs = Date.now() - t;
-  t = Date.now();
-  const ix = ShapefileIndex.open(GSHHG);
-  const indexMs = Date.now() - t;
-  t = Date.now();
-  const read = ix.read(b);
-  const readMs = Date.now() - t;
-  assert.deepEqual(read.map((s) => s.recordNumber), scan.map((s) => s.recordNumber));
-  // Byte-level point test agrees with pointInShape on the decoded records.
-  const pts: [number, number][] = [[-70.62, 41.39], [-70.5, 41.3], [-72, 42.3], [-69, 40], [-70.06, 41.28], [-76.3, 38.0], [-74.0, 40.7], [-66.5, 44.5]];
-  for (const [lon, lat] of pts) {
-    const exact = ix.containing(lon, lat).some((s) => pointInShape(s, lon, lat));
-    assert.equal(ix.containsPoint(lon, lat), exact, `${lon},${lat}`);
+test(
+  'real GSHHG full resolution: indexed read equals the full scan; viewport build time',
+  { skip: !fs.existsSync(GSHHG) && 'GSHHG not present' },
+  () => {
+    const b = { west: -75, south: 36, east: -65, north: 45 };
+    let t = Date.now();
+    const scan = readShapefilePolygons(GSHHG, b);
+    const scanMs = Date.now() - t;
+    t = Date.now();
+    const ix = ShapefileIndex.open(GSHHG);
+    const indexMs = Date.now() - t;
+    t = Date.now();
+    const read = ix.read(b);
+    const readMs = Date.now() - t;
+    assert.deepEqual(
+      read.map(s => s.recordNumber),
+      scan.map(s => s.recordNumber)
+    );
+    // Byte-level point test agrees with pointInShape on the decoded records.
+    const pts: [number, number][] = [
+      [-70.62, 41.39],
+      [-70.5, 41.3],
+      [-72, 42.3],
+      [-69, 40],
+      [-70.06, 41.28],
+      [-76.3, 38.0],
+      [-74.0, 40.7],
+      [-66.5, 44.5],
+    ];
+    for (const [lon, lat] of pts) {
+      const exact = ix.containing(lon, lat).some(s => pointInShape(s, lon, lat));
+      assert.equal(ix.containsPoint(lon, lat), exact, `${lon},${lat}`);
+    }
+    assert.equal(ix.containsPoint(-72, 42.3), true, 'inland Massachusetts');
+    assert.equal(ix.containsPoint(-69, 40), false, 'open Atlantic');
+    console.log(
+      `GSHHG f L1: index ${ix.count} records in ${indexMs} ms (${(ix.bytes() / 1e6).toFixed(1)} MB); bbox read ${readMs} ms indexed vs ${scanMs} ms full scan`
+    );
   }
-  assert.equal(ix.containsPoint(-72, 42.3), true, 'inland Massachusetts');
-  assert.equal(ix.containsPoint(-69, 40), false, 'open Atlantic');
-  console.log(`GSHHG f L1: index ${ix.count} records in ${indexMs} ms (${(ix.bytes() / 1e6).toFixed(1)} MB); bbox read ${readMs} ms indexed vs ${scanMs} ms full scan`);
-});
+);

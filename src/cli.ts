@@ -48,7 +48,7 @@ function flag(name: string): boolean {
 }
 function parseLatLon(s: string, what: string): [number, number] {
   const parts = s.split(',').map(Number);
-  if (parts.length !== 2 || parts.some((v) => !Number.isFinite(v))) throw new Error(`${what}: expected lat,lon (got "${s}")`);
+  if (parts.length !== 2 || parts.some(v => !Number.isFinite(v))) throw new Error(`${what}: expected lat,lon (got "${s}")`);
   return [parts[1], parts[0]];
 }
 
@@ -59,7 +59,7 @@ async function main(): Promise<void> {
   if (!landArg) throw new Error('--land <shapefile>[,<shapefile>...] is required');
   const land = landArg.split(',');
   const polarPath = arg('polar');
-  const mode = (arg('mode', 'sail_max') as ModePolicy);
+  const mode = arg('mode', 'sail_max') as ModePolicy;
   const hours = Number(arg('hours', '72'));
   const departure = new Date(arg('departure') ?? Date.now());
   const out = arg('o', 'route.geojson')!;
@@ -68,11 +68,11 @@ async function main(): Promise<void> {
   const motorKts = Number(arg('motor-kts', '6'));
   const viasArg = arg('via');
   const vias: Stop[] | undefined = viasArg
-    ? viasArg.split(';').map((v) => {
-      const [ll, r] = v.split('@');
-      const [lon, lat] = parseLatLon(ll, '--via');
-      return r !== undefined ? { lon, lat, radiusM: Number(r) } : { lon, lat };
-    })
+    ? viasArg.split(';').map(v => {
+        const [ll, r] = v.split('@');
+        const [lon, lat] = parseLatLon(ll, '--via');
+        return r !== undefined ? { lon, lat, radiusM: Number(r) } : { lon, lat };
+      })
     : undefined;
 
   const log = (m: string): void => console.log(m);
@@ -82,7 +82,11 @@ async function main(): Promise<void> {
   const precision: Precision = precisionArg;
   const radiusArg = arg('radius');
   const arrivalRadiusM = radiusArg !== undefined ? Number(radiusArg) : undefined;
-  const legErr = validateLegOptions(precision, arrivalRadiusM, (vias ?? []).map((v) => ({ radius_m: v.radiusM })));
+  const legErr = validateLegOptions(
+    precision,
+    arrivalRadiusM,
+    (vias ?? []).map(v => ({ radius_m: v.radiusM }))
+  );
   if (legErr) throw new Error(legErr);
   const stops: Stop[] = [{ lon: start[0], lat: start[1] }, ...(vias ?? []), { lon: end[0], lat: end[1] }];
   const multi = stops.length > 2;
@@ -92,7 +96,7 @@ async function main(): Promise<void> {
     const gridArg = arg('water-grid');
     if (gridArg) {
       grid = WaterGrid.load(gridArg);
-      log(`water grid: ${gridArg}, built ${grid.header.builtAt} from ${grid.header.sources.map((s) => s.name).join(', ')}`);
+      log(`water grid: ${gridArg}, built ${grid.header.builtAt} from ${grid.header.sources.map(s => s.name).join(', ')}`);
     } else {
       const choice = chooseWaterGrid(land, null);
       grid = choice.grid;
@@ -101,21 +105,31 @@ async function main(): Promise<void> {
     }
     if (grid) {
       grid.setCanalsAllowed(flag('allow-canals'));
-      log(`water grid: loaded in ${Date.now() - t} ms, ${(grid.bytes() / 1e6).toFixed(1)} MB resident, canals ${flag('allow-canals') ? 'allowed' : 'blocked'}`);
+      log(
+        `water grid: loaded in ${Date.now() - t} ms, ${(grid.bytes() / 1e6).toFixed(1)} MB resident, canals ${flag('allow-canals') ? 'allowed' : 'blocked'}`
+      );
     }
   }
   const landFor = (b: ReturnType<typeof bboxFromLonLat>): LandMask => {
     const t1 = Date.now();
     const r = LandMask.chooseResolution(b);
     const m = LandMask.fromShapefiles(land, b, { resolutionDeg: r });
-    log(`land mask: box W${b.west.toFixed(2)} S${b.south.toFixed(2)} E${b.east.toFixed(2)} N${b.north.toFixed(2)}, ${m.shapes.length} polygons, ${m.nx}x${m.ny} cells at ${r}°, ${Date.now() - t1} ms`);
+    log(
+      `land mask: box W${b.west.toFixed(2)} S${b.south.toFixed(2)} E${b.east.toFixed(2)} N${b.north.toFixed(2)}, ${m.shapes.length} polygons, ${m.nx}x${m.ny} cells at ${r}°, ${Date.now() - t1} ms`
+    );
     return m;
   };
 
   const polar = polarPath ? PolarDiagram.load(polarPath) : null;
-  const vessel = makeVessel({ motorSpeedMs: motorKts * 1852 / 3600 });
-  const client = flag('no-forecast') ? null : new EcmwfClient({ cacheDir, baseUrl: arg('mirror') ? ECMWF_MIRRORS[arg('mirror')!] ?? arg('mirror') : undefined, log: (m) => log(`  ecmwf: ${m}`) });
-  const cycle = client ? (await resolveCycle(client, hours, { log: (m) => log(`  forecast: ${m}`) })).cycle : null;
+  const vessel = makeVessel({ motorSpeedMs: (motorKts * 1852) / 3600 });
+  const client = flag('no-forecast')
+    ? null
+    : new EcmwfClient({
+        cacheDir,
+        baseUrl: arg('mirror') ? (ECMWF_MIRRORS[arg('mirror')!] ?? arg('mirror')) : undefined,
+        log: m => log(`  ecmwf: ${m}`),
+      });
+  const cycle = client ? (await resolveCycle(client, hours, { log: m => log(`  forecast: ${m}`) })).cycle : null;
   let cycleLabel: string | undefined;
 
   // Waypoints are leg ends (engine/multileg.ts); each leg is its own route.
@@ -126,10 +140,15 @@ async function main(): Promise<void> {
     if (grid) {
       t = Date.now();
       try {
-        corridor = planCorridor(grid, chain, { landFor, stages, onProgress: (m) => log(`  ${tag}corridor: ${m}`) });
+        corridor = planCorridor(grid, chain, { landFor, stages, onProgress: m => log(`  ${tag}corridor: ${m}`) });
         const st = corridor.stats;
-        log(`${tag}corridor: ${(corridor.lengthM / 1000).toFixed(1)} km, A* ${st.astarMs} ms (${st.expanded} cells expanded, window ≤ ${st.windowCells} cells), verify ${st.verifyMs} ms, ${st.refines} refinement(s), ${st.reroutes} re-route(s), total ${Date.now() - t} ms`);
-        for (const v of corridor.autoVias) log(`${tag}corridor: auto via at ${v.name}, width ${(v.widthM / 1000).toFixed(1)} km (${v.lat.toFixed(4)}, ${v.lon.toFixed(4)}, radius ${(v.radiusM / 1000).toFixed(1)} km)`);
+        log(
+          `${tag}corridor: ${(corridor.lengthM / 1000).toFixed(1)} km, A* ${st.astarMs} ms (${st.expanded} cells expanded, window ≤ ${st.windowCells} cells), verify ${st.verifyMs} ms, ${st.refines} refinement(s), ${st.reroutes} re-route(s), total ${Date.now() - t} ms`
+        );
+        for (const v of corridor.autoVias)
+          log(
+            `${tag}corridor: auto via at ${v.name}, width ${(v.widthM / 1000).toFixed(1)} km (${v.lat.toFixed(4)}, ${v.lon.toFixed(4)}, radius ${(v.radiusM / 1000).toFixed(1)} km)`
+          );
       } catch (err) {
         if (!(err instanceof CorridorError) || err.fatal) throw err;
         log(`WARNING: ${tag}corridor failed (${err.message}); falling back to the per-route skeleton`);
@@ -142,7 +161,11 @@ async function main(): Promise<void> {
       lm = corridor.land;
       bbox = corridor.bbox;
     } else {
-      bbox = bboxFromLonLat(chain.map((p) => p[0]), chain.map((p) => p[1]), 1.0);
+      bbox = bboxFromLonLat(
+        chain.map(p => p[0]),
+        chain.map(p => p[1]),
+        1.0
+      );
       lm = landFor(bbox);
     }
     log(`${tag}bbox W${bbox.west.toFixed(2)} S${bbox.south.toFixed(2)} E${bbox.east.toFixed(2)} N${bbox.north.toFixed(2)}`);
@@ -150,7 +173,7 @@ async function main(): Promise<void> {
     let wind;
     if (client && cycle) {
       t = Date.now();
-      wind = await loadForecastForBBox(client, bbox, { horizonHours: hours, cycle, log: (m) => log(`  forecast: ${m}`) });
+      wind = await loadForecastForBBox(client, bbox, { horizonHours: hours, cycle, log: m => log(`  forecast: ${m}`) });
       log(`${tag}forecast: ${wind.steps.length} steps, ${(wind.bytes() / 1024).toFixed(0)} kB resident, ${Date.now() - t} ms`);
       cycleLabel = wind.meta.cycleTime.toISOString();
     }
@@ -158,9 +181,17 @@ async function main(): Promise<void> {
     const prop = new OceanPropagator(lm, { stages });
     const autoVias = corridor ? mergeVias([], corridor.autoVias) : [];
     const r = prop.computeRoute({
-      start: legStart, end: plan.end, departureTime: legDeparture, vessel, polar, wind, modePolicy: mode, vias: autoVias.length ? autoVias : undefined,
+      start: legStart,
+      end: plan.end,
+      departureTime: legDeparture,
+      vessel,
+      polar,
+      wind,
+      modePolicy: mode,
+      vias: autoVias.length ? autoVias : undefined,
       corridor: corridor ? { skeleton: corridor.skeleton, widthM: corridor.widthM } : undefined,
-      arrivalRadiusM: plan.arrivalRadiusM, snapToExact: plan.snapToExact,
+      arrivalRadiusM: plan.arrivalRadiusM,
+      snapToExact: plan.snapToExact,
       onProgress: (s, K, msg) => log(`  ${tag}[${s}/${K}] ${msg}`),
     });
     if (wind) {
@@ -168,7 +199,9 @@ async function main(): Promise<void> {
       const arrival = r.waypoints[r.waypoints.length - 1].time.getTime();
       if (arrival > lastValid) {
         r.forecastHorizonExceededS = (arrival - lastValid) / 1000;
-        log(`WARNING: ${tag}arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`);
+        log(
+          `WARNING: ${tag}arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`
+        );
       }
     }
     return r;
@@ -176,12 +209,14 @@ async function main(): Promise<void> {
   t = Date.now();
   const route = await routeMultiLeg({ stops, departureTime: departure, precision, arrivalRadiusM, runLeg, onProgress: log });
   if (cycleLabel) route.forecastCycle = cycleLabel;
-  log(`route: ${route.waypoints.length} waypoints, ${(route.totalDistanceM / 1852).toFixed(1)} nm, ${(route.totalTimeS / 3600).toFixed(1)} h (sail ${(route.sailingTimeS / 3600).toFixed(1)} h, motor ${(route.motoringTimeS / 3600).toFixed(1)} h), warnings ${route.warnings?.length ?? 0}, ${Date.now() - t} ms`);
+  log(
+    `route: ${route.waypoints.length} waypoints, ${(route.totalDistanceM / 1852).toFixed(1)} nm, ${(route.totalTimeS / 3600).toFixed(1)} h (sail ${(route.sailingTimeS / 3600).toFixed(1)} h, motor ${(route.motoringTimeS / 3600).toFixed(1)} h), warnings ${route.warnings?.length ?? 0}, ${Date.now() - t} ms`
+  );
   fs.writeFileSync(out, JSON.stringify(routeToGeoJSON(route), null, 1));
   log(`wrote ${out}; total ${((Date.now() - tAll) / 1000).toFixed(1)} s`);
 }
 
-main().catch((err) => {
+main().catch(err => {
   console.error(`error: ${(err as Error).message}`);
   process.exit(1);
 });

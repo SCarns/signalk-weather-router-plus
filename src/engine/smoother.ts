@@ -30,7 +30,7 @@ const SAIL_PRESERVE_CANDIDATE_FRAC = 0.5;
 /** Land sampling step the propagator uses for this mask. */
 export function landStepFor(land: LandMask, base = 200): number {
   if (!land.patches.length) return base;
-  const finest = Math.min(...land.patches.map((p) => p.resolutionDeg));
+  const finest = Math.min(...land.patches.map(p => p.resolutionDeg));
   return Math.min(base, Math.max(20, 1.5 * finest * 111_195));
 }
 
@@ -57,7 +57,9 @@ export function rdpSimplify(route: Route, land: LandMask, toleranceM: number): n
     return Math.hypot(p.lon - (a.lon + t * dx), p.lat - (a.lat + t * dy));
   };
   const keep = new Set<number>([0, wps.length - 1]);
-  wps.forEach((w, i) => { if (w.role === 'via') keep.add(i); });
+  wps.forEach((w, i) => {
+    if (w.role === 'via') keep.add(i);
+  });
   const anchors = [...keep].sort((x, y) => x - y);
   const stack: [number, number][] = [];
   for (let k = 0; k + 1 < anchors.length; k++) stack.push([anchors[k], anchors[k + 1]]);
@@ -68,7 +70,10 @@ export function rdpSimplify(route: Route, land: LandMask, toleranceM: number): n
     let maxI = s;
     for (let i = s + 1; i < e; i++) {
       const d = perp(wps[i], wps[s], wps[e]);
-      if (d > maxD) { maxD = d; maxI = i; }
+      if (d > maxD) {
+        maxD = d;
+        maxI = i;
+      }
     }
     if (maxD < tolDeg && legClear(land, wps[s], wps[e], stepM)) continue;
     if (maxI === s) maxI = (s + e) >> 1;
@@ -76,7 +81,7 @@ export function rdpSimplify(route: Route, land: LandMask, toleranceM: number): n
     stack.push([s, maxI], [maxI, e]);
   }
   const before = wps.length;
-  route.waypoints = [...keep].sort((x, y) => x - y).map((i) => wps[i]);
+  route.waypoints = [...keep].sort((x, y) => x - y).map(i => wps[i]);
   return before - route.waypoints.length;
 }
 
@@ -122,17 +127,29 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
     let examined = anchor - 2;
     let failedAt: number | null = null;
     while (examined >= 0) {
-      if (wps.slice(examined + 1, anchor).some((w) => w.role === 'via')) { failedAt = examined; break; }
+      if (wps.slice(examined + 1, anchor).some(w => w.role === 'via')) {
+        failedAt = examined;
+        break;
+      }
       const A = wps[examined];
       const C = wps[anchor];
-      if (!legClear(a.land, A, C, stepM) || a.land.legCrossesLandExact(A.lon, A.lat, C.lon, C.lat, 100)) { failedAt = examined; break; }
+      if (!legClear(a.land, A, C, stepM) || a.land.legCrossesLandExact(A.lon, A.lat, C.lon, C.lat, 100)) {
+        failedAt = examined;
+        break;
+      }
       const sim = simulateLegTime(A.lon, A.lat, A.time, C.lon, C.lat, a.vessel, a.polar, a.wind, a.current, a.sim);
       const origS = (C.time.getTime() - A.time.getTime()) / 1000;
-      if (!Number.isFinite(sim.seconds) || sim.seconds > tol * origS) { failedAt = examined; break; }
+      if (!Number.isFinite(sim.seconds) || sim.seconds > tol * origS) {
+        failedAt = examined;
+        break;
+      }
       if (a.sim.modePolicy === 'sail_max' && origS > SAIL_PRESERVE_FLOOR_S) {
         const origFrac = chainSailingSeconds(wps, examined, anchor) / origS;
         const simFrac = sim.seconds > 0 ? sim.sailingSeconds / sim.seconds : 0;
-        if (origFrac >= SAIL_PRESERVE_ORIG_FRAC && simFrac < SAIL_PRESERVE_CANDIDATE_FRAC) { failedAt = examined; break; }
+        if (origFrac >= SAIL_PRESERVE_ORIG_FRAC && simFrac < SAIL_PRESERVE_CANDIDATE_FRAC) {
+          failedAt = examined;
+          break;
+        }
       }
       // Accept: re-time C and shift everything after it by the same amount.
       const shiftMs = A.time.getTime() + sim.seconds * 1000 - C.time.getTime();
@@ -165,7 +182,11 @@ export function recomputeTotals(route: Route): void {
     if (b.arrivingSplit) {
       let s = Math.max(0, b.arrivingSplit[0]);
       let m = Math.max(0, b.arrivingSplit[1]);
-      if (s + m > dt && s + m > 0) { const f = dt / (s + m); s *= f; m *= f; }
+      if (s + m > dt && s + m > 0) {
+        const f = dt / (s + m);
+        s *= f;
+        m *= f;
+      }
       sail += s;
       motor += m;
     } else if (b.mode === 'sailing') sail += dt;

@@ -113,7 +113,7 @@ export class Chokepoints {
     /** Width at the narrowest point, metres. */
     readonly widthM: Uint16Array,
     /** Channel axis, degrees 0..179 (clockwise from north). */
-    readonly axisDeg: Uint8Array,
+    readonly axisDeg: Uint8Array
   ) {}
 
   get length(): number {
@@ -161,7 +161,11 @@ export class Chokepoints {
 export class SplitCells {
   private map: Map<number, number> | null = null;
 
-  constructor(readonly cells: Uint32Array, readonly labels: Uint8Array, readonly cross: Uint16Array) {
+  constructor(
+    readonly cells: Uint32Array,
+    readonly labels: Uint8Array,
+    readonly cross: Uint16Array
+  ) {
     if (labels.length !== cells.length * 16 || cross.length !== cells.length) throw new Error('SplitCells: array sizes disagree');
   }
 
@@ -223,13 +227,17 @@ export class WaterGrid {
     readonly east: Uint8Array,
     readonly north: Uint8Array,
     readonly chokepoints: Chokepoints,
-    readonly splits: SplitCells = SplitCells.empty(),
+    readonly splits: SplitCells = SplitCells.empty()
   ) {
     this.nx = header.nx;
     this.ny = header.ny;
     this.res = header.res;
     const bytes = Math.ceil((this.nx * this.ny) / 8);
-    for (const [n, p] of [['water', water], ['east', east], ['north', north]] as const) {
+    for (const [n, p] of [
+      ['water', water],
+      ['east', east],
+      ['north', north],
+    ] as const) {
       if (p.length !== bytes) throw new Error(`water grid: ${n} plane has ${p.length} bytes, expected ${bytes}`);
     }
   }
@@ -238,15 +246,31 @@ export class WaterGrid {
   static empty(nx = WG_NX, ny = WG_NY, res = WG_RES): WaterGrid {
     const bytes = Math.ceil((nx * ny) / 8);
     const header: WaterGridHeader = {
-      version: WG_VERSION, res, nx, ny, fineRes: res / WG_FINE_PER_CELL, fineRule: 'centre-sampled', edgeRule: 'fine 4-connected crossing',
-      sources: [], builtAt: new Date(0).toISOString(), canals: [],
+      version: WG_VERSION,
+      res,
+      nx,
+      ny,
+      fineRes: res / WG_FINE_PER_CELL,
+      fineRule: 'centre-sampled',
+      edgeRule: 'fine 4-connected crossing',
+      sources: [],
+      builtAt: new Date(0).toISOString(),
+      canals: [],
     };
-    return new WaterGrid(header, new Uint8Array(bytes), new Uint8Array(bytes), new Uint8Array(bytes), new Chokepoints(new Float32Array(0), new Float32Array(0), new Uint16Array(0), new Uint8Array(0)));
+    return new WaterGrid(
+      header,
+      new Uint8Array(bytes),
+      new Uint8Array(bytes),
+      new Uint8Array(bytes),
+      new Chokepoints(new Float32Array(0), new Float32Array(0), new Uint16Array(0), new Uint8Array(0))
+    );
   }
 
   /** Resident bytes (planes, chokepoints, split cells; excluding the split lookup map). */
   bytes(): number {
-    return this.water.length + this.east.length + this.north.length + this.chokepoints.length * CHOKE_RECORD_BYTES + this.splits.length * 22;
+    return (
+      this.water.length + this.east.length + this.north.length + this.chokepoints.length * CHOKE_RECORD_BYTES + this.splits.length * 22
+    );
   }
 
   index(r: number, c: number): number {
@@ -292,9 +316,9 @@ export class WaterGrid {
   /** Diagonal move: both L-shaped 4-paths through the two side cells must be open. */
   diagOpen(r: number, c: number, dr: number, dc: number): boolean {
     // Through or out of a split cell only orthogonal moves follow its components.
-    if (this.splits.length && (this.isSplit(r, c) || this.isSplit(r, c + dc) || this.isSplit(r + dr, c) || this.isSplit(r + dr, c + dc))) return false;
-    return this.orthOpen(r, c, 0, dc) && this.orthOpen(r, c + dc, dr, 0)
-      && this.orthOpen(r, c, dr, 0) && this.orthOpen(r + dr, c, 0, dc);
+    if (this.splits.length && (this.isSplit(r, c) || this.isSplit(r, c + dc) || this.isSplit(r + dr, c) || this.isSplit(r + dr, c + dc)))
+      return false;
+    return this.orthOpen(r, c, 0, dc) && this.orthOpen(r, c + dc, dr, 0) && this.orthOpen(r, c, dr, 0) && this.orthOpen(r + dr, c, 0, dc);
   }
 
   /**
@@ -383,8 +407,8 @@ export class WaterGrid {
 
   /** Does the grid come from exactly these shapefiles (by content fingerprint)? */
   matchesSources(sources: WaterGridSource[]): boolean {
-    const a = this.header.sources.map((s) => s.fingerprint).sort();
-    const b = sources.map((s) => s.fingerprint).sort();
+    const a = this.header.sources.map(s => s.fingerprint).sort();
+    const b = sources.map(s => s.fingerprint).sort();
     return a.length === b.length && a.every((f, i) => f === b[i]);
   }
 
@@ -414,7 +438,8 @@ export class WaterGrid {
       for (let i = 0; i < ns; i++) {
         const o = 4 + i * SPLIT_RECORD_BYTES;
         sp.writeUInt32LE(this.splits.cells[i], o);
-        for (let b = 0; b < 8; b++) sp.writeUInt8((this.splits.labels[i * 16 + 2 * b] & 0xf) | ((this.splits.labels[i * 16 + 2 * b + 1] & 0xf) << 4), o + 4 + b);
+        for (let b = 0; b < 8; b++)
+          sp.writeUInt8((this.splits.labels[i * 16 + 2 * b] & 0xf) | ((this.splits.labels[i * 16 + 2 * b + 1] & 0xf) << 4), o + 4 + b);
         sp.writeUInt16LE(this.splits.cross[i], o + 12);
       }
       const raw = Buffer.concat([pre, headerJson, this.water, this.east, this.north, cp, sp]);
@@ -441,10 +466,14 @@ export class WaterGrid {
     if (raw.length < o + 3 * bytes + 4) throw new Error('water grid: truncated planes');
     // Views into the decompressed buffer (no copy).
     const view = (off: number, len: number): Uint8Array => new Uint8Array(raw.buffer, raw.byteOffset + off, len);
-    const water = view(o, bytes); o += bytes;
-    const east = view(o, bytes); o += bytes;
-    const north = view(o, bytes); o += bytes;
-    const n = raw.readUInt32LE(o); o += 4;
+    const water = view(o, bytes);
+    o += bytes;
+    const east = view(o, bytes);
+    o += bytes;
+    const north = view(o, bytes);
+    o += bytes;
+    const n = raw.readUInt32LE(o);
+    o += 4;
     if (raw.length < o + n * CHOKE_RECORD_BYTES) throw new Error('water grid: truncated chokepoints');
     const lat = new Float32Array(n);
     const lon = new Float32Array(n);
@@ -459,7 +488,8 @@ export class WaterGrid {
     }
     o += n * CHOKE_RECORD_BYTES;
     if (raw.length < o + 4) throw new Error('water grid: truncated split cells');
-    const ns = raw.readUInt32LE(o); o += 4;
+    const ns = raw.readUInt32LE(o);
+    o += 4;
     if (raw.length < o + ns * SPLIT_RECORD_BYTES) throw new Error('water grid: truncated split cells');
     const cells = new Uint32Array(ns);
     const labels = new Uint8Array(ns * 16);
@@ -494,7 +524,7 @@ export class WaterGrid {
 
 /** Content fingerprints of coastline shapefiles (reads 2 MiB per file). */
 export function sourceFingerprints(paths: string[]): WaterGridSource[] {
-  return paths.map((p) => {
+  return paths.map(p => {
     const st = fs.statSync(p);
     const h = crypto.createHash('sha256');
     h.update(String(st.size));

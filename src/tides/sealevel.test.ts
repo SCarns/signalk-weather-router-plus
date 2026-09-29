@@ -4,10 +4,28 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
-  findExtrema, MIN_PROMINENCE_M, mslOffset, derivedLevels, parabolicVertex, sampleSeries, signalKTendency, slopeAt, STEADY_RATE_MS, tendencyOf, tidalRanges,
+  findExtrema,
+  MIN_PROMINENCE_M,
+  mslOffset,
+  derivedLevels,
+  parabolicVertex,
+  sampleSeries,
+  signalKTendency,
+  slopeAt,
+  STEADY_RATE_MS,
+  tendencyOf,
+  tidalRanges,
 } from './tidecalc';
 import {
-  MEAN_WINDOW_DAYS, pointTimePlan, SeaLevelClient, SL_VARS, TideSource, tideRowAt, tideSummary, loadTideResident, type TidePointSeries,
+  MEAN_WINDOW_DAYS,
+  pointTimePlan,
+  SeaLevelClient,
+  SL_VARS,
+  TideSource,
+  tideRowAt,
+  tideSummary,
+  loadTideResident,
+  type TidePointSeries,
 } from './sealevel';
 import { parseConsolidated } from '../data/zarr';
 import type { ArcoRun } from '../data/arco';
@@ -75,7 +93,10 @@ test('tidecalc: high / low waters of a mixed tide match dense sampling (times wi
   const g = (t: number): number => 0.8 * Math.cos(M2 * (t - t0) - 0.9);
   for (const e of findExtrema(hourly(t0, 72, g))) {
     const phase = M2 * (e.timeMs - t0) - 0.9;
-    const k = e.kind === 'high' ? Math.round(phase / (2 * Math.PI)) * 2 * Math.PI : (Math.round((phase - Math.PI) / (2 * Math.PI)) * 2 + 1) * Math.PI;
+    const k =
+      e.kind === 'high'
+        ? Math.round(phase / (2 * Math.PI)) * 2 * Math.PI
+        : (Math.round((phase - Math.PI) / (2 * Math.PI)) * 2 + 1) * Math.PI;
     assert.ok(Math.abs(phase - k) / M2 < 3 * 60_000, `${e.kind} off by ${((phase - k) / M2 / 60_000).toFixed(1)} min`);
     assert.ok(Math.abs(Math.abs(e.height) - 0.8) < 0.004);
   }
@@ -87,7 +108,7 @@ test('tidecalc: wiggles below the prominence are dropped, a real double high wat
   const base = (t: number): number => Math.cos(M2 * t);
   const noisy = hourly(t0, 60, base);
   const clean = findExtrema(noisy);
-  const k = Math.round((clean.find((e) => e.kind === 'low')!.timeMs - t0) / H);
+  const k = Math.round((clean.find(e => e.kind === 'low')!.timeMs - t0) / H);
   noisy.values[k - 1] = noisy.values[k] - 0.01;
   noisy.values[k + 1] = noisy.values[k] - 0.005;
   const got = findExtrema(noisy);
@@ -97,15 +118,21 @@ test('tidecalc: wiggles below the prominence are dropped, a real double high wat
   const d = findExtrema(hourly(t0, 26, dbl));
   const truth = denseExtrema(dbl, t0 + H, t0 + 25 * H);
   assert.equal(d.length, truth.length);
-  const nh = d.filter((e) => e.kind === 'high').length;
-  const nl = d.filter((e) => e.kind === 'low').length;
-  assert.equal(nh, truth.filter((e) => e.kind === 'high').length);
+  const nh = d.filter(e => e.kind === 'high').length;
+  const nl = d.filter(e => e.kind === 'low').length;
+  assert.equal(nh, truth.filter(e => e.kind === 'high').length);
   // Two tides in 26 h, each with a double high water: 4 highs, 2 real lows and 2 dips (0.16 m) between the highs.
   assert.equal(nh, 4, `double highs kept: ${nh} highs, ${nl} lows`);
-  assert.equal(d.filter((e) => e.kind === 'low' && e.height > 0).length, 2);
+  assert.equal(d.filter(e => e.kind === 'low' && e.height > 0).length, 2);
   // Plateau: the centre of the run.
   const p = findExtrema({ t0Ms: 0, stepMs: H, values: [0, 0.5, 1, 1, 0.5, 0, -0.5, 0] });
-  assert.deepEqual(p.map((e) => [e.kind, e.timeMs / H, e.height]), [['high', 2.5, 1], ['low', 6, -0.5]]);
+  assert.deepEqual(
+    p.map(e => [e.kind, e.timeMs / H, e.height]),
+    [
+      ['high', 2.5, 1],
+      ['low', 6, -0.5],
+    ]
+  );
   // A gap (NaN) next to a sample means no extremum there; the ends are never extrema.
   assert.deepEqual(findExtrema({ t0Ms: 0, stepMs: H, values: [0, 1, NaN, 1, 0] }), []);
   assert.deepEqual(findExtrema({ t0Ms: 0, stepMs: H, values: [3, 2, 1] }), []);
@@ -160,8 +187,22 @@ test('tidecalc: mean-sea-level offset and derived levels (tide + surge = water l
 
 const FIX = path.join(__dirname, '..', '..', 'test-data', 'sealevel');
 const REF = JSON.parse(fs.readFileSync(path.join(FIX, 'ref.json'), 'utf8')) as {
-  run_time_count: number; t0_index: number; hours: number; mean_window: [number, number];
-  points: { name: string; lat: number; lon: number; chunk: string; offset: number; samples: number; tide: (number | null)[]; water_level: (number | null)[]; surge: (number | null)[]; extrapolated: number[] }[];
+  run_time_count: number;
+  t0_index: number;
+  hours: number;
+  mean_window: [number, number];
+  points: {
+    name: string;
+    lat: number;
+    lon: number;
+    chunk: string;
+    offset: number;
+    samples: number;
+    tide: (number | null)[];
+    water_level: (number | null)[];
+    surge: (number | null)[];
+    extrapolated: number[];
+  }[];
 };
 
 /** Run 2026100723 of the real store, built from its geoChunked metadata (no network). */
@@ -171,9 +212,17 @@ function realRun(): ArcoRun {
   const grid = { lat0: -80, dLat: 170 / 2040, nLat: 2041, lon0: -180, dLon: 360 / 4320, nLon: 4320, wrap: true };
   const dims = { time: 0, lat: 2, lon: 3, rank: 4 };
   return {
-    key: '2026100723', timeFirstMs: Date.UTC(2022, 8, 1), timeStepMs: H, timeCount: REF.run_time_count,
+    key: '2026100723',
+    timeFirstMs: Date.UTC(2022, 8, 1),
+    timeStepMs: H,
+    timeCount: REF.run_time_count,
     levels: { time: { layout: 'time', url: 'x', grid, meta, dims }, geo: { layout: 'geo', url: 'x', grid, meta, dims }, ds4: null },
-    stacUpdated: null, stacUpdating: false, metadataModified: null, metadataEtag: null, settled: true, probedAt: '',
+    stacUpdated: null,
+    stacUpdating: false,
+    metadataModified: null,
+    metadataEtag: null,
+    settled: true,
+    probedAt: '',
   };
 }
 
@@ -205,7 +254,11 @@ test('sea level: real point series at 3 coastal points equal an independent xarr
     assert.ok(Math.abs(s.offsetM - p.offset) < 1e-9, `${p.name} offset ${s.offsetM} vs ${p.offset}`);
     let maxd = 0;
     for (let k = 0; k < REF.hours; k++) {
-      for (const [a, b] of [[s.tide[k], p.tide[k]], [s.waterLevel[k], p.water_level[k]], [s.surge[k], p.surge[k]]] as [number, number | null][]) {
+      for (const [a, b] of [
+        [s.tide[k], p.tide[k]],
+        [s.waterLevel[k], p.water_level[k]],
+        [s.surge[k], p.surge[k]],
+      ] as [number, number | null][]) {
         assert.ok(b !== null && Number.isFinite(a), `${p.name} ${k}`);
         maxd = Math.max(maxd, Math.abs(a - b));
       }
@@ -219,7 +272,9 @@ test('sea level: real point series at 3 coastal points equal an independent xarr
     }
     // Real-series high / low waters: alternating, each at a local extremum of the hourly samples.
     const sum = tideSummary(s, from, from + (REF.hours - 1) * H);
-    const all = [...sum.highs.map((e) => ({ ...e, hi: true })), ...sum.lows.map((e) => ({ ...e, hi: false }))].sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
+    const all = [...sum.highs.map(e => ({ ...e, hi: true })), ...sum.lows.map(e => ({ ...e, hi: false }))].sort(
+      (a, b) => Date.parse(a.time) - Date.parse(b.time)
+    );
     assert.ok(all.length >= 4, `${p.name}: ${all.length} extrema in 72 h`);
     for (let i = 1; i < all.length; i++) assert.notEqual(all[i].hi, all[i - 1].hi);
     for (const e of all) {
@@ -252,11 +307,15 @@ const FILL = -9999;
 const T0 = Date.UTC(2026, 8, 20, 0);
 const NT = 200;
 const HOURS_1950 = (T0 - Date.UTC(1950, 0, 1)) / H;
-const tideTrue = (lat: number, lon: number, ti: number): number => 0.8 * Math.cos((2 * Math.PI * ti) / 12.42 + (lon * Math.PI) / 180) + 0.01 * lat;
-const totalTrue = (lat: number, lon: number, ti: number): number => tideTrue(lat, lon, ti) - 0.4 + 0.002 * lon + 0.1 * Math.sin((2 * Math.PI * ti) / 50);
+const tideTrue = (lat: number, lon: number, ti: number): number =>
+  0.8 * Math.cos((2 * Math.PI * ti) / 12.42 + (lon * Math.PI) / 180) + 0.01 * lat;
+const totalTrue = (lat: number, lon: number, ti: number): number =>
+  tideTrue(lat, lon, ti) - 0.4 + 0.002 * lon + 0.1 * Math.sin((2 * Math.PI * ti) / 50);
 const landAt = (lat: number, lon: number): boolean => (lat >= 40 && lat <= 45 && lon >= 10 && lon <= 20) || (lat === 0 && lon === 0);
 const LAYOUTS: Record<string, { d: number; chunks: number[] }> = {
-  time: { d: 1, chunks: [1, 1, 64, 128] }, geo: { d: 1, chunks: [48, 1, 16, 16] }, ds4: { d: 2, chunks: [1, 1, 86, 180] },
+  time: { d: 1, chunks: [1, 1, 64, 128] },
+  geo: { d: 1, chunks: [48, 1, 16, 16] },
+  ds4: { d: 2, chunks: [1, 1, 86, 180] },
 };
 
 function f4(vals: ArrayLike<number>): Uint8Array {
@@ -267,30 +326,52 @@ function mockFetch(counts: Map<string, number>): typeof fetch {
   return (async (input: string | URL | Request) => {
     const url = String(input);
     counts.set(url, (counts.get(url) ?? 0) + 1);
-    if (url.endsWith('dataset.stac.json')) return new Response(JSON.stringify({ properties: { admp_updated_data: '2026-09-28T10:00:00Z', admp_updating_start_date: null } }), { status: 200 });
+    if (url.endsWith('dataset.stac.json'))
+      return new Response(JSON.stringify({ properties: { admp_updated_data: '2026-09-28T10:00:00Z', admp_updating_start_date: null } }), {
+        status: 200,
+      });
     const m = /\/(time|geo|ds4)\.zarr\/(.+)$/.exec(url);
     if (!m) return new Response('no', { status: 404 });
     const L = LAYOUTS[m[1]];
     const key = m[2];
     const nLat = Math.round(170 / L.d) + 1;
     const nLon = Math.round(360 / L.d);
-    const arr = (shape: number[], chunks: number[], fill: unknown): unknown => ({ chunks, compressor: null, dtype: '<f4', fill_value: fill, filters: null, order: 'C', shape, zarr_format: 2 });
+    const arr = (shape: number[], chunks: number[], fill: unknown): unknown => ({
+      chunks,
+      compressor: null,
+      dtype: '<f4',
+      fill_value: fill,
+      filters: null,
+      order: 'C',
+      shape,
+      zarr_format: 2,
+    });
     if (key === '.zmetadata') {
       const md: Record<string, unknown> = {
-        '.zattrs': {}, 'latitude/.zarray': arr([nLat], [nLat], 'NaN'), 'latitude/.zattrs': { _ARRAY_DIMENSIONS: ['latitude'] },
-        'longitude/.zarray': arr([nLon], [nLon], 'NaN'), 'longitude/.zattrs': { _ARRAY_DIMENSIONS: ['longitude'] },
-        'time/.zarray': arr([NT], [64], 'NaN'), 'time/.zattrs': { _ARRAY_DIMENSIONS: ['time'], calendar: 'gregorian', units: 'hours since 1950-01-01' },
+        '.zattrs': {},
+        'latitude/.zarray': arr([nLat], [nLat], 'NaN'),
+        'latitude/.zattrs': { _ARRAY_DIMENSIONS: ['latitude'] },
+        'longitude/.zarray': arr([nLon], [nLon], 'NaN'),
+        'longitude/.zattrs': { _ARRAY_DIMENSIONS: ['longitude'] },
+        'time/.zarray': arr([NT], [64], 'NaN'),
+        'time/.zattrs': { _ARRAY_DIMENSIONS: ['time'], calendar: 'gregorian', units: 'hours since 1950-01-01' },
       };
       for (const v of ['ocean_tide', 'total_sea_level', 'invert_barometer']) {
         md[`${v}/.zarray`] = arr([NT, 1, nLat, nLon], L.chunks, FILL);
         md[`${v}/.zattrs`] = { _ARRAY_DIMENSIONS: ['time', 'elevation', 'latitude', 'longitude'], units: 'm' };
       }
-      return new Response(JSON.stringify({ metadata: md, zarr_consolidated_format: 1 }), { status: 200, headers: { etag: '"e1"', 'last-modified': 'Mon, 28 Sep 2026 08:00:00 GMT' } });
+      return new Response(JSON.stringify({ metadata: md, zarr_consolidated_format: 1 }), {
+        status: 200,
+        headers: { etag: '"e1"', 'last-modified': 'Mon, 28 Sep 2026 08:00:00 GMT' },
+      });
     }
     if (key === 'latitude/0') return new Response(f4(Array.from({ length: nLat }, (_, i) => -80 + i * L.d)), { status: 200 });
     if (key === 'longitude/0') return new Response(f4(Array.from({ length: nLon }, (_, i) => -180 + i * L.d)), { status: 200 });
     const tm = /^time\/(\d+)$/.exec(key);
-    if (tm) return new Response(f4(Array.from({ length: 64 }, (_, i) => (+tm[1] * 64 + i < NT ? HOURS_1950 + +tm[1] * 64 + i : NaN))), { status: 200 });
+    if (tm)
+      return new Response(f4(Array.from({ length: 64 }, (_, i) => (+tm[1] * 64 + i < NT ? HOURS_1950 + +tm[1] * 64 + i : NaN))), {
+        status: 200,
+      });
     const dm = /^(ocean_tide|total_sea_level)\/(\d+)\.0\.(\d+)\.(\d+)$/.exec(key);
     if (!dm) return new Response('no', { status: 404 });
     const [ct, , cr, cc] = L.chunks;
@@ -316,7 +397,12 @@ function mockFetch(counts: Map<string, number>): typeof fetch {
   }) as typeof fetch;
 }
 
-const URLS = { time: 'https://mock/time.zarr', geo: 'https://mock/geo.zarr', ds4: 'https://mock/ds4.zarr', stac: 'https://mock/dataset.stac.json' };
+const URLS = {
+  time: 'https://mock/time.zarr',
+  geo: 'https://mock/geo.zarr',
+  ds4: 'https://mock/ds4.zarr',
+  stac: 'https://mock/dataset.stac.json',
+};
 
 async function mockSource(): Promise<{ src: TideSource; client: SeaLevelClient; run: ArcoRun; counts: Map<string, number> }> {
   const counts = new Map<string, number>();
@@ -361,7 +447,7 @@ test('sea level (synthetic store): probe, exact point series, offset, coastal fi
     assert.ok(Math.abs(s.surge[k] - (s.waterLevel[k] - s.tide[k])) < 1e-12);
     assert.equal(s.extrapolated[k], 0);
   }
-  const chunkReqs = [...counts.keys()].filter((u) => /geo\.zarr\/(ocean_tide|total)/.test(u)).length;
+  const chunkReqs = [...counts.keys()].filter(u => /geo\.zarr\/(ocean_tide|total)/.test(u)).length;
   assert.equal(chunkReqs, 2 * Math.ceil(NT / 48), 'geo layout: one chunk column per variable per time chunk');
   // Coastal fill: the corner at 0°N 0°E is land; a point next to it is extrapolated and finite.
   const c = (await src.pointSeries(0.25, 0.25, from, from + 2 * H))!;
@@ -378,7 +464,13 @@ test('sea level (synthetic store): probe, exact point series, offset, coastal fi
   assert.ok(Math.abs(row.tide_m! - (s.tide[1] + s.tide[2]) / 2) < 1e-4);
   assert.equal(row.tide_extrapolated, false);
   assert.ok(['rising', 'falling', 'steady'].includes(row.tide_tendency!));
-  assert.deepEqual(tideRowAt(null, from), { tide_m: null, water_level_m: null, surge_m: null, tide_extrapolated: false, tide_tendency: null });
+  assert.deepEqual(tideRowAt(null, from), {
+    tide_m: null,
+    water_level_m: null,
+    surge_m: null,
+    tide_extrapolated: false,
+    tide_tendency: null,
+  });
   const st = src.status();
   assert.equal(st.run, run.key);
   assert.ok(st.point_cache.entries >= 2 && st.point_cache.bytes > 0);
@@ -409,17 +501,22 @@ test('sea level (synthetic store): tide map field — resident window, on-demand
   // Outside the resident area: nothing until loaded on demand.
   assert.ok(Number.isNaN(src.tideAtDisplay(100, 10, t)));
   assert.equal(await src.ensure({ west: 99, east: 101, south: 9, north: 11 }, src.bracketSteps(t.getTime()), { reason: 'test' }), true);
-  assert.ok(Math.abs(src.tideAtDisplay(100.2, 10.4, t) - (0.5 * bilin(tideTrue, 10.4, 100.2, 20) + 0.5 * bilin(tideTrue, 10.4, 100.2, 21))) < 1e-6);
+  assert.ok(
+    Math.abs(src.tideAtDisplay(100.2, 10.4, t) - (0.5 * bilin(tideTrue, 10.4, 100.2, 20) + 0.5 * bilin(tideTrue, 10.4, 100.2, 21))) < 1e-6
+  );
   assert.equal(src.status().on_demand.areas, 1);
   // Display fill next to the one-cell land spot at 0°N 0°E.
   await src.ensure({ west: -2, east: 2, south: -2, north: 2 }, src.bracketSteps(t.getTime()), { reason: 'test' });
-  assert.ok(Number.isFinite(src.tideAtDisplay(0, 0, t)), 'the land cell takes its neighbours\' value for display');
+  assert.ok(Number.isFinite(src.tideAtDisplay(0, 0, t)), "the land cell takes its neighbours' value for display");
   // fieldGrid layer=tide.
   const srcs: OverlaySources = { forecast: null, currents: null, land: null, tides: src };
   const g = fieldGrid(srcs, 'tide', { west: -41, east: -39, south: 29, north: 31 }, t, 0.5);
   assert.equal(g.units.tide_m, 'm');
-  assert.ok(g.fields.tide_m.flat().every((x) => typeof x === 'number'));
-  assert.throws(() => fieldGrid({ forecast: null, currents: null, land: null, tides: null }, 'tide', { west: 0, east: 1, south: 0, north: 1 }, t, 0.5), /no tide data/);
+  assert.ok(g.fields.tide_m.flat().every(x => typeof x === 'number'));
+  assert.throws(
+    () => fieldGrid({ forecast: null, currents: null, land: null, tides: null }, 'tide', { west: 0, east: 1, south: 0, north: 1 }, t, 0.5),
+    /no tide data/
+  );
   // conditionsSeries with a tide series: per-row fields and the summary; existing fields untouched.
   const from = new Date(T0 + 10 * H);
   const s = (await src.pointSeries(30.3, -40.6, from.getTime(), from.getTime() + 72 * H))!;
@@ -442,23 +539,34 @@ test('Weather API: water.level (m above MSL) and water.levelTendency from the po
   const t0 = Date.UTC(2026, 8, 28, 0);
   const wl = new Float64Array(100);
   for (let k = 0; k < 100; k++) wl[k] = 0.9 * Math.cos(M2 * k * H);
-  const items: WeatherData[] = [0, 3, 6, 99, 150].map((h) => ({ date: new Date(t0 + h * H).toISOString(), type: 'point' }));
+  const items: WeatherData[] = [0, 3, 6, 99, 150].map(h => ({ date: new Date(t0 + h * H).toISOString(), type: 'point' }));
   const n = applyWaterLevel(items, { t0Ms: t0, stepMs: H, waterLevel: wl, error: null });
   assert.equal(n, 4, 'beyond the series: no level');
   assert.ok(Math.abs(items[1].water!.level! - wl[3]) < 1e-12);
   assert.equal(items[1].water!.levelTendency, 'decreasing');
   assert.equal(items[4].water, undefined);
   // Through the provider (async), with a minimal store and a fake tide query.
-  const steps = [0, 3, 6].map((h) => ({ validMs: t0 + h * H, stepHours: h }));
+  const steps = [0, 3, 6].map(h => ({ validMs: t0 + h * H, stepHours: h }));
   const store = {
-    covers: () => true, has: () => false, steps, meta: { cycleTime: new Date(t0) },
-    at: () => [5, 90], wavesAt: () => null, mslAt: () => 101300, paramAt: () => NaN,
+    covers: () => true,
+    has: () => false,
+    steps,
+    meta: { cycleTime: new Date(t0) },
+    at: () => [5, 90],
+    wavesAt: () => null,
+    mslAt: () => 101300,
+    paramAt: () => NaN,
   } as unknown as ForecastStore;
   const asked: number[][] = [];
   const points: PointForecastFn = async (p, o) => pointForecasts(store, p.longitude, p.latitude, startMsOf(o), o?.maxCount ?? null);
   const provider = makeWeatherProvider(points, 'x', async (lat, lon, fromMs, hours) => {
     asked.push([lat, lon, fromMs, hours]);
-    return { t0Ms: t0 - H, stepMs: H, waterLevel: Float64Array.from({ length: 20 }, (_, k) => 0.9 * Math.cos(M2 * (k - 1) * H)), error: null };
+    return {
+      t0Ms: t0 - H,
+      stepMs: H,
+      waterLevel: Float64Array.from({ length: 20 }, (_, k) => 0.9 * Math.cos(M2 * (k - 1) * H)),
+      error: null,
+    };
   });
   const out = await provider.methods.getForecasts({ latitude: 41.4, longitude: -71.3 }, 'point', { startDate: new Date(t0).toISOString() });
   assert.equal(out.length, 3);
@@ -472,7 +580,9 @@ test('Weather API: water.level (m above MSL) and water.levelTendency from the po
   assert.equal(out[0].outside!.pressure, 101300, 'existing fields kept');
   assert.deepEqual(asked, [[41.4, -71.3, t0 - H, 8]]);
   // A failing tide query leaves the forecast intact without water.level.
-  const failing = makeWeatherProvider(points, 'x', async () => { throw new Error('down'); });
+  const failing = makeWeatherProvider(points, 'x', async () => {
+    throw new Error('down');
+  });
   const f = await failing.methods.getForecasts({ latitude: 41.4, longitude: -71.3 }, 'point', { startDate: new Date(t0).toISOString() });
   assert.equal(f.length, 3);
   assert.equal(f[0].water, undefined);
@@ -495,7 +605,10 @@ test('legends: tide ramp diverges around 0 from −3 to +3 m; settings: Tides gr
   assert.deepEqual(r.changed.sort(), ['tides.enabled', 'tides.halfWidth', 'tides.horizon']);
   assert.deepEqual([...reloadsFor(r.changed)], ['tides']);
   assert.throws(() => mergeSettings(d, { tides: { halfWidth: 40 } }), /\[1, 30\]/);
-  assert.deepEqual(SETTINGS_SPEC.filter((s) => s.group === 'tides').map((s) => s.key), ['tides.enabled', 'tides.halfWidth', 'tides.horizon']);
+  assert.deepEqual(
+    SETTINGS_SPEC.filter(s => s.group === 'tides').map(s => s.key),
+    ['tides.enabled', 'tides.halfWidth', 'tides.horizon']
+  );
 });
 
 // Types only: the series shape the worker hands to the main thread.

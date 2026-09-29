@@ -63,9 +63,12 @@ export interface LegPlan {
  * Returns an error message or null.
  */
 export function validateLegOptions(
-  precision: unknown, arrivalRadiusM: unknown, waypoints: { radius_m?: unknown }[] | undefined,
+  precision: unknown,
+  arrivalRadiusM: unknown,
+  waypoints: { radius_m?: unknown }[] | undefined
 ): string | null {
-  if (precision !== undefined && precision !== 'precise' && precision !== 'approximate') return 'precision must be "precise" or "approximate"';
+  if (precision !== undefined && precision !== 'precise' && precision !== 'approximate')
+    return 'precision must be "precise" or "approximate"';
   const radiusOk = (v: unknown): boolean => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= MAX_ARRIVAL_RADIUS_M;
   if (arrivalRadiusM !== undefined && !radiusOk(arrivalRadiusM)) return `arrival_radius_m must be 0..${MAX_ARRIVAL_RADIUS_M}`;
   for (let i = 0; i < (waypoints ?? []).length; i++) {
@@ -118,11 +121,11 @@ function samePoint(a: { lon: number; lat: number }, b: { lon: number; lat: numbe
 export function stitchLegs(legs: Route[]): Route {
   if (legs.length === 0) throw new Error('no legs to stitch');
   if (legs.length === 1) return legs[0];
-  const waypoints = legs[0].waypoints.map((w) => ({ ...w, role: undefined as 'via' | undefined }));
+  const waypoints = legs[0].waypoints.map(w => ({ ...w, role: undefined as 'via' | undefined }));
   let totalDistanceM = legs[0].totalDistanceM;
   let motoringTimeS = legs[0].motoringTimeS;
   let sailingTimeS = legs[0].sailingTimeS;
-  const warnings: RouteWarning[] = (legs[0].warnings ?? []).map((w) => ({ ...w }));
+  const warnings: RouteWarning[] = (legs[0].warnings ?? []).map(w => ({ ...w }));
   const autoVias = [...(legs[0].autoVias ?? [])];
   const skeleton = legs[0].skeleton ? [...legs[0].skeleton] : undefined;
   let validated = legs[0].validated;
@@ -150,7 +153,8 @@ export function stitchLegs(legs: Route[]): Route {
     motoringTimeS += leg.motoringTimeS;
     sailingTimeS += leg.sailingTimeS;
     autoVias.push(...(leg.autoVias ?? []));
-    if (skeleton && leg.skeleton) skeleton.push(...(samePoint(skeleton[skeleton.length - 1], leg.skeleton[0]) ? leg.skeleton.slice(1) : leg.skeleton));
+    if (skeleton && leg.skeleton)
+      skeleton.push(...(samePoint(skeleton[skeleton.length - 1], leg.skeleton[0]) ? leg.skeleton.slice(1) : leg.skeleton));
     validated = validated && leg.validated;
     horizon = Math.max(horizon, leg.forecastHorizonExceededS ?? 0);
     drops += leg.smootherDrops ?? 0;
@@ -199,14 +203,18 @@ export async function routeMultiLeg(args: MultiLegArgs): Promise<Route> {
   let departure = args.departureTime;
   for (const plan of plans) {
     if (plans.length > 1) {
-      progress(`leg ${plan.index + 1}/${plan.count}: (${start[1].toFixed(4)}, ${start[0].toFixed(4)}) → (${plan.end[1].toFixed(4)}, ${plan.end[0].toFixed(4)}), departing ${departure.toISOString()}${plan.snapToExact ? ', ends exactly on the point' : `, ends on entering the ${plan.arrivalRadiusM!.toFixed(0)} m circle`}`);
+      progress(
+        `leg ${plan.index + 1}/${plan.count}: (${start[1].toFixed(4)}, ${start[0].toFixed(4)}) → (${plan.end[1].toFixed(4)}, ${plan.end[0].toFixed(4)}), departing ${departure.toISOString()}${plan.snapToExact ? ', ends exactly on the point' : `, ends on entering the ${plan.arrivalRadiusM!.toFixed(0)} m circle`}`
+      );
     }
     const r = await args.runLeg(plan, start, departure);
     if (!r.waypoints.length) throw new Error(`leg ${plan.index + 1}/${plan.count} returned no waypoints`);
     const last = r.waypoints[r.waypoints.length - 1];
     if (plans.length > 1) {
       const miss = haversineDistanceM(last.lon, last.lat, plan.end[0], plan.end[1]);
-      progress(`leg ${plan.index + 1}/${plan.count} done: ${(r.totalDistanceM / 1852).toFixed(1)} nm, ${(r.totalTimeS / 3600).toFixed(1)} h, ends ${miss.toFixed(0)} m from the ${plan.index + 1 < plan.count ? 'waypoint' : 'destination'}`);
+      progress(
+        `leg ${plan.index + 1}/${plan.count} done: ${(r.totalDistanceM / 1852).toFixed(1)} nm, ${(r.totalTimeS / 3600).toFixed(1)} h, ends ${miss.toFixed(0)} m from the ${plan.index + 1 < plan.count ? 'waypoint' : 'destination'}`
+      );
     }
     legs.push(r);
     start = [last.lon, last.lat];

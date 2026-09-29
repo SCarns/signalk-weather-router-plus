@@ -40,8 +40,12 @@
  */
 
 import {
-  bboxFromLonLat, haversineBearing, haversineDistanceM, perpendicularOffsetM,
-  projectAlongBearing, segmentWithinDisc,
+  bboxFromLonLat,
+  haversineBearing,
+  haversineDistanceM,
+  perpendicularOffsetM,
+  projectAlongBearing,
+  segmentWithinDisc,
 } from '../geo/geodesy';
 import { buildCoarseGrid, type NavigabilityGrid } from '../geo/grid';
 import type { LandMask } from '../geo/landmask';
@@ -204,7 +208,10 @@ export class OceanPropagator {
   readonly skeletonPaddingDeg: number;
   readonly landStepM: number;
 
-  constructor(readonly landMask: LandMask, opts: PropagatorOptions = {}) {
+  constructor(
+    readonly landMask: LandMask,
+    opts: PropagatorOptions = {}
+  ) {
     this.K = Math.max(1, Math.floor(opts.stages ?? 20));
     this.k = Math.max(1, Math.floor(opts.subsectors ?? 30));
     this.m = Math.max(1, Math.floor(opts.headings ?? 30));
@@ -284,77 +291,98 @@ export class OceanPropagator {
     // detour around land still fits in K stages instead of running out
     // of stages short of the destination.
     let budgetDistM = totalDistM;
-    let dtS = (budgetDistM / cruise) / this.K;
+    let dtS = budgetDistM / cruise / this.K;
     let deltaD = budgetDistM / (2 * this.k);
     let candStepM = cruise * dtS;
 
     // ---- Coarse A* skeleton -------------------------------------------
-    const chainEndpoints: [number, number][] = [[sLon, sLat], ...goals.slice(0, -1).map((g) => [g.lon, g.lat] as [number, number]), [eLon, eLat]];
+    const chainEndpoints: [number, number][] = [
+      [sLon, sLat],
+      ...goals.slice(0, -1).map(g => [g.lon, g.lat] as [number, number]),
+      [eLon, eLat],
+    ];
     let skeleton: { lon: number; lat: number }[] | null = null;
     let skeletonCum: number[] | null = null;
     let widths: ArrayLike<number> | null = null;
     if (args.corridor && args.corridor.skeleton.length >= 2) {
-      skeleton = args.corridor.skeleton.map((p) => ({ lon: p.lon, lat: p.lat }));
+      skeleton = args.corridor.skeleton.map(p => ({ lon: p.lon, lat: p.lat }));
       skeleton[0] = { lon: sLon, lat: sLat };
       skeleton[skeleton.length - 1] = { lon: eLon, lat: eLat };
       widths = args.corridor.widthM && args.corridor.widthM.length === skeleton.length ? args.corridor.widthM : null;
       skeletonCum = [0];
       for (let i = 1; i < skeleton.length; i++) {
-        skeletonCum.push(skeletonCum[i - 1] + haversineDistanceM(skeleton[i - 1].lon, skeleton[i - 1].lat, skeleton[i].lon, skeleton[i].lat));
+        skeletonCum.push(
+          skeletonCum[i - 1] + haversineDistanceM(skeleton[i - 1].lon, skeleton[i - 1].lat, skeleton[i].lon, skeleton[i].lat)
+        );
       }
       const skLen = skeletonCum[skeletonCum.length - 1];
       progress(0, this.K, `skeleton: corridor from the global water grid, ${skeleton.length} points, ${(skLen / 1000).toFixed(1)} km`);
       if (skLen > budgetDistM) {
         budgetDistM = skLen;
-        dtS = (budgetDistM / cruise) / this.K;
+        dtS = budgetDistM / cruise / this.K;
         deltaD = budgetDistM / (2 * this.k);
         candStepM = cruise * dtS;
       }
-    } else try {
-      const bbox = bboxFromLonLat(chainEndpoints.map((p) => p[0]), chainEndpoints.map((p) => p[1]), this.skeletonPaddingDeg);
-      const t0 = Date.now();
-      const coarse = buildCoarseGrid(this.landMask, bbox, this.skeletonResolutionDeg);
-      progress(0, this.K, `skeleton grid ${coarse.spec.nx}x${coarse.spec.ny} at ${this.skeletonResolutionDeg}° built in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
-      checkCancel();
-      const t1 = Date.now();
-      // The skeleton is guidance only, so endpoints that fall on a land
-      // cell of the coarse raster (a harbour narrower than a cell) are
-      // snapped to the nearest passable cell centre for the search.
-      const snapped = chainEndpoints.map((p) => snapToPassable(coarse, p, 20));
-      const chain: { lon: number; lat: number }[] = [];
+    } else
       try {
-        for (let s = 0; s + 1 < snapped.length; s++) {
-          const seg = astarRoute(coarse, snapped[s], snapped[s + 1], cruise);
-          if (chain.length) chain.push(...seg.path.slice(1));
-          else chain.push(...seg.path);
+        const bbox = bboxFromLonLat(
+          chainEndpoints.map(p => p[0]),
+          chainEndpoints.map(p => p[1]),
+          this.skeletonPaddingDeg
+        );
+        const t0 = Date.now();
+        const coarse = buildCoarseGrid(this.landMask, bbox, this.skeletonResolutionDeg);
+        progress(
+          0,
+          this.K,
+          `skeleton grid ${coarse.spec.nx}x${coarse.spec.ny} at ${this.skeletonResolutionDeg}° built in ${((Date.now() - t0) / 1000).toFixed(1)} s`
+        );
+        checkCancel();
+        const t1 = Date.now();
+        // The skeleton is guidance only, so endpoints that fall on a land
+        // cell of the coarse raster (a harbour narrower than a cell) are
+        // snapped to the nearest passable cell centre for the search.
+        const snapped = chainEndpoints.map(p => snapToPassable(coarse, p, 20));
+        const chain: { lon: number; lat: number }[] = [];
+        try {
+          for (let s = 0; s + 1 < snapped.length; s++) {
+            const seg = astarRoute(coarse, snapped[s], snapped[s + 1], cruise);
+            if (chain.length) chain.push(...seg.path.slice(1));
+            else chain.push(...seg.path);
+          }
+          skeleton = chain;
+        } catch (err) {
+          if (!(err instanceof AstarError)) throw err;
+          progress(0, this.K, `skeleton chain A* failed (${err.message}); retrying start→end only`);
+          skeleton = astarRoute(coarse, snapped[0], snapped[snapped.length - 1], cruise).path;
         }
-        skeleton = chain;
+        // Restore the exact endpoints on the skeleton.
+        skeleton[0] = { lon: sLon, lat: sLat };
+        skeleton[skeleton.length - 1] = { lon: eLon, lat: eLat };
+        skeletonCum = [0];
+        for (let i = 1; i < skeleton.length; i++) {
+          skeletonCum.push(
+            skeletonCum[i - 1] + haversineDistanceM(skeleton[i - 1].lon, skeleton[i - 1].lat, skeleton[i].lon, skeleton[i].lat)
+          );
+        }
+        progress(
+          0,
+          this.K,
+          `skeleton: ${skeleton.length} points, ${(skeletonCum[skeletonCum.length - 1] / 1000).toFixed(1)} km, A* ${((Date.now() - t1) / 1000).toFixed(1)} s`
+        );
+        const skLen = skeletonCum[skeletonCum.length - 1];
+        if (skLen > budgetDistM) {
+          budgetDistM = skLen;
+          dtS = budgetDistM / cruise / this.K;
+          deltaD = budgetDistM / (2 * this.k);
+          candStepM = cruise * dtS;
+        }
       } catch (err) {
-        if (!(err instanceof AstarError)) throw err;
-        progress(0, this.K, `skeleton chain A* failed (${err.message}); retrying start→end only`);
-        skeleton = astarRoute(coarse, snapped[0], snapped[snapped.length - 1], cruise).path;
+        if (err instanceof RouteCancelled) throw err;
+        progress(0, this.K, `skeleton unavailable (${(err as Error).message}); headings aim straight at the destination`);
+        skeleton = null;
+        skeletonCum = null;
       }
-      // Restore the exact endpoints on the skeleton.
-      skeleton[0] = { lon: sLon, lat: sLat };
-      skeleton[skeleton.length - 1] = { lon: eLon, lat: eLat };
-      skeletonCum = [0];
-      for (let i = 1; i < skeleton.length; i++) {
-        skeletonCum.push(skeletonCum[i - 1] + haversineDistanceM(skeleton[i - 1].lon, skeleton[i - 1].lat, skeleton[i].lon, skeleton[i].lat));
-      }
-      progress(0, this.K, `skeleton: ${skeleton.length} points, ${(skeletonCum[skeletonCum.length - 1] / 1000).toFixed(1)} km, A* ${((Date.now() - t1) / 1000).toFixed(1)} s`);
-      const skLen = skeletonCum[skeletonCum.length - 1];
-      if (skLen > budgetDistM) {
-        budgetDistM = skLen;
-        dtS = (budgetDistM / cruise) / this.K;
-        deltaD = budgetDistM / (2 * this.k);
-        candStepM = cruise * dtS;
-      }
-    } catch (err) {
-      if (err instanceof RouteCancelled) throw err;
-      progress(0, this.K, `skeleton unavailable (${(err as Error).message}); headings aim straight at the destination`);
-      skeleton = null;
-      skeletonCum = null;
-    }
 
     // ---- Narrow passages: step limits, extra stages, narrow-bin zones ------
     const nSk = skeleton ? skeleton.length : 0;
@@ -384,23 +412,31 @@ export class OceanPropagator {
       // Zones narrower than a subsector bin.
       let i = 0;
       while (i < nSk) {
-        if (!(widths[i] < deltaD)) { i++; continue; }
+        if (!(widths[i] < deltaD)) {
+          i++;
+          continue;
+        }
         let j = i;
         let maxW = 0;
         while (j + 1 < nSk && widths[j + 1] < deltaD) j++;
-        let west = Infinity; let east = -Infinity; let south = Infinity; let north = -Infinity;
+        let west = Infinity;
+        let east = -Infinity;
+        let south = Infinity;
+        let north = -Infinity;
         const ref = skeleton[i].lon;
         for (let q = i; q <= j; q++) {
           maxW = Math.max(maxW, widths[q]);
           let x = skeleton[q].lon;
           while (x - ref > 180) x -= 360;
           while (x - ref < -180) x += 360;
-          west = Math.min(west, x); east = Math.max(east, x);
-          south = Math.min(south, skeleton[q].lat); north = Math.max(north, skeleton[q].lat);
+          west = Math.min(west, x);
+          east = Math.max(east, x);
+          south = Math.min(south, skeleton[q].lat);
+          north = Math.max(north, skeleton[q].lat);
         }
         const padM = maxW + 2000;
         const padLat = padM / 111_195;
-        const padLon = padLat / Math.max(0.05, Math.cos(((south + north) / 2) * Math.PI / 180));
+        const padLon = padLat / Math.max(0.05, Math.cos((((south + north) / 2) * Math.PI) / 180));
         zones.push({ a: i, b: j, west: west - padLon, east: east + padLon, south: south - padLat, north: north + padLat });
         i = j + 1;
       }
@@ -410,16 +446,24 @@ export class OceanPropagator {
     if (extraStages > 0) {
       let minStep = Infinity;
       for (let i = 0; i < nSk; i++) minStep = Math.min(minStep, stepAt[i]);
-      progress(0, kEff, `narrow passages: stages shortened down to ${(minStep / 1000).toFixed(1)} km there; ${kEff} stages planned (${zones.length} narrow stretch${zones.length === 1 ? '' : 'es'} binned across the passage)`);
+      progress(
+        0,
+        kEff,
+        `narrow passages: stages shortened down to ${(minStep / 1000).toFixed(1)} km there; ${kEff} stages planned (${zones.length} narrow stretch${zones.length === 1 ? '' : 'es'} binned across the passage)`
+      );
     }
     // Land sampling step: finer when the raster has fine local patches.
     let landStepM = this.landStepM;
     if (this.landMask.patches.length) {
-      const finest = Math.min(...this.landMask.patches.map((p) => p.resolutionDeg));
+      const finest = Math.min(...this.landMask.patches.map(p => p.resolutionDeg));
       landStepM = Math.min(landStepM, Math.max(20, 1.5 * finest * 111_195));
     }
 
-    progress(0, kEff, `K=${this.K} stages, k=${this.k} subsectors, m=${this.m} headings, step ${(candStepM / 1000).toFixed(1)} km, budget ${(budgetDistM / 1000).toFixed(1)} km (straight ${(totalDistM / 1000).toFixed(1)} km)`);
+    progress(
+      0,
+      kEff,
+      `K=${this.K} stages, k=${this.k} subsectors, m=${this.m} headings, step ${(candStepM / 1000).toFixed(1)} km, budget ${(budgetDistM / 1000).toFixed(1)} km (straight ${(totalDistM / 1000).toFixed(1)} km)`
+    );
 
     const nearestSkeleton = (pLon: number, pLat: number, from = 0, to = nSk - 1): number => {
       let bestI = from;
@@ -461,7 +505,14 @@ export class OceanPropagator {
         if (x < z.west || x > z.east) continue;
         const i = nearestSkeleton(c.lon, c.lat, z.a, z.b);
         const i2 = i < nSk - 1 ? i + 1 : i - 1;
-        const off = perpendicularOffsetM(skeleton[Math.min(i, i2)].lon, skeleton[Math.min(i, i2)].lat, skeleton[Math.max(i, i2)].lon, skeleton[Math.max(i, i2)].lat, c.lon, c.lat);
+        const off = perpendicularOffsetM(
+          skeleton[Math.min(i, i2)].lon,
+          skeleton[Math.min(i, i2)].lat,
+          skeleton[Math.max(i, i2)].lon,
+          skeleton[Math.max(i, i2)].lat,
+          c.lon,
+          c.lat
+        );
         const w = Math.max(200, Number.isFinite(widths[i]) ? widths[i] : deltaD);
         const binW = w / NARROW_BINS;
         let bin = Math.floor(off / binW);
@@ -493,7 +544,7 @@ export class OceanPropagator {
         const tgt = targetForParent(sf.idx, sf.step);
         const b0 = haversineBearing(par.lon, par.lat, tgt[0], tgt[1]);
         for (let h = -sweepM; h <= sweepM; h++) {
-          const b = ((b0 + h * sweepDc) % 360 + 360) % 360;
+          const b = (((b0 + h * sweepDc) % 360) + 360) % 360;
           const [x, y] = projectAlongBearing(par.lon, par.lat, b, stepM);
           pIdx[q] = p;
           hdg[q] = b;
@@ -515,9 +566,20 @@ export class OceanPropagator {
         start = end;
         if (keep.length === 0) continue;
         const par = parents[p];
-        const bearings = new Float64Array(keep.map((i) => hdg[i]));
+        const bearings = new Float64Array(keep.map(i => hdg[i]));
         const dists = new Float64Array(keep.length).fill(pStep[p]);
-        const sc = scoreCandidatesFromParent(par.lon, par.lat, new Date(par.timeMs), bearings, dists, vessel, polar, wind, current, simOpts);
+        const sc = scoreCandidatesFromParent(
+          par.lon,
+          par.lat,
+          new Date(par.timeMs),
+          bearings,
+          dists,
+          vessel,
+          polar,
+          wind,
+          current,
+          simOpts
+        );
         for (let c = 0; c < keep.length; c++) {
           const secs = sc.seconds[c];
           if (!Number.isFinite(secs) || secs <= 0) continue;
@@ -554,12 +616,31 @@ export class OceanPropagator {
     const announced = new Set<number>();
     for (let gi = 0; gi < nVias; gi++) {
       const g = goals[gi];
-      if (g.auto) progress(0, kEff, `auto via at ${g.name ?? 'a narrow passage'}, width ${((g.widthM ?? 0) / 1000).toFixed(1)} km (disc radius ${(g.radiusM / 1000).toFixed(1)} km)`);
+      if (g.auto)
+        progress(
+          0,
+          kEff,
+          `auto via at ${g.name ?? 'a narrow passage'}, width ${((g.widthM ?? 0) / 1000).toFixed(1)} km (disc radius ${(g.radiusM / 1000).toFixed(1)} km)`
+        );
     }
-    const stages: Candidate[][] = [[{
-      lon: sLon, lat: sLat, timeMs: args.departureTime.getTime(), elapsedS: 0, parentIdx: -1,
-      sogMs: 0, cogDeg: 0, mode: 'motoring', sailingS: 0, motoringS: 0, viaCount: startViaCount, viaIdxs: [],
-    }]];
+    const stages: Candidate[][] = [
+      [
+        {
+          lon: sLon,
+          lat: sLat,
+          timeMs: args.departureTime.getTime(),
+          elapsedS: 0,
+          parentIdx: -1,
+          sogMs: 0,
+          cogDeg: 0,
+          mode: 'motoring',
+          sailingS: 0,
+          motoringS: 0,
+          viaCount: startViaCount,
+          viaIdxs: [],
+        },
+      ],
+    ];
 
     for (let stage = 0; stage < maxStages; stage++) {
       checkCancel();
@@ -567,7 +648,7 @@ export class OceanPropagator {
       const parents = stages[stages.length - 1];
       if (parents.length === 0) {
         throw new RouteError(
-          `stage ${stage} has no live waypoints: every candidate from the previous stage was blocked by land even after widening the heading sweep and halving the step`,
+          `stage ${stage} has no live waypoints: every candidate from the previous stage was blocked by land even after widening the heading sweep and halving the step`
         );
       }
       let cands = propose(parents, this.m, this.deltaC, 1);
@@ -609,12 +690,16 @@ export class OceanPropagator {
         const cur = best.get(key);
         if (cur === undefined || cost[i] < cost[cur]) best.set(key, i);
       }
-      const retained = [...best.values()].map((i) => cands[i]);
+      const retained = [...best.values()].map(i => cands[i]);
       stages.push(retained);
 
       let bestRemaining = Infinity;
       for (const c of retained) bestRemaining = Math.min(bestRemaining, haversineDistanceM(c.lon, c.lat, eLon, eLat));
-      progress(stage + 1, Math.max(kEff, stage + 1), `${parents.length} parents → ${cands.length} candidates → ${retained.length} retained; best remaining ${(bestRemaining / 1000).toFixed(1)} km; ${((Date.now() - tStage) / 1000).toFixed(1)} s`);
+      progress(
+        stage + 1,
+        Math.max(kEff, stage + 1),
+        `${parents.length} parents → ${cands.length} candidates → ${retained.length} retained; best remaining ${(bestRemaining / 1000).toFixed(1)} km; ${((Date.now() - tStage) / 1000).toFixed(1)} s`
+      );
       for (const c of retained) {
         for (const vi of c.viaIdxs) {
           const g = goals[vi];
@@ -625,32 +710,44 @@ export class OceanPropagator {
         }
       }
 
-      const eligible = retained.filter((c) => c.viaCount === nVias);
+      const eligible = retained.filter(c => c.viaCount === nVias);
       if (eligible.length) {
         let minDist = Infinity;
         for (const c of eligible) minDist = Math.min(minDist, haversineDistanceM(c.lon, c.lat, eLon, eLat));
         if (args.arrivalRadiusM !== undefined && minDist <= args.arrivalRadiusM) {
-          progress(stage + 1, Math.max(kEff, stage + 1), `early termination: within arrival radius ${args.arrivalRadiusM.toFixed(0)} m (${minDist.toFixed(0)} m)`);
+          progress(
+            stage + 1,
+            Math.max(kEff, stage + 1),
+            `early termination: within arrival radius ${args.arrivalRadiusM.toFixed(0)} m (${minDist.toFixed(0)} m)`
+          );
           break;
         }
         // Within one (local) stage step of the destination, with a land-free final leg.
-        const near = eligible.filter((c) => haversineDistanceM(c.lon, c.lat, eLon, eLat) <= stepFor(c.lon, c.lat).step);
+        const near = eligible.filter(c => haversineDistanceM(c.lon, c.lat, eLon, eLat) <= stepFor(c.lon, c.lat).step);
         if (near.length) {
           const hop = this.landMask.legsCrossLandBulk(
-            Float64Array.from(near.map((c) => c.lon)), Float64Array.from(near.map((c) => c.lat)),
-            new Float64Array(near.length).fill(eLon), new Float64Array(near.length).fill(eLat), landStepM,
+            Float64Array.from(near.map(c => c.lon)),
+            Float64Array.from(near.map(c => c.lat)),
+            new Float64Array(near.length).fill(eLon),
+            new Float64Array(near.length).fill(eLat),
+            landStepM
           );
           const clear = near.filter((_c, i) => !hop[i]);
           if (clear.length) {
             let md = Infinity;
             for (const c of clear) md = Math.min(md, haversineDistanceM(c.lon, c.lat, eLon, eLat));
-            progress(stage + 1, Math.max(kEff, stage + 1), `early termination: within one stage step of destination with a clear final leg (${(md / 1000).toFixed(1)} km)`);
+            progress(
+              stage + 1,
+              Math.max(kEff, stage + 1),
+              `early termination: within one stage step of destination with a clear final leg (${(md / 1000).toFixed(1)} km)`
+            );
             break;
           }
         }
-        if (stage + 1 >= kEff && stage + 1 < maxStages) progress(stage + 1, Math.max(kEff, stage + 1), 'planned stages used without a clear final leg; continuing');
+        if (stage + 1 >= kEff && stage + 1 < maxStages)
+          progress(stage + 1, Math.max(kEff, stage + 1), 'planned stages used without a clear final leg; continuing');
       } else if (nVias > 0) {
-        const deepest = Math.max(...retained.map((c) => c.viaCount));
+        const deepest = Math.max(...retained.map(c => c.viaCount));
         progress(stage + 1, Math.max(kEff, stage + 1), `via progress: deepest branch crossed ${deepest}/${nVias}`);
       }
     }
@@ -658,17 +755,20 @@ export class OceanPropagator {
     const terminals = stages[stages.length - 1];
     if (terminals.length === 0) throw new RouteError('front went empty before reaching the destination; no path found');
     const score = (c: Candidate): [number, number] => [haversineDistanceM(c.lon, c.lat, eLon, eLat), c.elapsedS];
-    const pool = nVias > 0 ? terminals.filter((c) => c.viaCount === nVias) : terminals;
+    const pool = nVias > 0 ? terminals.filter(c => c.viaCount === nVias) : terminals;
     if (pool.length === 0) {
-      const deepest = Math.max(0, ...terminals.map((c) => c.viaCount));
+      const deepest = Math.max(0, ...terminals.map(c => c.viaCount));
       throw new ViasNotCrossedError(
-        `finished ${stages.length - 1} stages without any branch crossing all ${nVias} via(s); deepest branch crossed ${deepest}. Widen the via radius, add stages, or move the via.`,
+        `finished ${stages.length - 1} stages without any branch crossing all ${nVias} via(s); deepest branch crossed ${deepest}. Widen the via radius, add stages, or move the via.`
       );
     }
     // Prefer terminals whose straight final leg is land-free.
     const poolHop = this.landMask.legsCrossLandBulk(
-      Float64Array.from(pool.map((c) => c.lon)), Float64Array.from(pool.map((c) => c.lat)),
-      new Float64Array(pool.length).fill(eLon), new Float64Array(pool.length).fill(eLat), landStepM,
+      Float64Array.from(pool.map(c => c.lon)),
+      Float64Array.from(pool.map(c => c.lat)),
+      new Float64Array(pool.length).fill(eLon),
+      new Float64Array(pool.length).fill(eLat),
+      landStepM
     );
     const clearPool = pool.filter((_c, i) => !poolHop[i]);
     const choose = clearPool.length ? clearPool : pool;
@@ -678,7 +778,7 @@ export class OceanPropagator {
       const [bd, bt] = score(bestC);
       if (d < bd || (d === bd && t < bt)) bestC = c;
     }
-    const stageOfBest = stages.findIndex((st) => st.includes(bestC));
+    const stageOfBest = stages.findIndex(st => st.includes(bestC));
 
     // Final straight leg: to the exact destination, or (approximate
     // intermediate waypoint) only as far as the arrival circle.
@@ -688,38 +788,60 @@ export class OceanPropagator {
     if (!snapToExact) {
       const r = args.arrivalRadiusM!;
       if (bestDist <= r) hopEnd = null;
-      else hopEnd = projectAlongBearing(bestC.lon, bestC.lat, haversineBearing(bestC.lon, bestC.lat, eLon, eLat), bestDist - r + Math.min(1, 0.001 * r));
+      else
+        hopEnd = projectAlongBearing(
+          bestC.lon,
+          bestC.lat,
+          haversineBearing(bestC.lon, bestC.lat, eLon, eLat),
+          bestDist - r + Math.min(1, 0.001 * r)
+        );
     }
     let finalCand: Candidate | null = null;
     if (hopEnd) {
       const [hLon, hLat] = hopEnd;
       const finalCross = this.landMask.legsCrossLandBulk(
-        Float64Array.of(bestC.lon), Float64Array.of(bestC.lat), Float64Array.of(hLon), Float64Array.of(hLat), landStepM,
+        Float64Array.of(bestC.lon),
+        Float64Array.of(bestC.lat),
+        Float64Array.of(hLon),
+        Float64Array.of(hLat),
+        landStepM
       );
       if (finalCross[0]) {
         throw new RouteError(
-          `terminal hop from (${bestC.lat.toFixed(4)}, ${bestC.lon.toFixed(4)}) to the destination crosses land; the propagation got close but the straight final leg is blocked. Try a via point or a closer endpoint.`,
+          `terminal hop from (${bestC.lat.toFixed(4)}, ${bestC.lon.toFixed(4)}) to the destination crosses land; the propagation got close but the straight final leg is blocked. Try a via point or a closer endpoint.`
         );
       }
       const simFinal = simulateLegTime(bestC.lon, bestC.lat, new Date(bestC.timeMs), hLon, hLat, vessel, polar, wind, current, simOpts);
       if (!Number.isFinite(simFinal.seconds) || simFinal.seconds <= 0) {
-        throw new RouteError(`terminal hop to the destination could not be simulated (stuck under ${modePolicy} given wind/current at the destination)`);
+        throw new RouteError(
+          `terminal hop to the destination could not be simulated (stuck under ${modePolicy} given wind/current at the destination)`
+        );
       }
       const legDistFinal = haversineDistanceM(bestC.lon, bestC.lat, hLon, hLat);
       if (legDistFinal > 0) {
         finalCand = {
-          lon: hLon, lat: hLat, timeMs: bestC.timeMs + simFinal.seconds * 1000,
-          elapsedS: bestC.elapsedS + simFinal.seconds, parentIdx: -1,
-          sogMs: legDistFinal / simFinal.seconds, cogDeg: haversineBearing(bestC.lon, bestC.lat, hLon, hLat),
+          lon: hLon,
+          lat: hLat,
+          timeMs: bestC.timeMs + simFinal.seconds * 1000,
+          elapsedS: bestC.elapsedS + simFinal.seconds,
+          parentIdx: -1,
+          sogMs: legDistFinal / simFinal.seconds,
+          cogDeg: haversineBearing(bestC.lon, bestC.lat, hLon, hLat),
           mode: simFinal.dominantMode === 'sailing' ? 'sailing' : 'motoring',
-          sailingS: simFinal.sailingSeconds, motoringS: simFinal.motoringSeconds, viaCount: bestC.viaCount, viaIdxs: [],
+          sailingS: simFinal.sailingSeconds,
+          motoringS: simFinal.motoringSeconds,
+          viaCount: bestC.viaCount,
+          viaIdxs: [],
         };
       }
     }
     if (!snapToExact) {
       const endAt = finalCand ?? bestC;
-      progress(Math.max(kEff, stages.length - 1), Math.max(kEff, stages.length - 1),
-        `leg ends inside the ${args.arrivalRadiusM!.toFixed(0)} m circle, ${haversineDistanceM(endAt.lon, endAt.lat, eLon, eLat).toFixed(0)} m from the waypoint${finalCand ? ' (straight hop from the last stage to the circle)' : ''}`);
+      progress(
+        Math.max(kEff, stages.length - 1),
+        Math.max(kEff, stages.length - 1),
+        `leg ends inside the ${args.arrivalRadiusM!.toFixed(0)} m circle, ${haversineDistanceM(endAt.lon, endAt.lat, eLon, eLat).toFixed(0)} m from the waypoint${finalCand ? ' (straight hop from the last stage to the circle)' : ''}`
+      );
     }
 
     // Back-trace.
@@ -742,10 +864,14 @@ export class OceanPropagator {
     let dist = 0;
     chain.forEach((c, i) => {
       wps.push({
-        lon: c.lon, lat: c.lat, time: new Date(c.timeMs),
-        sogMs: i > 0 ? c.sogMs : 0, cogDeg: i > 0 ? c.cogDeg : 0,
-        mode: i > 0 ? c.mode : 'motoring', leg: 'ocean',
-        role: c.viaIdxs.some((vi) => !goals[vi].auto) ? 'via' : undefined,
+        lon: c.lon,
+        lat: c.lat,
+        time: new Date(c.timeMs),
+        sogMs: i > 0 ? c.sogMs : 0,
+        cogDeg: i > 0 ? c.cogDeg : 0,
+        mode: i > 0 ? c.mode : 'motoring',
+        leg: 'ocean',
+        role: c.viaIdxs.some(vi => !goals[vi].auto) ? 'via' : undefined,
       });
       if (i > 0) {
         motorS += c.motoringS;
@@ -763,10 +889,11 @@ export class OceanPropagator {
       motoringTimeS: motorS,
       sailingTimeS: sailS,
       validated: false,
-      skeleton: skeleton ? skeleton.map((p) => ({ lon: p.lon, lat: p.lat })) : undefined,
+      skeleton: skeleton ? skeleton.map(p => ({ lon: p.lon, lat: p.lat })) : undefined,
     };
-    const autos = goals.slice(0, nVias).filter((g) => g.auto);
-    if (autos.length) route.autoVias = autos.map((g) => ({ lon: g.lon, lat: g.lat, radiusM: g.radiusM, widthM: g.widthM ?? 0, name: g.name ?? '' }));
+    const autos = goals.slice(0, nVias).filter(g => g.auto);
+    if (autos.length)
+      route.autoVias = autos.map(g => ({ lon: g.lon, lat: g.lat, radiusM: g.radiusM, widthM: g.widthM ?? 0, name: g.name ?? '' }));
     recomputePerWaypointMetadata(route);
 
     // Final validation against the exact polygons.
@@ -781,9 +908,17 @@ export class OceanPropagator {
     route.validated = true;
     if (warns.length) {
       route.warnings = warns;
-      progress(Math.max(kEff, stages.length - 1), Math.max(kEff, stages.length - 1), `WARNING: ${warns.length} leg(s) cross land in the exact polygon check`);
+      progress(
+        Math.max(kEff, stages.length - 1),
+        Math.max(kEff, stages.length - 1),
+        `WARNING: ${warns.length} leg(s) cross land in the exact polygon check`
+      );
     }
-    progress(Math.max(kEff, stages.length - 1), Math.max(kEff, stages.length - 1), `done: ${wps.length} waypoints, ${(dist / 1000).toFixed(1)} km, ${(route.totalTimeS / 3600).toFixed(1)} h`);
+    progress(
+      Math.max(kEff, stages.length - 1),
+      Math.max(kEff, stages.length - 1),
+      `done: ${wps.length} waypoints, ${(dist / 1000).toFixed(1)} km, ${(route.totalTimeS / 3600).toFixed(1)} h`
+    );
     return route;
   }
 }
@@ -810,7 +945,7 @@ export function enrichWaypoints(wps: Waypoint[], wind: WindSource, current: Curr
       wp.currentVMs = cv;
       const sp = Math.hypot(cu, cv);
       wp.currentMs = sp;
-      if (sp > 1e-9) wp.currentDirDeg = ((90 - Math.atan2(cv, cu) * 180 / Math.PI) % 360 + 360) % 360;
+      if (sp > 1e-9) wp.currentDirDeg = (((90 - (Math.atan2(cv, cu) * 180) / Math.PI) % 360) + 360) % 360;
     }
   }
 }

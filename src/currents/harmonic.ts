@@ -89,11 +89,17 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
   constructor(serialized: SerializedHarmonic, opts?: { cacheMaxEntries?: number });
   constructor(src: string | SerializedHarmonic, opts: { cacheMaxEntries?: number } = {}) {
     if (typeof src !== 'string') {
-      this.name = src.name; this.priority = src.priority; this.resolutionM = src.resolutionM; this.bbox = src.bbox;
-      this.lats = src.lats; this.lons = src.lons; this.constituents = src.constituents; this.dropped = src.dropped;
+      this.name = src.name;
+      this.priority = src.priority;
+      this.resolutionM = src.resolutionM;
+      this.bbox = src.bbox;
+      this.lats = src.lats;
+      this.lons = src.lons;
+      this.constituents = src.constituents;
+      this.dropped = src.dropped;
       this.block = src.block;
       const n = this.constituents.length * this.lats.length * this.lons.length;
-      [this.eastAmp, this.eastPha, this.northAmp, this.northPha] = [0, 1, 2, 3].map((k) => new Float32Array(src.block, k * n * 4, n));
+      [this.eastAmp, this.eastPha, this.northAmp, this.northPha] = [0, 1, 2, 3].map(k => new Float32Array(src.block, k * n * 4, n));
       this.latStep = this.lats[1] - this.lats[0];
       this.lonStep = this.lons[1] - this.lons[0];
       this.cacheMaxEntries = HarmonicCurrentSource.cacheEntries(opts.cacheMaxEntries, this.lats.length * this.lons.length);
@@ -105,7 +111,7 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
     this.lons = asFloat64(z.get('lons'), 'lons');
     const cons = z.get('constituents');
     if (!cons || cons.kind !== 'str') throw new Error(`${filePath}: constituents missing`);
-    const allCons = cons.data.map((s) => String(s));
+    const allCons = cons.data.map(s => String(s));
     const nLat = this.lats.length;
     const nLon = this.lons.length;
     if (nLat < 2 || nLon < 2) throw new Error(`${filePath}: grid too small`);
@@ -120,8 +126,16 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
     const np_ = asF32(z.get('north_phase'), 'north_phase');
     const per = nLat * nLon;
     const expected = allCons.length * per;
-    for (const [label, arr] of [['east_amplitude', ea], ['east_phase', ep], ['north_amplitude', na], ['north_phase', np_]] as const) {
-      if (arr.length !== expected) throw new Error(`${filePath}: ${label} has ${arr.length} values, expected ${expected} (${allCons.length} constituents × ${nLat} × ${nLon})`);
+    for (const [label, arr] of [
+      ['east_amplitude', ea],
+      ['east_phase', ep],
+      ['north_amplitude', na],
+      ['north_phase', np_],
+    ] as const) {
+      if (arr.length !== expected)
+        throw new Error(
+          `${filePath}: ${label} has ${arr.length} values, expected ${expected} (${allCons.length} constituents × ${nLat} × ${nLon})`
+        );
     }
 
     // Drop constituents the argument port does not support, as the
@@ -129,12 +143,12 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
     const keep: number[] = [];
     const dropped: string[] = [];
     allCons.forEach((c, i) => (isSupportedConstituent(c) ? keep.push(i) : dropped.push(c)));
-    this.constituents = keep.map((i) => allCons[i]);
+    this.constituents = keep.map(i => allCons[i]);
     this.dropped = dropped;
     // One shared block for the four arrays (kept constituents only).
     const n = keep.length * per;
     this.block = new SharedArrayBuffer(4 * n * 4);
-    const views = [0, 1, 2, 3].map((k) => new Float32Array(this.block, k * n * 4, n));
+    const views = [0, 1, 2, 3].map(k => new Float32Array(this.block, k * n * 4, n));
     [ea, ep, na, np_].forEach((srcArr, a) => keep.forEach((ci, k) => views[a].set(srcArr.subarray(ci * per, (ci + 1) * per), k * per)));
     [this.eastAmp, this.eastPha, this.northAmp, this.northPha] = views;
 
@@ -160,8 +174,15 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
   /** For relaying to another worker: small metadata plus the shared constituent block (not copied). */
   serialize(): SerializedHarmonic {
     return {
-      name: this.name, priority: this.priority, resolutionM: this.resolutionM, bbox: this.bbox,
-      lats: this.lats, lons: this.lons, constituents: this.constituents, dropped: this.dropped, block: this.block,
+      name: this.name,
+      priority: this.priority,
+      resolutionM: this.resolutionM,
+      bbox: this.bbox,
+      lats: this.lats,
+      lons: this.lons,
+      constituents: this.constituents,
+      dropped: this.dropped,
+      block: this.block,
     };
   }
 
