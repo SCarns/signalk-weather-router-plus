@@ -2,7 +2,7 @@
  * Score a polar calculator against ORC non-spinnaker certificates.
  *
  * Usage:
- *   node --import tsx tools/vpp_validate.ts [dataset.json] [--boats N] [--worst K]
+ *   node --import tsx tools/vpp_validate.ts [dataset.json] [--worst K]
  *
  * The dataset (default test-data/orc-ns-2026.json, built by
  * tools/orc_ns_dataset.py) holds, per boat, the specs the calculator's
