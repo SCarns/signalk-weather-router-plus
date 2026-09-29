@@ -674,10 +674,11 @@ BASE=http://localhost:3000/plugins/signalk-weather-router-plus
 AUTH="Authorization: Bearer $TOKEN"   # a Signal K token with readwrite access
 ```
 
-**1. Submit the job.**
+**1. Submit the job** and keep its `id` for the next steps (this uses
+`jq`; without it, copy `id` from the response by hand):
 
 ```sh
-curl -s -X POST "$BASE/api/routes" -H "$AUTH" -H 'Content-Type: application/json' -d '{
+ID=$(curl -s -X POST "$BASE/api/routes" -H "$AUTH" -H 'Content-Type: application/json' -d '{
   "start": {"lat": 41.44, "lon": -71.36},
   "end":   {"lat": 32.42, "lon": -64.58},
   "waypoints": [{"lat": 41.13, "lon": -71.53}],
@@ -686,7 +687,8 @@ curl -s -X POST "$BASE/api/routes" -H "$AUTH" -H 'Content-Type: application/json
   "mode": "sail_max",
   "name": "Newport to Bermuda",
   "vessel": {"polar": "a_boat.pol"}
-}'
+}' | jq -r .id)
+echo "$ID"
 ```
 
 Response `202 Accepted`, with a `Location` header equal to `links.self`:
