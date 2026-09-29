@@ -14,9 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { iterateGrib2 } from '../grib/grib2';
 import { ForecastStore, GLOBAL_BBOX, sampleField, type FieldGrid, type ForecastStep } from './forecast';
-import {
-  DecodedRunWriter, fieldFile, listDecodedRuns, openDecodedRun, pruneDecodedRuns, INDEX_FILE, type DecodedRun,
-} from './decoded';
+import { DecodedRunWriter, fieldFile, listDecodedRuns, openDecodedRun, pruneDecodedRuns, INDEX_FILE, type DecodedRun } from './decoded';
 import { decodeForecastToDisk, loadGlobalForecast } from './loader';
 import { cycleFor, type EcmwfClient } from './ecmwf';
 import { conditionsSeries, fieldGrid, pressureFeatures, windPoints, type OverlaySources } from '../plugin/overlays';
@@ -59,7 +57,11 @@ function syntheticStore(nSteps = 5): ForecastStore {
           else if (p === 'msl') v[i] = 101300 + base * 100;
           else if (p === 'mwd') v[i] = (base * 36 + 360) % 360;
           else v[i] = p === 'swh' || p === 'mwp' ? Math.abs(base) : base;
-          if ((p === 'swh' || p === 'mwp' || p === 'mwd') && ((c > 100 && c < 140 && r > 60 && r < 120) || (c < 5 && r > 80 && r < 95) || c > 354)) v[i] = NaN;
+          if (
+            (p === 'swh' || p === 'mwp' || p === 'mwd') &&
+            ((c > 100 && c < 140 && r > 60 && r < 120) || (c < 5 && r > 80 && r < 95) || c > 354)
+          )
+            v[i] = NaN;
         }
       }
       v[pi] = -0;
@@ -67,13 +69,24 @@ function syntheticStore(nSteps = 5): ForecastStore {
     });
     steps.push({ validMs: T0 + k * 3 * 3600_000, stepHours: k * 3, fields });
   }
-  return new ForecastStore(steps, { cycleTime: new Date(T0), bbox: GLOBAL_BBOX, steps: steps.map((s) => s.stepHours), params: PARAMS, loadedAt: new Date(T0) });
+  return new ForecastStore(steps, {
+    cycleTime: new Date(T0),
+    bbox: GLOBAL_BBOX,
+    steps: steps.map(s => s.stepHours),
+    params: PARAMS,
+    loadedAt: new Date(T0),
+  });
 }
 
 function writeRun(root: string, store: ForecastStore, cycle = '2026092812'): DecodedRun {
   const w = new DecodedRunWriter(root, cycle);
   for (const s of store.steps) w.writeStep(s);
-  w.finish({ cycleTimeMs: store.meta.cycleTime.getTime(), request: { horizonHours: 12, params: PARAMS }, stepHours: store.meta.steps, decodeMs: 1 });
+  w.finish({
+    cycleTimeMs: store.meta.cycleTime.getTime(),
+    request: { horizonHours: 12, params: PARAMS },
+    stepHours: store.meta.steps,
+    decodeMs: 1,
+  });
   const { run, problem } = openDecodedRun(w.finalDir);
   assert.ok(run, problem ?? '');
   return run!;
@@ -194,8 +207,11 @@ test('bbox window reads: each cell equals the global field at its row/column (ro
     // Every point of the box is covered.
     for (let i = 0; i <= 10; i++) {
       for (let j = 0; j <= 10; j++) {
-        const width = ((bbox.east - bbox.west) % 360 + 360) % 360 || 360;
-        assert.ok(win.covers(bbox.west + (width * i) / 10, bbox.south + ((bbox.north - bbox.south) * j) / 10), `${JSON.stringify(bbox)} covers ${i},${j}`);
+        const width = (((bbox.east - bbox.west) % 360) + 360) % 360 || 360;
+        assert.ok(
+          win.covers(bbox.west + (width * i) / 10, bbox.south + ((bbox.north - bbox.south) * j) / 10),
+          `${JSON.stringify(bbox)} covers ${i},${j}`
+        );
       }
     }
   }
@@ -203,7 +219,7 @@ test('bbox window reads: each cell equals the global field at its row/column (ro
 });
 
 function randomPointIn(b: { west: number; south: number; east: number; north: number }, r: () => number): [number, number] {
-  const width = ((b.east - b.west) % 360 + 360) % 360 || 360;
+  const width = (((b.east - b.west) % 360) + 360) % 360 || 360;
   return [b.west + r() * width, b.south + r() * (b.north - b.south)];
 }
 
@@ -238,7 +254,16 @@ test('point series (conditions, Weather API) from a few cells × all steps equal
   const store = syntheticStore(5);
   const run = writeRun(root, store);
   const src = (f: ForecastStore): OverlaySources => ({ forecast: f, currents: null, land: null, tides: null });
-  for (const [lon, lat] of [[-71.3, 41.4], [179.9, -10.2], [-179.95, 10.5], [359.7, 50.1], [0, 0], [12.5, 89.9], [-60, -89.6], [120.25, 33.75]]) {
+  for (const [lon, lat] of [
+    [-71.3, 41.4],
+    [179.9, -10.2],
+    [-179.95, 10.5],
+    [359.7, 50.1],
+    [0, 0],
+    [12.5, 89.9],
+    [-60, -89.6],
+    [120.25, 33.75],
+  ]) {
     const pt = await run.window({ bbox: { west: lon, east: lon, south: lat, north: lat }, params: PARAMS, marginCells: 2 });
     assert.ok(pt.bytes() <= 5 * PARAMS.length * 6 * 6 * 4, `a few cells only (${pt.bytes()} B)`);
     const a = conditionsSeries(src(store), lon, lat, new Date(T0 - 3600_000), 14, 1);
@@ -254,14 +279,24 @@ test('map windows (two bracketing steps): field grids, wind arrows and isobars e
   const store = syntheticStore(5);
   const run = writeRun(root, store);
   const src = (f: ForecastStore): OverlaySources => ({ forecast: f, currents: null, land: null, tides: null });
-  const layers: [string, string[]][] = [['wind', ['10u', '10v']], ['waves', ['swh', 'mwp', 'mwd']], ['msl', ['msl']], ['precip', ['tprate', 'ptype']], ['sea_state', ['10u', '10v', 'swh', 'mwp', 'mwd']]];
+  const layers: [string, string[]][] = [
+    ['wind', ['10u', '10v']],
+    ['waves', ['swh', 'mwp', 'mwd']],
+    ['msl', ['msl']],
+    ['precip', ['tprate', 'ptype']],
+    ['sea_state', ['10u', '10v', 'swh', 'mwp', 'mwd']],
+  ];
   for (const bbox of BOXES.slice(0, 5)) {
     for (const tOff of [0, 4000_000, 12 * 3600_000]) {
       const t = new Date(T0 + tOff);
       const steps = run.bracket(t.getTime());
       for (const [layer, params] of layers) {
         const win = await run.window({ bbox, params, steps, marginCells: 2 });
-        assert.deepEqual(fieldGrid(src(win), layer as 'wind', bbox, t, 1), fieldGrid(src(store), layer as 'wind', bbox, t, 1), `${layer} ${JSON.stringify(bbox)}`);
+        assert.deepEqual(
+          fieldGrid(src(win), layer as 'wind', bbox, t, 1),
+          fieldGrid(src(store), layer as 'wind', bbox, t, 1),
+          `${layer} ${JSON.stringify(bbox)}`
+        );
       }
       const w = await run.window({ bbox, params: ['10u', '10v'], steps, marginCells: 2 });
       assert.deepEqual(windPoints(src(w), bbox, t, 2), windPoints(src(store), bbox, t, 2));
@@ -302,7 +337,8 @@ test('window sampling equals sampleField on the whole field for random points (r
 /** An EcmwfClient stand-in serving the fixture's messages as if cached (10u/10v only; msl absent). */
 function fakeClient(bytes: Uint8Array, msgs: ReturnType<typeof iterateGrib2> extends Iterable<infer M> ? M[] : never): EcmwfClient {
   const byKey = new Map<string, Uint8Array>();
-  for (const m of msgs) byKey.set(`${m.product.forecastHours}-${m.product.parameterNumber === 2 ? '10u' : '10v'}`, bytes.slice(m.offset, m.offset + m.length));
+  for (const m of msgs)
+    byKey.set(`${m.product.forecastHours}-${m.product.parameterNumber === 2 ? '10u' : '10v'}`, bytes.slice(m.offset, m.offset + m.length));
   return {
     hasCached: (_c: unknown, _s: string, step: number, p: string) => byKey.has(`${step}-${p}`),
     fetchIndex: async () => [],
@@ -323,7 +359,14 @@ test('streaming decode writes exactly the fields the whole-store decode builds (
   // One step's block (3 atmosphere params requested; msl is absent from the fixture), not the whole store.
   assert.equal(out.stepBlockBytes, 3 * 1440 * 721 * 4);
   assert.deepEqual(out.index.stepHours, [0, 3, 6]);
-  assert.deepEqual(out.index.steps.map((s) => s.params), [['10u', '10v'], ['10u', '10v'], ['10u', '10v']]);
+  assert.deepEqual(
+    out.index.steps.map(s => s.params),
+    [
+      ['10u', '10v'],
+      ['10u', '10v'],
+      ['10u', '10v'],
+    ]
+  );
   assert.deepEqual(out.index.request.params, store.meta.params);
   for (const s of store.steps) {
     for (const [p, f] of s.fields) {

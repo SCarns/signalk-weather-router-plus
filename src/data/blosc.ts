@@ -208,7 +208,9 @@ export function bitUnshuffle(typesize: number, blocksize: number, src: Uint8Arra
 export function bloscDecompress(src: Uint8Array): Uint8Array {
   const h = readBloscHeader(src);
   if (h.version === 0 || h.version > 2) {
-    throw new BloscError(`blosc: format version ${h.version} is not supported (Blosc1 format versions 1 and 2 only; Blosc2 frames are not)`);
+    throw new BloscError(
+      `blosc: format version ${h.version} is not supported (Blosc1 format versions 1 and 2 only; Blosc2 frames are not)`
+    );
   }
   if (h.flags & BLOSC_RESERVED) throw new BloscError('blosc: reserved flag bit 3 is set (chunk from a newer format)');
   const { nbytes, blocksize, cbytes, typesize } = h;
@@ -217,7 +219,8 @@ export function bloscDecompress(src: Uint8Array): Uint8Array {
   const out = new Uint8Array(nbytes);
   if (nbytes === 0) return out;
   if (h.memcpyed) {
-    if (nbytes + HEADER !== cbytes) throw new BloscError(`blosc: memcpyed chunk of ${nbytes} bytes has cbytes ${cbytes} (want ${nbytes + HEADER})`);
+    if (nbytes + HEADER !== cbytes)
+      throw new BloscError(`blosc: memcpyed chunk of ${nbytes} bytes has cbytes ${cbytes} (want ${nbytes + HEADER})`);
     out.set(src.subarray(HEADER, HEADER + nbytes));
     return out;
   }

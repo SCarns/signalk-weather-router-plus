@@ -43,7 +43,8 @@ export function parseArrayMeta(zarray: Record<string, unknown>, zattrs: Record<s
   if (zarray.zarr_format !== 2) throw new ZarrError(`${name}: zarr_format ${String(zarray.zarr_format)} is not 2`);
   const shape = zarray.shape as number[];
   const chunks = zarray.chunks as number[];
-  if (!Array.isArray(shape) || !Array.isArray(chunks) || shape.length !== chunks.length) throw new ZarrError(`${name}: shape / chunks missing or of different rank`);
+  if (!Array.isArray(shape) || !Array.isArray(chunks) || shape.length !== chunks.length)
+    throw new ZarrError(`${name}: shape / chunks missing or of different rank`);
   const dtype = String(zarray.dtype);
   dtypeInfo(dtype, name);
   const order = zarray.order === 'F' ? 'F' : 'C';
@@ -63,7 +64,11 @@ export function parseArrayMeta(zarray: Record<string, unknown>, zattrs: Record<s
   return { shape, chunks, dtype, fillValue, order, compressor, filters, dimensionSeparator: sep, attrs: zattrs };
 }
 
-interface DtypeInfo { size: number; little: boolean; kind: 'f' | 'i' | 'u' }
+interface DtypeInfo {
+  size: number;
+  little: boolean;
+  kind: 'f' | 'i' | 'u';
+}
 
 function dtypeInfo(dtype: string, name = 'array'): DtypeInfo {
   const m = /^([<>|])([fiu])(\d)$/.exec(dtype);
@@ -122,7 +127,8 @@ export function decodeChunk(meta: ZarrArrayMeta, stored: Uint8Array | null): Flo
     const o = i * info.size;
     let v: number;
     if (info.kind === 'f') v = info.size === 4 ? dv.getFloat32(o, info.little) : dv.getFloat64(o, info.little);
-    else if (info.kind === 'i') v = info.size === 1 ? dv.getInt8(o) : info.size === 2 ? dv.getInt16(o, info.little) : dv.getInt32(o, info.little);
+    else if (info.kind === 'i')
+      v = info.size === 1 ? dv.getInt8(o) : info.size === 2 ? dv.getInt16(o, info.little) : dv.getInt32(o, info.little);
     else v = info.size === 1 ? dv.getUint8(o) : info.size === 2 ? dv.getUint16(o, info.little) : dv.getUint32(o, info.little);
     out[i] = !fillIsNaN && v === fillCmp ? NaN : v;
   }
@@ -138,15 +144,33 @@ export function parseCfTimeUnits(units: string, calendar?: string): { unitMs: nu
   if (calendar && !['gregorian', 'standard', 'proleptic_gregorian'].includes(calendar.toLowerCase())) {
     throw new ZarrError(`time calendar ${calendar} is not supported`);
   }
-  const m = /^\s*(\w+)\s+since\s+(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?)?\s*(Z|UTC|[+-]\d{2}:?\d{2})?\s*$/i.exec(units);
+  const m =
+    /^\s*(\w+)\s+since\s+(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}(?:\.\d+)?))?)?\s*(Z|UTC|[+-]\d{2}:?\d{2})?\s*$/i.exec(
+      units
+    );
   if (!m) throw new ZarrError(`time units "${units}" not understood`);
   const unit = m[1].toLowerCase();
   const perUnit: Record<string, number> = {
-    days: 86_400_000, day: 86_400_000, d: 86_400_000,
-    hours: 3_600_000, hour: 3_600_000, h: 3_600_000, hr: 3_600_000, hrs: 3_600_000,
-    minutes: 60_000, minute: 60_000, min: 60_000, mins: 60_000,
-    seconds: 1000, second: 1000, s: 1000, sec: 1000, secs: 1000,
-    milliseconds: 1, millisecond: 1, ms: 1,
+    days: 86_400_000,
+    day: 86_400_000,
+    d: 86_400_000,
+    hours: 3_600_000,
+    hour: 3_600_000,
+    h: 3_600_000,
+    hr: 3_600_000,
+    hrs: 3_600_000,
+    minutes: 60_000,
+    minute: 60_000,
+    min: 60_000,
+    mins: 60_000,
+    seconds: 1000,
+    second: 1000,
+    s: 1000,
+    sec: 1000,
+    secs: 1000,
+    milliseconds: 1,
+    millisecond: 1,
+    ms: 1,
   };
   const unitMs = perUnit[unit];
   if (unitMs === undefined) throw new ZarrError(`time unit "${m[1]}" not understood`);
@@ -175,7 +199,7 @@ export interface ZarrHttpOptions {
   tag?: string;
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
 
 /** GET with timeout, retries, backoff and Retry-After (see the file comment). */
 export async function httpGet(url: string, opts: ZarrHttpOptions = {}): Promise<HttpResult> {
@@ -208,7 +232,9 @@ export async function httpGet(url: string, opts: ZarrHttpOptions = {}): Promise<
     let backoff = Math.min(60_000, 2000 * 2 ** (attempt - 1));
     if (retryAfterMs !== null) backoff = Math.min(60_000, Math.max(backoff, retryAfterMs));
     backoff += Math.random() * 500;
-    log(`${opts.tag ?? 'zarr'}: retry ${attempt}/${retries - 1} for ${url} after ${(backoff / 1000).toFixed(1)} s: ${(lastErr as Error).message}`);
+    log(
+      `${opts.tag ?? 'zarr'}: retry ${attempt}/${retries - 1} for ${url} after ${(backoff / 1000).toFixed(1)} s: ${(lastErr as Error).message}`
+    );
     await sleepImpl(backoff);
   }
   throw lastErr instanceof Error ? lastErr : new ZarrError(`request failed: ${url}`);

@@ -27,7 +27,16 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { bboxWidth, type BBox } from '../geo/geodesy';
 import { sharedFloat32 } from './forecast';
-import { chunkKey, decodeChunk, httpGet, parseCfTimeUnits, ZarrHttpStore, type ConsolidatedStore, type ZarrArrayMeta, type ZarrHttpOptions } from './zarr';
+import {
+  chunkKey,
+  decodeChunk,
+  httpGet,
+  parseCfTimeUnits,
+  ZarrHttpStore,
+  type ConsolidatedStore,
+  type ZarrArrayMeta,
+  type ZarrHttpOptions,
+} from './zarr';
 
 const HOUR_MS = 3600_000;
 /** Linear-in-time sampling answers up to this long beyond the first / last step. */
@@ -282,7 +291,8 @@ function checkDims(meta: ZarrArrayMeta, name: string, tag: string): ArcoLevel['d
   const lo = dims.indexOf('longitude');
   if (t < 0 || la < 0 || lo < 0) throw new Error(`${tag}: ${name} dimensions ${dims.join(',')} lack time/latitude/longitude`);
   dims.forEach((d, i) => {
-    if (i !== t && i !== la && i !== lo && meta.shape[i] !== 1) throw new Error(`${tag}: ${name} dimension ${d} has length ${meta.shape[i]} (want 1)`);
+    if (i !== t && i !== la && i !== lo && meta.shape[i] !== 1)
+      throw new Error(`${tag}: ${name} dimension ${d} has length ${meta.shape[i]} (want 1)`);
   });
   if (!(la < lo)) throw new Error(`${tag}: ${name}: latitude must come before longitude`);
   return { time: t, lat: la, lon: lo, rank: dims.length };
@@ -306,7 +316,10 @@ export function gridFromCoords(lat: Float64Array, lon: Float64Array, tag = 'arco
 }
 
 /** STAC properties of interest. */
-export interface StacInfo { updatedData: string | null; updatingStart: string | null }
+export interface StacInfo {
+  updatedData: string | null;
+  updatingStart: string | null;
+}
 
 export function parseStac(doc: unknown): StacInfo {
   const p = (doc as { properties?: Record<string, unknown> })?.properties ?? {};
@@ -351,7 +364,14 @@ export class ArcoClient {
     this.network = opts.network ?? true;
     this.log = opts.log ?? (() => undefined);
     this.concurrency = opts.concurrency ?? 6;
-    this.http = { timeoutMs: opts.timeoutMs ?? 120_000, retries: opts.retries ?? 6, log: this.log, fetchImpl: opts.fetchImpl, sleepImpl: opts.sleepImpl, tag: opts.tag };
+    this.http = {
+      timeoutMs: opts.timeoutMs ?? 120_000,
+      retries: opts.retries ?? 6,
+      log: this.log,
+      fetchImpl: opts.fetchImpl,
+      sleepImpl: opts.sleepImpl,
+      tag: opts.tag,
+    };
     this.stores = {
       time: new ZarrHttpStore(this.urls.time, this.http),
       geo: new ZarrHttpStore(this.urls.geo, this.http),
@@ -360,7 +380,10 @@ export class ArcoClient {
     fs.mkdirSync(this.cacheDir, { recursive: true });
   }
 
-  private async level(layout: ArcoLayout, cons: ConsolidatedStore): Promise<{ level: ArcoLevel; time: Float64Array; timeMeta: ZarrArrayMeta }> {
+  private async level(
+    layout: ArcoLayout,
+    cons: ConsolidatedStore
+  ): Promise<{ level: ArcoLevel; time: Float64Array; timeMeta: ZarrArrayMeta }> {
     const store = this.stores[layout];
     const need = (n: string): ZarrArrayMeta => {
       const m = cons.arrays.get(n);
@@ -374,7 +397,13 @@ export class ArcoClient {
     for (const v of this.vars.slice(1)) {
       const m = need(v);
       const d = checkDims(m, v, this.tag);
-      if (JSON.stringify(m.shape) !== JSON.stringify(m0.shape) || JSON.stringify(m.chunks) !== JSON.stringify(m0.chunks) || d.time !== dims.time || d.lat !== dims.lat || d.lon !== dims.lon) {
+      if (
+        JSON.stringify(m.shape) !== JSON.stringify(m0.shape) ||
+        JSON.stringify(m.chunks) !== JSON.stringify(m0.chunks) ||
+        d.time !== dims.time ||
+        d.lat !== dims.lat ||
+        d.lon !== dims.lon
+      ) {
         throw new Error(`${this.tag}: ${layout}: ${v0} and ${v} differ in shape or chunking`);
       }
       meta[v] = m;
@@ -382,7 +411,11 @@ export class ArcoClient {
     const latM = need('latitude');
     const lonM = need('longitude');
     const timeM = need('time');
-    const [lat, lon, time] = await Promise.all([store.read1d('latitude', latM), store.read1d('longitude', lonM), store.read1d('time', timeM)]);
+    const [lat, lon, time] = await Promise.all([
+      store.read1d('latitude', latM),
+      store.read1d('longitude', lonM),
+      store.read1d('time', timeM),
+    ]);
     const grid = gridFromCoords(lat, lon, this.tag);
     if (m0.shape[dims.lat] !== grid.nLat || m0.shape[dims.lon] !== grid.nLon || m0.shape[dims.time] !== time.length) {
       throw new Error(`${this.tag}: ${layout}: ${v0} shape ${m0.shape.join('×')} does not match the coordinates`);
@@ -412,7 +445,13 @@ export class ArcoClient {
     const metaModified = cons.lastModifiedMs !== null ? new Date(cons.lastModifiedMs).toISOString() : null;
     const settled = isSettled(stac, cons.lastModifiedMs);
     if (prev && cons.etag && prev.metadataEtag === cons.etag) {
-      return { ...prev, stacUpdated: stac?.updatedData ?? null, stacUpdating: !!stac?.updatingStart, settled, probedAt: new Date().toISOString() };
+      return {
+        ...prev,
+        stacUpdated: stac?.updatedData ?? null,
+        stacUpdating: !!stac?.updatingStart,
+        settled,
+        probedAt: new Date().toISOString(),
+      };
     }
     const t = await this.level('time', cons);
     const tm = t.timeMeta;
@@ -451,10 +490,16 @@ export class ArcoClient {
     const [geo, ds4] = await Promise.all([sameAxis('geo'), sameAxis('ds4')]);
     return {
       key: ymdh(firstMs + (times.length - 1) * stepMs),
-      timeFirstMs: firstMs, timeStepMs: stepMs, timeCount: times.length,
+      timeFirstMs: firstMs,
+      timeStepMs: stepMs,
+      timeCount: times.length,
       levels: { time: t.level, geo, ds4 },
-      stacUpdated: stac?.updatedData ?? null, stacUpdating: !!stac?.updatingStart,
-      metadataModified: metaModified, metadataEtag: cons.etag, settled, probedAt: new Date().toISOString(),
+      stacUpdated: stac?.updatedData ?? null,
+      stacUpdating: !!stac?.updatingStart,
+      metadataModified: metaModified,
+      metadataEtag: cons.etag,
+      settled,
+      probedAt: new Date().toISOString(),
     };
   }
 
@@ -466,7 +511,8 @@ export class ArcoClient {
   saveRun(run: ArcoRun): void {
     const dir = this.runDir(run.key);
     fs.mkdirSync(dir, { recursive: true });
-    const tmp = path.join(dir, `run.json.tmp-${process.pid}`);
+    // Random part: the data and route workers are threads of one process (same pid).
+    const tmp = path.join(dir, `run.json.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`);
     fs.writeFileSync(tmp, JSON.stringify(run));
     fs.renameSync(tmp, path.join(dir, 'run.json'));
   }
@@ -480,7 +526,10 @@ export class ArcoClient {
       return [];
     }
     const out: ArcoRun[] = [];
-    for (const e of entries.filter((x) => /^\d{10}$/.test(x)).sort().reverse()) {
+    for (const e of entries
+      .filter(x => /^\d{10}$/.test(x))
+      .sort()
+      .reverse()) {
       try {
         out.push(JSON.parse(fs.readFileSync(path.join(this.runDir(e), 'run.json'), 'utf8')) as ArcoRun);
       } catch {
@@ -526,7 +575,14 @@ export class ArcoClient {
       for (const e of es) {
         const p = path.join(d, e.name);
         if (e.isDirectory()) walk(p);
-        else total += fs.statSync(p).size;
+        else {
+          // The other worker may rename or prune files while this walks.
+          try {
+            total += fs.statSync(p).size;
+          } catch {
+            // gone since readdir
+          }
+        }
       }
     };
     walk(this.runDir(key));
@@ -614,14 +670,19 @@ export class ArcoClient {
     };
     const n = Math.min(this.concurrency, items.length);
     const results = await Promise.allSettled(Array.from({ length: n }, worker));
-    const bad = results.find((r) => r.status === 'rejected') as PromiseRejectedResult | undefined;
+    const bad = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined;
     if (bad) throw bad.reason;
   }
 }
 
 // ─────────────── area loading ───────────────
 
-interface ColRun { cc: number; local0: number; g0: number; len: number }
+interface ColRun {
+  cc: number;
+  local0: number;
+  g0: number;
+  len: number;
+}
 
 function firstMeta(level: ArcoLevel): ZarrArrayMeta {
   const m = Object.values(level.meta)[0];
@@ -643,14 +704,25 @@ function colRuns(level: ArcoLevel, r: Region): ColRun[] {
   return out;
 }
 
-export interface ChunkJob { tc: number; rc: number; run: ColRun; steps: number[] }
+export interface ChunkJob {
+  tc: number;
+  rc: number;
+  run: ColRun;
+  steps: number[];
+}
 
 /**
  * Chunks needed for a region × time indices on a layout: the jobs, the
  * chunk elements that hold data and the number of chunk requests, for
  * `nVars` variables.
  */
-export function planChunks(level: ArcoLevel, r: Region, tIdx: number[], timeCount: number, nVars = 1): { jobs: ChunkJob[]; elements: number; requests: number } {
+export function planChunks(
+  level: ArcoLevel,
+  r: Region,
+  tIdx: number[],
+  timeCount: number,
+  nVars = 1
+): { jobs: ChunkJob[]; elements: number; requests: number } {
   const ch = firstMeta(level).chunks;
   const ct = ch[level.dims.time];
   const cr = ch[level.dims.lat];
@@ -675,7 +747,7 @@ export function planChunks(level: ArcoLevel, r: Region, tIdx: number[], timeCoun
     for (let rc = rc0; rc <= rc1; rc++) {
       // Runs in the same chunk column split by the wrap are separate jobs sharing one chunk (fetched once).
       for (const run of runs) jobs.push({ tc, rc, run, steps });
-      const uniqueCc = new Set(runs.map((x) => x.cc)).size;
+      const uniqueCc = new Set(runs.map(x => x.cc)).size;
       elements += uniqueCc * (perChunk / ct) * valid;
       requests += uniqueCc;
     }
@@ -722,10 +794,16 @@ export interface LoadAreaOptions {
  * variable, [step][row][col].
  */
 export async function loadRegion(
-  client: ArcoClient, run: ArcoRun, res: ArcoResolution, region: Region, tIdx: number[], vars: readonly string[], opts: LoadAreaOptions,
+  client: ArcoClient,
+  run: ArcoRun,
+  res: ArcoResolution,
+  region: Region,
+  tIdx: number[],
+  vars: readonly string[],
+  opts: LoadAreaOptions
 ): Promise<{ layout: ArcoLayout; data: Record<string, Float32Array>; stats: DownloadStats }> {
   const t0 = Date.now();
-  const layout: ArcoLayout = res === 'ds4' ? 'ds4' : opts.layout ?? chooseLayout(run, region, tIdx);
+  const layout: ArcoLayout = res === 'ds4' ? 'ds4' : (opts.layout ?? chooseLayout(run, region, tIdx));
   const level = run.levels[layout];
   if (!level) throw new Error(`${client.tag}: layout ${layout} unavailable`);
   const grid = level.grid;
@@ -759,44 +837,55 @@ export async function loadRegion(
   const work: { v: string; jobs: ChunkJob[] }[] = [];
   for (const variable of vars) for (const js of byChunk.values()) work.push({ v: variable, jobs: js });
   stats.chunks = work.length;
-  await client.pool(work, async ({ v: variable, jobs: js }) => {
-    const j0 = js[0];
-    const idx = new Array<number>(level.dims.rank).fill(0);
-    idx[level.dims.time] = j0.tc;
-    idx[level.dims.lat] = j0.rc;
-    idx[level.dims.lon] = j0.run.cc;
-    const stored = await client.chunk(run, layout, variable, idx, stats);
-    if (stored === null) return; // all fill: the area stays NaN there
-    const td = Date.now();
-    const vals = decodeChunk(level.meta[variable], stored);
-    const dst = data[variable];
-    const rowLo = Math.max(region.row0, j0.rc * cr);
-    const rowHi = Math.min(region.row0 + region.nRows - 1, j0.rc * cr + cr - 1, grid.nLat - 1);
-    for (const j of js) {
-      for (const s of j.steps) {
-        const tl = tIdx[s] - j.tc * ct;
-        const base = s * nCells;
-        for (let gr = rowLo; gr <= rowHi; gr++) {
-          const rl = gr - j.rc * cr;
-          const src0 = tl * strides[level.dims.time] + rl * strides[level.dims.lat] + (j.run.g0 - j.run.cc * cc) * strides[level.dims.lon];
-          const dst0 = base + (gr - region.row0) * region.nCols + j.run.local0;
-          for (let k = 0; k < j.run.len; k++) dst[dst0 + k] = vals[src0 + k];
+  await client.pool(
+    work,
+    async ({ v: variable, jobs: js }) => {
+      const j0 = js[0];
+      const idx = new Array<number>(level.dims.rank).fill(0);
+      idx[level.dims.time] = j0.tc;
+      idx[level.dims.lat] = j0.rc;
+      idx[level.dims.lon] = j0.run.cc;
+      const stored = await client.chunk(run, layout, variable, idx, stats);
+      if (stored === null) return; // all fill: the area stays NaN there
+      const td = Date.now();
+      const vals = decodeChunk(level.meta[variable], stored);
+      const dst = data[variable];
+      const rowLo = Math.max(region.row0, j0.rc * cr);
+      const rowHi = Math.min(region.row0 + region.nRows - 1, j0.rc * cr + cr - 1, grid.nLat - 1);
+      for (const j of js) {
+        for (const s of j.steps) {
+          const tl = tIdx[s] - j.tc * ct;
+          const base = s * nCells;
+          for (let gr = rowLo; gr <= rowHi; gr++) {
+            const rl = gr - j.rc * cr;
+            const src0 =
+              tl * strides[level.dims.time] + rl * strides[level.dims.lat] + (j.run.g0 - j.run.cc * cc) * strides[level.dims.lon];
+            const dst0 = base + (gr - region.row0) * region.nCols + j.run.local0;
+            for (let k = 0; k < j.run.len; k++) dst[dst0 + k] = vals[src0 + k];
+          }
         }
       }
-    }
-    stats.decodeMs += Date.now() - td;
-    // Let other messages interleave between chunks.
-    await new Promise((r) => setImmediate(r));
-  }, opts.shouldCancel);
+      stats.decodeMs += Date.now() - td;
+      // Let other messages interleave between chunks.
+      await new Promise(r => setImmediate(r));
+    },
+    opts.shouldCancel
+  );
   stats.seconds = (Date.now() - t0) / 1000;
   return { layout, data, stats };
 }
 
 /** loadRegion at step instants, as an area. */
 export async function loadArcoArea(
-  client: ArcoClient, run: ArcoRun, res: ArcoResolution, region: Region, stepMs: number[], vars: readonly string[], opts: LoadAreaOptions,
+  client: ArcoClient,
+  run: ArcoRun,
+  res: ArcoResolution,
+  region: Region,
+  stepMs: number[],
+  vars: readonly string[],
+  opts: LoadAreaOptions
 ): Promise<{ area: ArcoArea; stats: DownloadStats }> {
-  const tIdx = stepMs.map((t) => {
+  const tIdx = stepMs.map(t => {
     const i = timeIndex(run, t);
     if (i < 0) throw new Error(`${client.tag}: ${new Date(t).toISOString()} is not on the store time axis`);
     return i;
@@ -805,11 +894,21 @@ export async function loadArcoArea(
   const grid = gridForRes(run, res, client.tag);
   const bbox = regionBBox(grid, region);
   const area: ArcoArea = {
-    ...region, id: areaId(res, region, stepMs), res, layout, runKey: run.key, stepMs: [...stepMs], data, bbox, reason: opts.reason,
+    ...region,
+    id: areaId(res, region, stepMs),
+    res,
+    layout,
+    runKey: run.key,
+    stepMs: [...stepMs],
+    data,
+    bbox,
+    reason: opts.reason,
   };
-  opts.log?.(`${client.tag}: ${opts.reason}: ${res === 'ds4' ? '1/3°' : '1/12°'} area ${fmtBox(bbox)} (${region.nRows}×${region.nCols} cells, ${stepMs.length} steps) from ${layout}: `
-    + `${stats.chunks} chunks (${stats.downloaded} downloaded ${(stats.bytes / 1e6).toFixed(2)} MB, ${stats.fromDisk} from disk, ${stats.absent} absent), `
-    + `decode ${stats.decodeMs} ms, ${(arcoAreaBytes(area) / 1e6).toFixed(1)} MB in memory, ${stats.seconds.toFixed(1)} s`);
+  opts.log?.(
+    `${client.tag}: ${opts.reason}: ${res === 'ds4' ? '1/3°' : '1/12°'} area ${fmtBox(bbox)} (${region.nRows}×${region.nCols} cells, ${stepMs.length} steps) from ${layout}: ` +
+      `${stats.chunks} chunks (${stats.downloaded} downloaded ${(stats.bytes / 1e6).toFixed(2)} MB, ${stats.fromDisk} from disk, ${stats.absent} absent), ` +
+      `decode ${stats.decodeMs} ms, ${(arcoAreaBytes(area) / 1e6).toFixed(1)} MB in memory, ${stats.seconds.toFixed(1)} s`
+  );
   return { area, stats };
 }
 
@@ -841,7 +940,13 @@ export function timeWeights(steps: number[], tMs: number): [number, number, numb
  * coordinates (x = column, y = row) of an nRows × nCols block (`wrap`:
  * columns span the full circle).
  */
-export function bilinearCorners(nRows: number, nCols: number, wrap: boolean, x: number, y: number): { i00: number; i01: number; i10: number; i11: number; tx: number; ty: number; r: number; c: number; r1: number; c1: number } {
+export function bilinearCorners(
+  nRows: number,
+  nCols: number,
+  wrap: boolean,
+  x: number,
+  y: number
+): { i00: number; i01: number; i10: number; i11: number; tx: number; ty: number; r: number; c: number; r1: number; c1: number } {
   let c = Math.floor(x);
   let r = Math.floor(y);
   if (wrap) {
@@ -932,7 +1037,8 @@ export class ArcoAreaSet<A extends ArcoArea> {
   }
 
   setResident(area: A | null, centre: { lat: number; lon: number } | null): void {
-    if (area && area.runKey !== this.run.key) throw new Error(`${this.opts.tag}: resident area of run ${area.runKey} for source of run ${this.run.key}`);
+    if (area && area.runKey !== this.run.key)
+      throw new Error(`${this.opts.tag}: resident area of run ${area.runKey} for source of run ${this.run.key}`);
     this.residentArea = area;
     this.centre = centre;
     this.rev++;
@@ -985,7 +1091,7 @@ export class ArcoAreaSet<A extends ArcoArea> {
       if (a.res !== res) continue;
       if (!regionContains(a, region, nLon)) continue;
       const have = new Set(a.stepMs);
-      if (steps.every((t) => have.has(t))) return a;
+      if (steps.every(t => have.has(t))) return a;
     }
     return null;
   }
@@ -1009,7 +1115,12 @@ export class ArcoAreaSet<A extends ArcoArea> {
    * background and serves later queries. `coarseOk` (a zoomed-out
    * view) takes the 1/3° level when it fits.
    */
-  async ensure(bbox: BBox, steps: number[], marginCells: number, opts: { reason: string; deadlineMs?: number; shouldCancel?: () => boolean; coarseOk?: boolean }): Promise<boolean> {
+  async ensure(
+    bbox: BBox,
+    steps: number[],
+    marginCells: number,
+    opts: { reason: string; deadlineMs?: number; shouldCancel?: () => boolean; coarseOk?: boolean }
+  ): Promise<boolean> {
     if (steps.length === 0) return false;
     const full = regionForBBox(this.run.levels.time.grid, bbox, marginCells);
     if (!full) return false;
@@ -1027,7 +1138,9 @@ export class ArcoAreaSet<A extends ArcoArea> {
     } else if (bytesFor(full) > maxArea) {
       const ds = this.run.levels.ds4 ? regionForBBox(this.run.levels.ds4.grid, bbox, marginCells) : null;
       if (!ds || bytesFor(ds) > maxArea) {
-        throw new Error(`${this.opts.tag}: ${opts.reason}: area ${bboxWidth(bbox).toFixed(1)}° × ${(bbox.north - bbox.south).toFixed(1)}° over ${steps.length} steps needs ${(bytesFor(full) / 1e6).toFixed(0)} MB at 1/12°${ds ? ` (${(bytesFor(ds) / 1e6).toFixed(0)} MB at 1/3°)` : ''}, over the ${(maxArea / 1e6).toFixed(0)} MB per-area cap`);
+        throw new Error(
+          `${this.opts.tag}: ${opts.reason}: area ${bboxWidth(bbox).toFixed(1)}° × ${(bbox.north - bbox.south).toFixed(1)}° over ${steps.length} steps needs ${(bytesFor(full) / 1e6).toFixed(0)} MB at 1/12°${ds ? ` (${(bytesFor(ds) / 1e6).toFixed(0)} MB at 1/3°)` : ''}, over the ${(maxArea / 1e6).toFixed(0)} MB per-area cap`
+        );
       }
       res = 'ds4';
       region = ds;
@@ -1038,7 +1151,11 @@ export class ArcoAreaSet<A extends ArcoArea> {
     let p = this.pending.get(id);
     if (!p) {
       const client = this.client;
-      p = loadArcoArea(client, this.run, res, region, steps, this.opts.vars, { reason: opts.reason, log: this.log, shouldCancel: opts.shouldCancel })
+      p = loadArcoArea(client, this.run, res, region, steps, this.opts.vars, {
+        reason: opts.reason,
+        log: this.log,
+        shouldCancel: opts.shouldCancel,
+      })
         .then(({ area, stats }) => {
           this.noteDownload(opts.reason, stats);
           const a = this.opts.wrap(area);
@@ -1053,29 +1170,41 @@ export class ArcoAreaSet<A extends ArcoArea> {
       return true;
     }
     let timer: NodeJS.Timeout | null = null;
-    const deadline = new Promise<null>((r) => {
+    const deadline = new Promise<null>(r => {
       timer = setTimeout(() => r(null), opts.deadlineMs);
     });
-    p.catch((err) => this.log(`${this.opts.tag}: ${opts.reason}: load failed: ${(err as Error).message}`));
+    p.catch(err => this.log(`${this.opts.tag}: ${opts.reason}: load failed: ${(err as Error).message}`));
     const got = await Promise.race([p.catch(() => null), deadline]);
     if (timer) clearTimeout(timer);
-    if (got === null) this.log(`${this.opts.tag}: ${opts.reason}: still loading after ${(opts.deadlineMs / 1000).toFixed(0)} s; answering without it (the area is used once loaded)`);
+    if (got === null)
+      this.log(
+        `${this.opts.tag}: ${opts.reason}: still loading after ${(opts.deadlineMs / 1000).toFixed(0)} s; answering without it (the area is used once loaded)`
+      );
     return got !== null;
   }
 
   noteDownload(reason: string, s: DownloadStats): void {
     this.lastDownload = {
-      at: new Date().toISOString(), reason, bytes: s.bytes, chunks: s.chunks, downloaded: s.downloaded, from_disk: s.fromDisk, seconds: s.seconds, decode_ms: s.decodeMs,
+      at: new Date().toISOString(),
+      reason,
+      bytes: s.bytes,
+      chunks: s.chunks,
+      downloaded: s.downloaded,
+      from_disk: s.fromDisk,
+      seconds: s.seconds,
+      decode_ms: s.decodeMs,
     };
   }
 
   private addOnDemand(area: A): void {
-    this.lru = [area, ...this.lru.filter((a) => a.id !== area.id)];
+    this.lru = [area, ...this.lru.filter(a => a.id !== area.id)];
     let total = this.onDemandBytes();
     while (total > this.opts.budgetBytes && this.lru.length > 1) {
       const gone = this.lru.pop()!;
       total -= arcoAreaBytes(gone);
-      this.log(`${this.opts.tag}: evicted on-demand area ${fmtBox(gone.bbox)} (${(arcoAreaBytes(gone) / 1e6).toFixed(1)} MB; budget ${(this.opts.budgetBytes / 1e6).toFixed(0)} MB)`);
+      this.log(
+        `${this.opts.tag}: evicted on-demand area ${fmtBox(gone.bbox)} (${(arcoAreaBytes(gone) / 1e6).toFixed(1)} MB; budget ${(this.opts.budgetBytes / 1e6).toFixed(0)} MB)`
+      );
     }
     this.rev++;
   }
@@ -1105,27 +1234,47 @@ export class ArcoAreaSet<A extends ArcoArea> {
   /** Drop on-demand areas whose steps all lie before `nowMs − grace` (they can no longer answer). */
   expire(nowMs: number): void {
     const before = this.lru.length;
-    this.lru = this.lru.filter((a) => a.stepMs.length && a.stepMs[a.stepMs.length - 1] + GRACE_MS >= nowMs);
+    this.lru = this.lru.filter(a => a.stepMs.length && a.stepMs[a.stepMs.length - 1] + GRACE_MS >= nowMs);
     if (this.lru.length !== before) this.rev++;
   }
 
   /** Status pieces shared by the sources. */
   statusParts(): {
-    resident: { bbox: GeoBox; centre: { lat: number; lon: number } | null; steps: number; valid_from: string | null; valid_to: string | null; bytes: number; layout: ArcoLayout } | null;
-    on_demand: { areas: number; bytes: number; budget_bytes: number; list: { bbox: GeoBox; res: ArcoResolution; steps: number; bytes: number; reason: string }[] };
+    resident: {
+      bbox: GeoBox;
+      centre: { lat: number; lon: number } | null;
+      steps: number;
+      valid_from: string | null;
+      valid_to: string | null;
+      bytes: number;
+      layout: ArcoLayout;
+    } | null;
+    on_demand: {
+      areas: number;
+      bytes: number;
+      budget_bytes: number;
+      list: { bbox: GeoBox; res: ArcoResolution; steps: number; bytes: number; reason: string }[];
+    };
     memory_bytes: number;
   } {
     const r = this.residentArea;
     return {
-      resident: r ? {
-        bbox: r.bbox, centre: this.centre, steps: r.stepMs.length,
-        valid_from: r.stepMs.length ? new Date(r.stepMs[0]).toISOString() : null,
-        valid_to: r.stepMs.length ? new Date(r.stepMs[r.stepMs.length - 1]).toISOString() : null,
-        bytes: arcoAreaBytes(r), layout: r.layout,
-      } : null,
+      resident: r
+        ? {
+            bbox: r.bbox,
+            centre: this.centre,
+            steps: r.stepMs.length,
+            valid_from: r.stepMs.length ? new Date(r.stepMs[0]).toISOString() : null,
+            valid_to: r.stepMs.length ? new Date(r.stepMs[r.stepMs.length - 1]).toISOString() : null,
+            bytes: arcoAreaBytes(r),
+            layout: r.layout,
+          }
+        : null,
       on_demand: {
-        areas: this.lru.length, bytes: this.onDemandBytes(), budget_bytes: this.opts.budgetBytes,
-        list: this.lru.map((a) => ({ bbox: a.bbox, res: a.res, steps: a.stepMs.length, bytes: arcoAreaBytes(a), reason: a.reason })),
+        areas: this.lru.length,
+        bytes: this.onDemandBytes(),
+        budget_bytes: this.opts.budgetBytes,
+        list: this.lru.map(a => ({ bbox: a.bbox, res: a.res, steps: a.stepMs.length, bytes: arcoAreaBytes(a), reason: a.reason })),
       },
       memory_bytes: this.memoryBytes(),
     };
@@ -1146,7 +1295,13 @@ export function residentBBox(lat: number, lon: number, halfWidthDeg: number): BB
  * has moved more than a third of the half-width from the centre it was
  * built around.
  */
-export function residentAreaStale(area: ArcoArea | null, centre: { lat: number; lon: number } | null, halfWidthDeg: number, pos: { lat: number; lon: number } | null, steps: number[]): boolean {
+export function residentAreaStale(
+  area: ArcoArea | null,
+  centre: { lat: number; lon: number } | null,
+  halfWidthDeg: number,
+  pos: { lat: number; lon: number } | null,
+  steps: number[]
+): boolean {
   if (!pos) return false;
   if (!area) return true;
   if (area.stepMs.length !== steps.length || area.stepMs.some((t, i) => t !== steps[i])) return true;

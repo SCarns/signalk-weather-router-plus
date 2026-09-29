@@ -7,7 +7,18 @@ import { bloscDecompress, BloscError, lz4DecompressBlock, readBloscHeader } from
 
 const dir = path.join(__dirname, '..', '..', 'test-data', 'blosc');
 
-interface Case { name: string; sha256: string; head: string; tail: string; flags: number; typesize: number; nbytes: number; blocksize: number; offset: number; length: number }
+interface Case {
+  name: string;
+  sha256: string;
+  head: string;
+  tail: string;
+  flags: number;
+  typesize: number;
+  nbytes: number;
+  blocksize: number;
+  offset: number;
+  length: number;
+}
 
 const sha = (b: Uint8Array): string => crypto.createHash('sha256').update(b).digest('hex');
 
@@ -37,7 +48,12 @@ test('blosc: every reference frame (numcodecs / c-blosc 1.21) decodes bit-exactl
 
 test('blosc: a real CMEMS SMOC utotal chunk decodes bit-exactly (vs numcodecs)', () => {
   const frame = new Uint8Array(fs.readFileSync(path.join(dir, 'smoc_utotal_51780.0.3.2.blosc')));
-  const ref = JSON.parse(fs.readFileSync(path.join(dir, 'smoc_utotal_51780.0.3.2.ref.json'), 'utf8')) as { sha256: string; nbytes: number; fill_count: number; samples: [number, number, number][] };
+  const ref = JSON.parse(fs.readFileSync(path.join(dir, 'smoc_utotal_51780.0.3.2.ref.json'), 'utf8')) as {
+    sha256: string;
+    nbytes: number;
+    fill_count: number;
+    samples: [number, number, number][];
+  };
   const h = readBloscHeader(frame);
   assert.equal(h.codec, 'lz4');
   assert.equal(h.shuffle, 'byte');

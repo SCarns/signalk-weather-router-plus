@@ -10,5 +10,5 @@ coverage/
 *.log
 *.ts.backup
 *-backup
-test-data/
-data/
+/test-data/
+/data/

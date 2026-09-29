@@ -206,11 +206,11 @@ async function main(): Promise<void> {
     }
     return r;
   };
-  t = Date.now();
+  const routeT0 = Date.now();
   const route = await routeMultiLeg({ stops, departureTime: departure, precision, arrivalRadiusM, runLeg, onProgress: log });
   if (cycleLabel) route.forecastCycle = cycleLabel;
   log(
-    `route: ${route.waypoints.length} waypoints, ${(route.totalDistanceM / 1852).toFixed(1)} nm, ${(route.totalTimeS / 3600).toFixed(1)} h (sail ${(route.sailingTimeS / 3600).toFixed(1)} h, motor ${(route.motoringTimeS / 3600).toFixed(1)} h), warnings ${route.warnings?.length ?? 0}, ${Date.now() - t} ms`
+    `route: ${route.waypoints.length} waypoints, ${(route.totalDistanceM / 1852).toFixed(1)} nm, ${(route.totalTimeS / 3600).toFixed(1)} h (sail ${(route.sailingTimeS / 3600).toFixed(1)} h, motor ${(route.motoringTimeS / 3600).toFixed(1)} h), warnings ${route.warnings?.length ?? 0}, ${Date.now() - routeT0} ms`
   );
   fs.writeFileSync(out, JSON.stringify(routeToGeoJSON(route), null, 1));
   log(`wrote ${out}; total ${((Date.now() - tAll) / 1000).toFixed(1)} s`);

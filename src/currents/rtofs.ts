@@ -222,7 +222,8 @@ export class RtofsClient {
     const buf = res.body;
     if (!(buf[0] === 0x47 && buf[1] === 0x52 && buf[2] === 0x49 && buf[3] === 0x42)) throw new Error(`${url}: body is not GRIB`);
     fs.mkdirSync(path.dirname(cached), { recursive: true });
-    const tmp = `${cached}.tmp-${process.pid}`;
+    // The data and route workers are threads of one process (same pid): add a random part.
+    const tmp = `${cached}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
     fs.writeFileSync(tmp, buf);
     fs.renameSync(tmp, cached);
     this.log(`rtofs: fetched ${file} (${(buf.length / 1e6).toFixed(1)} MB) in ${((Date.now() - t) / 1000).toFixed(1)} s`);

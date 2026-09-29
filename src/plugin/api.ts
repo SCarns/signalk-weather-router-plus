@@ -10,7 +10,7 @@
  *   GET  /api/polars                polar library (default + polarsDir)
  *   GET  /api/polar-angles?path=    best VMG angles per TWS
  *   GET  /api/polars/table?path=    polar table in m/s
- *   POST /api/polar-from-specs      generate a polar from boat specs (EmpiricalVPP) into polarsDir/user/
+ *   POST /api/polar-from-specs      generate a polar from boat specs (physics calculator) into polarsDir/user/
  *   GET  /api/legends               colour ramps (SI stops) for every layer
  *   GET  /api/field?layer=&bbox=&time=&res=     JSON grid for a heatmap/streamline layer (layer=tide: tide_m)
  *   GET  /api/wind-points?bbox=&time=&res=      wind barb points (speed_ms, dir_deg FROM)

@@ -99,9 +99,13 @@ export class FloatSlab {
     this.offset += n;
     return v;
   }
-  get used(): number { return this.offset; }
+  get used(): number {
+    return this.offset;
+  }
   /** Reuse the block from the start (the streaming decoder refills it for every step). */
-  reset(): void { this.offset = 0; }
+  reset(): void {
+    this.offset = 0;
+  }
 }
 
 /** Same backing kind as `like` (shared or plain). */
@@ -138,7 +142,7 @@ export function globalField(grid: Grib2Grid, values: Float64Array, scale = 1, sl
   }
   const lat0 = southUp ? grid.la1 : grid.la1 - (nj - 1) * dj;
   let lon0 = grid.lo1;
-  lon0 = ((lon0 + 180) % 360 + 360) % 360 - 180;
+  lon0 = ((((lon0 + 180) % 360) + 360) % 360) - 180;
   return { lat0, lon0, dLat: dj, dLon: di, nLat: nj, nLon: ni, values: out, wrapLon: spansCircle(ni, di) };
 }
 
@@ -187,7 +191,7 @@ export function cropField(grid: Grib2Grid, values: Float64Array, bbox: BBox, mar
   // the whole circle. Work in offsets east of lo1.
   const lo1 = grid.lo1;
   const globalWrap = Math.abs(ni * di - 360) < 1e-6;
-  const offWest = ((bbox.west - lo1) % 360 + 360) % 360;
+  const offWest = (((bbox.west - lo1) % 360) + 360) % 360;
   const width = bboxWidth(bbox);
   let cA = Math.floor(offWest / di) - marginCells;
   let cB = Math.ceil((offWest + width) / di) + marginCells;
@@ -211,7 +215,7 @@ export function cropField(grid: Grib2Grid, values: Float64Array, bbox: BBox, mar
   }
   const lat0 = rowsSouthUp ? latAt(rA) : latAt(rB);
   let lon0 = lo1 + cA * di;
-  lon0 = ((lon0 + 180) % 360 + 360) % 360 - 180;
+  lon0 = ((((lon0 + 180) % 360) + 360) % 360) - 180;
   return { lat0, lon0, dLat: dj, dLon: di, nLat, nLon, values: out };
 }
 
@@ -339,7 +343,7 @@ export function sampleField(f: FieldGrid, lon: number, lat: number): number {
   if (f.win) return sampleWindow(f, f.win, lon, lat);
   const { nLat, nLon } = f;
   if (f.wrapLon) return sampleWrapped(f, lon, lat);
-  const offLon = ((lon - f.lon0) % 360 + 360) % 360;
+  const offLon = (((lon - f.lon0) % 360) + 360) % 360;
   // If the offset is closer going west (box near the seam), allow negative.
   let x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
   let y = (lat - f.lat0) / f.dLat;
@@ -367,7 +371,7 @@ export function sampleField(f: FieldGrid, lon: number, lat: number): number {
 /** Bilinear sample on a full-circle grid (longitude wraps). */
 function sampleWrapped(f: FieldGrid, lon: number, lat: number): number {
   const { nLat, nLon } = f;
-  const x = (((lon - f.lon0) % 360) + 360) % 360 / f.dLon;
+  const x = ((((lon - f.lon0) % 360) + 360) % 360) / f.dLon;
   let c = Math.floor(x);
   if (c >= nLon) c -= nLon;
   const tx = x - Math.floor(x);
@@ -417,13 +421,13 @@ function sampleWindow(f: FieldGrid, w: FieldWindow, lon: number, lat: number): n
   let c1: number;
   let tx: number;
   if (f.wrapLon) {
-    const x = (((lon - f.lon0) % 360) + 360) % 360 / f.dLon;
+    const x = ((((lon - f.lon0) % 360) + 360) % 360) / f.dLon;
     c = Math.floor(x);
     if (c >= nLon) c -= nLon;
     tx = x - Math.floor(x);
     c1 = c + 1 === nLon ? 0 : c + 1;
   } else {
-    const offLon = ((lon - f.lon0) % 360 + 360) % 360;
+    const offLon = (((lon - f.lon0) % 360) + 360) % 360;
     let x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
     if (x < 0) x = 0;
     if (x > nLon - 1) x = nLon - 1;
@@ -465,7 +469,7 @@ export function windowCovers(f: FieldGrid, w: FieldWindow, lon: number, lat: num
   const y = (lat - f.lat0) / f.dLat;
   if (!(y >= w.r0 && y <= w.r0 + w.nr - 1)) return false;
   if (w.nc >= f.nLon) return true;
-  let x = (((lon - f.lon0) % 360) + 360) % 360 / f.dLon - w.c0;
+  let x = ((((lon - f.lon0) % 360) + 360) % 360) / f.dLon - w.c0;
   if (x < 0) x += f.nLon;
   return x <= w.nc - 1;
 }
@@ -477,11 +481,11 @@ export function sampleFieldNearest(f: FieldGrid, lon: number, lat: number): numb
     let x: number;
     let y: number;
     if (f.wrapLon) {
-      x = Math.round((((lon - f.lon0) % 360) + 360) % 360 / f.dLon);
+      x = Math.round(((((lon - f.lon0) % 360) + 360) % 360) / f.dLon);
       if (x >= f.nLon) x -= f.nLon;
       y = Math.max(0, Math.min(f.nLat - 1, Math.round((lat - f.lat0) / f.dLat)));
     } else {
-      const offLon = ((lon - f.lon0) % 360 + 360) % 360;
+      const offLon = (((lon - f.lon0) % 360) + 360) % 360;
       x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
       y = (lat - f.lat0) / f.dLat;
       x = Math.max(0, Math.min(f.nLon - 1, Math.round(x)));
@@ -490,12 +494,12 @@ export function sampleFieldNearest(f: FieldGrid, lon: number, lat: number): numb
     return f.values[winRow(w, y) * w.nc + winCol(w, f.nLon, !!f.wrapLon, x)];
   }
   if (f.wrapLon) {
-    let x = Math.round((((lon - f.lon0) % 360) + 360) % 360 / f.dLon);
+    let x = Math.round(((((lon - f.lon0) % 360) + 360) % 360) / f.dLon);
     if (x >= f.nLon) x -= f.nLon;
     const y = Math.max(0, Math.min(f.nLat - 1, Math.round((lat - f.lat0) / f.dLat)));
     return f.values[y * f.nLon + x];
   }
-  const offLon = ((lon - f.lon0) % 360 + 360) % 360;
+  const offLon = (((lon - f.lon0) % 360) + 360) % 360;
   let x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
   let y = (lat - f.lat0) / f.dLat;
   x = Math.max(0, Math.min(f.nLon - 1, Math.round(x)));
@@ -519,7 +523,7 @@ export class ForecastStore implements WindSource {
     if (steps.length === 0) throw new Error('ForecastStore needs at least one step');
     this.steps = [...steps].sort((a, b) => a.validMs - b.validMs);
     this.meta = meta;
-    this.hasWaves = this.steps.every((s) => s.fields.has('swh') && s.fields.has('mwp') && s.fields.has('mwd'));
+    this.hasWaves = this.steps.every(s => s.fields.has('swh') && s.fields.has('mwp') && s.fields.has('mwd'));
     if (opts.requireWind !== false) {
       for (const s of this.steps) {
         if (!s.fields.has('10u') || !s.fields.has('10v')) throw new Error(`step +${s.stepHours}h lacks 10u/10v`);
@@ -527,7 +531,7 @@ export class ForecastStore implements WindSource {
     }
     const isGlobal = (f: FieldGrid): boolean =>
       !f.win && !!f.wrapLon && f.lat0 <= -90 + 1e-6 && f.lat0 + (f.nLat - 1) * f.dLat >= 90 - 1e-6;
-    this.global = this.steps.every((s) => [...s.fields.values()].every(isGlobal));
+    this.global = this.steps.every(s => [...s.fields.values()].every(isGlobal));
   }
 
   /** Any field of the first step (the geometry reference for covers()). */
@@ -571,14 +575,14 @@ export class ForecastStore implements WindSource {
 
   /** Is this parameter loaded in every step? */
   has(param: string): boolean {
-    return this.steps.every((s) => s.fields.has(param));
+    return this.steps.every(s => s.fields.has(param));
   }
 
   /** Wind [speed m/s, direction FROM degrees]. */
   at(lon: number, lat: number, time: Date): [number, number] {
     const u = this.blended('10u', lon, lat, time);
     const v = this.blended('10v', lon, lat, time);
-    return [Math.hypot(u, v), ((270 - Math.atan2(v, u) * 180 / Math.PI) % 360 + 360) % 360];
+    return [Math.hypot(u, v), (((270 - (Math.atan2(v, u) * 180) / Math.PI) % 360) + 360) % 360];
   }
 
   atMany(lons: Float64Array, lats: Float64Array, time: Date): { speed: Float64Array; dir: Float64Array } {
@@ -598,7 +602,7 @@ export class ForecastStore implements WindSource {
         v = v * (1 - a) + sampleField(v1, lons[k], lats[k]) * a;
       }
       speed[k] = Math.hypot(u, v);
-      dir[k] = ((270 - Math.atan2(v, u) * 180 / Math.PI) % 360 + 360) % 360;
+      dir[k] = (((270 - (Math.atan2(v, u) * 180) / Math.PI) % 360) + 360) % 360;
     }
     return { speed, dir };
   }
@@ -610,16 +614,16 @@ export class ForecastStore implements WindSource {
     let swh = g('swh', i0);
     let mwp = g('mwp', i0);
     let mwd: number;
-    const d0 = g('mwd', i0) * Math.PI / 180;
+    const d0 = (g('mwd', i0) * Math.PI) / 180;
     if (a === 0 || i0 === i1) {
-      mwd = ((d0 * 180 / Math.PI) % 360 + 360) % 360;
+      mwd = ((((d0 * 180) / Math.PI) % 360) + 360) % 360;
     } else {
       swh = swh * (1 - a) + g('swh', i1) * a;
       mwp = mwp * (1 - a) + g('mwp', i1) * a;
-      const d1 = g('mwd', i1) * Math.PI / 180;
+      const d1 = (g('mwd', i1) * Math.PI) / 180;
       const sx = Math.sin(d0) * (1 - a) + Math.sin(d1) * a;
       const cx = Math.cos(d0) * (1 - a) + Math.cos(d1) * a;
-      mwd = ((Math.atan2(sx, cx) * 180 / Math.PI) % 360 + 360) % 360;
+      mwd = ((((Math.atan2(sx, cx) * 180) / Math.PI) % 360) + 360) % 360;
     }
     if (!Number.isFinite(swh)) return null;
     return { swh, mwp, mwd };
@@ -660,7 +664,7 @@ export class ForecastStore implements WindSource {
 
   /** True when every field lives in a SharedArrayBuffer (posting the store shares it, no copy). */
   get shared(): boolean {
-    return this.steps.every((s) => [...s.fields.values()].every((f) => f.values.buffer instanceof SharedArrayBuffer));
+    return this.steps.every(s => [...s.fields.values()].every(f => f.values.buffer instanceof SharedArrayBuffer));
   }
 
   /**
@@ -671,7 +675,7 @@ export class ForecastStore implements WindSource {
    */
   serialize(): SerializedForecast {
     return {
-      steps: this.steps.map((s) => ({ validMs: s.validMs, stepHours: s.stepHours, fields: [...s.fields.entries()] })),
+      steps: this.steps.map(s => ({ validMs: s.validMs, stepHours: s.stepHours, fields: [...s.fields.entries()] })),
       meta: {
         cycleTimeMs: this.meta.cycleTime.getTime(),
         bbox: this.meta.bbox,
@@ -685,8 +689,14 @@ export class ForecastStore implements WindSource {
   /** Wrap a serialized store; shared field memory stays shared (nothing is copied). */
   static deserialize(s: SerializedForecast): ForecastStore {
     return new ForecastStore(
-      s.steps.map((st) => ({ validMs: st.validMs, stepHours: st.stepHours, fields: new Map(st.fields) })),
-      { cycleTime: new Date(s.meta.cycleTimeMs), bbox: s.meta.bbox, steps: s.meta.steps, params: s.meta.params, loadedAt: new Date(s.meta.loadedAtMs) },
+      s.steps.map(st => ({ validMs: st.validMs, stepHours: st.stepHours, fields: new Map(st.fields) })),
+      {
+        cycleTime: new Date(s.meta.cycleTimeMs),
+        bbox: s.meta.bbox,
+        steps: s.meta.steps,
+        params: s.meta.params,
+        loadedAt: new Date(s.meta.loadedAtMs),
+      }
     );
   }
 
@@ -698,8 +708,9 @@ export class ForecastStore implements WindSource {
     if (f.win) {
       const w = f.win;
       const east = b.west + bboxWidth(b);
-      return windowCovers(f, w, b.west, b.south) && windowCovers(f, w, east, b.north)
-        && (w.nc >= f.nLon || bboxWidth(b) <= (w.nc - 1) * f.dLon);
+      return (
+        windowCovers(f, w, b.west, b.south) && windowCovers(f, w, east, b.north) && (w.nc >= f.nLon || bboxWidth(b) <= (w.nc - 1) * f.dLon)
+      );
     }
     const spanLon = (f.nLon - 1) * f.dLon;
     const spanLat = (f.nLat - 1) * f.dLat;
@@ -737,8 +748,12 @@ function scaleField(f: FieldGrid, k: number): FieldGrid {
  * given); a bbox crops.
  */
 export function buildStep(
-  named: { param: string; message: Grib2Message }[], bbox: BBox | null, waveFillCells = 3, scratch?: DecodeScratch, slab?: FloatSlab,
-  fillScratch?: NanFillScratch,
+  named: { param: string; message: Grib2Message }[],
+  bbox: BBox | null,
+  waveFillCells = 3,
+  scratch?: DecodeScratch,
+  slab?: FloatSlab,
+  fillScratch?: NanFillScratch
 ): ForecastStep {
   if (named.length === 0) throw new Error('buildStep: no messages');
   const first = named[0].message;

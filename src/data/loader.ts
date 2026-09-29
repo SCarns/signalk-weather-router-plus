@@ -16,10 +16,7 @@
 
 import type { BBox } from '../geo/geodesy';
 import { parseGrib2Message, type DecodeScratch } from '../grib/grib2';
-import {
-  ATM_PARAMS, WAVE_PARAMS, availableSteps, latestExpectedCycle,
-  type Cycle, type EcmwfClient, type IndexRecord,
-} from './ecmwf';
+import { ATM_PARAMS, WAVE_PARAMS, availableSteps, latestExpectedCycle, type Cycle, type EcmwfClient, type IndexRecord } from './ecmwf';
 import { buildStep, ForecastStore, GLOBAL_BBOX, type ForecastStep, FloatSlab, type NanFillScratch } from './forecast';
 import { cycleName, type DecodedIndex, type DecodedRunWriter } from './decoded';
 
@@ -52,8 +49,9 @@ export interface ResolvedCycle {
  *  3. if that fails, the newest fully cached cycle, if any.
  */
 export async function resolveCycle(
-  client: EcmwfClient, horizonHours: number,
-  opts: { now?: Date; includeWaves?: boolean; extraAtmParams?: string[]; log?: (m: string) => void } = {},
+  client: EcmwfClient,
+  horizonHours: number,
+  opts: { now?: Date; includeWaves?: boolean; extraAtmParams?: string[]; log?: (m: string) => void } = {}
 ): Promise<ResolvedCycle> {
   const log = opts.log ?? (() => undefined);
   const atm = [...ATM_PARAMS, ...(opts.extraAtmParams ?? [])];
@@ -67,7 +65,7 @@ export async function resolveCycle(
     const cycle = await client.findLatestCycle(horizonHours, { now: opts.now });
     return { cycle, fromCache: client.cycleFullyCached(cycle, horizonHours, atm, wave) };
   } catch (err) {
-    const cached = client.cachedCycles().find((c) => client.cycleFullyCached(c, horizonHours, atm, wave));
+    const cached = client.cachedCycles().find(c => client.cycleFullyCached(c, horizonHours, atm, wave));
     if (cached) {
       const msg = `ECMWF unreachable (${(err as Error).message}); using cached cycle ${cached.yyyymmdd} ${cached.hh}z`;
       log(msg);
@@ -124,14 +122,17 @@ interface DecodeLoopResult {
  * its field memory (global loads) and hand it to `onStep`.
  */
 async function decodeSteps(
-  client: EcmwfClient, bbox: BBox | null, opts: LoadOptions,
+  client: EcmwfClient,
+  bbox: BBox | null,
+  opts: LoadOptions,
   slabFor: (stepCount: number, fieldsPerStep: number) => FloatSlab | undefined,
-  onStep: (step: ForecastStep) => void,
+  onStep: (step: ForecastStep) => void
 ): Promise<DecodeLoopResult> {
   const log = opts.log ?? (() => undefined);
   const includeWaves = opts.includeWaves ?? true;
   const atmParams = [...ATM_PARAMS, ...(opts.extraAtmParams ?? [])];
-  const cycle = opts.cycle ?? (await resolveCycle(client, opts.horizonHours, { includeWaves, extraAtmParams: opts.extraAtmParams, log })).cycle;
+  const cycle =
+    opts.cycle ?? (await resolveCycle(client, opts.horizonHours, { includeWaves, extraAtmParams: opts.extraAtmParams, log })).cycle;
   const steps = availableSteps(cycle.atmStream, opts.horizonHours);
   const waveSteps = new Set(availableSteps(cycle.waveStream, opts.horizonHours));
   // One set of decode buffers for every field (~12 MB for 0.25° global)
@@ -179,7 +180,7 @@ async function decodeSteps(
     done++;
     opts.onStep?.(done, steps.length);
     // Yield to the event loop between steps so a host process stays responsive.
-    await new Promise((r) => setImmediate(r));
+    await new Promise(r => setImmediate(r));
   }
   log(`decoded ${done} steps for cycle ${cycle.yyyymmdd} ${cycle.hh}z (${downloaded} fields downloaded, rest from cache)`);
   return { cycle, steps, params: [...atmParams, ...(includeWaves ? WAVE_PARAMS : [])], downloaded };
@@ -189,9 +190,19 @@ async function loadForecast(client: EcmwfClient, bbox: BBox | null, opts: LoadOp
   const built: ForecastStep[] = [];
   // Global loads: every field-step in one shared block (see FloatSlab for
   // why), sized for the 0.25° grid; a field of another size gets its own.
-  const r = await decodeSteps(client, bbox, opts, (n, fields) => (bbox ? undefined : new FloatSlab(n * fields * GLOBAL_CELLS)), (s) => built.push(s));
+  const r = await decodeSteps(
+    client,
+    bbox,
+    opts,
+    (n, fields) => (bbox ? undefined : new FloatSlab(n * fields * GLOBAL_CELLS)),
+    s => built.push(s)
+  );
   return new ForecastStore(built, {
-    cycleTime: r.cycle.time, bbox: bbox ?? GLOBAL_BBOX, steps: r.steps, params: r.params, loadedAt: new Date(),
+    cycleTime: r.cycle.time,
+    bbox: bbox ?? GLOBAL_BBOX,
+    steps: r.steps,
+    params: r.params,
+    loadedAt: new Date(),
   });
 }
 
@@ -209,16 +220,30 @@ export interface DiskDecodeResult {
  * writer is finished (renamed into place) on success; on failure the
  * caller aborts it.
  */
-export async function decodeForecastToDisk(client: EcmwfClient, writer: DecodedRunWriter, opts: LoadOptions & { cycle: Cycle }): Promise<DiskDecodeResult> {
+export async function decodeForecastToDisk(
+  client: EcmwfClient,
+  writer: DecodedRunWriter,
+  opts: LoadOptions & { cycle: Cycle }
+): Promise<DiskDecodeResult> {
   const t = Date.now();
   let slab: FloatSlab | undefined;
-  const r = await decodeSteps(client, null, opts, (_n, fields) => (slab = new FloatSlab(fields * GLOBAL_CELLS)), (step) => {
-    writer.writeStep(step);
-    slab!.reset();
-  });
-  if (cycleName(r.cycle.time) !== writer.cycle) throw new Error(`decoded cycle ${cycleName(r.cycle.time)} into a writer for ${writer.cycle}`);
+  const r = await decodeSteps(
+    client,
+    null,
+    opts,
+    (_n, fields) => (slab = new FloatSlab(fields * GLOBAL_CELLS)),
+    step => {
+      writer.writeStep(step);
+      slab!.reset();
+    }
+  );
+  if (cycleName(r.cycle.time) !== writer.cycle)
+    throw new Error(`decoded cycle ${cycleName(r.cycle.time)} into a writer for ${writer.cycle}`);
   const index = writer.finish({
-    cycleTimeMs: r.cycle.time.getTime(), request: { horizonHours: opts.horizonHours, params: r.params }, stepHours: r.steps, decodeMs: Date.now() - t,
+    cycleTimeMs: r.cycle.time.getTime(),
+    request: { horizonHours: opts.horizonHours, params: r.params },
+    stepHours: r.steps,
+    decodeMs: Date.now() - t,
   });
   return { index, downloaded: r.downloaded, stepBlockBytes: slab ? slab.capacity * 4 : 0 };
 }

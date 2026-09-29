@@ -1135,15 +1135,20 @@ loadPolarList();
 
 // ─────────── Plugin status (header line + Forecast data section) ───────────
 let _pluginStatus = null;
+/** Text for innerHTML: escapes &, <, >, " and '. */
+function escapeHtml(v) {
+  return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function _statusLine(s) {
   const f = s.forecast;
-  if (!f) return '<span class="warn">no forecast loaded</span>' + (s.forecast_error ? ': ' + s.forecast_error : ' (loading)');
+  if (!f) return '<span class="warn">no forecast loaded</span>' + (s.forecast_error ? ': ' + escapeHtml(s.forecast_error) : ' (loading)');
   const cur = Array.isArray(s.currents) && s.currents.length ? s.currents.map(c => c.name).join(', ') : 'none';
   return '<span class="ok">forecast</span> ' + f.cycle.slice(0, 13) + 'Z · ' + f.steps + ' steps to ' + f.valid_to.slice(0, 13) + 'Z'
     + (f.has_waves ? ' · waves' : '') + '<br>currents: ' + cur
     + (s.jobs ? ' · jobs: ' + (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued' : '')
     // A refused reload (e.g. the memory guard) while the previous forecast keeps serving.
-    + (s.forecast_error ? '<br><span class="warn">' + String(s.forecast_error).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c])) + '</span>' : '');
+    + (s.forecast_error ? '<br><span class="warn">' + escapeHtml(s.forecast_error) + '</span>' : '');
 }
 function loadPluginStatus() {
   const el = document.getElementById('dataStatus');
@@ -1162,7 +1167,7 @@ function loadPluginStatus() {
             + '<br>params: ' + (f.params || []).join(', ') + (s.extra_fields ? '' : '<br><span style="color:var(--warn)">extra fields (temperature, precipitation, SST, humidity) are off in Settings</span>')
             + (s.rtofs_run ? '<br>RTOFS run ' + s.rtofs_run : '')
             + (s.vessel ? '<br>vessel ' + (s.vessel.name || '—') + ', motor ' + (fmtSpeed(s.vessel.motorSpeedMs) || '—') : '')
-          : '<span style="color:var(--warn)">No forecast loaded' + (s.forecast_error ? ': ' + s.forecast_error : '') + '</span>';
+          : '<span style="color:var(--warn)">No forecast loaded' + (s.forecast_error ? ': ' + escapeHtml(s.forecast_error) : '') + '</span>';
       }
       window.dispatchEvent(new Event('rp:status'));
     })

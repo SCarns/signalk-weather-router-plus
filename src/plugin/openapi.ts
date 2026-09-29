@@ -237,7 +237,8 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       },
       '/api/polar-from-specs': {
         post: {
-          summary: 'Generate a polar from boat specs with the empirical VPP and save it to <polarsDir>/user/<slug>.csv',
+          summary:
+            'Generate a polar from boat specs with the physics polar calculator (ORC sail forces, Delft hull resistance, heeling limit; no spinnaker) and save it to <polarsDir>/user/<slug>.csv',
           requestBody: {
             required: true,
             content: {
@@ -264,7 +265,11 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
                         displacement_kg: { type: 'number', minimum: 50, maximum: 500000 },
                         ballast_kg: { type: 'number', nullable: true },
                         sail_area_upwind_m2: { type: 'number', exclusiveMinimum: true, minimum: 0, description: 'Main + 100% jib' },
-                        sail_area_downwind_m2: { type: 'number', default: 0, description: '0 = 1.5 x upwind' },
+                        sail_area_downwind_m2: {
+                          type: 'number',
+                          default: 0,
+                          description: 'Accepted but not used: the calculator assumes no spinnaker (a value > 0 adds a warning)',
+                        },
                         mast_height_m: { type: 'number', nullable: true },
                         rig_type: { type: 'string', enum: ['sloop', 'cutter', 'ketch', 'yawl', 'cat'], default: 'sloop' },
                         keel_type: { type: 'string', enum: ['fin', 'bulb', 'wing', 'full', 'centerboard', 'swing'], default: 'fin' },
@@ -283,7 +288,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             },
             400: { description: 'Invalid specs or name, or no polarsDir configured' },
             409: { description: 'A polar with that name exists and overwrite is false' },
-            422: { description: 'Hull type the empirical VPP cannot model (multihulls)' },
+            422: { description: 'Hull type the polar calculator does not model (multihulls)' },
           },
         },
       },

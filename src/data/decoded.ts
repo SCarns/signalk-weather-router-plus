@@ -127,7 +127,10 @@ export class DecodedRunWriter {
   private grid: DecodedGrid | null = null;
   private done = false;
 
-  constructor(readonly root: string, readonly cycle: string) {
+  constructor(
+    readonly root: string,
+    readonly cycle: string
+  ) {
     fs.mkdirSync(root, { recursive: true });
     this.finalDir = path.join(root, cycle);
     this.tmpDir = path.join(root, `.tmp-${cycle}-${process.pid}-${Date.now().toString(36)}`);
@@ -147,9 +150,14 @@ export class DecodedRunWriter {
       if (f.win) throw new Error(`decoded run: ${param} +${step.stepHours}h is a window, not a whole field`);
       const g: DecodedGrid = { lat0: f.lat0, lon0: f.lon0, dLat: f.dLat, dLon: f.dLon, nLat: f.nLat, nLon: f.nLon, wrapLon: !!f.wrapLon };
       if (!this.grid) this.grid = g;
-      else if (JSON.stringify(g) !== JSON.stringify(this.grid)) throw new Error(`decoded run: ${param} +${step.stepHours}h has a different grid`);
-      if (f.values.length !== g.nLat * g.nLon) throw new Error(`decoded run: ${param} +${step.stepHours}h has ${f.values.length} values for ${g.nLat}×${g.nLon}`);
-      writeFileDurable(path.join(this.tmpDir, fieldFile(step.stepHours, param)), new Uint8Array(f.values.buffer, f.values.byteOffset, f.values.byteLength));
+      else if (JSON.stringify(g) !== JSON.stringify(this.grid))
+        throw new Error(`decoded run: ${param} +${step.stepHours}h has a different grid`);
+      if (f.values.length !== g.nLat * g.nLon)
+        throw new Error(`decoded run: ${param} +${step.stepHours}h has ${f.values.length} values for ${g.nLat}×${g.nLon}`);
+      writeFileDurable(
+        path.join(this.tmpDir, fieldFile(step.stepHours, param)),
+        new Uint8Array(f.values.buffer, f.values.byteOffset, f.values.byteLength)
+      );
       this.bytes += f.values.byteLength;
       params.push(param);
     }
@@ -157,13 +165,27 @@ export class DecodedRunWriter {
   }
 
   /** Write index.json and move the run into place (replacing an older copy of the same cycle). */
-  finish(meta: { cycleTimeMs: number; request: { horizonHours: number; params: string[] }; stepHours: number[]; decodeMs: number }): DecodedIndex {
+  finish(meta: {
+    cycleTimeMs: number;
+    request: { horizonHours: number; params: string[] };
+    stepHours: number[];
+    decodeMs: number;
+  }): DecodedIndex {
     if (!this.grid || this.steps.length === 0) throw new Error('decoded run: no steps written');
     const index: DecodedIndex = {
-      format: DECODED_FORMAT, version: DECODED_VERSION, byteOrder: 'LE', cycle: this.cycle, cycleTimeMs: meta.cycleTimeMs,
-      request: meta.request, stepHours: meta.stepHours, grid: this.grid,
-      steps: [...this.steps].sort((a, b) => a.validMs - b.validMs), bytes: this.bytes,
-      decodedAt: new Date().toISOString(), decodeMs: meta.decodeMs, complete: true,
+      format: DECODED_FORMAT,
+      version: DECODED_VERSION,
+      byteOrder: 'LE',
+      cycle: this.cycle,
+      cycleTimeMs: meta.cycleTimeMs,
+      request: meta.request,
+      stepHours: meta.stepHours,
+      grid: this.grid,
+      steps: [...this.steps].sort((a, b) => a.validMs - b.validMs),
+      bytes: this.bytes,
+      decodedAt: new Date().toISOString(),
+      decodeMs: meta.decodeMs,
+      complete: true,
     };
     writeFileDurable(path.join(this.tmpDir, INDEX_FILE), Buffer.from(JSON.stringify(index)));
     fsyncPath(this.tmpDir);
@@ -195,7 +217,8 @@ export function openDecodedRun(dir: string): { run: DecodedRun | null; problem: 
   } catch (err) {
     return { run: null, problem: `no readable ${INDEX_FILE} (${(err as Error).message})` };
   }
-  if (index.format !== DECODED_FORMAT || index.version !== DECODED_VERSION) return { run: null, problem: `format ${index.format} v${index.version}, expected ${DECODED_FORMAT} v${DECODED_VERSION}` };
+  if (index.format !== DECODED_FORMAT || index.version !== DECODED_VERSION)
+    return { run: null, problem: `format ${index.format} v${index.version}, expected ${DECODED_FORMAT} v${DECODED_VERSION}` };
   if (index.complete !== true) return { run: null, problem: 'not marked complete' };
   if (index.byteOrder !== 'LE' || !isLittleEndian()) return { run: null, problem: 'byte order differs from this machine' };
   const want = index.grid.nLat * index.grid.nLon * 4;
@@ -205,7 +228,9 @@ export function openDecodedRun(dir: string): { run: DecodedRun | null; problem: 
       let size = -1;
       try {
         size = fs.statSync(f).size;
-      } catch { /* missing */ }
+      } catch {
+        /* missing */
+      }
       if (size !== want) return { run: null, problem: `${path.basename(f)} is ${size < 0 ? 'missing' : `${size} B, expected ${want}`}` };
     }
   }
@@ -224,7 +249,10 @@ export function listDecodedRuns(root: string): string[] {
   } catch {
     return [];
   }
-  return entries.filter((e) => /^\d{10}$/.test(e)).sort().reverse();
+  return entries
+    .filter(e => /^\d{10}$/.test(e))
+    .sort()
+    .reverse();
 }
 
 /**
@@ -266,7 +294,9 @@ export function dirBytes(dir: string): number {
     else if (e.isFile()) {
       try {
         total += fs.statSync(p).size;
-      } catch { /* vanished */ }
+      } catch {
+        /* vanished */
+      }
     }
   }
   return total;
@@ -301,7 +331,10 @@ const READ_CONCURRENCY = 4;
  * to the files.
  */
 export class DecodedRun {
-  constructor(readonly dir: string, readonly index: DecodedIndex) {}
+  constructor(
+    readonly dir: string,
+    readonly index: DecodedIndex
+  ) {}
 
   get cycleTime(): Date {
     return new Date(this.index.cycleTimeMs);
@@ -314,7 +347,7 @@ export class DecodedRun {
 
   /** Is this parameter present in every step? */
   has(param: string): boolean {
-    return this.index.steps.every((s) => s.params.includes(param));
+    return this.index.steps.every(s => s.params.includes(param));
   }
 
   get hasWaves(): boolean {
@@ -438,15 +471,33 @@ export class DecodedRun {
     list.forEach(({ stepIdx, param }, k) => {
       const m = byStep.get(stepIdx) ?? new Map<string, FieldGrid>();
       m.set(param, {
-        lat0: g.lat0, lon0: g.lon0, dLat: g.dLat, dLon: g.dLon, nLat: g.nLat, nLon: g.nLon, wrapLon: g.wrapLon,
-        values: block.subarray(k * cells, (k + 1) * cells), win: { r0: geo.r0, c0: geo.c0, nr: geo.nr, nc: geo.nc },
+        lat0: g.lat0,
+        lon0: g.lon0,
+        dLat: g.dLat,
+        dLon: g.dLon,
+        nLat: g.nLat,
+        nLon: g.nLon,
+        wrapLon: g.wrapLon,
+        values: block.subarray(k * cells, (k + 1) * cells),
+        win: { r0: geo.r0, c0: geo.c0, nr: geo.nr, nc: geo.nc },
       });
       byStep.set(stepIdx, m);
     });
-    const steps: ForecastStep[] = [...byStep.entries()].map(([i, fields]) => ({ validMs: this.index.steps[i].validMs, stepHours: this.index.steps[i].stepHours, fields }));
-    return new ForecastStore(steps, {
-      cycleTime: this.cycleTime, bbox: opts.bbox ?? GLOBAL_BBOX, steps: this.index.stepHours, params: [...new Set(list.map((x) => x.param))],
-      loadedAt: opts.loadedAt ?? new Date(this.index.decodedAt),
-    }, { requireWind: false });
+    const steps: ForecastStep[] = [...byStep.entries()].map(([i, fields]) => ({
+      validMs: this.index.steps[i].validMs,
+      stepHours: this.index.steps[i].stepHours,
+      fields,
+    }));
+    return new ForecastStore(
+      steps,
+      {
+        cycleTime: this.cycleTime,
+        bbox: opts.bbox ?? GLOBAL_BBOX,
+        steps: this.index.stepHours,
+        params: [...new Set(list.map(x => x.param))],
+        loadedAt: opts.loadedAt ?? new Date(this.index.decodedAt),
+      },
+      { requireWind: false }
+    );
   }
 }

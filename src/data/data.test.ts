@@ -29,7 +29,17 @@ function syntheticGrid(): { grid: Grib2Grid; values: Float64Array } {
   const ni = 360;
   const nj = 181;
   const grid: Grib2Grid = {
-    ni, nj, la1: 90, lo1: 0, la2: -90, lo2: 359, di: 1, dj: 1, scanningMode: 0, jScansPositively: false, iScansPositively: true,
+    ni,
+    nj,
+    la1: 90,
+    lo1: 0,
+    la2: -90,
+    lo2: 359,
+    di: 1,
+    dj: 1,
+    scanningMode: 0,
+    jScansPositively: false,
+    iScansPositively: true,
   };
   const values = new Float64Array(ni * nj);
   for (let r = 0; r < nj; r++) {
@@ -81,16 +91,44 @@ test('nanFillLimited fills near valid cells and leaves distant NaN', () => {
 });
 
 test('ForecastStore blends steps in time and reports wind FROM direction', () => {
-  const mk = (u: number, _v: number): FieldGrid => ({ lat0: 0, lon0: 0, dLat: 1, dLon: 1, nLat: 2, nLon: 2, values: Float32Array.from([u, u, u, u]) });
+  const mk = (u: number, _v: number): FieldGrid => ({
+    lat0: 0,
+    lon0: 0,
+    dLat: 1,
+    dLon: 1,
+    nLat: 2,
+    nLon: 2,
+    values: Float32Array.from([u, u, u, u]),
+  });
   const t0 = Date.UTC(2026, 0, 1, 0);
   const t1 = t0 + 3 * 3600_000;
   const steps = [
-    { validMs: t0, stepHours: 0, fields: new Map([['10u', mk(0, 0)], ['10v', mk(-10, 0)]]) },
-    { validMs: t1, stepHours: 3, fields: new Map([['10u', mk(10, 0)], ['10v', mk(0, 0)]]) },
+    {
+      validMs: t0,
+      stepHours: 0,
+      fields: new Map([
+        ['10u', mk(0, 0)],
+        ['10v', mk(-10, 0)],
+      ]),
+    },
+    {
+      validMs: t1,
+      stepHours: 3,
+      fields: new Map([
+        ['10u', mk(10, 0)],
+        ['10v', mk(0, 0)],
+      ]),
+    },
   ];
   // Fix the v component grids: mk builds a constant field of its first arg.
   steps[0].fields.set('10v', { ...mk(-10, 0) });
-  const store = new ForecastStore(steps, { cycleTime: new Date(t0), bbox: { west: 0, south: 0, east: 1, north: 1 }, steps: [0, 3], params: ['10u', '10v'], loadedAt: new Date() });
+  const store = new ForecastStore(steps, {
+    cycleTime: new Date(t0),
+    bbox: { west: 0, south: 0, east: 1, north: 1 },
+    steps: [0, 3],
+    params: ['10u', '10v'],
+    loadedAt: new Date(),
+  });
   // At t0: u=0, v=-10 → wind blowing south → FROM north (0°).
   const [s0, d0] = store.at(0.5, 0.5, new Date(t0));
   assert.ok(Math.abs(s0 - 10) < 1e-6);
@@ -152,14 +190,20 @@ test('EcmwfClient retries 429 with backoff, honours Retry-After, then falls back
     return new Response('{"param":"10u","step":"0","levtype":"sfc","_offset":0,"_length":4}\n', { status: 200 });
   }) as unknown as typeof fetch;
   const client = new EcmwfClient({
-    baseUrl: 'https://primary', fallbackUrls: ['https://secondary'], cacheDir: tmpDir(), retries: 3,
-    fetchImpl, sleepImpl: async (ms) => { sleeps.push(ms); },
+    baseUrl: 'https://primary',
+    fallbackUrls: ['https://secondary'],
+    cacheDir: tmpDir(),
+    retries: 3,
+    fetchImpl,
+    sleepImpl: async ms => {
+      sleeps.push(ms);
+    },
   });
   const cycle = latestExpectedCycle(new Date('2026-09-27T20:00:00Z'), 24);
   const idx = await client.fetchIndex(cycle, 'oper', 0);
   assert.equal(idx.length, 1);
-  assert.equal(calls.filter((c) => c.startsWith('https://primary')).length, 3); // exhausted
-  assert.equal(calls.filter((c) => c.startsWith('https://secondary')).length, 1);
+  assert.equal(calls.filter(c => c.startsWith('https://primary')).length, 3); // exhausted
+  assert.equal(calls.filter(c => c.startsWith('https://secondary')).length, 1);
   assert.equal(sleeps.length, 2); // two backoffs on the primary
   assert.ok(sleeps[0] >= 5000 && sleeps[0] < 5600, `first backoff ${sleeps[0]} should honour Retry-After 5 s`);
   assert.equal(client.baseUrl, 'https://secondary'); // sticks for the session
@@ -167,8 +211,17 @@ test('EcmwfClient retries 429 with backoff, honours Retry-After, then falls back
 
 test('EcmwfClient does not retry 404 and reports it', async () => {
   let n = 0;
-  const fetchImpl = (async () => { n++; return new Response('', { status: 404 }); }) as unknown as typeof fetch;
-  const client = new EcmwfClient({ baseUrl: 'https://x', fallbackUrls: [], cacheDir: tmpDir(), fetchImpl, sleepImpl: async () => undefined });
+  const fetchImpl = (async () => {
+    n++;
+    return new Response('', { status: 404 });
+  }) as unknown as typeof fetch;
+  const client = new EcmwfClient({
+    baseUrl: 'https://x',
+    fallbackUrls: [],
+    cacheDir: tmpDir(),
+    fetchImpl,
+    sleepImpl: async () => undefined,
+  });
   const cycle = latestExpectedCycle(new Date('2026-09-27T20:00:00Z'), 24);
   assert.equal(await client.stepPublished(cycle, 'oper', 0), false);
   assert.equal(n, 1);
@@ -177,13 +230,19 @@ test('EcmwfClient does not retry 404 and reports it', async () => {
 test('resolveCycle uses a fully cached expected cycle without any network call', async () => {
   const dir = tmpDir();
   let n = 0;
-  const fetchImpl = (async () => { n++; throw new Error('network must not be used'); }) as unknown as typeof fetch;
+  const fetchImpl = (async () => {
+    n++;
+    throw new Error('network must not be used');
+  }) as unknown as typeof fetch;
   const client = new EcmwfClient({ baseUrl: 'https://x', fallbackUrls: [], cacheDir: dir, fetchImpl, sleepImpl: async () => undefined });
   const now = new Date('2026-09-27T20:00:00Z');
   const expected = latestExpectedCycle(now, 6);
   // Fake a complete cache for +0/+3/+6 h: 3 atm params + 3 wave params per step.
   for (const step of [0, 3, 6]) {
-    for (const [stream, params] of [[expected.atmStream, ['10u', '10v', 'msl']], [expected.waveStream, ['swh', 'mwp', 'mwd']]] as const) {
+    for (const [stream, params] of [
+      [expected.atmStream, ['10u', '10v', 'msl']],
+      [expected.waveStream, ['swh', 'mwp', 'mwd']],
+    ] as const) {
       for (const p of params) {
         const f = client.cachePath(expected, stream, step, p);
         fs.mkdirSync(path.dirname(f), { recursive: true });

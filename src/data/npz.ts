@@ -50,7 +50,11 @@ export function parseNpy(buf: Buffer): NpyArray {
   const shapeStr = /'shape':\s*\(([^)]*)\)/.exec(header)?.[1];
   if (!descr || !fortran || shapeStr === undefined) throw new NpzError(`unparseable .npy header: ${header}`);
   if (fortran === 'True') throw new NpzError('Fortran-ordered arrays are not supported');
-  const shape = shapeStr.split(',').map((s) => s.trim()).filter(Boolean).map(Number);
+  const shape = shapeStr
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(Number);
   const count = shape.reduce((a, b) => a * b, 1);
   const data = buf.subarray(dataStart);
 

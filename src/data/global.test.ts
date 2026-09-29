@@ -11,7 +11,15 @@ import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { iterateGrib2, type Grib2Grid, type Grib2Message } from '../grib/grib2';
 import {
-  buildStep, cropField, globalField, nanFillLimited, sampleField, sampleFieldNearest, ForecastStore, GLOBAL_BBOX, type FieldGrid,
+  buildStep,
+  cropField,
+  globalField,
+  nanFillLimited,
+  sampleField,
+  sampleFieldNearest,
+  ForecastStore,
+  GLOBAL_BBOX,
+  type FieldGrid,
 } from './forecast';
 
 const fixture = path.join(__dirname, '..', '..', 'test-data', 'ecmwf_10u10v_3steps.grib2');
@@ -64,8 +72,14 @@ test('global store keeps every decoded value at Float32, bit for bit, in shared 
 test('global store samples exactly like the cropped Float32 store (real ECMWF fields)', () => {
   const named = realSteps();
   const t0 = named[0][0].message.referenceTime.getTime();
-  const globalSteps = named.map((n) => buildStep(n, null));
-  const global = new ForecastStore(globalSteps, { cycleTime: new Date(t0), bbox: GLOBAL_BBOX, steps: [0, 3, 6], params: ['10u', '10v'], loadedAt: new Date() });
+  const globalSteps = named.map(n => buildStep(n, null));
+  const global = new ForecastStore(globalSteps, {
+    cycleTime: new Date(t0),
+    bbox: GLOBAL_BBOX,
+    steps: [0, 3, 6],
+    params: ['10u', '10v'],
+    loadedAt: new Date(),
+  });
   assert.equal(global.global, true);
   assert.equal(global.shared, true);
   const boxes = [
@@ -80,10 +94,16 @@ test('global store samples exactly like the cropped Float32 store (real ECMWF fi
   let randomExact = 0;
   let maxRel = 0;
   for (const bbox of boxes) {
-    const cropSteps = named.map((n) => buildStep(n, bbox));
-    const crop = new ForecastStore(cropSteps, { cycleTime: new Date(t0), bbox, steps: [0, 3, 6], params: ['10u', '10v'], loadedAt: new Date() });
-    const width = ((bbox.east - bbox.west) % 360 + 360) % 360;
-    const times = [t0, t0 + 3600_000, t0 + 4.5 * 3600_000, t0 + 6 * 3600_000].map((t) => new Date(t));
+    const cropSteps = named.map(n => buildStep(n, bbox));
+    const crop = new ForecastStore(cropSteps, {
+      cycleTime: new Date(t0),
+      bbox,
+      steps: [0, 3, 6],
+      params: ['10u', '10v'],
+      loadedAt: new Date(),
+    });
+    const width = (((bbox.east - bbox.west) % 360) + 360) % 360;
+    const times = [t0, t0 + 3600_000, t0 + 4.5 * 3600_000, t0 + 6 * 3600_000].map(t => new Date(t));
     // Dyadic positions (multiples of 1/64°): every step of the arithmetic is
     // exact in both stores, so the results must be bit-identical.
     for (let i = 0; i < 400; i++) {
@@ -117,14 +137,28 @@ test('global store samples exactly like the cropped Float32 store (real ECMWF fi
   }
   assert.ok(dyadicExact > 0 && randomChecked > 0);
   // Report the agreement (visible with --test-reporter=spec).
-  console.log(`global vs crop: ${dyadicExact} dyadic samples bit-identical; ${randomExact}/${randomChecked} arbitrary samples bit-identical, max relative difference ${maxRel.toExponential(2)}`);
+  console.log(
+    `global vs crop: ${dyadicExact} dyadic samples bit-identical; ${randomExact}/${randomChecked} arbitrary samples bit-identical, max relative difference ${maxRel.toExponential(2)}`
+  );
 });
 
 // A 1° global grid, 0..359 E, 90..-90 N, north→south like ECMWF.
 function grid1(): { grid: Grib2Grid; values: Float64Array } {
   const ni = 360;
   const nj = 181;
-  const grid: Grib2Grid = { ni, nj, la1: 90, lo1: 0, la2: -90, lo2: 359, di: 1, dj: 1, scanningMode: 0, jScansPositively: false, iScansPositively: true };
+  const grid: Grib2Grid = {
+    ni,
+    nj,
+    la1: 90,
+    lo1: 0,
+    la2: -90,
+    lo2: 359,
+    di: 1,
+    dj: 1,
+    scanningMode: 0,
+    jScansPositively: false,
+    iScansPositively: true,
+  };
   const values = new Float64Array(ni * nj);
   for (let r = 0; r < nj; r++) for (let c = 0; c < ni; c++) values[r * ni + c] = (90 - r) * 1000 + c;
   return { grid, values };
@@ -169,13 +203,29 @@ test('antimeridian and 0° seam: sampling wraps with no seam', () => {
 test('global store covers everywhere; a crop does not', () => {
   const { grid, values } = grid1();
   const ref = new Date('2026-09-27T00:00:00Z');
-  const msg = (p: string) => ({ param: p, message: { grid, referenceTime: ref, product: { forecastHours: 0 }, decode: () => values } as unknown as Grib2Message });
+  const msg = (p: string) => ({
+    param: p,
+    message: { grid, referenceTime: ref, product: { forecastHours: 0 }, decode: () => values } as unknown as Grib2Message,
+  });
   const step = buildStep([msg('10u'), msg('10v')], null);
   const store = new ForecastStore([step], { cycleTime: ref, bbox: GLOBAL_BBOX, steps: [0], params: ['10u', '10v'], loadedAt: new Date() });
   assert.equal(store.global, true);
-  for (const [lon, lat] of [[0, 0], [180, 89.9], [-180, -90], [359.99, 45], [-73, 40]]) assert.ok(store.covers(lon, lat));
+  for (const [lon, lat] of [
+    [0, 0],
+    [180, 89.9],
+    [-180, -90],
+    [359.99, 45],
+    [-73, 40],
+  ])
+    assert.ok(store.covers(lon, lat));
   assert.ok(store.coversBBox({ west: 170, south: -80, east: -170, north: 80 }));
-  const cropStore = new ForecastStore([buildStep([msg('10u'), msg('10v')], { west: -75, south: 36, east: -65, north: 45 })], { cycleTime: ref, bbox: GLOBAL_BBOX, steps: [0], params: ['10u', '10v'], loadedAt: new Date() });
+  const cropStore = new ForecastStore([buildStep([msg('10u'), msg('10v')], { west: -75, south: 36, east: -65, north: 45 })], {
+    cycleTime: ref,
+    bbox: GLOBAL_BBOX,
+    steps: [0],
+    params: ['10u', '10v'],
+    loadedAt: new Date(),
+  });
   assert.equal(cropStore.global, false);
   assert.equal(cropStore.covers(0, 0), false);
   // Memory: 360 × 181 cells × 4 B per field.
@@ -185,7 +235,10 @@ test('global store covers everywhere; a crop does not', () => {
 test('tprate ingest scaling is identical for global and cropped fields', () => {
   const { grid, values } = grid1();
   const ref = new Date('2026-09-27T00:00:00Z');
-  const msg = (p: string) => ({ param: p, message: { grid, referenceTime: ref, product: { forecastHours: 3 }, decode: () => values } as unknown as Grib2Message });
+  const msg = (p: string) => ({
+    param: p,
+    message: { grid, referenceTime: ref, product: { forecastHours: 3 }, decode: () => values } as unknown as Grib2Message,
+  });
   const bbox = { west: -75, south: 36, east: -65, north: 45 };
   const g = buildStep([msg('10u'), msg('10v'), msg('tprate')], null).fields.get('tprate')!;
   const c = buildStep([msg('10u'), msg('10v'), msg('tprate')], bbox).fields.get('tprate')!;
@@ -243,12 +296,14 @@ test('pruned nanFillLimited equals the previous implementation on non-wrapping g
     for (const maxCells of [1, 2, 3, 2.5]) {
       const a = nanFillReference(f, maxCells).values;
       const b = nanFillLimited(f, maxCells).values;
-      for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) assert.fail(`trial ${trial} max ${maxCells} cell ${i}: ${a[i]} vs ${b[i]}`);
+      for (let i = 0; i < a.length; i++)
+        if (!Object.is(a[i], b[i])) assert.fail(`trial ${trial} max ${maxCells} cell ${i}: ${a[i]} vs ${b[i]}`);
       const copy: FieldGrid = { ...f, values: new Float32Array(new SharedArrayBuffer(v.length * 4)) };
       copy.values.set(v);
       const c = nanFillLimited(copy, maxCells, { inPlace: true });
       assert.equal(c.values, copy.values, 'in place');
-      for (let i = 0; i < a.length; i++) if (!Object.is(a[i], c.values[i])) assert.fail(`in-place trial ${trial} max ${maxCells} cell ${i}`);
+      for (let i = 0; i < a.length; i++)
+        if (!Object.is(a[i], c.values[i])) assert.fail(`in-place trial ${trial} max ${maxCells} cell ${i}`);
     }
   }
 });
@@ -271,8 +326,17 @@ test('nanFillLimited wraps across the seam on a full-circle grid and keeps share
 test('SharedArrayBuffer fields are shared, not copied, across a worker boundary', async () => {
   const { grid, values } = grid1();
   const ref = new Date('2026-09-27T00:00:00Z');
-  const msg = (p: string) => ({ param: p, message: { grid, referenceTime: ref, product: { forecastHours: 0 }, decode: () => values } as unknown as Grib2Message });
-  const store = new ForecastStore([buildStep([msg('10u'), msg('10v')], null)], { cycleTime: ref, bbox: GLOBAL_BBOX, steps: [0], params: ['10u', '10v'], loadedAt: new Date() });
+  const msg = (p: string) => ({
+    param: p,
+    message: { grid, referenceTime: ref, product: { forecastHours: 0 }, decode: () => values } as unknown as Grib2Message,
+  });
+  const store = new ForecastStore([buildStep([msg('10u'), msg('10v')], null)], {
+    cycleTime: ref,
+    bbox: GLOBAL_BBOX,
+    steps: [0],
+    params: ['10u', '10v'],
+    loadedAt: new Date(),
+  });
   const u = store.steps[0].fields.get('10u')!;
   const before = u.values[5];
   // The worker reads a cell, then writes a marker into the field; if the

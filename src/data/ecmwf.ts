@@ -122,7 +122,7 @@ export function availableSteps(stream: Cycle['atmStream'] | Cycle['waveStream'],
   return steps;
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
 
 export class EcmwfClient {
   /** Mirrors in order; index 0 is the one currently in use. */
@@ -136,7 +136,7 @@ export class EcmwfClient {
 
   constructor(opts: EcmwfClientOptions) {
     const primary = (opts.baseUrl ?? ECMWF_MIRRORS.ecmwf).replace(/\/$/, '');
-    const fallbacks = (opts.fallbackUrls ?? Object.values(ECMWF_MIRRORS)).map((u) => u.replace(/\/$/, '')).filter((u) => u !== primary);
+    const fallbacks = (opts.fallbackUrls ?? Object.values(ECMWF_MIRRORS)).map(u => u.replace(/\/$/, '')).filter(u => u !== primary);
     this.mirrors = [primary, ...fallbacks];
     this.cacheDir = opts.cacheDir;
     this.timeoutMs = opts.timeoutMs ?? 60_000;
@@ -229,10 +229,7 @@ export class EcmwfClient {
       const lastAtm = atmSteps[atmSteps.length - 1];
       const lastWave = waveSteps[waveSteps.length - 1];
       if (lastAtm < horizonHours && c.atmStream === 'scda') continue; // short cycle cannot cover the horizon
-      const [a, w] = await Promise.all([
-        this.stepPublished(c, c.atmStream, lastAtm),
-        this.stepPublished(c, c.waveStream, lastWave),
-      ]);
+      const [a, w] = await Promise.all([this.stepPublished(c, c.atmStream, lastAtm), this.stepPublished(c, c.waveStream, lastWave)]);
       if (a && w) {
         this.log(`latest complete cycle: ${c.yyyymmdd} ${c.hh}z (${c.atmStream}/${c.waveStream}) to +${lastAtm} h`);
         return c;
@@ -304,10 +301,10 @@ export class EcmwfClient {
       return [];
     }
     return entries
-      .filter((e) => /^\d{10}$/.test(e))
+      .filter(e => /^\d{10}$/.test(e))
       .sort()
       .reverse()
-      .map((e) => cycleFor(new Date(Date.UTC(+e.slice(0, 4), +e.slice(4, 6) - 1, +e.slice(6, 8), +e.slice(8, 10)))));
+      .map(e => cycleFor(new Date(Date.UTC(+e.slice(0, 4), +e.slice(4, 6) - 1, +e.slice(6, 8), +e.slice(8, 10)))));
   }
 
   /**
@@ -322,10 +319,12 @@ export class EcmwfClient {
       fs.unlinkSync(cached);
     }
     const idx = index ?? (await this.fetchIndex(cycle, stream, step));
-    const rec = idx.find((r) => r.param === param && (r.levtype === undefined || r.levtype === 'sfc'));
+    const rec = idx.find(r => r.param === param && (r.levtype === undefined || r.levtype === 'sfc'));
     if (!rec) return null;
     const url = this.stepUrl(cycle, stream, step, 'grib2');
-    const res = await this.request(this.stepPath(cycle, stream, step, 'grib2'), { headers: { Range: `bytes=${rec._offset}-${rec._offset + rec._length - 1}` } });
+    const res = await this.request(this.stepPath(cycle, stream, step, 'grib2'), {
+      headers: { Range: `bytes=${rec._offset}-${rec._offset + rec._length - 1}` },
+    });
     if (res.status !== 206 && res.status !== 200) throw new EcmwfError(`HTTP ${res.status} fetching ${param} from ${url}`);
     const buf = new Uint8Array(await res.arrayBuffer());
     let msg = buf;
@@ -348,7 +347,7 @@ export class EcmwfClient {
 
   /** Delete cached cycles other than `keep`. */
   pruneCache(keep: Cycle[]): void {
-    const keepNames = new Set(keep.map((c) => `${c.yyyymmdd}${c.hh}`));
+    const keepNames = new Set(keep.map(c => `${c.yyyymmdd}${c.hh}`));
     let entries: string[];
     try {
       entries = fs.readdirSync(this.cacheDir);

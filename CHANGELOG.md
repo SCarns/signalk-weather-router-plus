@@ -6,6 +6,7 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+
 ### Added
 
 - **Polar performance** (vessel setting, and `vessel.polar_performance`
@@ -33,72 +34,6 @@ uses [Semantic Versioning](https://semver.org/).
   course or wind missing, the card shows no tack instead of defaulting
   to starboard.
 
-### Fixed
-
-- **The conditions popup took 14–15 s** inside the NECOFS-GOM3 area
-  (brain, 72 hourly rows). Each hour predicted the tidal current for the
-  whole NECOFS grid (501 × 501 cells, ~230 ms on the Pi) to read one
-  point. A point at a time with no grid cached is now predicted from its
-  4 surrounding cells only: 360 points × 72 h took 32 ms instead of
-  16.1 s, with identical results (difference 0; the pyTMD reference test
-  still passes). Map layers, which read many points at one time, still
-  use the cached grid. Leg simulations and the shortcut smoother, which
-  read one point at changing times, use the fast path too.
-
-### Changed
-
-- **The polar generator ("Create polar from boat specs…",
-  `POST /api/polar-from-specs`) uses a new physics calculator**
-  (`src/vessel/vpp_physics.ts`) instead of the empirical one. Sail forces
-  come from the ORC VPP Documentation 2026, hull resistance from the Delft
-  Systematic Yacht Hull Series and ITTC-57, and a heeling limit (with ORC's
-  default crew on the rail) makes the boat flatten and reef as the wind
-  builds. The heeling limit and effective sail span are fitted to 441 ORC
-  2026 non-spinnaker certificates; on 441 other certificates the median
-  error is 3.3% upwind, 3.2% reaching, 3.3% running (was 8.8%, 3.7%,
-  6.9%), and boats with a cell over 30% fell from 17 / 12 / 12 to
-  3 / 1 / 0. Heavy boats no longer come out 10–15% fast upwind. No
-  spinnaker is assumed: the downwind sail area field is gone and the API
-  ignores it. Polars generated before are not changed; generate them again
-  to get the new numbers.
-
-- **Display units come from the Signal K user's unit preferences.** The
-  page's own units selector is gone. As the Signal K Unit Preferences
-  guide describes for clients, the page reads `displayUnits` from path
-  metadata (`GET /signalk/v1/api/vessels/self/<path>/meta`), which the
-  server resolves for the logged-in user. Each quantity uses one path in
-  its category: speed, distance, depth, length, temperature, pressure,
-  time. Wave height follows depth, wave period is always seconds, rain
-  rate is mm/h or in/h depending on the user's length unit. Isobar labels
-  and the pressure legend use the user's pressure unit. There is no
-  fallback unit: a value whose category doesn't resolve shows as "—" and
-  the Display section names the missing categories.
-
-### Fixed
-
-- **Routes with waypoints failed** ("finished 30 stages without any
-  branch crossing all 3 via(s); deepest branch crossed 0", job
-  `5e0abb0d…`, reproduced on brain with the installed build and the
-  2026-09-28 12Z forecast). One search ran for the whole route and each
-  waypoint was a disc that some fixed-length stage step had to happen to
-  cross; near a turn the steps cut the corner and missed it. Waypoints
-  are now leg ends: each leg is routed on its own (port of the
-  routePlanning `compute_multi_leg_route`), departing at the previous
-  leg's arrival, and the legs are stitched. The same request now succeeds
-  in precise and approximate mode (500 m and 200 m), motor and sail_max.
-  Routes without waypoints are unchanged (byte-identical GeoJSON against
-  the previous build for Baja sail_max / motor and Lisbon → Palma).
-- **Routes failed when the search took a different passage than the
-  corridor** (same message, "crossing all 1 via(s)", job `2bce05cd…`:
-  Long Island Sound → east of Block Island Sound). The corridor went past
-  Gardiners Island and put an automatic via there; the search went
-  through The Race and no branch crossed the via. When that happens the
-  leg is now routed again without its automatic vias. Routes that already
-  worked never take this path and are unchanged (byte-identical GeoJSON on
-  brain for Lisbon → Palma and Baja, with and without waypoints).
-
-### Added
-
 - Request fields `precision` (`"precise"` default, `"approximate"`) and
   `arrival_radius_m` (default 200, 0..5000, > 0 for approximate), as in
   routePlanning; a waypoint's `radius_m` overrides the radius for that
@@ -114,17 +49,6 @@ uses [Semantic Versioning](https://semver.org/).
 - GeoJSON: each waypoint's junction point has `role: "via"`; job summary
   `legs` and `precision` for routes with waypoints. Forecast and SMOC
   areas are read per leg and released after each leg.
-
-### Removed
-
-- The Conditions sample-dots map layer (Layers → Weather) and its endpoint
-  `/api/conditions-tile`. Shift-click (or "Conditions here") gives the
-  full conditions forecast for any point without it. Each dots tile
-  loaded and kept its own current-data area: on brain, 926 such areas
-  held 160 MB after one zoomed-out browse (source: `/api/status`
-  on-demand list, 2026-09-28).
-
-### Added
 
 - **Global water grid** (`data/water-grid-0.02.bin.gz`, 1.49 MB, shipped
   with the package): the world's coastline as a 0.02° navigability graph
@@ -159,6 +83,33 @@ uses [Semantic Versioning](https://semver.org/).
   patches, down to 0.0005°, where the corridor passes a narrow passage.
 
 ### Changed
+
+- **The polar generator ("Create polar from boat specs…",
+  `POST /api/polar-from-specs`) uses a new physics calculator**
+  (`src/vessel/vpp_physics.ts`) instead of the empirical one. Sail forces
+  come from the ORC VPP Documentation 2026, hull resistance from the Delft
+  Systematic Yacht Hull Series and ITTC-57, and a heeling limit (with ORC's
+  default crew on the rail) makes the boat flatten and reef as the wind
+  builds. The heeling limit and effective sail span are fitted to 441 ORC
+  2026 non-spinnaker certificates; on 441 other certificates the median
+  error is 3.3% upwind, 3.2% reaching, 3.3% running (was 8.8%, 3.7%,
+  6.9%), and boats with a cell over 30% fell from 17 / 12 / 12 to
+  3 / 1 / 0. Heavy boats no longer come out 10–15% fast upwind. No
+  spinnaker is assumed: the downwind sail area field is gone and the API
+  ignores it. Polars generated before are not changed; generate them again
+  to get the new numbers.
+
+- **Display units come from the Signal K user's unit preferences.** The
+  page's own units selector is gone. As the Signal K Unit Preferences
+  guide describes for clients, the page reads `displayUnits` from path
+  metadata (`GET /signalk/v1/api/vessels/self/<path>/meta`), which the
+  server resolves for the logged-in user. Each quantity uses one path in
+  its category: speed, distance, depth, length, temperature, pressure,
+  time. Wave height follows depth, wave period is always seconds, rain
+  rate is mm/h or in/h depending on the user's length unit. Isobar labels
+  and the pressure legend use the user's pressure unit. There is no
+  fallback unit: a value whose category doesn't resolve shows as "—" and
+  the Display section names the missing categories.
 
 - **The decoded forecast lives on disk, not in memory.** Each ECMWF run
   is decoded once, when it arrives, one step at a time through one
@@ -227,7 +178,47 @@ uses [Semantic Versioning](https://semver.org/).
   profile in the exact polygon test of the final validation) to 0.27 s.
 - A route point on land fails at once with a clear message.
 
+### Removed
+
+- The Conditions sample-dots map layer (Layers → Weather) and its endpoint
+  `/api/conditions-tile`. Shift-click (or "Conditions here") gives the
+  full conditions forecast for any point without it. Each dots tile
+  loaded and kept its own current-data area: on brain, 926 such areas
+  held 160 MB after one zoomed-out browse (source: `/api/status`
+  on-demand list, 2026-09-28).
+
 ### Fixed
+
+- **The conditions popup took 14–15 s** inside the NECOFS-GOM3 area
+  (brain, 72 hourly rows). Each hour predicted the tidal current for the
+  whole NECOFS grid (501 × 501 cells, ~230 ms on the Pi) to read one
+  point. A point at a time with no grid cached is now predicted from its
+  4 surrounding cells only: 360 points × 72 h took 32 ms instead of
+  16.1 s, with identical results (difference 0; the pyTMD reference test
+  still passes). Map layers, which read many points at one time, still
+  use the cached grid. Leg simulations and the shortcut smoother, which
+  read one point at changing times, use the fast path too.
+
+- **Routes with waypoints failed** ("finished 30 stages without any
+  branch crossing all 3 via(s); deepest branch crossed 0", job
+  `5e0abb0d…`, reproduced on brain with the installed build and the
+  2026-09-28 12Z forecast). One search ran for the whole route and each
+  waypoint was a disc that some fixed-length stage step had to happen to
+  cross; near a turn the steps cut the corner and missed it. Waypoints
+  are now leg ends: each leg is routed on its own (port of the
+  routePlanning `compute_multi_leg_route`), departing at the previous
+  leg's arrival, and the legs are stitched. The same request now succeeds
+  in precise and approximate mode (500 m and 200 m), motor and sail_max.
+  Routes without waypoints are unchanged (byte-identical GeoJSON against
+  the previous build for Baja sail_max / motor and Lisbon → Palma).
+- **Routes failed when the search took a different passage than the
+  corridor** (same message, "crossing all 1 via(s)", job `2bce05cd…`:
+  Long Island Sound → east of Block Island Sound). The corridor went past
+  Gardiners Island and put an automatic via there; the search went
+  through The Race and no branch crossed the via. When that happens the
+  leg is now routed again without its automatic vias. Routes that already
+  worked never take this path and are unchanged (byte-identical GeoJSON on
+  brain for Lisbon → Palma and Baja, with and without waypoints).
 
 - A forecast reload no longer needs memory for two whole forecasts
   (the old one serving while the new one loaded: 3059.6 MiB peak RSS on

@@ -108,6 +108,14 @@ export = function plugin(app: SkApp): SignalKPlugin {
 
   const log = (msg: string): void => app.debug(msg);
 
+  function rejectPendingQueries(reason: string): void {
+    for (const [id, p] of pendingQueries) {
+      clearTimeout(p.timer);
+      p.reject(new Error(reason));
+      pendingQueries.delete(id);
+    }
+  }
+
   function post(role: WorkerRole, msg: MainToWorker): void {
     workers[role].worker?.postMessage(msg);
   }
@@ -351,25 +359,26 @@ export = function plugin(app: SkApp): SignalKPlugin {
       execArgv: isTs ? ['--import', 'tsx'] : [],
     });
     workers[role] = { role, worker, ready: false };
-    worker.on('message', (m: WorkerToMain) => onWorkerMessage(role, m));
+    // After a restart (stop() then start()) the old worker is still shutting
+    // down; its late events must not touch the new worker's slot, queries
+    // or jobs. Only the worker currently in workers[role] is acted on.
+    const isCurrent = (): boolean => workers[role].worker === worker;
+    worker.on('message', (m: WorkerToMain) => {
+      if (isCurrent()) onWorkerMessage(role, m);
+    });
     worker.on('error', err => {
-      app.error(`${role} worker error: ${err.message}`);
-      if (role === 'route') jobs?.failRunning(`worker crashed: ${err.message}`);
+      app.error(`${role} worker error: ${err.message}${isCurrent() ? '' : ' (worker already replaced)'}`);
+      if (isCurrent() && role === 'route') jobs?.failRunning(`worker crashed: ${err.message}`);
     });
     worker.on('exit', code => {
+      if (!isCurrent()) return;
       workers[role] = { role, worker: null, ready: false };
-      if (role === 'data') {
-        for (const [id, p] of pendingQueries) {
-          clearTimeout(p.timer);
-          p.reject(new Error('data worker exited'));
-          pendingQueries.delete(id);
-        }
-      }
+      if (role === 'data') rejectPendingQueries('data worker exited');
       if (!stopped) {
         app.error(`${role} worker exited with code ${code}; restarting in 5 s`);
         if (role === 'route') jobs?.failRunning(`worker exited with code ${code}`);
         setTimeout(() => {
-          if (!stopped && config) {
+          if (!stopped && config && !workers[role].worker) {
             startWorker(role);
             post(role, { type: 'init', role, config, cacheDir: app.getDataDirPath() });
             if (role === 'data') requestRefresh(false);
@@ -511,6 +520,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       }
       workers[role] = { role, worker: null, ready: false };
     }
+    rejectPendingQueries('plugin stopped');
     jobs?.failRunning('plugin stopped');
     jobs = null;
     forecastRun = null;

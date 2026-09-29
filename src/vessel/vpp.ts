@@ -30,7 +30,7 @@ export interface BoatSpecs {
   // Rig + sails
   /** Main + 100% jib. */
   sail_area_upwind_m2: number;
-  /** Main + spinnaker/genoa; 0 = use 1.5x upwind. */
+  /** Main + spinnaker/genoa. Used only by the empirical VPP (0 = 1.5x upwind); the physics calculator, which the polar generator uses, ignores it (no spinnaker). */
   sail_area_downwind_m2?: number;
   mast_height_m?: number | null;
   // Categorical

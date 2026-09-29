@@ -153,10 +153,12 @@ test('overlay land resolution respects the cell budget and snapping is outward',
   assert.ok(w.west <= 175 && w.west > 170 && w.east >= -175 && w.east < -170);
 });
 
-const GSHHG = '/Users/mauricetamman/routePlanning/data/land/gshhg/GSHHS_shp/f/GSHHS_f_L1.shp';
+// Point WRP_GSHHG_SHP at a GSHHG full-resolution L1 shapefile
+// (GSHHS_shp/f/GSHHS_f_L1.shp) to run this; skipped otherwise.
+const GSHHG = process.env.WRP_GSHHG_SHP ?? '';
 test(
   'real GSHHG full resolution: indexed read equals the full scan; viewport build time',
-  { skip: !fs.existsSync(GSHHG) && 'GSHHG not present' },
+  { skip: !(GSHHG && fs.existsSync(GSHHG)) && 'WRP_GSHHG_SHP not set' },
   () => {
     const b = { west: -75, south: 36, east: -65, north: 45 };
     let t = Date.now();
