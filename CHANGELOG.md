@@ -20,6 +20,14 @@ uses [Semantic Versioning](https://semver.org/).
   in precise and approximate mode (500 m and 200 m), motor and sail_max.
   Routes without waypoints are unchanged (byte-identical GeoJSON against
   the previous build for Baja sail_max / motor and Lisbon → Palma).
+- **Routes failed when the search took a different passage than the
+  corridor** (same message, "crossing all 1 via(s)", job `2bce05cd…`:
+  Long Island Sound → east of Block Island Sound). The corridor went past
+  Gardiners Island and put an automatic via there; the search went
+  through The Race and no branch crossed the via. When that happens the
+  leg is now routed again without its automatic vias. Routes that already
+  worked never take this path and are unchanged (byte-identical GeoJSON on
+  brain for Lisbon → Palma and Baja, with and without waypoints).
 
 ### Added
 

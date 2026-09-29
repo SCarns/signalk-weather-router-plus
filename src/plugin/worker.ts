@@ -43,7 +43,7 @@ import { LandMask } from '../geo/landmask';
 import { OnDemandLand } from '../geo/landcache';
 import { releaseMemory } from '../util/gc';
 import { NoCurrent, type CurrentSource } from '../engine/environment';
-import { OceanPropagator, RouteCancelled } from '../engine/propagator';
+import { OceanPropagator, RouteCancelled, ViasNotCrossedError } from '../engine/propagator';
 import { CorridorError, mergeVias, planCorridor, type Corridor } from '../engine/corridor';
 import { DEFAULT_PRECISION, routeMultiLeg, validateLegOptions, type LegPlan, type Stop } from '../engine/multileg';
 import { WaterGrid } from '../geo/watergrid';
@@ -946,7 +946,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
       const t = Date.now();
       const autoVias = corridor ? mergeVias([], corridor.autoVias) : [];
       const legWind: ForecastStore | null = wind;
-      const r = prop.computeRoute({
+      const legArgs = {
         start: legStart, end: legEnd, departureTime: legDeparture, vessel, polar: routePolar,
         wind: legWind ?? undefined, current,
         modePolicy: request.mode ?? 'sail_max',
@@ -956,8 +956,19 @@ async function route(id: string, request: RouteRequest): Promise<void> {
         corridor: corridor ? { skeleton: corridor.skeleton, widthM: corridor.widthM } : undefined,
         arrivalRadiusM: plan.arrivalRadiusM,
         snapToExact: plan.snapToExact,
-        onProgress: multi ? (st, tot, m) => progress(st, tot, `${tag}${m}`) : progress, shouldCancel,
-      });
+        onProgress: multi ? (st: number, tot: number, m: string) => progress(st, tot, `${tag}${m}`) : progress, shouldCancel,
+      };
+      let r: Route;
+      try {
+        r = prop.computeRoute(legArgs);
+      } catch (err) {
+        // The corridor's automatic vias are only guidance: when the search
+        // finds another passage (e.g. The Race instead of the gap past
+        // Gardiners Island) no branch crosses them. Retry without them.
+        if (!(err instanceof ViasNotCrossedError) || !autoVias.length) throw err;
+        progress(0, 0, `${tag}no branch went through the auto via(s) at ${autoVias.map((v) => v.name ?? 'a narrow passage').join(', ')}; routing again without them`);
+        r = prop.computeRoute({ ...legArgs, vias: undefined });
+      }
       if (legWind) {
         const lastValid = legWind.validRange[1].getTime();
         const arrival = r.waypoints[r.waypoints.length - 1].time.getTime();

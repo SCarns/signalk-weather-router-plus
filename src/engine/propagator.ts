@@ -165,6 +165,14 @@ export class RouteError extends Error {
   }
 }
 
+/** No branch went through every via (thrown so callers can retry without automatic vias). */
+export class ViasNotCrossedError extends RouteError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ViasNotCrossedError';
+  }
+}
+
 export class RouteCancelled extends Error {
   constructor() {
     super('route computation cancelled');
@@ -653,7 +661,7 @@ export class OceanPropagator {
     const pool = nVias > 0 ? terminals.filter((c) => c.viaCount === nVias) : terminals;
     if (pool.length === 0) {
       const deepest = Math.max(0, ...terminals.map((c) => c.viaCount));
-      throw new RouteError(
+      throw new ViasNotCrossedError(
         `finished ${stages.length - 1} stages without any branch crossing all ${nVias} via(s); deepest branch crossed ${deepest}. Widen the via radius, add stages, or move the via.`,
       );
     }
