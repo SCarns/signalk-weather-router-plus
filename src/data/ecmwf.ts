@@ -9,8 +9,11 @@
  * `ecmwf-opendata` client):
  *   {base}/{yyyymmdd}/{HH}z/ifs/0p25/{stream}/{yyyymmddHH0000}-{step}h-{stream}-fc.grib2
  *   {base}/{yyyymmdd}/{HH}z/ifs/0p25/{stream}/{yyyymmddHH0000}-{step}h-{stream}-fc.index
- * Streams: 00z/12z use `oper` (atmosphere) and `wave`; 06z/18z use
- * `scda` and `scwv` (shorter range).
+ * Streams: every cycle uses `oper` (atmosphere) and `wave`. 00z/12z publish
+ * 0–144 h every 3 h then 150–360 h every 6 h (85 steps); 06z/18z publish
+ * 0–144 h every 3 h (49 steps). Checked on data.ecmwf.int 2026-09-29
+ * (20260929/00z and 20260928/06z directory listings); the former
+ * `scda`/`scwv` directories for 06z/18z are empty.
  */
 
 import * as fs from 'node:fs';
@@ -41,8 +44,10 @@ export interface Cycle {
   time: Date;
   yyyymmdd: string;
   hh: string;
-  atmStream: 'oper' | 'scda';
-  waveStream: 'wave' | 'scwv';
+  atmStream: 'oper';
+  waveStream: 'wave';
+  /** Last published step, hours: 360 for 00z/12z, 144 for 06z/18z. */
+  maxStep: number;
 }
 
 export interface EcmwfClientOptions {
@@ -72,16 +77,16 @@ export const PUBLICATION_LAG_MINUTES = 400;
 /**
  * The most recent cycle that should be published by `now`, given a
  * ~400 minute publication lag: cycles run at 00/06/12/18Z. When the
- * horizon exceeds what the short 06z/18z cycles publish (90 h), only
- * 00z/12z cycles qualify.
+ * horizon exceeds what the 06z/18z cycles publish (144 h), only 00z/12z
+ * cycles qualify.
  */
 export function latestExpectedCycle(now: Date, horizonHours: number): Cycle {
   const t = new Date(now.getTime() - PUBLICATION_LAG_MINUTES * 60_000);
   let start = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), Math.floor(t.getUTCHours() / 6) * 6));
   for (;;) {
     const c = cycleFor(start);
-    const steps = availableSteps(c.atmStream, horizonHours);
-    if (steps[steps.length - 1] >= horizonHours || c.atmStream === 'oper') return c;
+    const steps = availableSteps(c, horizonHours);
+    if (steps[steps.length - 1] >= horizonHours || c.maxStep === MAIN_MAX_STEP) return c;
     start = new Date(start.getTime() - 6 * 3600_000);
   }
 }
@@ -111,14 +116,20 @@ export function cycleFor(time: Date): Cycle {
   const hh = pad2(time.getUTCHours());
   const yyyymmdd = `${time.getUTCFullYear()}${pad2(time.getUTCMonth() + 1)}${pad2(time.getUTCDate())}`;
   const main = hh === '00' || hh === '12';
-  return { time, yyyymmdd, hh, atmStream: main ? 'oper' : 'scda', waveStream: main ? 'wave' : 'scwv' };
+  return { time, yyyymmdd, hh, atmStream: 'oper', waveStream: 'wave', maxStep: main ? MAIN_MAX_STEP : SHORT_MAX_STEP };
 }
 
-/** Steps published for a stream: 3-hourly to 144 h then 6-hourly to 240 h (oper); scda stops at 90 h. */
-export function availableSteps(stream: Cycle['atmStream'] | Cycle['waveStream'], horizonHours: number): number[] {
+/** Last step of the 00z/12z and the 06z/18z cycles, hours. */
+export const MAIN_MAX_STEP = 360;
+export const SHORT_MAX_STEP = 144;
+
+/**
+ * Steps a cycle publishes up to the horizon (atmosphere and waves alike):
+ * every 3 h to 144 h, then every 6 h to the cycle's last step.
+ */
+export function availableSteps(cycle: Pick<Cycle, 'maxStep'>, horizonHours: number): number[] {
   const steps: number[] = [];
-  const max = stream === 'oper' || stream === 'wave' ? 240 : 90;
-  for (let s = 0; s <= Math.min(horizonHours, max); s += s < 144 ? 3 : 6) steps.push(s);
+  for (let s = 0; s <= Math.min(horizonHours, cycle.maxStep); s += s < 144 ? 3 : 6) steps.push(s);
   return steps;
 }
 
@@ -223,12 +234,12 @@ export class EcmwfClient {
     const start = latestExpectedCycle(now, horizonHours).time;
     for (let ageH = 0; ageH <= maxAge; ageH += 6) {
       const c = cycleFor(new Date(start.getTime() - ageH * 3600_000));
-      if (opts.mainCyclesOnly && c.atmStream !== 'oper') continue;
-      const atmSteps = availableSteps(c.atmStream, horizonHours);
-      const waveSteps = availableSteps(c.waveStream, horizonHours);
+      if (opts.mainCyclesOnly && c.maxStep !== MAIN_MAX_STEP) continue;
+      const atmSteps = availableSteps(c, horizonHours);
+      const waveSteps = availableSteps(c, horizonHours);
       const lastAtm = atmSteps[atmSteps.length - 1];
       const lastWave = waveSteps[waveSteps.length - 1];
-      if (lastAtm < horizonHours && c.atmStream === 'scda') continue; // short cycle cannot cover the horizon
+      if (lastAtm < horizonHours && c.maxStep < horizonHours) continue; // 06z/18z cannot cover the horizon
       const [a, w] = await Promise.all([this.stepPublished(c, c.atmStream, lastAtm), this.stepPublished(c, c.waveStream, lastWave)]);
       if (a && w) {
         this.log(`latest complete cycle: ${c.yyyymmdd} ${c.hh}z (${c.atmStream}/${c.waveStream}) to +${lastAtm} h`);
@@ -281,11 +292,11 @@ export class EcmwfClient {
    * already cached, so a load needs no network at all.
    */
   cycleFullyCached(cycle: Cycle, horizonHours: number, atmParams: readonly string[], waveParams: readonly string[]): boolean {
-    for (const step of availableSteps(cycle.atmStream, horizonHours)) {
+    for (const step of availableSteps(cycle, horizonHours)) {
       for (const p of atmParams) if (!this.hasCached(cycle, cycle.atmStream, step, p)) return false;
     }
     if (waveParams.length) {
-      for (const step of availableSteps(cycle.waveStream, horizonHours)) {
+      for (const step of availableSteps(cycle, horizonHours)) {
         for (const p of waveParams) if (!this.hasCached(cycle, cycle.waveStream, step, p)) return false;
       }
     }

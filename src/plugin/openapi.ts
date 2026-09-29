@@ -71,7 +71,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         enum: ['precise', 'approximate'],
         default: 'precise',
         description:
-          'precise: each leg ends exactly on its waypoint; approximate: a leg ends as soon as the route enters the waypoint circle and the next leg starts there. The destination is always exact.',
+          'precise: each leg ends exactly on its waypoint; approximate: consecutive approximate waypoints are routed as one search that must pass through each waypoint circle in order (leg by leg if no branch passes them all). The destination is always exact.',
       },
       arrival_radius_m: {
         type: 'number',

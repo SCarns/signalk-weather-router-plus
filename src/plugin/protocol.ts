@@ -38,7 +38,7 @@ export interface RouteRequest {
    * radius_m overrides arrival_radius_m for that waypoint (approximate).
    */
   waypoints?: { lat: number; lon: number; radius_m?: number }[];
-  /** "precise" (default): each leg ends exactly on its waypoint; "approximate": on entering its circle. */
+  /** "precise" (default): each leg ends exactly on its waypoint; "approximate": one search through the waypoint circles. */
   precision?: 'precise' | 'approximate';
   /** Waypoint circle radius in approximate mode, metres (default 200, 0..5000, > 0 when approximate). */
   arrival_radius_m?: number;

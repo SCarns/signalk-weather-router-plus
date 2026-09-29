@@ -313,11 +313,12 @@ export class ZarrHttpStore {
    * exist (404/403 = all fill). 403 counts as missing because the only Zarr
    * source, the Copernicus Marine ARCO store, is S3 without list permission:
    * S3 answers 403, not 404, for an object that does not exist (absent land
-   * chunks in the SMOC geo layout; see smoc.test.ts). A real access failure
-   * still surfaces: the store's metadata is read with getJson, which throws
-   * on any non-200, before any chunk is requested (ArcoClient reads the
+   * chunks in the SMOC geo layout; see smoc.test.ts). Only a metadata
+   * failure surfaces: metadata is read with getJson, which throws on any
+   * non-200, before any chunk is requested (ArcoClient reads the
    * consolidated .zmetadata; arrayMeta reads .zarray, while .zattrs is
-   * optional and may fail quietly).
+   * optional and may fail quietly). A 403 on a chunk, whatever its cause,
+   * is treated as missing and decodes to an all-NaN chunk.
    */
   async chunkBytes(name: string, meta: ZarrArrayMeta, idx: number[]): Promise<Uint8Array | null> {
     const url = this.url(`${name}/${chunkKey(meta, idx)}`);

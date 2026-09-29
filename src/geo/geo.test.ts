@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  alongTrackDistanceM,
   bboxFromLonLat,
   bboxContains,
   haversineBearing,
@@ -139,4 +140,12 @@ test('chooseResolution respects the cell budget', () => {
   assert.equal(r, 0.005); // 10.2° × 15.2° at 0.002° would be 38.8M cells
   const r2 = LandMask.chooseResolution({ west: -72, south: 41, east: -70, north: 42 }, 25_000_000);
   assert.equal(r2, 0.0005);
+});
+
+test('alongTrackDistanceM: closest point along the track, negative behind the start', () => {
+  // Equator east from (0, 0): a point at (0.5, 0.01) is abreast of lon 0.5.
+  const at = alongTrackDistanceM(0, 0, 1, 0, 0.5, 0.01);
+  const half = haversineDistanceM(0, 0, 0.5, 0);
+  assert.ok(Math.abs(at - half) < 1, `${at} vs ${half}`);
+  assert.ok(alongTrackDistanceM(0, 0, 1, 0, -0.2, 0.01) < 0);
 });

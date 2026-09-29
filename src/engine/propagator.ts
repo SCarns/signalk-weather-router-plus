@@ -37,6 +37,14 @@
  *    branches survive through the passage instead of one per bin.
  * Automatic vias (Via.auto) work like user vias but are never reported as
  * route waypoints.
+ *
+ * INTO_CIRCLE_NOTE (deviation from the reference): a parent whose next
+ * user via's circle is closer than one stage step also gets one candidate
+ * on the straight line to the via, ending just inside its circle (the
+ * same hop the approximate final leg uses). Without it a branch reaches a
+ * small circle only if a full stage step happens to cross it, which
+ * fails where the course turns at the waypoint (Baja job 5e0abb0d,
+ * docs/plans/waypoints-multi-leg.md).
  */
 
 import {
@@ -44,6 +52,7 @@ import {
   haversineBearing,
   haversineDistanceM,
   perpendicularOffsetM,
+  alongTrackDistanceM,
   projectAlongBearing,
   segmentWithinDisc,
 } from '../geo/geodesy';
@@ -527,47 +536,75 @@ export class OceanPropagator {
     const propose = (parents: Candidate[], sweepM: number, sweepDc: number, stepFactor: number): Candidate[] => {
       const nH = 2 * sweepM + 1;
       const nP = parents.length;
-      const total = nP * nH;
+      // Per parent: the heading sweep, plus one hop into the next user
+      // waypoint's circle when that circle is closer than one step
+      // (INTO_CIRCLE_NOTE). hopDist[p] = 0: no hop.
+      const pStep = new Float64Array(nP);
+      const pTgt: [number, number][] = [];
+      const hopDist = new Float64Array(nP);
+      const hopBrg = new Float64Array(nP);
+      let total = 0;
+      for (let p = 0; p < nP; p++) {
+        const par = parents[p];
+        const sf = stepFor(par.lon, par.lat);
+        pStep[p] = sf.step * stepFactor;
+        pTgt.push(targetForParent(sf.idx, sf.step));
+        total += nH;
+        if (par.viaCount < nVias) {
+          const g = goals[par.viaCount];
+          if (!g.auto) {
+            const d = haversineDistanceM(par.lon, par.lat, g.lon, g.lat);
+            const hop = d - g.radiusM + Math.min(1, 0.001 * g.radiusM);
+            if (d > g.radiusM && hop < pStep[p]) {
+              hopDist[p] = hop;
+              hopBrg[p] = haversineBearing(par.lon, par.lat, g.lon, g.lat);
+              total++;
+            }
+          }
+        }
+      }
       const pIdx = new Int32Array(total);
       const hdg = new Float64Array(total);
+      const dist = new Float64Array(total);
       const cLon = new Float64Array(total);
       const cLat = new Float64Array(total);
       const pLon = new Float64Array(total);
       const pLat = new Float64Array(total);
-      const pStep = new Float64Array(nP);
+      const pCount = new Int32Array(nP);
       let q = 0;
+      const push = (p: number, b: number, d: number): void => {
+        const par = parents[p];
+        const [x, y] = projectAlongBearing(par.lon, par.lat, b, d);
+        pIdx[q] = p;
+        hdg[q] = b;
+        dist[q] = d;
+        cLon[q] = x;
+        cLat[q] = y;
+        pLon[q] = par.lon;
+        pLat[q] = par.lat;
+        q++;
+      };
       for (let p = 0; p < nP; p++) {
         const par = parents[p];
-        const sf = stepFor(par.lon, par.lat);
-        const stepM = sf.step * stepFactor;
-        pStep[p] = stepM;
-        const tgt = targetForParent(sf.idx, sf.step);
+        const tgt = pTgt[p];
         const b0 = haversineBearing(par.lon, par.lat, tgt[0], tgt[1]);
-        for (let h = -sweepM; h <= sweepM; h++) {
-          const b = (((b0 + h * sweepDc) % 360) + 360) % 360;
-          const [x, y] = projectAlongBearing(par.lon, par.lat, b, stepM);
-          pIdx[q] = p;
-          hdg[q] = b;
-          cLon[q] = x;
-          cLat[q] = y;
-          pLon[q] = par.lon;
-          pLat[q] = par.lat;
-          q++;
-        }
+        for (let h = -sweepM; h <= sweepM; h++) push(p, (((b0 + h * sweepDc) % 360) + 360) % 360, pStep[p]);
+        if (hopDist[p] > 0) push(p, hopBrg[p], hopDist[p]);
+        pCount[p] = nH + (hopDist[p] > 0 ? 1 : 0);
       }
       const crosses = this.landMask.legsCrossLandBulk(pLon, pLat, cLon, cLat, landStepM);
       const out: Candidate[] = [];
       // Group survivors by parent for batched scoring.
       let start = 0;
       for (let p = 0; p < nP; p++) {
-        const end = start + nH;
+        const end = start + pCount[p];
         const keep: number[] = [];
         for (let i = start; i < end; i++) if (!crosses[i]) keep.push(i);
         start = end;
         if (keep.length === 0) continue;
         const par = parents[p];
         const bearings = new Float64Array(keep.map(i => hdg[i]));
-        const dists = new Float64Array(keep.length).fill(pStep[p]);
+        const dists = new Float64Array(keep.map(i => dist[i]));
         const sc = scoreCandidatesFromParent(
           par.lon,
           par.lat,
@@ -863,6 +900,60 @@ export class OceanPropagator {
     let sailS = 0;
     let dist = 0;
     chain.forEach((c, i) => {
+      // A user via crossed by a step that ends outside its circle: add a
+      // waypoint on that step where it passes closest to the via (same
+      // straight line, so the track is unchanged) and mark it, instead of
+      // marking the step's end up to a stage step past the waypoint.
+      let endIsVia = false;
+      if (i > 0) {
+        const par = chain[i - 1];
+        const inserts: { at: number; lon: number; lat: number }[] = [];
+        for (const vi of c.viaIdxs) {
+          const g = goals[vi];
+          if (g.auto) continue;
+          if (haversineDistanceM(c.lon, c.lat, g.lon, g.lat) <= g.radiusM) {
+            endIsVia = true;
+            continue;
+          }
+          const legM = haversineDistanceM(par.lon, par.lat, c.lon, c.lat);
+          const at = Math.min(legM, Math.max(0, alongTrackDistanceM(par.lon, par.lat, c.lon, c.lat, g.lon, g.lat)));
+          if (at <= 0 || at >= legM) {
+            endIsVia = true;
+            continue;
+          }
+          const [lon, lat] = projectAlongBearing(par.lon, par.lat, haversineBearing(par.lon, par.lat, c.lon, c.lat), at);
+          inserts.push({ at, lon, lat });
+        }
+        inserts.sort((x, y) => x.at - y.at);
+        let prevWp = { lon: par.lon, lat: par.lat, timeMs: par.timeMs };
+        for (const ins of inserts) {
+          const sim = simulateLegTime(
+            prevWp.lon,
+            prevWp.lat,
+            new Date(prevWp.timeMs),
+            ins.lon,
+            ins.lat,
+            vessel,
+            polar,
+            wind,
+            current,
+            simOpts
+          );
+          const secs = Number.isFinite(sim.seconds) && sim.seconds > 0 ? sim.seconds : 0;
+          const timeMs = Math.min(c.timeMs - 1, Math.max(prevWp.timeMs + 1, prevWp.timeMs + secs * 1000));
+          wps.push({
+            lon: ins.lon,
+            lat: ins.lat,
+            time: new Date(timeMs),
+            sogMs: c.sogMs,
+            cogDeg: c.cogDeg,
+            mode: sim.dominantMode === 'sailing' ? 'sailing' : sim.dominantMode === 'motoring' ? 'motoring' : c.mode,
+            leg: 'ocean',
+            role: 'via',
+          });
+          prevWp = { lon: ins.lon, lat: ins.lat, timeMs };
+        }
+      }
       wps.push({
         lon: c.lon,
         lat: c.lat,
@@ -871,7 +962,7 @@ export class OceanPropagator {
         cogDeg: i > 0 ? c.cogDeg : 0,
         mode: i > 0 ? c.mode : 'motoring',
         leg: 'ocean',
-        role: c.viaIdxs.some(vi => !goals[vi].auto) ? 'via' : undefined,
+        role: endIsVia ? 'via' : undefined,
       });
       if (i > 0) {
         motorS += c.motoringS;

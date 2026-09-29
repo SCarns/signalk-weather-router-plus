@@ -10,18 +10,25 @@ test('cycle naming and stream selection', () => {
   assert.equal(c00.hh, '00');
   assert.equal(c00.atmStream, 'oper');
   assert.equal(c00.waveStream, 'wave');
+  assert.equal(c00.maxStep, 360);
+  // 06z/18z are published under oper/wave too, to 144 h (data.ecmwf.int, 2026-09-29).
   const c06 = cycleFor(new Date('2026-09-27T06:00:00Z'));
-  assert.equal(c06.atmStream, 'scda');
-  assert.equal(c06.waveStream, 'scwv');
+  assert.equal(c06.atmStream, 'oper');
+  assert.equal(c06.waveStream, 'wave');
+  assert.equal(c06.maxStep, 144);
 });
 
 test('published step lists', () => {
-  assert.deepEqual(availableSteps('oper', 12), [0, 3, 6, 9, 12]);
-  const s = availableSteps('oper', 240);
-  assert.equal(s[s.length - 1], 240);
+  const main = cycleFor(new Date('2026-09-27T00:00:00Z'));
+  const short = cycleFor(new Date('2026-09-27T06:00:00Z'));
+  assert.deepEqual(availableSteps(main, 12), [0, 3, 6, 9, 12]);
+  const s = availableSteps(main, 360);
+  assert.equal(s[s.length - 1], 360);
+  assert.equal(s.length, 85, '0–144 every 3 h (49) + 150–360 every 6 h (36), as listed on data.ecmwf.int');
   assert.ok(s.includes(144) && s.includes(150) && !s.includes(147));
-  const sc = availableSteps('scda', 240);
-  assert.equal(sc[sc.length - 1], 90);
+  const sc = availableSteps(short, 360);
+  assert.equal(sc[sc.length - 1], 144);
+  assert.equal(sc.length, 49);
 });
 
 // A tiny global-style grid: 0..359 by 1°, 90..-90 by 1°, scanning north→south like ECMWF.
@@ -161,9 +168,10 @@ test('latestExpectedCycle applies the 400-minute lag and skips short cycles for 
   assert.equal(c.yyyymmdd + c.hh, '2026092712');
   // 12:00Z minus 400 min = 05:20Z → 00z cycle.
   assert.equal(latestExpectedCycle(new Date('2026-09-27T12:00:00Z'), 72).hh, '00');
-  // 14:00Z minus 400 min = 07:20Z → 06z (scda) is fine for 72 h but not for 120 h → falls back to 00z.
+  // 14:00Z minus 400 min = 07:20Z → 06z (to 144 h) is fine for 72 and 144 h but not for 150 h → falls back to 00z.
   assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 72).hh, '06');
-  assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 120).hh, '00');
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 144).hh, '06');
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 150).hh, '00');
 });
 
 test('parseRetryAfterMs handles seconds and HTTP dates', () => {

@@ -6,6 +6,25 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **06z and 18z forecast cycles were never used.** ECMWF publishes them
+  under `oper`/`wave` (0–144 h every 3 h); the plugin looked for them
+  under `scda`/`scwv`, which are now empty, so it always fell back to the
+  00z/12z cycle (brain, 27–29 Sep: only 00z/12z loaded), up to 6 h older
+  than needed. Every cycle now uses `oper`/`wave`; a 06z/18z cycle is used
+  whenever the horizon is 144 h or less.
+
+- **Approximate waypoints now carry the route through the circle**, as in
+  routePlanning: consecutive legs joined by approximate waypoints are
+  routed as one search that must pass through each waypoint circle in
+  order, instead of each leg ending at the circle and the next restarting
+  there (only the last `arrival_radius_m` of each leg differed from
+  Precise before). A branch whose next circle is closer than one stage
+  step also tries a step straight into it (not in the reference; without
+  it small circles were missed where the course turns). If no branch
+  passes every circle, the run falls back to leg-by-leg routing and the
+  log says so.
 
 ### Added
 
@@ -83,6 +102,11 @@ uses [Semantic Versioning](https://semver.org/).
   patches, down to 0.0005°, where the corridor passes a narrow passage.
 
 ### Changed
+
+- **Forecast horizon up to 360 h** (was 240 h). ECMWF's 00z/12z cycles
+  publish to 360 h (every 3 h to 144 h, then every 6 h; 85 steps, checked
+  on data.ecmwf.int). The decoded run on disk is about 3.9 GB at 360 h
+  with the extra fields.
 
 - **`sail_max` now honours the sail threshold.** The boat sails when the
   polar speed is at or above `routing.sailThreshold` (or the request's
@@ -196,6 +220,19 @@ uses [Semantic Versioning](https://semver.org/).
   on-demand list, 2026-09-28).
 
 ### Fixed
+
+- **Zooming out stalled the map (wind barbs 1.3–4.9 s per tile on brain).**
+  Every map tile's colour layers, current arrows and land mask ask the
+  data worker for a coastline raster; only 8 were kept, so a zoom-out
+  rebuilt dozens back to back (~165 ms each on the Pi; 673 builds against
+  1,573 hits in 20 minutes) and every other request queued behind them.
+  Rasters are now saved on disk (gzip, ~8 kB each, in
+  `overlay-land/coast-<fingerprint>/` of the plugin data directory, 256 MB
+  cap, least recently used pruned); 8 stay in memory as before. A box seen
+  once is read back in about 1 ms instead of being rasterised again, also
+  after a restart; a changed coastline file gets a new folder.
+  `/api/status` `overlay_land` adds `disk_hits`, `disk_writes` and
+  `disk {dir, files, bytes}`.
 
 - **The conditions popup took 14–15 s** inside the NECOFS-GOM3 area
   (brain, 72 hourly rows). Each hour predicted the tidal current for the

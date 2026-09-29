@@ -123,7 +123,7 @@ test('partial merge validates with the old ranges and enums, all-or-nothing', ()
     assert.match(e['vessel.draught'], /\[0, 30\] m/);
     assert.match(e['vessel.name'], /string/);
     assert.match(e['vessel.bogus'], /unknown setting/);
-    assert.match(e['forecast.horizon'], /\[10800, 864000\] s/);
+    assert.match(e['forecast.horizon'], /\[10800, 1296000\] s/);
     assert.match(e['forecast.refreshInterval'], /multiple of 60/);
     assert.match(e['forecast.keepCycles'], /whole number/);
     assert.match(e['currents.rtofsRegion'], /one of west_atl, west_conus/);

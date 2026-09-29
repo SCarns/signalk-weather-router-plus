@@ -33,8 +33,9 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
 
 ## Data
 
-- **Forecast:** ECMWF IFS 0.25° open data, `oper`/`wave` streams
-  (00z/12z) or `scda`/`scwv` (06z/18z). Fields: `10u`, `10v`, `msl`,
+- **Forecast:** ECMWF IFS 0.25° open data, `oper`/`wave` streams for every
+  cycle: 00z/12z to 360 h (every 3 h to 144 h, then every 6 h), 06z/18z to
+  144 h. Fields: `10u`, `10v`, `msl`,
   `swh`, `mwp`, `mwd`. Only those fields are fetched (byte-range
   requests against the published `.index` files, roughly 4.7 MB per
   step instead of 140 MB) and cached on disk under the plugin's data
@@ -308,8 +309,9 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   the course). Drag any pin to move it. Holding on a computed route pins
   that point as a waypoint.
 - **Waypoint behaviour** (Setup tab): **Precision** Precise (each leg
-  ends exactly at its waypoint) or Approximate (a leg ends on entering
-  the circle around the waypoint and the next leg starts there), and
+  ends exactly at its waypoint) or Approximate (one search carries the
+  route through the circle around each waypoint instead of stopping at
+  it), and
   **Waypoint radius** 50–2000 m, default 200 (Approximate only). See
   [Waypoints](#waypoints-legs).
 - **Layers** (Base / Weather / Water): each layer is named for the
@@ -407,20 +409,31 @@ never `role: "via"`). Progress messages are prefixed `leg 2/4: …`.
 - **`precise`** (default): exactly on the waypoint (a straight final leg
   from the last stage to the point, checked against land and simulated
   like the final leg to the destination).
-- **`approximate`**: as soon as the route enters the waypoint's circle
-  (`arrival_radius_m`, default 200 m, or the waypoint's own `radius_m`):
-  the leg stops when a branch is inside the circle; if the search instead
-  stops within one stage step of the waypoint (the reference's fallback),
-  the straight final leg goes only as far as the circle. The next leg
-  starts where the route entered the circle.
+- **`approximate`**: the route only has to pass through the waypoint's
+  circle (`arrival_radius_m`, default 200 m, or the waypoint's own
+  `radius_m`). As in the reference (`hybrid.py`, collapsed ocean runs),
+  consecutive legs joined by approximate waypoints are routed as **one
+  search** from the run's start to its end, with each waypoint circle as
+  a via the winning branch must pass through in order. The track carries
+  on through the waypoint instead of ending there and restarting, and the
+  point where it passes the circle carries `role: "via"`. Progress
+  messages for such a run read `legs 1–3/3: … through 2 waypoint
+  circle(s) … in one search`.
 
 The final destination is always exact. Routes without waypoints are one
-leg, unchanged. Where this differs from the reference: its next leg
-starts from the canonical waypoint and the stitch trims the points inside
-the circle; here the next leg starts at the circle entry, so the track is
-continuous. The reference's merging of consecutive approximate ocean legs
-into one search with via discs is not ported (that single search with
-discs is what failed on routes with waypoints before).
+leg, unchanged. Where this differs from the reference:
+- after a precise waypoint the next leg starts where the previous one
+  ended (the reference restarts from the canonical waypoint and trims the
+  stitch), so the track is continuous;
+- a branch whose next waypoint circle is closer than one stage step also
+  gets a candidate that steps straight into the circle. Without it a
+  branch reaches a small circle only if a full stage step (tens of km)
+  happens to cross it, which failed where the course turns at a waypoint
+  (the Baja route in `docs/plans/waypoints-multi-leg.md`);
+- if a one-search run still finds no branch through every circle, that
+  run's legs are routed one by one (each ends on entering its circle and
+  the next starts there) and the log says so, instead of the route
+  failing.
 
 The forecast area and the CMEMS SMOC area are read per leg (the leg's
 corridor box plus the margin) and released after the leg; everything is
@@ -547,7 +560,7 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 | Group | Settings (default) | A change… |
 |---|---|---|
 | `vessel` | name, draught (1.8 m), air draft (16 m), LOA (11 m), beam (3.7 m), under-keel margin (0.5 m), overhead margin (1 m), speed under power (6 kt = 3.087 m/s), max wave height (none), tack penalty (30 s), polar performance (1 = 100%, 0.3–1.2) | applies to the next route |
-| `forecast` | horizon (72 h = 259200 s, 3–240 h), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
+| `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
 | `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (on), shortcut may be slower by (0.05 = 5%), finished routes kept (50) | applies to the next route |
@@ -864,7 +877,7 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `start` | `{lat, lon}` | degrees | required | both numbers |
 | `end` | `{lat, lon}` | degrees | required | both numbers; always reached exactly |
 | `waypoints` | array of `{lat, lon, radius_m?}` | degrees, m | none | at most 20; each ends one leg and starts the next ([Waypoints](#waypoints-legs)). `radius_m` 0..5000, overrides `arrival_radius_m` for that waypoint, and must be > 0 with `"approximate"` |
-| `precision` | `"precise"` or `"approximate"` | | `"precise"` | `precise`: each leg ends exactly on its waypoint; `approximate`: a leg ends on entering the waypoint's circle |
+| `precision` | `"precise"` or `"approximate"` | | `"precise"` | `precise`: each leg ends exactly on its waypoint; `approximate`: the route only has to pass through the waypoint's circle; consecutive approximate waypoints are normally routed as one search through their circles in order, and leg by leg when no branch passes through all of them |
 | `arrival_radius_m` | number | m | 200 | 0..5000; must be > 0 with `"approximate"`. Ignored in precise mode and for the destination |
 | `departure` | string | ISO 8601 | now | an empty string also means now |
 | `mode` | `"sail_max"`, `"fastest"` or `"motor"` | | `"sail_max"` | mode policy. `motor`: always motor, and no forecast is used; `fastest`: sail when the polar speed beats the motor speed; `sail_max`: sail when the polar speed is at or above `sail_thresh_ms`, otherwise motor (`src/engine/legsim.ts`). The parent routePlanning server also sails above 0.25 m/s VMG or 1.0 m/s whatever the threshold; this plugin does not |

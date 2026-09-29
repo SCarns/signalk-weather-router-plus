@@ -33,7 +33,7 @@
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
-import { availableSteps, ATM_PARAMS, WAVE_PARAMS, cycleFor } from '../data/ecmwf';
+import { availableSteps, ATM_PARAMS, WAVE_PARAMS, MAIN_MAX_STEP } from '../data/ecmwf';
 import { streamingDecodeBytes } from '../data/loader';
 
 /** Bytes of one global field for one step (Float32, 0.25°). */
@@ -41,8 +41,9 @@ export const FIELD_STEP_BYTES = 1440 * 721 * 4;
 export const EXTRA_FIELD_COUNT = 5;
 
 /** Bytes of a decoded run (on disk) for a horizon and field set: steps × fields × one global grid. */
-export function forecastBytes(horizonHours: number, extraFields: boolean, now = new Date()): number {
-  const steps = availableSteps(cycleFor(now).atmStream, horizonHours).length;
+export function forecastBytes(horizonHours: number, extraFields: boolean): number {
+  // The longest schedule (a 00z/12z cycle), so the estimate never falls short.
+  const steps = availableSteps({ maxStep: MAIN_MAX_STEP }, horizonHours).length;
   return steps * fieldsPerStep(extraFields) * FIELD_STEP_BYTES;
 }
 
@@ -150,11 +151,10 @@ export function checkDecodeResources(
   headroomBytes: number,
   dir: string | null,
   available: { bytes: number; source: string } = availableMemory(),
-  disk: number | null = dir ? availableDisk(dir) : null,
-  now = new Date()
+  disk: number | null = dir ? availableDisk(dir) : null
 ): MemoryCheck {
   const need = streamingDecodeBytes(fieldsPerStep(extraFields));
-  const runBytes = forecastBytes(horizonHours, extraFields, now);
+  const runBytes = forecastBytes(horizonHours, extraFields);
   const memOk = need + headroomBytes <= available.bytes;
   const diskOk = disk === null || runBytes + DISK_RESERVE_BYTES <= disk;
   const diskText = disk === null ? 'free disk space unknown' : `${mb(disk)} disk free`;
@@ -162,7 +162,7 @@ export function checkDecodeResources(
   if (!memOk) {
     message = `not enough memory: ${message}. Free memory or lower the memory headroom setting (Settings tab).`;
   } else if (!diskOk) {
-    const fits = (h: number, x: boolean): boolean => forecastBytes(h, x, now) + DISK_RESERVE_BYTES <= disk!;
+    const fits = (h: number, x: boolean): boolean => forecastBytes(h, x) + DISK_RESERVE_BYTES <= disk!;
     const options: string[] = [];
     if (extraFields && fits(horizonHours, false)) options.push('turn off the extra fields');
     for (const h of [120, 96, 72, 48, 24, 12]) {

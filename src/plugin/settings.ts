@@ -303,10 +303,10 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     unit: 's',
     quantity: 'hours',
     min: 3 * H,
-    max: 240 * H,
+    max: 360 * H,
     multipleOf: H,
     default: 72 * H,
-    help: 'How far ahead the forecast reaches. Changing it decodes the forecast again; the decoded run on disk grows with it (about 1.1 GB for 72 h with the extra fields), memory does not.',
+    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to 360 h, 06z/18z runs to 144 h, so above 144 h only 00z/12z runs are used). Changing it decodes the forecast again; the decoded run on disk grows with it (about 1.1 GB for 72 h and 3.9 GB for 360 h with the extra fields), memory does not.',
     reload: 'forecast',
   },
   {

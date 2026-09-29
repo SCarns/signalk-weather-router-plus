@@ -53,8 +53,8 @@ import { releaseMemory } from '../util/gc';
 import { NoCurrent, NoWind, type CurrentSource } from '../engine/environment';
 import { enrichWaypoints, OceanPropagator, RouteCancelled, ViasNotCrossedError } from '../engine/propagator';
 import { rdpSimplify, recomputeTotals, revalidateLand, shortcutSmoother } from '../engine/smoother';
-import { CorridorError, mergeVias, planCorridor, type Corridor } from '../engine/corridor';
-import { DEFAULT_PRECISION, routeMultiLeg, validateLegOptions, type LegPlan, type Stop } from '../engine/multileg';
+import { CorridorError, mergeVias, planCorridor, type ChainVia, type Corridor } from '../engine/corridor';
+import { DEFAULT_PRECISION, legLabel, routeMultiLeg, validateLegOptions, type LegPlan, type Stop } from '../engine/multileg';
 import { WaterGrid } from '../geo/watergrid';
 import { chooseWaterGrid } from '../geo/watergrid_store';
 import type { GridBuilderData, GridBuilderMessage } from './gridbuilder';
@@ -667,7 +667,7 @@ function wantedParams(cfg: ResolvedConfig): string[] {
 function runFitsConfig(r: DecodedRun, cfg: ResolvedConfig): boolean {
   const want = wantedParams(cfg);
   const have = r.index.request.params;
-  const steps = availableSteps(cycleFor(r.cycleTime).atmStream, cfg.forecast.horizonHours);
+  const steps = availableSteps(cycleFor(r.cycleTime), cfg.forecast.horizonHours);
   return (
     want.length === have.length &&
     want.every((p, i) => p === have[i]) &&
@@ -1039,14 +1039,15 @@ async function route(id: string, request: RouteRequest): Promise<void> {
         return await legRoute(plan, legStart, legDeparture);
       } catch (err) {
         if (multi && err instanceof Error && !(err instanceof RouteCancelled) && !shouldCancel())
-          err.message = `leg ${plan.index + 1}/${plan.count}: ${err.message}`;
+          err.message = `${legLabel(plan)}: ${err.message}`;
         throw err;
       }
     };
     const legRoute = async (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> => {
       const legEnd = plan.end;
-      const chain: [number, number][] = [legStart, legEnd];
-      const tag = multi ? `leg ${plan.index + 1}/${plan.count} ` : '';
+      // A collapsed approximate run passes through its waypoint circles (plan.vias).
+      const chain: [number, number][] = [legStart, ...plan.vias.map(v => [v.lon, v.lat] as [number, number]), legEnd];
+      const tag = multi ? `${legLabel(plan)} ` : '';
       // Corridor from the global water grid: its box (not the endpoints') sets
       // the land raster, SMOC area and forecast crop.
       let corridor: Corridor | null = null;
@@ -1106,7 +1107,8 @@ async function route(id: string, request: RouteRequest): Promise<void> {
         headingIncrementDeg: cfg.routing.headingIncrementDeg,
       });
       const t = Date.now();
-      const autoVias = corridor ? mergeVias([], corridor.autoVias) : [];
+      const vias: ChainVia[] = corridor ? mergeVias(plan.vias, corridor.autoVias) : plan.vias;
+      const hasAuto = vias.some(v => v.auto);
       const legWind: ForecastStore | null = wind;
       const legArgs = {
         start: legStart,
@@ -1119,7 +1121,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
         modePolicy: request.mode ?? 'sail_max',
         sailThreshMs: request.sail_thresh_ms ?? cfg.routing.sailThreshMs,
         simStepM: cfg.routing.simStepM,
-        vias: autoVias.length ? autoVias : undefined,
+        vias: vias.length ? vias : undefined,
         corridor: corridor ? { skeleton: corridor.skeleton, widthM: corridor.widthM } : undefined,
         arrivalRadiusM: plan.arrivalRadiusM,
         snapToExact: plan.snapToExact,
@@ -1132,14 +1134,18 @@ async function route(id: string, request: RouteRequest): Promise<void> {
       } catch (err) {
         // The corridor's automatic vias are only guidance: when the search
         // finds another passage (e.g. The Race instead of the gap past
-        // Gardiners Island) no branch crosses them. Retry without them.
-        if (!(err instanceof ViasNotCrossedError) || !autoVias.length) throw err;
+        // Gardiners Island) no branch crosses them. Retry without them,
+        // keeping the waypoint circles of a collapsed run.
+        if (!(err instanceof ViasNotCrossedError) || !hasAuto) throw err;
         progress(
           0,
           0,
-          `${tag}no branch went through the auto via(s) at ${autoVias.map(v => v.name ?? 'a narrow passage').join(', ')}; routing again without them`
+          `${tag}no branch went through the auto via(s) at ${vias
+            .filter(v => v.auto)
+            .map(v => v.name ?? 'a narrow passage')
+            .join(', ')}; routing again without them`
         );
-        r = prop.computeRoute({ ...legArgs, vias: undefined });
+        r = prop.computeRoute({ ...legArgs, vias: plan.vias.length ? plan.vias : undefined });
       }
       // Simplification (parent order: RDP, then the shortcut smoother).
       const simplifyM = request.simplify_m ?? cfg.routing.simplifyM;
@@ -1176,7 +1182,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
           progress(
             0,
             0,
-            `WARNING: ${multi ? `leg ${plan.index + 1} ` : ''}arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`
+            `WARNING: ${multi ? `${legLabel(plan)} ` : ''}arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`
           );
         }
       }
@@ -1499,7 +1505,14 @@ async function handle(msg: MainToWorker): Promise<void> {
         log('info', 'no polar configured: routes will be motor-only');
       }
       if (config.landShapefiles.length === 0) throw new Error('no land shapefile configured');
-      overlayLand = role === 'data' ? new OnDemandLand(config.landShapefiles, { log: m => log('debug', m) }) : null;
+      overlayLand =
+        role === 'data'
+          ? new OnDemandLand(config.landShapefiles, {
+              log: m => log('debug', m),
+              // Rasters saved on disk: a map box seen once is never rasterised again.
+              cacheDir: cacheRoot ? path.join(cacheRoot, 'overlay-land') : undefined,
+            })
+          : null;
       smocClient = makeSmocClient(config);
       smoc = null;
       seaLevelClient = makeSeaLevelClient(config);

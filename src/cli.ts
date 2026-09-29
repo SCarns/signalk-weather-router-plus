@@ -11,8 +11,8 @@
  * `--no-forecast` runs with calm wind (motor timing only).
  * Waypoints: `--via "lat,lon[@radius_m];lat,lon"`; each waypoint ends one
  * leg and starts the next. `--precision precise|approximate` (default
- * precise: each leg ends exactly on its waypoint; approximate: on entering
- * its circle), `--radius <m>` the circle (default 200; @radius overrides
+ * precise: each leg ends exactly on its waypoint; approximate: one search
+ * through the waypoint circles), `--radius <m>` the circle (default 200; @radius overrides
  * it per waypoint).
  * The corridor comes from the global water grid (data/water-grid-0.02.bin.gz
  * by default; `--water-grid <file>` for another, `--no-water-grid` for the
@@ -25,7 +25,7 @@ import { EcmwfClient, ECMWF_MIRRORS } from './data/ecmwf';
 import { bboxFromLonLat } from './geo/geodesy';
 import { LandMask } from './geo/landmask';
 import { OceanPropagator } from './engine/propagator';
-import { routeMultiLeg, validateLegOptions, type LegPlan, type Precision, type Stop } from './engine/multileg';
+import { legLabel, routeMultiLeg, validateLegOptions, type LegPlan, type Precision, type Stop } from './engine/multileg';
 import { CorridorError, mergeVias, planCorridor, type Corridor } from './engine/corridor';
 import { WaterGrid } from './geo/watergrid';
 import { chooseWaterGrid } from './geo/watergrid_store';
@@ -134,8 +134,9 @@ async function main(): Promise<void> {
 
   // Waypoints are leg ends (engine/multileg.ts); each leg is its own route.
   const runLeg = async (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> => {
-    const tag = multi ? `leg ${plan.index + 1}/${plan.count} ` : '';
-    const chain: [number, number][] = [legStart, plan.end];
+    const tag = multi ? `${legLabel(plan)} ` : '';
+    // A collapsed approximate run passes through its waypoint circles (plan.vias).
+    const chain: [number, number][] = [legStart, ...plan.vias.map(v => [v.lon, v.lat] as [number, number]), plan.end];
     let corridor: Corridor | null = null;
     if (grid) {
       t = Date.now();
@@ -179,7 +180,7 @@ async function main(): Promise<void> {
     }
 
     const prop = new OceanPropagator(lm, { stages });
-    const autoVias = corridor ? mergeVias([], corridor.autoVias) : [];
+    const vias = corridor ? mergeVias(plan.vias, corridor.autoVias) : plan.vias;
     const r = prop.computeRoute({
       start: legStart,
       end: plan.end,
@@ -188,7 +189,7 @@ async function main(): Promise<void> {
       polar,
       wind,
       modePolicy: mode,
-      vias: autoVias.length ? autoVias : undefined,
+      vias: vias.length ? vias : undefined,
       corridor: corridor ? { skeleton: corridor.skeleton, widthM: corridor.widthM } : undefined,
       arrivalRadiusM: plan.arrivalRadiusM,
       snapToExact: plan.snapToExact,

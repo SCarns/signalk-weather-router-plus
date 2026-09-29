@@ -142,6 +142,41 @@ test('OnDemandLand: raster per bbox matched to the spacing, LRU reuse, exact poi
   assert.equal(land.isLandAt(0, 0), false);
 });
 
+test('OnDemandLand: rasters saved on disk are reused by a new instance, identical to a fresh build', () => {
+  const file = fixture();
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-landcache-'));
+  const view = { west: -72, south: 40, east: -69, north: 43 };
+  const a = new OnDemandLand([file], { cacheDir });
+  const built = a.forBBox(view, 0.05);
+  assert.equal(a.stats().builds, 1);
+  assert.equal(a.stats().disk_writes, 1);
+  assert.equal(a.stats().disk.files, 1);
+  // A new instance (as after a restart) reads it back instead of rasterising.
+  const b = new OnDemandLand([file], { cacheDir });
+  const loaded = b.forBBox(view, 0.05);
+  assert.equal(b.stats().builds, 0);
+  assert.equal(b.stats().disk_hits, 1);
+  assert.equal(loaded.resolutionDeg, built.resolutionDeg);
+  assert.deepEqual(loaded.bbox, built.bbox);
+  assert.deepEqual(loaded.serializeRaster().raster, built.serializeRaster().raster);
+  // A changed coastline file gets a different folder: nothing stale is reused.
+  fs.appendFileSync(file, Buffer.alloc(0));
+  const later = new Date(Date.now() + 5000);
+  fs.utimesSync(file, later, later);
+  const c = new OnDemandLand([file], { cacheDir });
+  c.forBBox(view, 0.05);
+  assert.equal(c.stats().builds, 1);
+  assert.equal(c.stats().disk_hits, 0);
+  // The disk budget prunes least recently used rasters.
+  const pruneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-landcache-'));
+  const d = new OnDemandLand([file], { cacheDir: pruneDir, diskBudgetBytes: 1 });
+  for (let i = 0; i < 15; i++) d.forBBox({ west: -170 + i * 20, south: 0, east: -165 + i * 20, north: 5 }, 0.05);
+  assert.equal(d.stats().disk.files, 15, 'no prune before the 16th write');
+  d.forBBox({ west: 150, south: 0, east: 155, north: 5 }, 0.05); // 16th write → prune to the 1-byte budget
+  assert.equal(d.stats().disk_writes, 16);
+  assert.equal(d.stats().disk.files, 0);
+});
+
 test('overlay land resolution respects the cell budget and snapping is outward', () => {
   assert.equal(chooseOverlayResolution({ west: -80, south: 20, east: -40, north: 60 }, 0.2, 4_000_000), 0.05);
   // A whole-world request at fine spacing is coarsened to fit.

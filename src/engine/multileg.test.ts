@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { LandMask } from '../geo/landmask';
 import type { ShapePolygon } from '../geo/shapefile';
 import { haversineDistanceM } from '../geo/geodesy';
-import { OceanPropagator } from './propagator';
-import { planLegs, routeMultiLeg, stitchLegs, validateLegOptions, type LegPlan } from './multileg';
+import { OceanPropagator, ViasNotCrossedError } from './propagator';
+import { collapseRuns, planLegs, routeMultiLeg, stitchLegs, validateLegOptions, type LegPlan } from './multileg';
 import type { Route, Waypoint } from './route';
 import { makeVessel } from '../vessel/vessel';
 
@@ -84,6 +84,31 @@ test('planLegs: precise legs are exact; approximate intermediate legs use the ci
       300
     ).map(l => l.snapToExact),
     [true]
+  );
+});
+
+test('collapseRuns: approximate waypoints join their legs into one run with circle vias; precise legs stay apart', () => {
+  const stops = [
+    { lon: 0, lat: 0 },
+    { lon: 1, lat: 0 },
+    { lon: 1, lat: 1, radiusM: 750 },
+    { lon: 2, lat: 1 },
+  ];
+  const a = collapseRuns(planLegs(stops, 'approximate', 300));
+  assert.equal(a.length, 1);
+  assert.deepEqual([a[0].index, a[0].lastIndex, a[0].count, a[0].snapToExact, a[0].end], [0, 2, 3, true, [2, 1]]);
+  assert.deepEqual(a[0].vias, [
+    { lon: 1, lat: 0, radiusM: 300 },
+    { lon: 1, lat: 1, radiusM: 750 },
+  ]);
+  const p = collapseRuns(planLegs(stops, 'precise', 300));
+  assert.deepEqual(
+    p.map(l => [l.index, l.lastIndex, l.vias.length]),
+    [
+      [0, 0, 0],
+      [1, 1, 0],
+      [2, 2, 0],
+    ]
   );
 });
 
@@ -187,6 +212,7 @@ function legRunner(prop: OceanPropagator) {
       modePolicy: 'motor',
       arrivalRadiusM: leg.arrivalRadiusM,
       snapToExact: leg.snapToExact,
+      vias: leg.vias.length ? leg.vias : undefined,
     });
 }
 
@@ -209,27 +235,33 @@ test('precise: every leg ends exactly on its waypoint; the route passes through 
   for (let i = 1; i < r.waypoints.length; i++) assert.ok(r.waypoints[i].time > r.waypoints[i - 1].time);
 });
 
-test('approximate: an intermediate leg ends inside the circle, the next leg starts there, the last leg is exact', async () => {
+// A hairpin: out to (0.6, 0.1), back to (0.5, 0.45) with a reversal.
+const HAIRPIN = [
+  { lon: 0, lat: 0 },
+  { lon: 0.6, lat: 0.1 },
+  { lon: 0.5, lat: 0.45, radiusM: 900 },
+  { lon: 1, lat: 0.5 },
+];
+
+test('approximate: one search passes through every waypoint circle; the destination is exact', async () => {
   const prop = new OceanPropagator(LM, { stages: 10, subsectors: 20, headings: 30 });
-  // A hairpin: out to (0.6, 0.1), back to (0.5, 0.45) with a reversal.
-  const stops = [
-    { lon: 0, lat: 0 },
-    { lon: 0.6, lat: 0.1 },
-    { lon: 0.5, lat: 0.45, radiusM: 900 },
-    { lon: 1, lat: 0.5 },
-  ];
-  const starts: [number, number][] = [];
+  const plans: LegPlan[] = [];
   const run = legRunner(prop);
   const r = await routeMultiLeg({
-    stops,
+    stops: HAIRPIN,
     departureTime: T0,
     precision: 'approximate',
     arrivalRadiusM: 500,
     runLeg: (leg, start, dep) => {
-      starts.push(start);
+      plans.push(leg);
       return run(leg, start, dep);
     },
   });
+  // Collapsed: one search from start to end with both circles as vias.
+  assert.deepEqual(
+    plans.map(l => [l.index, l.lastIndex, l.vias.length]),
+    [[0, 2, 2]]
+  );
   const vias = r.waypoints.filter(w => w.role === 'via');
   assert.equal(vias.length, 2);
   const d0 = haversineDistanceM(vias[0].lon, vias[0].lat, 0.6, 0.1);
@@ -237,7 +269,35 @@ test('approximate: an intermediate leg ends inside the circle, the next leg star
   assert.ok(d0 <= 500, `first via ${d0} m from its waypoint (radius 500)`);
   // Per-waypoint radius override (900 m).
   assert.ok(d1 <= 900, `second via ${d1} m from its waypoint (radius 900)`);
-  // Next leg starts where the previous ended.
+  const last = r.waypoints[r.waypoints.length - 1];
+  assert.ok(haversineDistanceM(last.lon, last.lat, 1, 0.5) < 0.01, 'last leg must be exact');
+  for (let i = 1; i < r.waypoints.length; i++) assert.ok(r.waypoints[i].time > r.waypoints[i - 1].time);
+});
+
+test('approximate: when no branch passes every circle, the run is routed leg by leg', async () => {
+  const prop = new OceanPropagator(LM, { stages: 10, subsectors: 20, headings: 30 });
+  const starts: [number, number][] = [];
+  const messages: string[] = [];
+  const run = legRunner(prop);
+  const r = await routeMultiLeg({
+    stops: HAIRPIN,
+    departureTime: T0,
+    precision: 'approximate',
+    arrivalRadiusM: 500,
+    onProgress: m => messages.push(m),
+    runLeg: (leg, start, dep) => {
+      if (leg.vias.length) throw new ViasNotCrossedError('no branch crossed all 2 via(s)');
+      starts.push(start);
+      return run(leg, start, dep);
+    },
+  });
+  assert.ok(messages.some(m => m.includes('routing these legs one by one')));
+  assert.equal(starts.length, 3);
+  const vias = r.waypoints.filter(w => w.role === 'via');
+  assert.equal(vias.length, 2);
+  assert.ok(haversineDistanceM(vias[0].lon, vias[0].lat, 0.6, 0.1) <= 500);
+  assert.ok(haversineDistanceM(vias[1].lon, vias[1].lat, 0.5, 0.45) <= 900);
+  // Each leg starts where the previous one ended.
   assert.deepEqual(starts[1], [vias[0].lon, vias[0].lat]);
   assert.deepEqual(starts[2], [vias[1].lon, vias[1].lat]);
   const last = r.waypoints[r.waypoints.length - 1];

@@ -87,6 +87,21 @@ export function perpendicularOffsetM(sLon: number, sLat: number, eLon: number, e
  * of (vLon, vLat)? Segment test, not endpoint test: cross-track plus
  * along-track, with the endpoints checked first.
  */
+/**
+ * Along-track distance from (lon1, lat1), on the great circle towards
+ * (lon2, lat2), of the point closest to (pLon, pLat), metres (Aviation
+ * Formulary; negative when the point is behind the start).
+ */
+export function alongTrackDistanceM(lon1: number, lat1: number, lon2: number, lat2: number, pLon: number, pLat: number): number {
+  const d1pAng = haversineDistanceM(lon1, lat1, pLon, pLat) / R_EARTH_M;
+  const dBrg = (haversineBearing(lon1, lat1, pLon, pLat) - haversineBearing(lon1, lat1, lon2, lat2)) * DEG;
+  const xtAng = Math.asin(Math.max(-1, Math.min(1, Math.sin(d1pAng) * Math.sin(dBrg))));
+  const cosXt = Math.cos(xtAng);
+  if (Math.abs(cosXt) < 1e-12) return 0;
+  const at = Math.acos(Math.max(-1, Math.min(1, Math.cos(d1pAng) / cosXt))) * R_EARTH_M;
+  return Math.cos(dBrg) < 0 ? -at : at;
+}
+
 export function segmentWithinDisc(lon1: number, lat1: number, lon2: number, lat2: number, vLon: number, vLat: number, rM: number): boolean {
   const d1 = haversineDistanceM(lon1, lat1, vLon, vLat);
   if (d1 <= rM) return true;

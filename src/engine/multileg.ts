@@ -17,17 +17,24 @@
  *    1037–1075, snap_to_exact=False); the next leg starts from that point.
  *    The final destination is always exact.
  *
- * Difference from the reference: its next leg starts from the canonical
- * waypoint (hybrid.py: leg_start = stops_lonlat[leg_idx]) and the stitch
- * then trims the points inside the circle; here the next leg starts
- * where the previous one ended, so the stitched track is continuous and
- * the junction point is the circle entry itself. The reference's
- * collapse of consecutive approximate ocean legs into one propagator run
- * with via discs (hybrid.py ~1336) is not ported: that is the single
- * search with discs that failed here.
+ * Consecutive approximate legs are collapsed into one run (hybrid.py
+ * lines 1336–1446): one search from the run's start to its end that must
+ * pass through each intermediate waypoint's circle (propagator vias), so
+ * the track carries through a waypoint instead of ending and restarting
+ * there. Every plugin leg is an ocean-propagator leg, so every approximate
+ * boundary collapses.
+ *
+ * Differences from the reference:
+ *  - a leg after a precise waypoint starts where the previous one ended
+ *    (the reference restarts from the canonical waypoint and trims the
+ *    stitch), so the stitched track is continuous;
+ *  - when a collapsed run finds no branch through every circle, its legs
+ *    are routed one by one (approximate ends as above) instead of failing
+ *    the route.
  */
 
 import { haversineDistanceM } from '../geo/geodesy';
+import { ViasNotCrossedError } from './propagator';
 import { recomputePerWaypointMetadata, type Route, type RouteWarning } from './route';
 
 export type Precision = 'precise' | 'approximate';
@@ -45,10 +52,14 @@ export interface Stop {
 }
 
 export interface LegPlan {
-  /** 0-based leg index. */
+  /** 0-based index of the (first) leg. */
   index: number;
+  /** 0-based index of the last leg this plan covers (> index for a collapsed run). */
+  lastIndex: number;
   /** Number of legs. */
   count: number;
+  /** Waypoint circles the run must pass through, in order (empty for a single leg). */
+  vias: { lon: number; lat: number; radiusM: number }[];
   /** The leg's target (the next stop). */
   end: [number, number];
   /** true: the leg ends exactly on `end`; false: on entering the circle of radius arrivalRadiusM. */
@@ -100,9 +111,49 @@ export function planLegs(stops: Stop[], precision: Precision = DEFAULT_PRECISION
     const last = i === count - 1;
     const r = to.radiusM ?? arrivalRadiusM;
     const approx = precision === 'approximate' && !last && r > 0;
-    out.push({ index: i, count, end: [to.lon, to.lat], snapToExact: !approx, arrivalRadiusM: approx ? r : undefined });
+    out.push({
+      index: i,
+      lastIndex: i,
+      count,
+      vias: [],
+      end: [to.lon, to.lat],
+      snapToExact: !approx,
+      arrivalRadiusM: approx ? r : undefined,
+    });
   }
   return out;
+}
+
+/**
+ * Collapse maximal runs of legs joined by approximate waypoints into one
+ * plan each (hybrid.py ~1336): the run ends where its last leg ends, and
+ * each inner waypoint becomes a via with its circle radius.
+ */
+export function collapseRuns(plans: LegPlan[]): LegPlan[] {
+  const out: LegPlan[] = [];
+  let i = 0;
+  while (i < plans.length) {
+    let j = i;
+    while (j + 1 < plans.length && !plans[j].snapToExact) j++;
+    if (j === i) {
+      out.push(plans[i]);
+    } else {
+      const last = plans[j];
+      out.push({
+        ...last,
+        index: plans[i].index,
+        lastIndex: last.index,
+        vias: plans.slice(i, j).map(p => ({ lon: p.end[0], lat: p.end[1], radiusM: p.arrivalRadiusM! })),
+      });
+    }
+    i = j + 1;
+  }
+  return out;
+}
+
+/** "leg 2/4" or "legs 1–3/4". */
+export function legLabel(plan: LegPlan): string {
+  return plan.lastIndex > plan.index ? `legs ${plan.index + 1}–${plan.lastIndex + 1}/${plan.count}` : `leg ${plan.index + 1}/${plan.count}`;
 }
 
 /** Same point to within ~0.1 m. */
@@ -121,7 +172,8 @@ function samePoint(a: { lon: number; lat: number }, b: { lon: number; lat: numbe
 export function stitchLegs(legs: Route[]): Route {
   if (legs.length === 0) throw new Error('no legs to stitch');
   if (legs.length === 1) return legs[0];
-  const waypoints = legs[0].waypoints.map(w => ({ ...w, role: undefined as 'via' | undefined }));
+  // Roles a leg already set (the waypoints of a collapsed run) are kept.
+  const waypoints = legs[0].waypoints.map(w => ({ ...w }));
   let totalDistanceM = legs[0].totalDistanceM;
   let motoringTimeS = legs[0].motoringTimeS;
   let sailingTimeS = legs[0].sailingTimeS;
@@ -147,7 +199,7 @@ export function stitchLegs(legs: Route[]): Route {
         totalDistanceM += haversineDistanceM(a.lon, a.lat, wps[0].lon, wps[0].lat);
       }
     }
-    for (const w of wps) waypoints.push({ ...w, role: undefined });
+    for (const w of wps) waypoints.push({ ...w });
     for (const w of leg.warnings ?? []) warnings.push({ ...w, leg_index: w.leg_index + offset });
     totalDistanceM += leg.totalDistanceM;
     motoringTimeS += leg.motoringTimeS;
@@ -193,32 +245,52 @@ export interface MultiLegArgs {
 /**
  * Route stops[0] → … → stops[n-1] leg by leg and stitch. Each leg starts
  * where the previous one ended (the waypoint in precise mode, the circle
- * entry in approximate mode) at its arrival time.
+ * entry in approximate mode) at its arrival time. Approximate runs are
+ * one search through the waypoint circles; if no branch passes through
+ * every circle, that run's legs are routed one by one.
  */
 export async function routeMultiLeg(args: MultiLegArgs): Promise<Route> {
-  const plans = planLegs(args.stops, args.precision ?? DEFAULT_PRECISION, args.arrivalRadiusM ?? DEFAULT_ARRIVAL_RADIUS_M);
+  const single = planLegs(args.stops, args.precision ?? DEFAULT_PRECISION, args.arrivalRadiusM ?? DEFAULT_ARRIVAL_RADIUS_M);
+  const plans = collapseRuns(single);
   const progress = args.onProgress ?? (() => undefined);
+  const multi = single.length > 1;
   const legs: Route[] = [];
   let start: [number, number] = [args.stops[0].lon, args.stops[0].lat];
   let departure = args.departureTime;
-  for (const plan of plans) {
-    if (plans.length > 1) {
+  const run = async (plan: LegPlan): Promise<void> => {
+    if (multi) {
+      const through = plan.vias.length
+        ? `, through ${plan.vias.length} waypoint circle(s) (${plan.vias.map(v => `${v.radiusM.toFixed(0)} m`).join(', ')}) in one search`
+        : '';
       progress(
-        `leg ${plan.index + 1}/${plan.count}: (${start[1].toFixed(4)}, ${start[0].toFixed(4)}) → (${plan.end[1].toFixed(4)}, ${plan.end[0].toFixed(4)}), departing ${departure.toISOString()}${plan.snapToExact ? ', ends exactly on the point' : `, ends on entering the ${plan.arrivalRadiusM!.toFixed(0)} m circle`}`
+        `${legLabel(plan)}: (${start[1].toFixed(4)}, ${start[0].toFixed(4)}) → (${plan.end[1].toFixed(4)}, ${plan.end[0].toFixed(4)}), departing ${departure.toISOString()}${through}${plan.snapToExact ? ', ends exactly on the point' : `, ends on entering the ${plan.arrivalRadiusM!.toFixed(0)} m circle`}`
       );
     }
     const r = await args.runLeg(plan, start, departure);
-    if (!r.waypoints.length) throw new Error(`leg ${plan.index + 1}/${plan.count} returned no waypoints`);
+    if (!r.waypoints.length) throw new Error(`${legLabel(plan)} returned no waypoints`);
     const last = r.waypoints[r.waypoints.length - 1];
-    if (plans.length > 1) {
+    if (multi) {
       const miss = haversineDistanceM(last.lon, last.lat, plan.end[0], plan.end[1]);
       progress(
-        `leg ${plan.index + 1}/${plan.count} done: ${(r.totalDistanceM / 1852).toFixed(1)} nm, ${(r.totalTimeS / 3600).toFixed(1)} h, ends ${miss.toFixed(0)} m from the ${plan.index + 1 < plan.count ? 'waypoint' : 'destination'}`
+        `${legLabel(plan)} done: ${(r.totalDistanceM / 1852).toFixed(1)} nm, ${(r.totalTimeS / 3600).toFixed(1)} h, ends ${miss.toFixed(0)} m from the ${plan.lastIndex + 1 < plan.count ? 'waypoint' : 'destination'}`
       );
     }
     legs.push(r);
     start = [last.lon, last.lat];
     departure = last.time;
+  };
+  for (const plan of plans) {
+    if (!plan.vias.length) {
+      await run(plan);
+      continue;
+    }
+    try {
+      await run(plan);
+    } catch (err) {
+      if (!(err instanceof ViasNotCrossedError)) throw err;
+      progress(`WARNING: ${legLabel(plan)}: ${err.message}; routing these legs one by one instead`);
+      for (const p of single.slice(plan.index, plan.lastIndex + 1)) await run(p);
+    }
   }
   return stitchLegs(legs);
 }

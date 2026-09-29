@@ -133,8 +133,8 @@ async function decodeSteps(
   const atmParams = [...ATM_PARAMS, ...(opts.extraAtmParams ?? [])];
   const cycle =
     opts.cycle ?? (await resolveCycle(client, opts.horizonHours, { includeWaves, extraAtmParams: opts.extraAtmParams, log })).cycle;
-  const steps = availableSteps(cycle.atmStream, opts.horizonHours);
-  const waveSteps = new Set(availableSteps(cycle.waveStream, opts.horizonHours));
+  const steps = availableSteps(cycle, opts.horizonHours);
+  const waveSteps = new Set(availableSteps(cycle, opts.horizonHours));
   // One set of decode buffers for every field (~12 MB for 0.25° global)
   // instead of fresh ones per field: a 72 h load decodes ~275 fields.
   const scratch: DecodeScratch = {};

@@ -11,8 +11,13 @@ request succeeds precise and approximate (500 m, 200 m), motor and
 sail_max; Lisbon → Palma via Cabo de São Vicente and a hairpin succeed;
 no-waypoint routes byte-identical to the installed build. Deviation from
 the reference: the next approximate leg starts at the circle entry, not
-the canonical waypoint; the collapse of approximate ocean legs into one
-via-disc search is not ported.
+the canonical waypoint.
+
+Update 2026-09-29: the collapse of consecutive approximate legs into one
+via-disc search **is now ported** (`collapseRuns` in multileg.ts), with
+two additions: an into-the-circle hop candidate in the propagator
+(INTO_CIRCLE_NOTE in propagator.ts), and a leg-by-leg fallback when no
+branch crosses every circle.
 
 ## Problem (facts)
 
