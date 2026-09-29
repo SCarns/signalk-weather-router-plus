@@ -8,7 +8,7 @@
 //      min/max (SI), multipleOf, oneOf, default, nullable, enum, help, reload.
 // PUT  /api/settings with only the changed keys ({group: {key: SI}}) →
 //      {values, changed, reloaded} or 400 {error, errors: {key: msg}}.
-// Inputs show values in the display-unit preset (Setup → Display);
+// Inputs show values in the Signal K user's unit preferences;
 // conversion happens here, the server only ever sees SI.
 (function () {
   const form = document.getElementById('srvSettingsForm');
@@ -26,20 +26,23 @@
   const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const getVal = (key) => { const [g, k] = key.split('.'); return values && values[g] ? values[g][k] : undefined; };
 
-  // Display conversion for a spec: display = si * f + off.
+  // Display conversion for a spec: display = fn(si), si = inv(display).
+  // User-unit quantities use the Signal K unit preferences (UI_UNITS).
+  const lin = (unit, f, prec) => ({ unit, fn: v => v * f, inv: d => d / f, prec });
   function convFor(spec) {
     const q = spec.quantity;
-    if (q === 'speed' || q === 'depth' || q === 'wave_height' || q === 'short_distance') {
-      const c = (typeof UI_UNITS !== 'undefined' && UI_UNITS && UI_UNITS[q]) || null;
-      if (c) return { unit: c.unit, f: c.factor, off: c.offset || 0, prec: Math.max(1, c.precision) + 1 };
-      return { unit: spec.unit || '', f: 1, off: 0, prec: 2 };
+    if (q === 'speed' || q === 'depth' || q === 'wave_height' || q === 'short_distance' || q === 'ratio') {
+      // No fallback unit: unresolved → the value shows empty and can't be saved.
+      const c = UI_UNITS[q];
+      if (c && c.inv) return { unit: c.unit, fn: c.fn, inv: c.inv, prec: Math.max(1, c.precision) + 1 };
+      return { unit: UNIT_MISSING, fn: () => NaN, inv: () => NaN, prec: 0, missing: true };
     }
-    if (q === 'hours') return { unit: 'h', f: 1 / 3600, off: 0, prec: 0 };
-    if (q === 'minutes') return { unit: 'min', f: 1 / 60, off: 0, prec: 0 };
-    if (q === 'seconds') return { unit: 's', f: 1, off: 0, prec: 0 };
-    if (q === 'megabytes') return { unit: 'MB', f: 1e-6, off: 0, prec: 0 };
-    if (q === 'angle') return { unit: '°', f: 1, off: 0, prec: 2 };
-    return { unit: spec.unit || '', f: 1, off: 0, prec: spec.type === 'integer' ? 0 : 3 };
+    if (q === 'hours') return lin('h', 1 / 3600, 0);
+    if (q === 'minutes') return lin('min', 1 / 60, 0);
+    if (q === 'seconds') return lin('s', 1, 0);
+    if (q === 'megabytes') return lin('MB', 1e-6, 0);
+    if (q === 'angle') return lin('°', 1, 2);
+    return lin(spec.unit || '', 1, spec.type === 'integer' ? 0 : 3);
   }
   function fmtNum(v, prec) {
     if (v === null || v === undefined || !Number.isFinite(v)) return '';
@@ -50,7 +53,7 @@
   function textFor(spec, si, conv) {
     if (spec.type === 'boolean') return si ? 'true' : 'false';
     if (spec.type === 'string' || spec.type === 'enum') return si == null ? '' : String(si);
-    return fmtNum(si == null ? null : si * conv.f + conv.off, conv.prec);
+    return fmtNum(si == null ? null : conv.fn(si), conv.prec);
   }
   function currentText(r) {
     return r.spec.type === 'boolean' ? (r.input.checked ? 'true' : 'false') : r.input.value.trim();
@@ -70,7 +73,8 @@
     }
     const d = Number(t);
     if (!Number.isFinite(d)) throw new Error('not a number');
-    let si = (d - r.conv.off) / r.conv.f;
+    if (r.conv.missing) throw new Error('no unit for this value in your Signal K unit preferences');
+    let si = r.conv.inv(d);
     if (s.multipleOf) {
       const q = si / s.multipleOf;
       if (Math.abs(q - Math.round(q)) > 1e-6) throw new Error('must be a whole number of ' + (r.conv.unit || s.unit));

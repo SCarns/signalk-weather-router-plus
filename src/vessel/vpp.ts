@@ -120,7 +120,8 @@ export function pyFixed(x: number, d: number): string {
  * SpecsError for specs it cannot use. Same checks, order and messages as
  * `BoatSpecs.validate()`.
  */
-export function validateSpecs(specs: BoatSpecs): string[] {
+export function validateSpecs(specs: BoatSpecs, opts: { downwindDefault?: boolean } = {}): string[] {
+  const downwindDefault = opts.downwindDefault ?? true;
   const warnings: string[] = [];
   const f = pyFloatRepr;
   const inRange = (v: number, lo: number, hi: number): boolean => lo <= v && v <= hi;
@@ -136,8 +137,8 @@ export function validateSpecs(specs: BoatSpecs): string[] {
     throw new SpecsError(`Displacement ${f(specs.displacement_kg)} kg outside 50-500000 kg`);
   }
   if (sa_up <= 0.0) throw new SpecsError('Upwind sail area must be > 0 for the VPP to do anything');
-  if (sa_dn <= 0.0) {
-    // Downwind SA defaults to 1.5x upwind at compute time.
+  if (downwindDefault && sa_dn <= 0.0) {
+    // Downwind SA defaults to 1.5x upwind at compute time (empirical VPP only).
     warnings.push('Downwind sail area not set; using 1.5× upwind SA as default.');
   }
 

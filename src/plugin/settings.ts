@@ -33,6 +33,7 @@ export interface AppSettings {
     motorSpeed: number;
     maxSwh: number | null;
     tackPenalty: number;
+    polarPerformance: number;
   };
   forecast: {
     horizon: number;
@@ -69,6 +70,12 @@ export interface AppSettings {
     landRasterMaxCells: number;
     /** Let routes use known ship canals (Corinth, Cape Cod, Kiel, Suez, …) where the coastline data shows them as water. */
     allowCanals: boolean;
+    /** RDP simplification tolerance, metres (0 = off). */
+    simplify: number;
+    /** Run the shortcut smoother. */
+    smoother: boolean;
+    /** Smoother time tolerance, ratio (0.05 = a shortcut may be 5% slower). */
+    smootherTolerance: number;
     keepJobs: number;
   };
   publish: {
@@ -97,7 +104,7 @@ export type ReloadKind = 'forecast' | 'currents' | 'tides' | 'refresh_timer' | '
  * wave_height / short_distance follow the user's unit preset; hours,
  * minutes and seconds are fixed displays of a value stored in seconds.
  */
-export type Quantity = 'speed' | 'depth' | 'wave_height' | 'short_distance' | 'megabytes' | 'hours' | 'minutes' | 'seconds' | 'angle' | 'count';
+export type Quantity = 'speed' | 'depth' | 'wave_height' | 'short_distance' | 'ratio' | 'megabytes' | 'hours' | 'minutes' | 'seconds' | 'angle' | 'count';
 
 export interface SettingSpec {
   key: string;
@@ -143,6 +150,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
   { key: 'vessel.motorSpeed', group: 'vessel', label: 'Speed under power', type: 'number', unit: 'm/s', quantity: 'speed', min: 0.01, max: 50, default: 6 * KTS_TO_MS, help: 'Cruising speed when motoring.', reload: 'next_job' },
   { key: 'vessel.maxSwh', group: 'vessel', label: 'Maximum wave height', type: 'number', unit: 'm', quantity: 'wave_height', min: 0, max: 30, default: null, nullable: true, help: 'Significant wave height limit (informational). Empty = none.', reload: 'next_job' },
   { key: 'vessel.tackPenalty', group: 'vessel', label: 'Tack penalty', type: 'number', unit: 's', quantity: 'seconds', min: 0, max: 3600, default: 30, help: 'Time lost per tack or gybe.', reload: 'next_job' },
+  { key: 'vessel.polarPerformance', group: 'vessel', label: 'Polar performance', type: 'number', unit: 'ratio', quantity: 'ratio', min: 0.3, max: 1.2, default: 1, help: 'Share of the polar\'s boat speeds the boat actually makes under sail (100% = the polar as written). Polars are usually race predictions (flat water, racing sails, full crew); a loaded cruising boat is slower. Motor speed is not affected.', reload: 'next_job' },
 
   { key: 'forecast.horizon', group: 'forecast', label: 'Forecast horizon', type: 'number', unit: 's', quantity: 'hours', min: 3 * H, max: 240 * H, multipleOf: H, default: 72 * H, help: 'How far ahead the forecast reaches. Changing it decodes the forecast again; the decoded run on disk grows with it (about 1.1 GB for 72 h with the extra fields), memory does not.', reload: 'forecast' },
   { key: 'forecast.refreshInterval', group: 'forecast', label: 'Check for a new cycle every', type: 'number', unit: 's', quantity: 'minutes', min: 600, max: 24 * H, multipleOf: 60, default: H, help: 'How often ECMWF is checked for a newer cycle.', reload: 'refresh_timer' },
@@ -171,6 +179,9 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
   { key: 'routing.simStep', group: 'routing', label: 'Leg simulation step', type: 'number', unit: 'm', quantity: 'short_distance', min: 50, max: 5000, default: 200, help: 'Distance between samples along each leg.', reload: 'next_job' },
   { key: 'routing.landRasterMaxCells', group: 'routing', label: 'Land raster cell budget', type: 'integer', min: 1_000_000, max: 1_000_000_000, default: 25_000_000, help: 'Upper bound on the per-route land raster (1 byte per cell). Lower it on small machines.', reload: 'next_job' },
   { key: 'routing.allowCanals', group: 'routing', label: 'Allow canals', type: 'boolean', default: false, help: 'Let routes pass through known ship canals (Corinth, Cape Cod, Chesapeake and Delaware, Kiel, Suez, Panama) where the coastline data shows them as water. Off: routes go the natural way round. With the GSHHG coastline none of these canals is open water, so this only matters with coastline data that includes canals.', reload: 'next_job' },
+  { key: 'routing.simplify', group: 'routing', label: 'Route simplification', type: 'number', unit: 'm', quantity: 'short_distance', min: 0, max: 5000, default: 10, help: 'Waypoints closer than this to the straight line between their neighbours are dropped when that line is clear of land (0 = off). Your own waypoints are always kept.', reload: 'next_job' },
+  { key: 'routing.smoother', group: 'routing', label: 'Shortcut smoother', type: 'boolean', default: true, help: 'Replace runs of waypoints with one straight leg when it is clear of land and not much slower. Your own waypoints are always kept.', reload: 'next_job' },
+  { key: 'routing.smootherTolerance', group: 'routing', label: 'Shortcut may be slower by', type: 'number', unit: 'ratio', quantity: 'ratio', min: 0, max: 0.5, default: 0.05, help: 'A straight shortcut is accepted when its simulated time is at most this much longer than the legs it replaces.', reload: 'next_job' },
   { key: 'routing.keepJobs', group: 'routing', label: 'Finished routes kept', type: 'integer', min: 1, max: 500, default: 50, help: 'Older finished route jobs are deleted beyond this.', reload: 'jobs' },
 
   { key: 'publish.toResources', group: 'publish', label: 'Save finished routes to Signal K', type: 'boolean', default: true, help: 'Write each finished route to the Resources API (routes).', reload: 'next_job' },

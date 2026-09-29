@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { listPolars, loadPolarCached, polarAngles, polarFromSpecs, polarTable, resolvePolarPath } from './polars';
+import { PolarDiagram } from '../vessel/polar';
 
 const CSV = 'twa/tws,6,10,16\n30,0,0,0\n45,3.5,5.2,6.0\n60,4.2,6.0,6.8\n90,4.8,6.6,7.2\n120,4.6,6.9,7.8\n150,3.9,6.2,7.9\n180,3.2,5.4,7.1\n';
 
@@ -71,7 +72,7 @@ test('polarFromSpecs: writes user/<slug>.csv, lists it, resolves it, 409 without
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.equal(r.body.path, 'user/my_catalina_36.csv');
   assert.equal(r.body.label, 'user: my catalina 36');
-  assert.deepEqual(r.body.warnings, ['Downwind sail area not set; using 1.5× upwind SA as default.']);
+  assert.deepEqual(r.body.warnings, []);
   const polar = r.body.polar as { path: string; twa_deg: number[]; tws_ms: number[]; speeds_ms: number[][] };
   assert.equal(polar.path, 'user/my_catalina_36.csv');
   assert.equal(polar.twa_deg.length, 22);
@@ -106,4 +107,15 @@ test('polarFromSpecs: 400 validation, 400 bad name, 422 multihull, 400 without p
   assert.match(String(cat.body.error), /monohulls only; got 'catamaran'/);
   assert.equal(fs.existsSync(path.join(dir, 'user', 'cat.csv')), false);
   assert.equal(polarFromSpecs({ polarFile: null, polarsDir: null }, { name: 'x', specs: SPECS }).status, 400);
+});
+
+test('PolarDiagram.scaled multiplies every boat speed and keeps the no-go floor', () => {
+  const p = PolarDiagram.parse('twa/tws,6,12\n0,0,0\n40,0,5\n90,6,8\n', ',');
+  const s = p.scaled(0.8);
+  assert.equal(p.scaled(1), p);
+  for (const [twa, tws] of [[90, 3.0867], [90, 6.1733], [60, 5]]) {
+    assert.ok(Math.abs(s.boatSpeed(twa, tws) - 0.8 * p.boatSpeed(twa, tws)) < 1e-12);
+  }
+  assert.equal(s.boatSpeed(40, 3.0867), 0, 'in irons at 6 kn stays in irons');
+  assert.equal(s.noGoFloor(3.0867), p.noGoFloor(3.0867));
 });

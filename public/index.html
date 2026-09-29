@@ -110,13 +110,16 @@
     border-radius: var(--r-md);
     box-shadow: var(--shadow-panel);
     width: var(--panel-w-desktop); box-sizing: border-box;
-    max-height: calc(100vh - 20px); overflow-y: auto;
+    /* Stops above the map's attribution line so nothing hides behind it. */
+    max-height: calc(100vh - 20px - var(--attrib-h, 48px)); overflow-y: auto;
     font-size: var(--f-base);
     color: var(--text);
     display: flex; flex-direction: column;
   }
+  /* Only the title, status line and tab bar are fixed; the active tab
+     (route inputs included) scrolls below them. */
   #panelHead { flex: none; }
-  #tabBody { flex: 1 1 auto; min-height: 120px; overflow-y: auto; }
+  #tabBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
   /* Tab bar */
   #tabBar {
     display: flex; gap: 2px; margin: var(--s-2) 0 var(--s-2);
@@ -415,13 +418,14 @@
   #modalLog .error { color: #ff6e6e; }
   #modalLog .warn  { color: #f0c270; }
   #modalLog .done  { color: #76e09b; font-weight: 600; }
-  /* Itinerary pane (dark) — cards live in here. */
+  /* Itinerary pane (dark) — cards live in here. No scroll of its own:
+     the cards scroll with the tab body. */
   #modalItinerary {
-    background: var(--ink-bg); overflow-y: auto;
+    background: var(--ink-bg);
     padding: var(--s-2) var(--s-3);
     font-size: var(--f-xs); color: var(--ink-text);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    max-height: 460px; min-height: 120px;
+    min-height: 120px;
     border-radius: 0 0 var(--r-md) var(--r-md);
   }
   /* Leg cards. Tack/mode colour is on the left border AND echoed
@@ -533,7 +537,24 @@
     <div id="dataStatus">loading status…</div>
   </div>
 
-  <!-- Plan strip: always visible. Start, end, vias, departure, Find Route. -->
+  <div id="tabBar" role="tablist">
+    <button type="button" data-tab="routeSection" role="tab">Route</button>
+    <button type="button" data-tab="settingsSection" role="tab">Setup</button>
+    <button type="button" data-tab="layersSection" role="tab">Layers</button>
+    <button type="button" data-tab="savedSection" role="tab">Saved</button>
+    <button type="button" data-tab="logSection" role="tab">Log</button>
+    <button type="button" data-tab="itinerarySection" role="tab">Itinerary</button>
+    <button type="button" data-tab="srvSettingsSection" role="tab">Settings</button>
+  </div>
+  </div><!-- /panelHead -->
+  <div id="tabBody">
+
+  <!-- Route: the plan (start, end, waypoints, departure, Find Route), the
+       progress bar and the result summary. A tab like the others, so the
+       rest of the panel is not pushed down by it. -->
+  <section class="tab-pane" id="routeSection">
+  <div class="section-body">
+  <!-- Plan strip: start, end, vias, departure, Find Route. -->
   <div id="planStrip">
 
   <div id="modeRow">
@@ -590,32 +611,18 @@
   <!-- Result strip: what the route is. Hidden while empty. -->
   <div id="routeInfo"></div>
 
-  <div id="tabBar" role="tablist">
-    <button type="button" data-tab="settingsSection" role="tab">Setup</button>
-    <button type="button" data-tab="layersSection" role="tab">Layers</button>
-    <button type="button" data-tab="savedSection" role="tab">Routes</button>
-    <button type="button" data-tab="logSection" role="tab">Log</button>
-    <button type="button" data-tab="itinerarySection" role="tab">Itinerary</button>
-    <button type="button" data-tab="srvSettingsSection" role="tab">Settings</button>
   </div>
-  </div><!-- /panelHead -->
-  <div id="tabBody">
+  </section>
 
   <section class="tab-pane" id="settingsSection">
   <div class="section-body">
 
-  <!-- Display units: how SI values are shown. Per browser. -->
+  <!-- Display units: taken from the Signal K user's unit preferences. -->
   <details class="subsection" open>
   <summary>Display</summary>
   <div class="subsection-body">
-  <label for="unitPreset">Units</label>
-  <select id="unitPreset">
-    <option value="nautical_imperial">Nautical imperial — kt, nm, ft, °F, inHg</option>
-    <option value="nautical_metric">Nautical metric — kt, nm, m, °C, hPa</option>
-    <option value="metric">Metric — km/h, km, m, °C, hPa</option>
-    <option value="imperial">Imperial — mph, mi, ft, °F, inHg</option>
-  </select>
-  <div class="ctl-hint">Applies to every value shown. Boat specs are always entered in metres and knots.</div>
+  <div class="ctl-hint" id="unitSource">Loading your Signal K unit preferences…</div>
+  <div class="ctl-hint">Units are set in your Signal K unit preferences. Boat specs are always entered in metres and knots.</div>
   </div>
   </details>
 
@@ -867,7 +874,6 @@
         <div><label>Displacement (kg) <span style="color:#c00;">*</span></label><input type="number" step="1" id="vf_disp" style="width:100%;padding:4px;box-sizing:border-box;"></div>
         <div><label>Ballast (kg)</label><input type="number" step="1" id="vf_ballast" style="width:100%;padding:4px;box-sizing:border-box;"></div>
         <div><label>Upwind sail area (m²) <span style="color:#c00;">*</span></label><input type="number" step="0.1" id="vf_sa_up" style="width:100%;padding:4px;box-sizing:border-box;"></div>
-        <div><label>Downwind sail area (m²)</label><input type="number" step="0.1" id="vf_sa_dn" style="width:100%;padding:4px;box-sizing:border-box;" placeholder="(default: 1.5 × upwind)"></div>
         <div><label>Rig type</label>
           <select id="vf_rig" style="width:100%;padding:4px;box-sizing:border-box;">
             <option>sloop</option><option>cutter</option><option>ketch</option><option>yawl</option><option>cat</option>

@@ -14,7 +14,8 @@ import * as path from 'node:path';
 import { PolarDiagram } from '../vessel/polar';
 import { KTS_TO_MS } from '../geo/geodesy';
 import { HULL_TYPES, KEEL_TYPES, RIG_TYPES, slugifyPolarName, UnsupportedHull, validateSpecs, type BoatSpecs } from '../vessel/vpp';
-import { computePolarTable, polarCsv, type VppTable } from '../vessel/vpp_empirical';
+import { polarCsv, type VppTable } from '../vessel/vpp_empirical';
+import { computePhysicsTable } from '../vessel/vpp_physics';
 
 export interface PolarEntry {
   path: string;
@@ -153,7 +154,7 @@ export function polarTable(polar: PolarDiagram): { twa_deg: number[]; tws_ms: nu
 }
 
 
-// ─────────── POST /api/polar-from-specs (EmpiricalVPP) ───────────
+// ─────────── POST /api/polar-from-specs (physics calculator) ───────────
 
 /** Result of a polar-from-specs request: an HTTP status and its JSON body. */
 export interface PolarFromSpecsResult {
@@ -202,7 +203,8 @@ function parseSpecsRequest(raw: unknown): { name: string; specs: BoatSpecs; over
 }
 
 /**
- * Generate a polar from boat specs with the empirical VPP and write it to
+ * Generate a polar from boat specs with the physics calculator
+ * (vessel/vpp_physics.ts) and write it to
  * `<polarsDir>/user/<slug>.csv` in the routing server's CSV layout. Same
  * contract as the routing server's POST /polar-from-specs: 400 invalid
  * specs or name, 409 exists without overwrite, 422 unsupported hull.
@@ -215,7 +217,8 @@ export function polarFromSpecs(cfg: PolarLibraryConfig, raw: unknown): PolarFrom
   if (typeof req === 'string') return { status: 400, body: { error: req } };
   let warnings: string[];
   try {
-    warnings = validateSpecs(req.specs);
+    warnings = validateSpecs(req.specs, { downwindDefault: false });
+    if ((req.specs.sail_area_downwind_m2 ?? 0) > 0) warnings.push('Downwind sail area is not used: the calculator assumes no spinnaker.');
   } catch (err) {
     return { status: 400, body: { error: (err as Error).message } };
   }
@@ -230,7 +233,7 @@ export function polarFromSpecs(cfg: PolarLibraryConfig, raw: unknown): PolarFrom
   }
   let table: VppTable;
   try {
-    table = computePolarTable(req.specs);
+    table = computePhysicsTable(req.specs);
   } catch (err) {
     if (err instanceof UnsupportedHull) return { status: 422, body: { error: err.message } };
     return { status: 500, body: { error: `VPP failed: ${(err as Error).message}` } };

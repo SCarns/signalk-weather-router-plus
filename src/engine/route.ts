@@ -33,6 +33,12 @@ export interface Waypoint {
   currentDirDeg?: number;
   leg?: string;
   role?: 'via';
+  /**
+   * Sailing and motoring seconds of the leg arriving here, set when the
+   * shortcut smoother merged several legs into one (mixed modes); totals
+   * use it in place of the binary `mode`.
+   */
+  arrivingSplit?: [number, number];
 }
 
 export interface RouteWarning {
@@ -59,6 +65,8 @@ export interface Route {
   currentSources?: string[];
   /** Coarse A* skeleton that guided the heading sweep, when one was found. */
   skeleton?: { lon: number; lat: number }[];
+  /** Waypoints the shortcut smoother dropped (RDP thinning not counted, as in the parent). */
+  smootherDrops?: number;
   /** Automatic vias the router placed at narrow passages (not waypoints). */
   autoVias?: { lon: number; lat: number; radiusM: number; widthM: number; name: string }[];
 }
@@ -137,7 +145,7 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
     waypoint_count: wps.length,
     validated: route.validated,
     repairs_applied: 0,
-    smoother_drops: 0,
+    smoother_drops: route.smootherDrops ?? 0,
   };
   if (route.forecastCycle) props.forecast_cycle = route.forecastCycle;
   if (route.autoVias && route.autoVias.length) {

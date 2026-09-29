@@ -542,15 +542,15 @@ installation settings only.
 /api/settings`): stored on the server in `settings.json` in the plugin
 data directory and shared by every client. Values are SI on the wire
 (m, m/s, s; degrees for the heading increment); the page shows them in
-the selected display units. Saving needs a `readwrite` login.
+the Signal K user's unit preferences. Saving needs a `readwrite` login.
 
 | Group | Settings (default) | A change… |
 |---|---|---|
-| `vessel` | name, draught (1.8 m), air draft (16 m), LOA (11 m), beam (3.7 m), under-keel margin (0.5 m), overhead margin (1 m), speed under power (6 kt = 3.087 m/s), max wave height (none), tack penalty (30 s) | applies to the next route |
+| `vessel` | name, draught (1.8 m), air draft (16 m), LOA (11 m), beam (3.7 m), under-keel margin (0.5 m), overhead margin (1 m), speed under power (6 kt = 3.087 m/s), max wave height (none), tack penalty (30 s), polar performance (1 = 100%, 0.3–1.2) | applies to the next route |
 | `forecast` | horizon (72 h = 259200 s, 3–240 h), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
-| `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), allow canals (off), finished routes kept (50) | applies to the next route |
+| `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (on), shortcut may be slower by (0.05 = 5%), finished routes kept (50) | applies to the next route |
 | `publish` | save to the Resources API (on), route name prefix (`WRP`), notifications (on) | applies to the next route |
 
 **Resource guard.** The decoded forecast is on disk, so the guard
@@ -615,16 +615,30 @@ a route with waypoints carries `legs` and `precision`.
 `a_boat.pol` resolves only inside the configured `polarsDir`. Use
 `"default"`, or omit the field, for the configured `polarFile`.
 
+`vessel.polar_performance` (ratio, 0.3..1.2) is the share of the polar's
+boat speeds the boat makes under sail; it overrides the vessel setting
+of the same name (default 1, the polar as written). Every boat speed in
+the polar is multiplied by it before the sail/motor choice, so a lower
+value also means more motoring; motor speed is unchanged. Polars are
+usually race predictions (flat water, racing sails, full crew), so a
+loaded cruising boat is slower than its polar. The job summary carries
+`polar_performance` when a polar was used.
+
 `POST …/api/polar-from-specs` (readwrite) takes `{name, specs, overwrite?}`
 with the routing server's boat-spec fields (`loa_m`, `lwl_m`, `beam_m`,
 `draft_m`, `displacement_kg`, `sail_area_upwind_m2`, optional `ballast_kg`,
-`sail_area_downwind_m2` (0 = 1.5 × upwind), `mast_height_m`, `rig_type`,
-`keel_type`, `hull_type`). It runs the same empirical VPP as the routing
-server, writes `<polarsDir>/user/<slug>.csv` in its CSV layout and returns
+`sail_area_downwind_m2` (not used: no spinnaker is assumed), `mast_height_m`,
+`rig_type`, `keel_type`, `hull_type`). It runs the physics polar calculator
+(`src/vessel/vpp_physics.ts`: ORC 2026 sail forces, Delft hull resistance,
+a heeling limit; see `docs/plans/vpp-physics.md`), writes
+`<polarsDir>/user/<slug>.csv` in the routing server's CSV layout and returns
 `{path, label, warnings, polar}`, where `path` (`user/<slug>.csv`) is a
 `vessel.polar` token. 400: invalid specs, bad name, or no `polarsDir`;
 409: the file exists and `overwrite` is not true; 422: a multihull, which
-the empirical VPP cannot model. In the webapp, use "Create polar from
+the calculator does not model. Against 441 ORC 2026 non-spinnaker
+certificates it was not fitted on, its median error is 3.3% upwind, 3.2%
+reaching and 3.3% running (6–20 kn). ORC's speeds are race predictions;
+use the polar performance setting for a cruising boat. In the webapp, use "Create polar from
 boat specs…" under the polar picker.
 
 ```
@@ -641,7 +655,7 @@ PUT  …/api/settings             change some settings (readwrite)
 GET  …/api/polars               polar library: the configured default + every .pol/.csv in the polars directory
 GET  …/api/polar-angles?path=   best upwind/downwind VMG angles per TWS (point-of-sail bucketing)
 GET  …/api/polars/table?path=   polar speed table in m/s for drawing
-POST …/api/polar-from-specs     generate a polar from boat specs (empirical VPP) → <polarsDir>/user/<slug>.csv
+POST …/api/polar-from-specs     generate a polar from boat specs (physics calculator) → <polarsDir>/user/<slug>.csv
 GET  …/api/legends              colour ramps (SI stops) for every overlay
 GET  …/api/field?layer=&bbox=&time=&res=      JSON grid for a heatmap layer (wind, waves, msl, temperature, sst, precip, sea_state, current, tide → tide_m in m above MSL)
 GET  …/api/wind-points?bbox=&time=&res=       barb points

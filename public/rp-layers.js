@@ -956,9 +956,18 @@ function loadTide() {
 
 // ─────────── MSL pressure synoptic chart (vector GeoJSON) ─────────
 // Plugin returns isobars + hPa labels along each contour + H/L glyphs
+// (labels are shown in the user's pressure unit, see _isobarLabel)
 // at smoothed-field circulation centres. Rendered with an OL VectorLayer
 // styled per `kind` property: isobar (gray; bold black on multiples of 20
 // hPa), label (hPa value with white halo), high (blue "H"), low (red "L").
+// Labels are text styles; redraw them when the units change.
+window.addEventListener('rp:units', () => pressureLayer.changed());
+function _isobarLabel(hpa) {
+  const u = unitDesc('pressure');
+  if (u.missing) return UNIT_MISSING;
+  const t = u.fn(hpa * 100).toFixed(u.p);
+  return t === '-0' ? '0' : t;
+}
 const pressureSource = new ol.source.Vector({});
 const pressureLayer = new ol.layer.Vector({
   source: pressureSource,
@@ -976,7 +985,7 @@ const pressureLayer = new ol.layer.Vector({
     if (p.kind === 'label') {
       return new ol.style.Style({
         text: new ol.style.Text({
-          text: String(p.hpa),
+          text: _isobarLabel(p.hpa),
           font: 'bold 11px sans-serif',
           fill: new ol.style.Fill({ color: '#000' }),
           stroke: new ol.style.Stroke({ color: '#fff', width: 3 }),
@@ -997,7 +1006,7 @@ const pressureLayer = new ol.layer.Vector({
         }),
         new ol.style.Style({
           text: new ol.style.Text({
-            text: String(Math.round(p.hpa)),
+            text: _isobarLabel(p.hpa),
             offsetY: 16,
             font: 'bold 11px sans-serif',
             fill: new ol.style.Fill({ color }),
@@ -1378,6 +1387,20 @@ const map = new ol.Map({
     zoom: _SAVED_VIEW ? _SAVED_VIEW.zoom : 11
   })
 });
+
+// Keep the side panel clear of the map's attribution line: its height
+// changes with the window width and the visible layers, so measure it.
+(function () {
+  const setAttribH = () => {
+    const el = document.querySelector('.ol-attribution');
+    const h = el ? Math.ceil(el.getBoundingClientRect().height) + 8 : 0;
+    document.documentElement.style.setProperty('--attrib-h', h + 'px');
+  };
+  const el = document.querySelector('.ol-attribution');
+  if (el && typeof ResizeObserver === 'function') new ResizeObserver(setAttribH).observe(el);
+  window.addEventListener('resize', setAttribH);
+  setAttribH();
+})();
 
 // Remember where the map was left, so the next load opens there. Not
 // while a first-visit position request is pending: OL fires moveend

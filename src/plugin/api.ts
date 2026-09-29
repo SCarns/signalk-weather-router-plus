@@ -503,9 +503,13 @@ function validateRequestShape(b: RouteRequest): string | null {
   if (b.departure !== undefined && b.departure !== '' && Number.isNaN(Date.parse(b.departure))) return 'departure must be ISO 8601';
   if (b.stages !== undefined && (typeof b.stages !== 'number' || b.stages < 4 || b.stages > 200)) return 'stages must be 4..200';
   if (b.sail_thresh_ms !== undefined && (typeof b.sail_thresh_ms !== 'number' || b.sail_thresh_ms < 0)) return 'sail_thresh_ms must be >= 0';
+  if (b.simplify_m !== undefined && (typeof b.simplify_m !== 'number' || !(b.simplify_m >= 0 && b.simplify_m <= 5000))) return 'simplify_m must be 0..5000';
+  if (b.smoother !== undefined && typeof b.smoother !== 'boolean') return 'smoother must be true or false';
+  if (b.smoother_tolerance !== undefined && (typeof b.smoother_tolerance !== 'number' || !(b.smoother_tolerance >= 0 && b.smoother_tolerance <= 0.5))) return 'smoother_tolerance must be 0..0.5';
   if (b.name !== undefined && typeof b.name !== 'string') return 'name must be a string';
   if (b.vessel !== undefined && (b.vessel === null || typeof b.vessel !== 'object')) return 'vessel must be an object';
   if (b.vessel?.tack_penalty_s !== undefined && (typeof b.vessel.tack_penalty_s !== 'number' || b.vessel.tack_penalty_s < 0 || b.vessel.tack_penalty_s > 600)) return 'vessel.tack_penalty_s must be 0..600';
+  if (b.vessel?.polar_performance !== undefined && (typeof b.vessel.polar_performance !== 'number' || !(b.vessel.polar_performance >= 0.3 && b.vessel.polar_performance <= 1.2))) return 'vessel.polar_performance must be 0.3..1.2';
   if (b.vessel?.polar !== undefined && (typeof b.vessel.polar !== 'string' || b.vessel.polar.length > 200)) return 'vessel.polar must be a polar token from /api/polars';
   return null;
 }

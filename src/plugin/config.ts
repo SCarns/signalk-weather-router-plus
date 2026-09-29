@@ -119,6 +119,9 @@ export interface ResolvedConfig {
     landRasterMaxCells: number;
     /** Open the known canals' edges in the global water grid. */
     allowCanals: boolean;
+    simplifyM: number;
+    smoother: boolean;
+    smootherTolerance: number;
     keepJobs: number;
   };
   publish: {
@@ -214,6 +217,7 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       motorSpeedMs: v.motorSpeed,
       maxSwh: v.maxSwh ?? undefined,
       tackPenaltySeconds: v.tackPenalty,
+      polarPerformance: v.polarPerformance,
     }),
     forecast: {
       horizonHours: f.horizon / 3600,
@@ -248,6 +252,9 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       simStepM: r.simStep,
       landRasterMaxCells: r.landRasterMaxCells,
       allowCanals: r.allowCanals,
+      simplifyM: r.simplify,
+      smoother: r.smoother,
+      smootherTolerance: r.smootherTolerance,
       keepJobs: r.keepJobs,
     },
     publish: {
@@ -276,5 +283,6 @@ export function routeVessel(cfg: ResolvedConfig, rv: RouteRequest['vessel']): Ve
     motorSpeedMs: rv?.motor_speed_ms ?? cfg.vessel.motorSpeedMs,
     underKeelClearance: rv?.under_keel_clearance ?? cfg.vessel.underKeelClearance,
     tackPenaltySeconds: rv?.tack_penalty_s ?? cfg.vessel.tackPenaltySeconds,
+    polarPerformance: rv?.polar_performance ?? cfg.vessel.polarPerformance,
   });
 }

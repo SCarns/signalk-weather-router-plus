@@ -7,7 +7,7 @@ import { LandMask } from '../geo/landmask';
 import { WaterGrid } from '../geo/watergrid';
 import { buildWaterGrid } from '../geo/watergrid_build';
 import { gridAstar, GridAstarError, smoothGridPath, gridLineOfSight } from './gridastar';
-import { planCorridor, mergeVias, widthProfile, CorridorError, type AutoVia } from './corridor';
+import { planCorridor, verifyCorridor, mergeVias, widthProfile, CorridorError, type AutoVia } from './corridor';
 import { OceanPropagator } from './propagator';
 import { makeVessel } from '../vessel/vessel';
 
@@ -281,4 +281,25 @@ test('propagator: automatic vias pull the route through the passage but are not 
     vias: [{ lon: 170, lat: 0, radiusM: 1500 }], corridor: { skeleton: cor.skeleton, widthM: cor.widthM },
   });
   assert.ok(r2.waypoints.some((w) => w.role === 'via'));
+});
+
+test('corridor: verify does not wrap across band edges into the next row', () => {
+  // 1° grid, corridor straight north along column 10 (rows 90..95), band 2 → columns 8..12.
+  // Land: row 92 columns 9..12 and cell (91, 8). Water at (92, 8) touches only row 93, so the
+  // band is closed; an east step from (91, 12) must not alias into (92, 8).
+  const mask = (gap: boolean): LandMask => ({
+    resolutionDeg: 1,
+    patches: [],
+    isLand: (lon: number, lat: number) => {
+      const r = Math.floor(lat + 90);
+      const c = Math.floor(lon + 180);
+      return (r === 92 && c >= 9 && c <= 12) || (!gap && r === 91 && c === 8);
+    },
+  }) as unknown as LandMask;
+  const path = [90, 91, 92, 93, 94, 95].map((r) => ({ r, c: 10, comp: 0 }));
+  const start: [number, number] = [-169.5, 0.5];
+  const end: [number, number] = [-169.5, 5.5];
+  assert.equal(verifyCorridor(mask(false), 1, path, start, end, 2).ok, false);
+  // Control: open (91, 8) and the fill gets through via column 8.
+  assert.equal(verifyCorridor(mask(true), 1, path, start, end, 2).ok, true);
 });

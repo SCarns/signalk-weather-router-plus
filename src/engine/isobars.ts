@@ -239,6 +239,7 @@ function* labelPointsAlong(coords: [number, number][], spacingDeg: number): Gene
 /**
  * Build the GeoJSON features: isobar LineStrings (`kind: "isobar"`,
  * `hpa`, `bold`), label Points (`kind: "label"`), and `high`/`low` Points.
+ * Every feature carries `pa` (Pa, SI) beside `hpa`; the webapp reads `hpa`.
  */
 export function buildIsobarFeatures(fieldHpa: Float64Array, lons: Float64Array, lats: Float64Array, intervalHpa: number): IsobarFeature[] {
   let vmin = Infinity;
@@ -258,14 +259,14 @@ export function buildIsobarFeatures(fieldHpa: Float64Array, lons: Float64Array, 
     const bold = hpaInt % BOLD_MULTIPLE === 0 || hpaInt === 1000;
     for (const line of contourLines(fieldHpa, lons, lats, level)) {
       if (line.length < 2) continue;
-      out.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: line.map(([x, y]) => [r5(x), r5(y)]) }, properties: { kind: 'isobar', hpa: hpaInt, bold } });
+      out.push({ type: 'Feature', geometry: { type: 'LineString', coordinates: line.map(([x, y]) => [r5(x), r5(y)]) }, properties: { kind: 'isobar', hpa: hpaInt, pa: hpaInt * 100, bold } });
       for (const [lon, lat] of labelPointsAlong(line, LABEL_SPACING_DEG)) {
-        out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [r5(lon), r5(lat)] }, properties: { kind: 'label', hpa: hpaInt } });
+        out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [r5(lon), r5(lat)] }, properties: { kind: 'label', hpa: hpaInt, pa: hpaInt * 100 } });
       }
     }
   }
   const { highs, lows } = findExtrema(fieldHpa, lons, lats);
-  for (const h of highs) out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [r5(h.lon), r5(h.lat)] }, properties: { kind: 'high', hpa: h.hpa } });
-  for (const l of lows) out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [r5(l.lon), r5(l.lat)] }, properties: { kind: 'low', hpa: l.hpa } });
+  for (const h of highs) out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [r5(h.lon), r5(h.lat)] }, properties: { kind: 'high', hpa: h.hpa, pa: Math.round(h.hpa * 100) } });
+  for (const l of lows) out.push({ type: 'Feature', geometry: { type: 'Point', coordinates: [r5(l.lon), r5(l.lat)] }, properties: { kind: 'low', hpa: l.hpa, pa: Math.round(l.hpa * 100) } });
   return out;
 }

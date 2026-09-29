@@ -395,6 +395,8 @@ export function verifyCorridor(
   visit(s0.b, s0.sub);
   const neighbourCell = (b: number, dr: number, dc: number): number => {
     const cell = cells[b];
+    // Outside the band's columns: keyOf would alias into the next/previous row.
+    if (cell.c + dc < cMin || cell.c + dc > cMax) return -1;
     const i = idxOf.get(keyOf(cell.r + dr, cell.c + dc));
     return i === undefined ? -1 : i;
   };

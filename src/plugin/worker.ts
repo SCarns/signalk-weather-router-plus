@@ -42,14 +42,15 @@ import { bboxFromLonLat, bboxWidth, bboxHeight, type BBox } from '../geo/geodesy
 import { LandMask } from '../geo/landmask';
 import { OnDemandLand } from '../geo/landcache';
 import { releaseMemory } from '../util/gc';
-import { NoCurrent, type CurrentSource } from '../engine/environment';
-import { OceanPropagator, RouteCancelled, ViasNotCrossedError } from '../engine/propagator';
+import { NoCurrent, NoWind, type CurrentSource } from '../engine/environment';
+import { enrichWaypoints, OceanPropagator, RouteCancelled, ViasNotCrossedError } from '../engine/propagator';
+import { rdpSimplify, recomputeTotals, revalidateLand, shortcutSmoother } from '../engine/smoother';
 import { CorridorError, mergeVias, planCorridor, type Corridor } from '../engine/corridor';
 import { DEFAULT_PRECISION, routeMultiLeg, validateLegOptions, type LegPlan, type Stop } from '../engine/multileg';
 import { WaterGrid } from '../geo/watergrid';
 import { chooseWaterGrid } from '../geo/watergrid_store';
 import type { GridBuilderData, GridBuilderMessage } from './gridbuilder';
-import { routeToGeoJSON, routeToSignalKRoute, skeletonToGeoJSON, type Route } from '../engine/route';
+import { recomputePerWaypointMetadata, routeToGeoJSON, routeToSignalKRoute, skeletonToGeoJSON, type Route } from '../engine/route';
 import { PolarDiagram } from '../vessel/polar';
 import { loadPolarCached, resolvePolarPath } from './polars';
 import { HarmonicCurrentSource } from '../currents/harmonic';
@@ -179,7 +180,11 @@ function startGridRebuild(cfg: ResolvedConfig, outFile: string): void {
   }
   log('info', `water grid: rebuilding from ${cfg.landShapefiles.join(', ')} into ${outFile} (${mem.message}); this takes a few minutes`);
   const data: GridBuilderData = { shapefiles: cfg.landShapefiles, outFile };
-  const w = new Worker(path.join(__dirname, 'gridbuilder.js'), { workerData: data });
+  const isTs = __filename.endsWith('.ts');
+  const w = new Worker(path.join(__dirname, isTs ? 'gridbuilder.ts' : 'gridbuilder.js'), {
+    workerData: data,
+    execArgv: isTs ? ['--import', 'tsx'] : [],
+  });
   gridBuilder = w;
   w.on('message', (m: GridBuilderMessage) => {
     if (m.type === 'progress') log('debug', `water grid rebuild: ${m.done}/${m.total} tiles (${m.message})`);
@@ -826,6 +831,10 @@ async function route(id: string, request: RouteRequest): Promise<void> {
         log('info', `job ${id}: polar ${polarLabel} (${routePolar.twa.length} TWA × ${routePolar.tws.length} TWS)`);
       }
     }
+    if (routePolar && vessel.polarPerformance !== 1) {
+      routePolar = routePolar.scaled(vessel.polarPerformance);
+      log('info', `job ${id}: polar performance ${(vessel.polarPerformance * 100).toFixed(0)}%`);
+    }
     const departureMs = request.departure ? Date.parse(request.departure) : Date.now();
     const useForecast = !request.no_forecast && request.mode !== 'motor';
     if (request.mode !== 'motor' && request.no_forecast) progress(0, 0, 'no_forecast set: routing with calm wind');
@@ -969,6 +978,24 @@ async function route(id: string, request: RouteRequest): Promise<void> {
         progress(0, 0, `${tag}no branch went through the auto via(s) at ${autoVias.map((v) => v.name ?? 'a narrow passage').join(', ')}; routing again without them`);
         r = prop.computeRoute({ ...legArgs, vias: undefined });
       }
+      // Simplification (parent order: RDP, then the shortcut smoother).
+      const simplifyM = request.simplify_m ?? cfg.routing.simplifyM;
+      const nRdp = rdpSimplify(r, land, simplifyM);
+      if (nRdp) recomputeTotals(r);
+      const nSm = (request.smoother ?? cfg.routing.smoother)
+        ? shortcutSmoother(r, {
+          land, vessel, polar: routePolar, wind: legWind ?? new NoWind(), current,
+          sim: { modePolicy: legArgs.modePolicy, sailThreshMs: legArgs.sailThreshMs, simStepM: legArgs.simStepM },
+          tolerancePct: (request.smoother_tolerance ?? cfg.routing.smootherTolerance) * 100,
+        })
+        : 0;
+      if (nSm) r.smootherDrops = nSm;
+      if (nRdp || nSm) {
+        enrichWaypoints(r.waypoints, legWind ?? new NoWind(), current);
+        recomputePerWaypointMetadata(r);
+        revalidateLand(r, land);
+        progress(0, 0, `${tag}simplified: ${nRdp} waypoint(s) within ${simplifyM} m of a straight line, ${nSm} replaced by straight shortcuts; ${r.waypoints.length} left`);
+      }
       if (legWind) {
         const lastValid = legWind.validRange[1].getTime();
         const arrival = r.waypoints[r.waypoints.length - 1].time.getTime();
@@ -1001,6 +1028,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
       waypoint_count: wps.length, warnings: result.warnings?.length ?? 0,
       departure: wps[0].time.toISOString(), arrival: wps[wps.length - 1].time.toISOString(),
       forecast_cycle: cycleLabel, current_sources: result.currentSources, polar: polarLabel,
+      polar_performance: routePolar ? vessel.polarPerformance : undefined,
       auto_vias: result.autoVias?.map((v) => ({ name: v.name, width_m: Math.round(v.widthM) })),
     };
     if (multi) {

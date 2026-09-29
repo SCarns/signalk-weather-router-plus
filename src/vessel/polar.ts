@@ -125,6 +125,16 @@ export class PolarDiagram {
     return s0 + ta * (s1 - s0);
   }
 
+  /**
+   * This polar with every boat speed multiplied by `factor` (the vessel's
+   * polar performance, a ratio). Zero cells stay zero, so the no-go floor
+   * is unchanged.
+   */
+  scaled(factor: number): PolarDiagram {
+    if (factor === 1) return this;
+    return new PolarDiagram(this.twa, this.tws, this.speeds.map((s) => s * factor));
+  }
+
   static load(filePath: string): PolarDiagram {
     const ext = path.extname(filePath).toLowerCase();
     if (ext === '.pol') return PolarDiagram.fromDelimited(filePath, '\t');

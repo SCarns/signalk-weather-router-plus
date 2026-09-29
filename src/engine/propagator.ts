@@ -754,30 +754,7 @@ export class OceanPropagator {
       }
     });
 
-    // Enrichment: wind, waves, current at each waypoint's position/time.
-    for (const wp of wps) {
-      const [ws, wd] = wind.at(wp.lon, wp.lat, wp.time);
-      if (Number.isFinite(ws)) {
-        wp.windMs = ws;
-        wp.windDirDeg = wd;
-      }
-      if (wind.hasWaves) {
-        const wv = wind.wavesAt(wp.lon, wp.lat, wp.time);
-        if (wv) {
-          wp.swhM = wv.swh;
-          wp.mwpS = wv.mwp;
-          wp.mwdDeg = wv.mwd;
-        }
-      }
-      const [cu, cv] = current.at(wp.lon, wp.lat, wp.time);
-      if (Number.isFinite(cu) && Number.isFinite(cv)) {
-        wp.currentUMs = cu;
-        wp.currentVMs = cv;
-        const sp = Math.hypot(cu, cv);
-        wp.currentMs = sp;
-        if (sp > 1e-9) wp.currentDirDeg = ((90 - Math.atan2(cv, cu) * 180 / Math.PI) % 360 + 360) % 360;
-      }
-    }
+    enrichWaypoints(wps, wind, current);
 
     const route: Route = {
       waypoints: wps,
@@ -808,5 +785,32 @@ export class OceanPropagator {
     }
     progress(Math.max(kEff, stages.length - 1), Math.max(kEff, stages.length - 1), `done: ${wps.length} waypoints, ${(dist / 1000).toFixed(1)} km, ${(route.totalTimeS / 3600).toFixed(1)} h`);
     return route;
+  }
+}
+
+/** Wind, waves and current at each waypoint's position and time. */
+export function enrichWaypoints(wps: Waypoint[], wind: WindSource, current: CurrentSource): void {
+  for (const wp of wps) {
+    const [ws, wd] = wind.at(wp.lon, wp.lat, wp.time);
+    if (Number.isFinite(ws)) {
+      wp.windMs = ws;
+      wp.windDirDeg = wd;
+    }
+    if (wind.hasWaves) {
+      const wv = wind.wavesAt(wp.lon, wp.lat, wp.time);
+      if (wv) {
+        wp.swhM = wv.swh;
+        wp.mwpS = wv.mwp;
+        wp.mwdDeg = wv.mwd;
+      }
+    }
+    const [cu, cv] = current.at(wp.lon, wp.lat, wp.time);
+    if (Number.isFinite(cu) && Number.isFinite(cv)) {
+      wp.currentUMs = cu;
+      wp.currentVMs = cv;
+      const sp = Math.hypot(cu, cv);
+      wp.currentMs = sp;
+      if (sp > 1e-9) wp.currentDirDeg = ((90 - Math.atan2(cv, cu) * 180 / Math.PI) % 360 + 360) % 360;
+    }
   }
 }

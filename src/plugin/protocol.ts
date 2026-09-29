@@ -45,6 +45,12 @@ export interface RouteRequest {
   departure?: string;
   mode?: ModePolicy;
   sail_thresh_ms?: number;
+  /** RDP simplification tolerance, metres (0 = off); default from routing.simplify. */
+  simplify_m?: number;
+  /** Run the shortcut smoother; default from routing.smoother. */
+  smoother?: boolean;
+  /** Smoother time tolerance, ratio; default from routing.smootherTolerance. */
+  smoother_tolerance?: number;
   name?: string;
   stages?: number;
   no_forecast?: boolean;
@@ -60,6 +66,8 @@ export interface RouteRequest {
     under_keel_clearance?: number;
     /** Time lost per tack or gybe, seconds (default from plugin config). */
     tack_penalty_s?: number;
+    /** Share of the polar's boat speeds achieved under sail, ratio 0.3..1.2 (default from settings). */
+    polar_performance?: number;
     /** Polar token from GET /api/polars (`default` or a library file name). */
     polar?: string;
   };
@@ -87,6 +95,8 @@ export interface RouteSummary {
   current_sources?: string[];
   /** Label of the polar the route was computed with, or null when motor-only. */
   polar?: string | null;
+  /** Polar performance applied (ratio; 1 = the polar as written). */
+  polar_performance?: number;
   /** Automatic vias placed at narrow passages (not waypoints of the route). */
   auto_vias?: { name: string; width_m: number }[];
   /** Routes with waypoints: number of legs and the waypoint precision used. */

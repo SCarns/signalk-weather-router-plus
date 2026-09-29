@@ -237,6 +237,16 @@ test('per-route vessel values override the settings; omitted ones come from the 
   assert.equal(o.name, 'Catalina 36');
 });
 
+test('polar performance: ratio setting (default 1), per-route override, 0.3..1.2', () => {
+  const d = defaultSettings();
+  assert.equal(d.vessel.polarPerformance, 1);
+  const m = migrateLegacy(LEGACY);
+  const cfg = resolveConfig({ landShapefiles: '/a.shp' }, m.values);
+  assert.equal(routeVessel(cfg, undefined).polarPerformance, 1);
+  assert.equal(routeVessel(cfg, { polar_performance: 0.85 }).polarPerformance, 0.85);
+  assert.throws(() => routeVessel(cfg, { polar_performance: 1.5 }), /polarPerformance/);
+});
+
 test('CMEMS SMOC settings: defaults in SI, 1 h or 3 h step only, changes reload currents', () => {
   const d = defaultSettings();
   assert.equal(d.currents.smocEnabled, true);

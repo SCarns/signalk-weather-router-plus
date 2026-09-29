@@ -326,15 +326,15 @@ document.getElementById('clearEnd').addEventListener('click', function() {
 });
 
 // --- Tabs ---
-// The plan strip and result strip are pinned in #panelHead; these
-// five panes share #tabBody. Switching never hides the inputs.
+// All panes share #tabBody, the route inputs and result strip included
+// (Route tab); only the title, status line and tab bar stay on top.
 const modalLog = document.getElementById('modalLog');
 const modalItinerary = document.getElementById('modalItinerary');
 const modalStatus = document.getElementById('modalStatus');
 const logSection = document.getElementById('logSection');
 const itinerarySection = document.getElementById('itinerarySection');
 const cancelBtn = document.getElementById('cancelRoute');
-const TAB_IDS = ['settingsSection', 'layersSection', 'savedSection', 'logSection', 'itinerarySection', 'srvSettingsSection'];
+const TAB_IDS = ['routeSection', 'settingsSection', 'layersSection', 'savedSection', 'logSection', 'itinerarySection', 'srvSettingsSection'];
 function showTab(id) {
   if (!TAB_IDS.includes(id)) return;
   for (const t of TAB_IDS) {
@@ -356,7 +356,7 @@ document.querySelectorAll('#tabBar button').forEach(b => {
 (function () {
   let saved = null;
   try { saved = localStorage.getItem('rp:tab'); } catch (_) {}
-  showTab(TAB_IDS.includes(saved) ? saved : 'settingsSection');
+  showTab(TAB_IDS.includes(saved) ? saved : 'routeSection');
 })();
 
 // ─────────── Legends ───────────
@@ -375,18 +375,18 @@ function _loadLegends() {
 _loadLegends();
 
 function _legendUnit(quantity) {
-  if (quantity === 'speed') { const d = unitDesc('speed', 'm/s'); d.p = 0; return d; }
-  if (quantity === 'wave_height') { const d = unitDesc('wave_height', 'm'); d.p = d.f === 1 ? 1 : 0; return d; }
-  if (quantity === 'temperature') { const d = unitDesc('temperature', 'K'); d.p = 0; return d; }
-  // Precip stops are a water-depth rate in m/s; the preset's precip
-  // factor is per m/s as well.
-  if (quantity === 'precip_depth_rate') { const d = unitDesc('precip', 'm/s'); d.p = d.u === 'in/h' ? 2 : 1; return d; }
-  // Sea-level heights (tide) follow the preset's depth unit.
-  if (quantity === 'sea_level') { const d = unitDesc('depth', 'm'); d.p = d.f === 1 ? 1 : 0; return d; }
-  return { f: 1, off: 0, u: '', p: 0 };
+  if (quantity === 'speed') { const d = unitDesc('speed'); d.p = 0; return d; }
+  if (quantity === 'wave_height') { const d = unitDesc('wave_height'); d.p = Math.min(d.p, 1); return d; }
+  if (quantity === 'temperature') { const d = unitDesc('temperature'); d.p = 0; return d; }
+  // Precip stops are a water-depth rate in m/s, as is the precip unit.
+  if (quantity === 'precip_depth_rate') return unitDesc('precip');
+  // Sea-level heights (tide) follow the user's depth unit.
+  if (quantity === 'sea_level') { const d = unitDesc('depth'); d.p = Math.min(d.p, 1); return d; }
+  return { fn: v => v, u: '', p: 0 };
 }
 function _legendVal(v, u) {
-  const x = v * u.f + (u.off || 0);
+  if (u.missing) return UNIT_MISSING;
+  const x = u.fn(v);
   const s = x.toFixed(u.p);
   return s === '-0' ? '0' : s;
 }
@@ -415,8 +415,8 @@ function _bandsRow(L) {
 // Class bounds are in knots (the symbols are knot-based); shown in the
 // preset's speed unit.
 function _classesRow(title, classes, glyph) {
-  const u = unitDesc('speed', 'kt'); u.p = 1;
-  const cv = kt => { const t = (kt * 0.5144444444 * u.f).toFixed(u.p); return t.replace(/\.0$/, ''); };
+  const u = unitDesc('speed'); u.p = 1;
+  const cv = kt => { if (u.missing) return UNIT_MISSING; const t = u.fn(kt * 0.5144444444).toFixed(u.p); return t.replace(/\.0$/, ''); };
   const cells = classes.map(([lo, color], i) => {
     const hi = i + 1 < classes.length ? classes[i + 1][0] : null;
     const label = hi == null ? '≥' + cv(lo) : (i === 0 ? '&lt;' + cv(hi) : cv(lo) + '–' + cv(hi));
@@ -452,7 +452,7 @@ function updateLegends() {
     const scaled = (typeof _autoScaleStops !== 'undefined' && _autoScaleStops.tide) ? Object.assign({}, G.tide, { stops: _autoScaleStops.tide }) : G.tide;
     rows.push(_gradientRow(scaled) + '<div class="lg-note">scaled to the largest tide in view · relative to mean sea level, not chart datum · Copernicus Marine</div>' + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (~9 km)</div>' + _noteRow('tideToggle'));
   }
-  if (_on('pressureToggle')) rows.push('<div class="lg-row"><div class="lg-title">Pressure <span>(hPa)</span></div><div class="lg-note">isobars every 4 hPa · bold every 20 · <b style="color:#1565C0">H</b> / <b style="color:#C62828">L</b> centres</div>' + _noteRow('pressureToggle') + '</div>');
+  if (_on('pressureToggle')) rows.push('<div class="lg-row"><div class="lg-title">Pressure <span>(' + unitDesc('pressure').u + ')</span></div><div class="lg-note">isobars every ' + fmtPressure(400) + ' · bold every ' + fmtPressure(2000) + ' · <b style="color:#1565C0">H</b> / <b style="color:#C62828">L</b> centres</div>' + _noteRow('pressureToggle') + '</div>');
   box.innerHTML = rows.join('');
 }
 // Any layer toggle change (user click, or the saved-state restore that
@@ -693,12 +693,13 @@ function populateItinerary(features) {
     // Sailing-tack color: starboard = green, port = red — matches the
     // map route-line coloring. Same `tackSide` rule as displayRoute
     // (wind minus course), forward-looking on the next leg.
+    // No tack when course or wind is missing (no colour, no label).
     let tackCls = '';
+    let tack = null;
     if (modeCls === 'mode-sailing') {
       const nCog = p.next_cog != null ? p.next_cog : p.outgoing_cog;
-      const wDir = p.next_wind_dir_deg;
-      // fallback — default to green when cog or wind is missing
-      tackCls = 'tack-' + (tackSide(nCog, wDir) || 'starboard');
+      tack = tackSide(nCog, p.next_wind_dir_deg);
+      if (tack) tackCls = 'tack-' + tack;
     }
 
     const t = p.time ? formatTime(p.time) : '—';
@@ -773,6 +774,7 @@ function populateItinerary(features) {
       _kv('COG', cog),
       _kv('Wind', wind),
       _kv('TWA', twaStr),
+      _kv('Tack', tack ? (tack === 'port' ? 'Port' : 'Starboard') : null),
       _kv('Current', curStr),
       _kv('Waves', wavesStr),
       `<span class="kv"><span class="k">Depth</span><span class="v">${depth}</span></span>`,
@@ -924,7 +926,7 @@ function _computeUiIdle() {
 }
 
 // Subscribe to a job's event stream and drive the log, progress bar and
-// result. Used by Find Route and by the Routes tab for a job that is
+// result. Used by Find Route and by the Saved tab for a job that is
 // still queued/running. `Last-Event-ID` is sent by the browser on
 // reconnect, so a dropped connection replays what was missed.
 function attachToJob(id, jobRow) {
@@ -977,7 +979,7 @@ function attachToJob(id, jobRow) {
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     let d = null; try { d = JSON.parse(ev.data); } catch (_) {}
     appendLog('Route complete! (' + elapsed + 's)', 'done');
-    if (d && d.summary) appendLog('summary: ' + (fmtDist(d.summary.total_distance_m) || '') + ', ' + (fmtTime(d.summary.total_time_s) || '') + ', ' + d.summary.waypoint_count + ' waypoints' + (d.summary.polar ? ', polar ' + d.summary.polar : ''));
+    if (d && d.summary) appendLog('summary: ' + (fmtDist(d.summary.total_distance_m) || '') + ', ' + (fmtTime(d.summary.total_time_s) || '') + ', ' + d.summary.waypoint_count + ' waypoints' + (d.summary.polar ? ', polar ' + d.summary.polar : '') + (d.summary.polar_performance != null && UI_UNITS.ratio ? ' at ' + _fmt(d.summary.polar_performance, 'ratio') : ''));
     modalStatus.textContent = 'Done in ' + elapsed + 's';
     statusEl.textContent = '';
     RouteProgress.done(elapsed);
@@ -1262,17 +1264,19 @@ function _rowCells(r) {
        + '<td>' + (r.sea_state_index == null ? '—' : r.sea_state_index.toFixed(0) + ' ' + (r.sea_state || '') + (r.sea_state_partial ? '*' : '')) + '</td>'
        + '<td>' + (r.tide_m == null ? '—' : _fmtTideH(r.tide_m) + ' / ' + _fmtTideH(r.water_level_m) + ' / ' + _fmtTideH(r.surge_m) + (r.tide_extrapolated ? '*' : '')) + '</td>';
 }
-// Sea-level height in the preset's depth unit, one more decimal than depths (tides are small).
-function _tideUnit() { const u = unitDesc('depth', 'm'); u.p = u.f === 1 ? 2 : 1; return u; }
+// Sea-level height in the user's depth unit, one more decimal than depths (tides are small).
+function _tideUnit() { const u = unitDesc('depth'); u.p = u.p + 1; return u; }
 function _fmtTideH(m) {
   if (m == null) return '—';
-  const u = _tideUnit(), t = (m * u.f).toFixed(u.p);
+  const u = _tideUnit();
+  if (u.missing) return UNIT_MISSING;
+  const t = u.fn(m).toFixed(u.p);
   return (t.startsWith('-') && Number(t) === 0 ? t.slice(1) : t) + ' ' + u.u;
 }
 const _COND_HEAD = '<tr><th>time</th><th>wind</th><th>waves (h / T)</th><th>current (set)</th><th>press.</th><th>air / water</th><th>rain</th><th>type</th><th>feels like</th><th>RH</th><th>Bft</th><th>Douglas</th><th>sea state</th><th>tide / level / surge</th></tr>';
 
 // Display-unit scale for a SI value.
-function _unitOf(key, fallbackUnit) { return unitDesc(key, fallbackUnit); }
+function _unitOf(key) { return unitDesc(key); }
 
 // Tab definitions. `lines`: series drawn; `dir`: arrow field + sense
 // ('from' → arrow shows where it goes, 'to' → as given); `hover`:
@@ -1287,26 +1291,26 @@ const _PRECIP_COLORS = {
 };
 const _COND_TABS = [
   { id: 'wind',  label: 'Wind', overlays: [['windToggle', 'Barbs'], ['windCombinedToggle', 'Wind speed']],
-    lines: [{ key: 'wind_ms', unit: () => _unitOf('speed', 'm/s'), color: '#1565c0', name: 'wind' }],
+    lines: [{ key: 'wind_ms', unit: () => _unitOf('speed'), color: '#1565c0', name: 'wind' }],
     dir: { key: 'wind_dir_deg', sense: 'from' },
     hover: r => r.beaufort == null ? '' : ' · Beaufort ' + r.beaufort },
   { id: 'waves', label: 'Waves', marine: true, overlays: [['wavesCombinedToggle', 'Wave height']],
-    lines: [{ key: 'swh_m', unit: () => _unitOf('wave_height', 'm'), color: '#00838f', name: 'height' }],
+    lines: [{ key: 'swh_m', unit: () => _unitOf('wave_height'), color: '#00838f', name: 'height' }],
     dir: { key: 'mwd_deg', sense: 'from' },
     hover: r => (r.mwp_s == null ? '' : ' · period ' + fmtWavePeriod(r.mwp_s))
               + (r.douglas == null ? '' : ' · Douglas ' + r.douglas + ' ' + (r.douglas_label || '')) },
   { id: 'seastate', label: 'Sea state', marine: true,
     sub: [
       { id: 'index', label: 'Index', overlays: [['roughnessToggle', 'Sea state']],
-        lines: [{ key: 'sea_state_index', unit: () => ({ f: 1, u: 'index', p: 0 }), color: '#ad1457', name: 'index' }],
+        lines: [{ key: 'sea_state_index', unit: () => ({ fn: v => v, u: 'index', p: 0 }), color: '#ad1457', name: 'index' }],
         bands: [[35, 'good'], [50, 'slight'], [75, 'choppy'], [100, 'rough'], [150, 'extreme']],
         hover: r => (r.sea_state ? ' · ' + r.sea_state : '') + (r.sea_state_partial ? ' (wind only, no wave data)' : '') },
       { id: 'beaufort', label: 'Beaufort', overlays: [['windCombinedToggle', 'Wind speed']],
-        lines: [{ key: 'beaufort', unit: () => ({ f: 1, u: 'force', p: 0 }), color: '#1565c0', name: 'force', step: true }],
+        lines: [{ key: 'beaufort', unit: () => ({ fn: v => v, u: 'force', p: 0 }), color: '#1565c0', name: 'force', step: true }],
         range: [0, 12], yTicks: 6,
         hover: r => r.beaufort == null ? '' : ' · ' + _BEAUFORT_NAMES[r.beaufort] },
       { id: 'douglas', label: 'Douglas', overlays: [['wavesCombinedToggle', 'Waves']],
-        lines: [{ key: 'douglas', unit: () => ({ f: 1, u: 'state', p: 0 }), color: '#00838f', name: 'state', step: true }],
+        lines: [{ key: 'douglas', unit: () => ({ fn: v => v, u: 'state', p: 0 }), color: '#00838f', name: 'state', step: true }],
         range: [0, 9], yTicks: 9,
         hover: r => r.douglas_label ? ' · ' + r.douglas_label : '' },
     ] },
@@ -1323,24 +1327,24 @@ const _COND_TABS = [
     lines: [{ key: 'tide_m', unit: () => _tideUnit(), color: '#2a78d6', name: 'tide height', width: 2 },
             { key: 'water_level_m', unit: () => _tideUnit(), color: '#eb6834', name: 'total water level', width: 2 },
             { key: 'surge_m', unit: () => _tideUnit(), color: '#4a3aa7', name: 'surge (non-tidal)', width: 1.6, dash: [5, 3] },
-            { key: 'current_ms', unit: () => _unitOf('speed', 'm/s'), color: '#1baf7a', name: 'current speed', axis: 'right', width: 1.5, fill: 'rgba(27,175,122,0.16)', marine: true }],
+            { key: 'current_ms', unit: () => _unitOf('speed'), color: '#1baf7a', name: 'current speed', axis: 'right', width: 1.5, fill: 'rgba(27,175,122,0.16)', marine: true }],
     dir: { key: 'current_dir_deg', sense: 'to', color: '#11805a' },
     zeroLine: 'mean sea level', tideMarks: true,
     hover: r => (r.tide_tendency ? ' · tide ' + r.tide_tendency : '') + (r.tide_extrapolated ? ' · tide extrapolated near the coast' : '') },
   { id: 'pressure', label: 'Pressure', overlays: [['pressureToggle', 'Isobars']],
-    lines: [{ key: 'msl_pa', unit: () => unitDesc('pressure', 'Pa'), color: '#37474f', name: 'MSL' }] },
+    lines: [{ key: 'msl_pa', unit: () => unitDesc('pressure'), color: '#37474f', name: 'MSL' }] },
   { id: 'temp', label: 'Temp', overlays: [['temperatureToggle', 'Air'], ['sstToggle', 'Sea surface']],
-    lines: [{ key: 't2m_k', unit: () => unitDesc('temperature', 'K'), color: '#e65100', name: 'air' },
+    lines: [{ key: 't2m_k', unit: () => unitDesc('temperature'), color: '#e65100', name: 'air' },
             // ECMWF skin temperature: sea surface over ocean cells, ground
             // over land cells — only shown as "water" off land.
-            { key: 'skt_k', unit: () => unitDesc('temperature', 'K'), color: '#0277bd', name: 'water', marine: true },
-            { key: 'feels_like_k', unit: () => unitDesc('temperature', 'K'), color: '#8e24aa', name: 'feels like', width: 2.4 },
-            { key: 'wind_chill_k', unit: () => unitDesc('temperature', 'K'), color: '#00838f', name: 'wind chill', dash: [4, 3] },
-            { key: 'heat_index_k', unit: () => unitDesc('temperature', 'K'), color: '#c62828', name: 'heat index', dash: [4, 3] }],
+            { key: 'skt_k', unit: () => unitDesc('temperature'), color: '#0277bd', name: 'water', marine: true },
+            { key: 'feels_like_k', unit: () => unitDesc('temperature'), color: '#8e24aa', name: 'feels like', width: 2.4 },
+            { key: 'wind_chill_k', unit: () => unitDesc('temperature'), color: '#00838f', name: 'wind chill', dash: [4, 3] },
+            { key: 'heat_index_k', unit: () => unitDesc('temperature'), color: '#c62828', name: 'heat index', dash: [4, 3] }],
     hover: r => (r.rh == null ? '' : ' · RH ' + (r.rh * 100).toFixed(0) + ' %')
               + (r.dewpoint_k == null ? '' : ' · dew point ' + _fmtDegC(r.dewpoint_k)) },
   { id: 'precip', label: 'Precip', overlays: [['precipToggle', 'Precip']],
-    lines: [{ key: 'precip_rate_ms', unit: () => unitDesc('precip', 'm/s'), color: '#2e7d32', name: 'rate' }],
+    lines: [{ key: 'precip_rate_ms', unit: () => unitDesc('precip'), color: '#2e7d32', name: 'rate' }],
     colorBy: { key: 'precip_type_label', colors: _PRECIP_COLORS },
     hover: r => r.precip_type_label && r.precip_type_label !== 'none' ? ' · ' + r.precip_type_label : '' },
   { id: 'raw', label: 'Raw' },
@@ -1349,8 +1353,8 @@ let _condTab = 'wind';
 let _cond = null;   // { lon, lat, hourIso, instant, series, note, isLand }
 
 function _condDisplay(v, unit) {
-  if (v == null) return null;
-  return v * unit.f + (unit.off || 0);
+  if (v == null || unit.missing) return null;
+  return unit.fn(v);
 }
 
 // True when at least one row of the series carries a value for any of
@@ -1541,7 +1545,7 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
     const mark = (e, up) => {
       const t = new Date(e.time).getTime();
       if (t < t0 || t > tN) return;
-      const x = xOf(t), y = yOf(e.height_m * u.f + (u.off || 0));
+      const x = xOf(t), y = yOf(u.fn(e.height_m));
       ctx.fillStyle = lines[0].color;
       ctx.beginPath();
       if (up) { ctx.moveTo(x, y - 7); ctx.lineTo(x - 4, y - 1); ctx.lineTo(x + 4, y - 1); }

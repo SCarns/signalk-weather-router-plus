@@ -455,6 +455,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     forecastRun = null;
     routeForecastMemory = null;
     smocShared = null;
+    harmonicShared = null;
     routeCurrents = null;
     currentsKey = '';
     dataStatus = null;

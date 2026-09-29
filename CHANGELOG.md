@@ -6,6 +6,74 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Polar performance** (vessel setting, and `vessel.polar_performance`
+  per route): the share of the polar's boat speeds the boat makes under
+  sail, as a ratio (default 1 = the polar as written, 0.3–1.2). Polars
+  are usually race predictions; checked against 882 ORC 2026
+  non-spinnaker certificates, the generated Skye 51 polar is in line with
+  ORC's own predictions for comparable boats (Swan 48, Baltic 51,
+  Contest 48CS), which a loaded cruising boat does not reach. Motor speed
+  is unchanged. The Settings tab shows it in the user's Signal K
+  percentage unit.
+
+- **Route simplification** (port of the parent's `_rdp_simplify` and
+  `shortcut_smoother`), per leg, after the search: waypoints within
+  10 m of the straight line between their neighbours are dropped when
+  that line is clear of land, then runs of waypoints are replaced by one
+  straight leg when it is clear of land and its simulated time is at most
+  5% longer (under `sail_max`, a mostly-sailing stretch must stay mostly
+  sailing). Your waypoints are always kept. Settings: `routing.simplify`,
+  `routing.smoother`, `routing.smootherTolerance`; per route:
+  `simplify_m`, `smoother`, `smoother_tolerance`. Conditions are sampled
+  again at the new waypoint times, and the job summary's
+  `smoother_drops` is now filled in.
+- **Leg cards show the tack** (Port / Starboard) on sailing legs. With
+  course or wind missing, the card shows no tack instead of defaulting
+  to starboard.
+
+### Fixed
+
+- **The conditions popup took 14–15 s** inside the NECOFS-GOM3 area
+  (brain, 72 hourly rows). Each hour predicted the tidal current for the
+  whole NECOFS grid (501 × 501 cells, ~230 ms on the Pi) to read one
+  point. A point at a time with no grid cached is now predicted from its
+  4 surrounding cells only: 360 points × 72 h took 32 ms instead of
+  16.1 s, with identical results (difference 0; the pyTMD reference test
+  still passes). Map layers, which read many points at one time, still
+  use the cached grid. Leg simulations and the shortcut smoother, which
+  read one point at changing times, use the fast path too.
+
+### Changed
+
+- **The polar generator ("Create polar from boat specs…",
+  `POST /api/polar-from-specs`) uses a new physics calculator**
+  (`src/vessel/vpp_physics.ts`) instead of the empirical one. Sail forces
+  come from the ORC VPP Documentation 2026, hull resistance from the Delft
+  Systematic Yacht Hull Series and ITTC-57, and a heeling limit (with ORC's
+  default crew on the rail) makes the boat flatten and reef as the wind
+  builds. The heeling limit and effective sail span are fitted to 441 ORC
+  2026 non-spinnaker certificates; on 441 other certificates the median
+  error is 3.3% upwind, 3.2% reaching, 3.3% running (was 8.8%, 3.7%,
+  6.9%), and boats with a cell over 30% fell from 17 / 12 / 12 to
+  3 / 1 / 0. Heavy boats no longer come out 10–15% fast upwind. No
+  spinnaker is assumed: the downwind sail area field is gone and the API
+  ignores it. Polars generated before are not changed; generate them again
+  to get the new numbers.
+
+- **Display units come from the Signal K user's unit preferences.** The
+  page's own units selector is gone. As the Signal K Unit Preferences
+  guide describes for clients, the page reads `displayUnits` from path
+  metadata (`GET /signalk/v1/api/vessels/self/<path>/meta`), which the
+  server resolves for the logged-in user. Each quantity uses one path in
+  its category: speed, distance, depth, length, temperature, pressure,
+  time. Wave height follows depth, wave period is always seconds, rain
+  rate is mm/h or in/h depending on the user's length unit. Isobar labels
+  and the pressure legend use the user's pressure unit. There is no
+  fallback unit: a value whose category doesn't resolve shows as "—" and
+  the Display section names the missing categories.
+
 ### Fixed
 
 - **Routes with waypoints failed** ("finished 30 stages without any

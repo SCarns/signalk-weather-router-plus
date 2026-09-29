@@ -56,6 +56,9 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       departure: { type: 'string', format: 'date-time', description: 'Empty or absent = now' },
       mode: { type: 'string', enum: ['sail_max', 'fastest', 'motor'], default: 'sail_max' },
       sail_thresh_ms: { type: 'number', description: 'Overrides the routing.sailThreshold setting (m/s)' },
+      simplify_m: { type: 'number', minimum: 0, maximum: 5000, description: 'RDP simplification tolerance in metres (0 = off); overrides routing.simplify' },
+      smoother: { type: 'boolean', description: 'Run the shortcut smoother; overrides routing.smoother' },
+      smoother_tolerance: { type: 'number', minimum: 0, maximum: 0.5, description: 'Shortcut time tolerance as a ratio; overrides routing.smootherTolerance' },
       name: { type: 'string', description: 'Name for the Signal K route resource' },
       stages: { type: 'integer', minimum: 4, maximum: 200, description: 'Overrides the routing.stages setting' },
       no_forecast: { type: 'boolean', description: 'Route with calm wind' },
@@ -65,7 +68,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         description: 'Per-route overrides of the vessel settings (SI); absent keys use the settings.',
         properties: {
           name: { type: 'string' }, draught: { type: 'number' }, air_draft: { type: 'number' }, loa: { type: 'number' },
-          beam: { type: 'number' }, motor_speed_ms: { type: 'number' }, under_keel_clearance: { type: 'number' }, tack_penalty_s: { type: 'number', minimum: 0, maximum: 600 },
+          beam: { type: 'number' }, motor_speed_ms: { type: 'number' }, under_keel_clearance: { type: 'number' }, tack_penalty_s: { type: 'number', minimum: 0, maximum: 600 }, polar_performance: { type: 'number', minimum: 0.3, maximum: 1.2, description: 'Share of the polar boat speeds achieved under sail (ratio, 1 = as written)' },
           polar: { type: 'string', maxLength: 200, description: 'Polar token from /api/polars; absent = the configured default' },
         },
       },

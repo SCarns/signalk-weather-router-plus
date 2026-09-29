@@ -108,4 +108,25 @@ test('isobars: a synthetic low yields closed contours, labels and an L', () => {
   const [lon, lat] = (low.geometry as { coordinates: [number, number] }).coordinates;
   assert.ok(Math.abs(lon + 70) <= 0.26 && Math.abs(lat - 40) <= 0.26, `low at ${lon},${lat}`);
   assert.ok(feats.some((f) => f.properties.kind === 'isobar' && f.properties.hpa === 1000 && f.properties.bold === true));
+  for (const f of feats) assert.equal(f.properties.pa, Math.round((f.properties.hpa as number) * 100), `pa beside hpa on ${f.properties.kind}`);
+});
+
+test('harmonic: one point at a new time equals the full-grid prediction', { skip: !tidesDir ? 'WRP_TIDES_DIR not set' : false }, () => {
+  for (const f of ['necofs_gom3.npz', 'currents_local.npz']) {
+    const point = new HarmonicCurrentSource(path.join(tidesDir!, f));
+    const grid = new HarmonicCurrentSource(path.join(tidesDir!, f));
+    const b = point.bbox;
+    const t0 = Date.parse('2026-09-29T18:00:00Z');
+    for (let h = 0; h < 24; h++) {
+      const t = new Date(t0 + h * 3600e3);
+      for (let k = 0; k < 4; k++) {
+        const lon = b.west + (b.east - b.west) * ((k * 0.173 + h * 0.037) % 1);
+        const lat = b.south + (b.north - b.south) * ((k * 0.291 + h * 0.053) % 1);
+        const p = point.at(lon, lat, t); // no grid cached: single-point path
+        const g = grid.atMany(Float64Array.of(lon), Float64Array.of(lat), t); // full grid
+        assert.equal(p[0], g.u[0], `${f} u at ${lon},${lat} ${t.toISOString()}`);
+        assert.equal(p[1], g.v[0], `${f} v at ${lon},${lat} ${t.toISOString()}`);
+      }
+    }
+  }
 });

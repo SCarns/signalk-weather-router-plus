@@ -5,74 +5,200 @@
 // declarations share one global lexical scope across the three files.
 
 // ─── Slider label wiring / display units ─────────────────────────────
-// Display units. Everything the server sends is SI; these presets
-// decide how the page renders it. `factor` converts SI → display
-// (plus `offset` for temperature). The choice is per browser
-// (localStorage `rp:unitPreset`); nautical imperial is the default.
-// NOTE: `precip` factors are per m/s (the plugin's precip_rate_ms is a
-// depth rate in m/s), not per kg m⁻² s⁻¹ as in the routing server.
-const UNIT_PRESETS = {
-  metric: { label: 'Metric',
-    speed: { unit: 'km/h', factor: 3.6, precision: 1 },
-    distance: { unit: 'km', factor: 0.001, precision: 1 },
-    short_distance: { unit: 'm', factor: 1, precision: 0 },
-    depth: { unit: 'm', factor: 1, precision: 1 },
-    wave_height: { unit: 'm', factor: 1, precision: 1 },
-    wave_period: { unit: 's', factor: 1, precision: 0 },
-    time: { unit: 'h', factor: 1 / 3600, precision: 1 },
-    temperature: { unit: '°C', factor: 1, offset: -273.15, precision: 1 },
-    pressure: { unit: 'hPa', factor: 0.01, precision: 0 },
-    precip: { unit: 'mm/h', factor: 3600 * 1000, precision: 1 },
+// Display units come from the Signal K user's unit preferences, never
+// from a choice on this page. Everything the plugin sends is SI. As the
+// Signal K Unit Preferences guide describes for clients, the page reads
+// `displayUnits` from path metadata,
+//   GET /signalk/v1/api/vessels/self/<path>/meta
+// which the server resolves for the logged-in user (category,
+// targetUnit, formula, inverseFormula, symbol, displayFormat). The
+// page's values aren't Signal K paths, so each quantity takes the
+// displayUnits of one path in its category (paths from the server's
+// default-categories mapping).
+// Quantities with no Signal K category:
+//   wave_height → follows the user's depth unit (as tide height does)
+//   wave_period → always seconds
+//   precip      → mm/h when the user's length unit is metric, else in/h
+// There is no fallback: until the metadata loads, or for any category
+// the server doesn't resolve, values show as '—' and the Display
+// section names what is missing.
+const CATEGORY_PATH = {
+  speed: 'navigation/speedOverGround',
+  distance: 'navigation/log',
+  depth: 'environment/depth/belowTransducer',
+  length: 'design/beam',
+  temperature: 'environment/outside/temperature',
+  pressure: 'environment/outside/pressure',
+  time: 'navigation/racing/timeToStart',
+  percentage: 'environment/outside/relativeHumidity',
+};
+const UNIT_CATEGORY = {
+  speed: 'speed', distance: 'distance', depth: 'depth', short_distance: 'length',
+  wave_height: 'depth', time: 'time', temperature: 'temperature', pressure: 'pressure',
+  ratio: 'percentage',
+};
+const METRIC_LENGTH_UNITS = ['m', 'meter', 'mm', 'cm', 'km', 'kilometer'];
+const _ident = v => v;
+const WAVE_PERIOD_UNIT = { unit: 's', fn: _ident, inv: _ident, precision: 0 };
+const UNIT_MISSING = '—';      // shown in place of a value whose unit is unresolved
+let UI_UNITS = {};             // page quantity → {unit, fn, inv, precision[, text]}; empty until loaded
+
+// Signal K conversion formulas use mathjs syntax. This evaluates the
+// arithmetic subset (numbers, `value`, + - * / ^, parentheses, and a
+// few Math functions) without eval. Returns fn(value) or null.
+function _compileFormula(src) {
+  const toks = String(src).match(/\d+\.?\d*(?:e[+-]?\d+)?|\.\d+(?:e[+-]?\d+)?|[A-Za-z_]\w*|[-+*/^(),]/gi);
+  if (!toks || toks.join('') !== String(src).replace(/\s+/g, '')) return null;
+  const FUNCS = { sqrt: Math.sqrt, abs: Math.abs, exp: Math.exp, log: Math.log, log10: Math.log10,
+    round: Math.round, floor: Math.floor, ceil: Math.ceil, pow: Math.pow, cbrt: Math.cbrt };
+  let i = 0;
+  const peek = () => toks[i], take = () => toks[i++];
+  function expr() {
+    let a = term();
+    while (peek() === '+' || peek() === '-') { const op = take(), b = term(), x = a; a = op === '+' ? v => x(v) + b(v) : v => x(v) - b(v); }
+    return a;
+  }
+  function term() {
+    let a = unary();
+    while (peek() === '*' || peek() === '/') { const op = take(), b = unary(), x = a; a = op === '*' ? v => x(v) * b(v) : v => x(v) / b(v); }
+    return a;
+  }
+  function unary() {
+    if (peek() === '-') { take(); const a = unary(); return v => -a(v); }
+    if (peek() === '+') { take(); return unary(); }
+    return power();
+  }
+  function power() {
+    const a = atom();
+    if (peek() === '^') { take(); const b = unary(); return v => Math.pow(a(v), b(v)); }
+    return a;
+  }
+  function atom() {
+    const t = take();
+    if (t === undefined) throw new Error('end');
+    if (t === '(') { const a = expr(); if (take() !== ')') throw new Error(')'); return a; }
+    if (/^[\d.]/.test(t)) { const n = Number(t); return () => n; }
+    if (t === 'value') return v => v;
+    if (FUNCS[t] && peek() === '(') {
+      take(); const args = [expr()];
+      while (peek() === ',') { take(); args.push(expr()); }
+      if (take() !== ')') throw new Error(')');
+      const f = FUNCS[t];
+      return v => f(...args.map(a => a(v)));
+    }
+    throw new Error('token ' + t);
+  }
+  try { const f = expr(); return i === toks.length ? f : null; } catch (_) { return null; }
+}
+
+// Duration formats named by Signal K's time conversions
+// (formatDurationHMS(value) etc.). The server ships only the names, no
+// implementation, so these layouts follow the unit keys (HH:MM:SS …);
+// verbose and compact are this page's own wording.
+const _durPad = (n, w = 2) => String(n).padStart(w, '0');
+function _durParts(s) {
+  const neg = s < 0; s = Math.abs(s);
+  const ms = Math.round(s * 1000);
+  return { neg, d: Math.floor(ms / 86400000), h: Math.floor(ms / 3600000), hd: Math.floor(ms / 3600000) % 24,
+    m: Math.floor(ms / 60000) % 60, mt: Math.floor(ms / 60000), sec: Math.floor(ms / 1000) % 60, milli: ms % 1000 };
+}
+const DURATION_FORMATS = {
+  formatDurationDHMS: s => { const p = _durParts(s); return (p.neg ? '-' : '') + _durPad(p.d) + ':' + _durPad(p.hd) + ':' + _durPad(p.m) + ':' + _durPad(p.sec); },
+  formatDurationHMS: s => { const p = _durParts(s); return (p.neg ? '-' : '') + _durPad(p.h) + ':' + _durPad(p.m) + ':' + _durPad(p.sec); },
+  formatDurationHMSMillis: s => { const p = _durParts(s); return (p.neg ? '-' : '') + _durPad(p.h) + ':' + _durPad(p.m) + ':' + _durPad(p.sec) + '.' + _durPad(p.milli, 3); },
+  formatDurationMS: s => { const p = _durParts(s); return (p.neg ? '-' : '') + _durPad(p.mt) + ':' + _durPad(p.sec); },
+  formatDurationMSMillis: s => { const p = _durParts(s); return (p.neg ? '-' : '') + _durPad(p.mt) + ':' + _durPad(p.sec) + '.' + _durPad(p.milli, 3); },
+  formatDurationVerbose: s => {
+    const p = _durParts(s), out = [];
+    const part = (n, w) => { if (n) out.push(n + ' ' + w + (n === 1 ? '' : 's')); };
+    part(p.d, 'day'); part(p.hd, 'hour'); part(p.m, 'minute');
+    if (!out.length) part(p.sec, 'second');
+    return (p.neg ? '-' : '') + (out.join(' ') || '0 minutes');
   },
-  imperial: { label: 'Imperial',
-    speed: { unit: 'mph', factor: 2.236936, precision: 1 },
-    distance: { unit: 'mi', factor: 0.000621371, precision: 1 },
-    short_distance: { unit: 'ft', factor: 3.28084, precision: 0 },
-    depth: { unit: 'ft', factor: 3.28084, precision: 1 },
-    wave_height: { unit: 'ft', factor: 3.28084, precision: 1 },
-    wave_period: { unit: 's', factor: 1, precision: 0 },
-    time: { unit: 'h', factor: 1 / 3600, precision: 1 },
-    temperature: { unit: '°F', factor: 1.8, offset: -459.67, precision: 0 },
-    pressure: { unit: 'inHg', factor: 0.0002953, precision: 2 },
-    precip: { unit: 'in/h', factor: 3600 * 1000 / 25.4, precision: 2 },
-  },
-  nautical_metric: { label: 'Nautical metric',
-    speed: { unit: 'kt', factor: 1.943844, precision: 1 },
-    distance: { unit: 'nm', factor: 0.000539957, precision: 1 },
-    short_distance: { unit: 'm', factor: 1, precision: 0 },
-    depth: { unit: 'm', factor: 1, precision: 1 },
-    wave_height: { unit: 'm', factor: 1, precision: 1 },
-    wave_period: { unit: 's', factor: 1, precision: 0 },
-    time: { unit: 'h', factor: 1 / 3600, precision: 1 },
-    temperature: { unit: '°C', factor: 1, offset: -273.15, precision: 1 },
-    pressure: { unit: 'hPa', factor: 0.01, precision: 0 },
-    precip: { unit: 'mm/h', factor: 3600 * 1000, precision: 1 },
-  },
-  nautical_imperial: { label: 'Nautical imperial',
-    speed: { unit: 'kt', factor: 1.943844, precision: 1 },
-    distance: { unit: 'nm', factor: 0.000539957, precision: 1 },
-    short_distance: { unit: 'ft', factor: 3.28084, precision: 0 },
-    depth: { unit: 'ft', factor: 3.28084, precision: 1 },
-    wave_height: { unit: 'ft', factor: 3.28084, precision: 1 },
-    wave_period: { unit: 's', factor: 1, precision: 0 },
-    time: { unit: 'h', factor: 1 / 3600, precision: 1 },
-    temperature: { unit: '°F', factor: 1.8, offset: -459.67, precision: 0 },
-    pressure: { unit: 'inHg', factor: 0.0002953, precision: 2 },
-    precip: { unit: 'in/h', factor: 3600 * 1000 / 25.4, precision: 2 },
+  formatDurationCompact: s => {
+    const p = _durParts(s), out = [];
+    if (p.d) out.push(p.d + 'd'); if (p.hd) out.push(p.hd + 'h'); if (p.m || !out.length) out.push(p.m + 'm');
+    return (p.neg ? '-' : '') + out.join(' ');
   },
 };
-let UNIT_PRESET = 'nautical_imperial';
-try { const v = localStorage.getItem('rp:unitPreset'); if (v && UNIT_PRESETS[v]) UNIT_PRESET = v; } catch (_) {}
-let UI_UNITS = UNIT_PRESETS[UNIT_PRESET];
 
-// Switch preset and re-render everything that shows a number. Parts
-// that live inside closures listen for `rp:units`.
-function applyUnitPreset(key) {
-  if (!UNIT_PRESETS[key]) return;
-  UNIT_PRESET = key; UI_UNITS = UNIT_PRESETS[key];
-  try { localStorage.setItem('rp:unitPreset', key); } catch (_) {}
-  const sel = document.getElementById('unitPreset');
-  if (sel && sel.value !== key) sel.value = key;
+// Signal K displayFormat ("0", "0.0", "0.00") → decimal places.
+function _precisionOf(fmt) {
+  const m = /^0(?:\.(0+))?$/.exec(fmt || '');
+  return m ? (m[1] ? m[1].length : 0) : 1;
+}
+
+// A Signal K displayUnits object → page unit, or null when its formula
+// can't be evaluated.
+function _unitFromDisplayUnits(du) {
+  if (!du || typeof du.formula !== 'string') return null;
+  const dur = /^\s*(formatDuration\w+)\(\s*value\s*\)\s*$/.exec(du.formula);
+  if (dur) {
+    const text = DURATION_FORMATS[dur[1]];
+    return text ? { unit: '', fn: v => v / 3600, inv: v => v * 3600, precision: 1, text } : null;
+  }
+  const fn = _compileFormula(du.formula), inv = _compileFormula(du.inverseFormula);
+  if (!fn) return null;
+  return { unit: du.symbol || du.targetUnit || '', fn, inv, precision: _precisionOf(du.displayFormat) };
+}
+
+// category → displayUnits (null where unresolved) → {units, missing}.
+function _buildUnits(byCategory) {
+  const u = {}, missing = new Set();
+  const resolved = {};
+  for (const [cat, du] of Object.entries(byCategory)) {
+    resolved[cat] = _unitFromDisplayUnits(du);
+    if (!resolved[cat]) missing.add(cat);
+  }
+  for (const [key, cat] of Object.entries(UNIT_CATEGORY)) if (resolved[cat]) u[key] = resolved[cat];
+  u.wave_period = WAVE_PERIOD_UNIT;
+  const len = byCategory.length;
+  if (resolved.length && len) {
+    u.precip = METRIC_LENGTH_UNITS.includes(len.targetUnit)
+      ? { unit: 'mm/h', fn: v => v * 3600000, inv: v => v / 3600000, precision: 1 }
+      : { unit: 'in/h', fn: v => v * 3600000 / 25.4, inv: v => v * 25.4 / 3600000, precision: 2 };
+  }
+  return { units: u, missing: [...missing] };
+}
+
+// displayUnits for one category, or null with the reason logged.
+async function _fetchDisplayUnits(cat) {
+  const url = '/signalk/v1/api/vessels/self/' + CATEGORY_PATH[cat] + '/meta';
+  try {
+    const r = await fetch(url, { credentials: 'include' });
+    if (!r.ok) { console.warn('[units] ' + url + ' → HTTP ' + r.status); return null; }
+    const meta = await r.json();
+    if (!meta || !meta.displayUnits || meta.displayUnits.category !== cat) {
+      console.warn('[units] ' + url + ': no "' + cat + '" displayUnits', meta && meta.displayUnits);
+      return null;
+    }
+    return meta.displayUnits;
+  } catch (e) {
+    console.warn('[units] ' + url + ' failed', e);
+    return null;
+  }
+}
+let _lastUnitsJson = null;
+async function loadUnitPreferences() {
+  const cats = Object.keys(CATEGORY_PATH);
+  const got = await Promise.all(cats.map(_fetchDisplayUnits));
+  const byCategory = Object.fromEntries(cats.map((c, i) => [c, got[i]]));
+  const { units, missing } = _buildUnits(byCategory);
+  let status = missing.length === cats.length
+    ? 'Could not read your Signal K unit preferences, so values show as ' + UNIT_MISSING + '.'
+    : 'Units from your Signal K unit preferences.';
+  if (missing.length && missing.length < cats.length) {
+    status += ' No unit for: ' + missing.join(', ') + ', so those values show as ' + UNIT_MISSING + '.';
+  }
+  const json = JSON.stringify(byCategory);
+  if (json !== _lastUnitsJson) { _lastUnitsJson = json; UI_UNITS = units; applyDisplayUnits(); }
+  const el = document.getElementById('unitSource');
+  if (el) el.textContent = status;
+}
+
+// Re-render everything that shows a number. Parts that live inside
+// closures listen for `rp:units`.
+function applyDisplayUnits() {
   if (typeof refreshSliderLabels === 'function') refreshSliderLabels();
   if (typeof renderResultStrip === 'function' && typeof _lastRouteProps !== 'undefined' && _lastRouteProps) renderResultStrip(_lastRouteProps, _lastNavWarns);
   if (typeof populateItinerary === 'function' && typeof _itineraryFeatures !== 'undefined' && _itineraryFeatures.length) populateItinerary(_itineraryFeatures);
@@ -84,28 +210,30 @@ function applyUnitPreset(key) {
 }
 
 // Format helpers — null-safe, return null if input is null.
-function _fmt(siValue, key, fallbackUnit) {
+function _fmt(siValue, key) {
   if (siValue == null) return null;
-  const c = UI_UNITS && UI_UNITS[key];
-  if (!c) return siValue.toFixed(1) + (fallbackUnit ? ' ' + fallbackUnit : '');
-  const v = siValue * c.factor + (c.offset || 0);
-  const t = v.toFixed(c.precision);
-  return (t === '-0' ? '0' : t) + ' ' + c.unit;
+  const c = UI_UNITS[key];
+  if (!c) return UNIT_MISSING;
+  if (c.text) return c.text(siValue);
+  const t = c.fn(siValue).toFixed(c.precision);
+  return (t === '-0' ? '0' : t) + (c.unit ? ' ' + c.unit : '');
 }
-function fmtSpeed(ms)        { return _fmt(ms, 'speed', 'm/s'); }
-function fmtDist(m)          { return _fmt(m, 'distance', 'm'); }
-function fmtDepth(m)         { return _fmt(m, 'depth', 'm'); }
-function fmtSwh(m)           { return _fmt(m, 'wave_height', 'm'); }
-function fmtWavePeriod(s)    { return _fmt(s, 'wave_period', 's'); }
-function fmtTime(s)          { return _fmt(s, 'time', 's'); }
-function fmtShortDist(m)     { return _fmt(m, 'short_distance', 'm'); }
-function fmtTemp(k)          { return _fmt(k, 'temperature', 'K'); }
-function fmtPressure(pa)     { return _fmt(pa, 'pressure', 'Pa'); }
-function fmtPrecip(rate)     { return _fmt(rate, 'precip', 'm/s'); }
-// Display-unit descriptor for chart axes and legends: {f, off, u, p}.
-function unitDesc(key, fallbackUnit) {
-  const c = UI_UNITS && UI_UNITS[key];
-  return c ? { f: c.factor, off: c.offset || 0, u: c.unit, p: c.precision } : { f: 1, off: 0, u: fallbackUnit || '', p: 1 };
+function fmtSpeed(ms)        { return _fmt(ms, 'speed'); }
+function fmtDist(m)          { return _fmt(m, 'distance'); }
+function fmtDepth(m)         { return _fmt(m, 'depth'); }
+function fmtSwh(m)           { return _fmt(m, 'wave_height'); }
+function fmtWavePeriod(s)    { return _fmt(s, 'wave_period'); }
+function fmtTime(s)          { return _fmt(s, 'time'); }
+function fmtShortDist(m)     { return _fmt(m, 'short_distance'); }
+function fmtTemp(k)          { return _fmt(k, 'temperature'); }
+function fmtPressure(pa)     { return _fmt(pa, 'pressure'); }
+function fmtPrecip(rate)     { return _fmt(rate, 'precip'); }
+// Display-unit descriptor for chart axes and legends: {fn, u, p};
+// fn converts SI → display (may be non-linear, e.g. Beaufort). When the
+// unit is unresolved, `missing` is set and fn gives NaN.
+function unitDesc(key) {
+  const c = UI_UNITS[key];
+  return c ? { fn: c.fn, u: c.unit, p: c.precision } : { fn: () => NaN, u: '', p: 0, missing: true };
 }
 
 // Sliders keep their native value (knots for sail speed, metres for
@@ -123,9 +251,10 @@ function refreshSliderLabels() {
     const inp = document.getElementById(id), lbl = document.getElementById(id + 'Label');
     if (!inp || !lbl) continue;
     const d = SLIDER_DISPLAY[id], c = UI_UNITS[d.q];
-    const v = d.toSI(parseFloat(inp.value)) * c.factor;
-    lbl.textContent = v.toFixed(v >= 100 ? 0 : c.precision);
     const u = document.querySelector('.unitOf[data-for="' + id + 'Label"]');
+    if (!c) { lbl.textContent = UNIT_MISSING; if (u) u.textContent = ''; continue; }
+    const v = c.fn(d.toSI(parseFloat(inp.value)));
+    lbl.textContent = v.toFixed(v >= 100 ? 0 : c.precision);
     if (u) u.textContent = c.unit;
   }
   const st = document.getElementById('stages'), stl = document.getElementById('stagesLabel');
@@ -145,8 +274,10 @@ function refreshSliderLabels() {
     });
   }
   refreshSliderLabels();
-  const sel = document.getElementById('unitPreset');
-  if (sel) { sel.value = UNIT_PRESET; sel.addEventListener('change', () => applyUnitPreset(sel.value)); }
+  // Pick up the user's preferences now, and again when the page regains
+  // focus (they may have changed them in the admin UI meanwhile).
+  loadUnitPreferences();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) loadUnitPreferences(); });
 })();
 
 // ─── Sailing tack ────────────────────────────────────────────────────
@@ -672,10 +803,15 @@ function drawPolarDiagram() {
     if (info && !T) info.textContent = '';
     return;
   }
-  const u = unitDesc('speed', 'm/s'); u.p = 0;
+  const u = unitDesc('speed'); u.p = 0;
+  if (u.missing) {
+    ctx.fillStyle = '#888'; ctx.textAlign = 'center';
+    ctx.fillText('No speed unit from your Signal K unit preferences', W / 2, H / 2);
+    return;
+  }
   const cx = 96, cy = H / 2, R = Math.min(cy - 18, W - cx - 14);
   let vmax = 0;
-  for (const row of T.speeds_ms) for (const v of row) if (Number.isFinite(v)) vmax = Math.max(vmax, v * u.f);
+  for (const row of T.speeds_ms) for (const v of row) if (Number.isFinite(v)) vmax = Math.max(vmax, u.fn(v));
   if (vmax <= 0) vmax = 1;
   // Ring step: a round number in the display unit giving 3–6 rings.
   const rawStep = vmax / 4;
@@ -711,7 +847,7 @@ function drawPolarDiagram() {
     for (let i = 0; i < T.twa_deg.length; i++) {
       const v = T.speeds_ms[i] ? T.speeds_ms[i][k] : null;
       if (v == null || !Number.isFinite(v)) { up = true; continue; }
-      const [x, y] = xy(T.twa_deg[i], v * u.f);
+      const [x, y] = xy(T.twa_deg[i], u.fn(v));
       if (up) { ctx.moveTo(x, y); up = false; } else ctx.lineTo(x, y);
     }
     ctx.stroke();
@@ -723,7 +859,7 @@ function drawPolarDiagram() {
           if (ang == null) continue;
           const v = _polarSpeedAt(T, ang, k);
           if (v == null) continue;
-          const [x, y] = xy(ang, v * u.f);
+          const [x, y] = xy(ang, u.fn(v));
           ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, 2.6, 0, Math.PI * 2); ctx.fill();
           ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
         }
@@ -737,7 +873,7 @@ function drawPolarDiagram() {
   for (let k = 0; k < nW; k++) {
     ctx.fillStyle = _POLAR_TWS_COLORS[Math.min(k, _POLAR_TWS_COLORS.length - 1)];
     ctx.fillRect(lx, ly - 4, 14, 3);
-    ctx.fillStyle = '#333'; ctx.fillText((T.tws_ms[k] * u.f).toFixed(u.p), lx + 18, ly);
+    ctx.fillStyle = '#333'; ctx.fillText(u.fn(T.tws_ms[k]).toFixed(u.p), lx + 18, ly);
     ly += 12;
     if (ly > H - 8) break;
   }
@@ -853,7 +989,7 @@ document.getElementById('polarFilter').addEventListener('input', function() {
 loadPolarList();
 
 // ─────────── Vessel/polar specs form (VPP generator) ───────────
-// POST /api/polar-from-specs runs the plugin's empirical VPP on the specs
+// POST /api/polar-from-specs runs the plugin's polar calculator on the specs
 // and writes <polarsDir>/user/<slug>.csv; the new polar is then selected
 // in the picker. The sister app's sailboatdata search (Algolia + a public
 // CORS proxy for the boat page) is not carried over: a Signal K server
@@ -926,7 +1062,6 @@ loadPolarList();
         displacement_kg: num('vf_disp'),
         ballast_kg: num('vf_ballast'),
         sail_area_upwind_m2: num('vf_sa_up'),
-        sail_area_downwind_m2: num('vf_sa_dn') || 0.0,
         rig_type: g('vf_rig').value,
         keel_type: g('vf_keel').value,
         hull_type: 'monohull',

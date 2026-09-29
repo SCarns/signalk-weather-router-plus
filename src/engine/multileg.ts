@@ -127,6 +127,7 @@ export function stitchLegs(legs: Route[]): Route {
   const skeleton = legs[0].skeleton ? [...legs[0].skeleton] : undefined;
   let validated = legs[0].validated;
   let horizon = legs[0].forecastHorizonExceededS ?? 0;
+  let drops = legs[0].smootherDrops ?? 0;
   for (let li = 1; li < legs.length; li++) {
     const leg = legs[li];
     // The previous leg's end is this waypoint's junction.
@@ -152,6 +153,7 @@ export function stitchLegs(legs: Route[]): Route {
     if (skeleton && leg.skeleton) skeleton.push(...(samePoint(skeleton[skeleton.length - 1], leg.skeleton[0]) ? leg.skeleton.slice(1) : leg.skeleton));
     validated = validated && leg.validated;
     horizon = Math.max(horizon, leg.forecastHorizonExceededS ?? 0);
+    drops += leg.smootherDrops ?? 0;
   }
   const route: Route = {
     waypoints,
@@ -165,6 +167,7 @@ export function stitchLegs(legs: Route[]): Route {
   if (autoVias.length) route.autoVias = autoVias;
   if (skeleton) route.skeleton = skeleton;
   if (horizon > 0) route.forecastHorizonExceededS = horizon;
+  if (drops) route.smootherDrops = drops;
   recomputePerWaypointMetadata(route);
   return route;
 }

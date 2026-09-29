@@ -18,6 +18,12 @@ export interface VesselParams {
   /** Maximum acceptable significant wave height, metres (informational in this version). */
   maxSwh?: number;
   tackPenaltySeconds: number;
+  /**
+   * Polar performance: the fraction of the polar's boat speeds the vessel
+   * achieves under sail (1 = the polar as written). Motor speed is not
+   * affected.
+   */
+  polarPerformance: number;
 }
 
 /** Minimum water depth the vessel needs: draught plus under-keel clearance. */
@@ -39,6 +45,7 @@ export const DEFAULT_VESSEL: VesselParams = {
   overheadClearance: 1.0,
   motorSpeedMs: 3.09,
   tackPenaltySeconds: 30,
+  polarPerformance: 1,
 };
 
 /** Merge a partial override onto defaults, validating ranges. */
@@ -58,6 +65,7 @@ export function makeVessel(partial: Partial<VesselParams>): VesselParams {
   check('overheadClearance', 0, 20);
   check('motorSpeedMs', 0.01, 50);
   check('tackPenaltySeconds', 0, 3600);
+  check('polarPerformance', 0.3, 1.2);
   if (v.maxSwh !== undefined) check('maxSwh', 0, 30);
   return v;
 }

@@ -8,6 +8,12 @@
 export interface LegendEntry {
   title: string;
   quantity: string;
+  /**
+   * Signal K unit-preference category a client formats the stop values
+   * with (`speed`, `depth`, `temperature`, …); null when the quantity
+   * has no category (dimensionless indices, precipitation rate).
+   */
+  category: string | null;
   si_unit: string;
   kind: 'gradient' | 'bands';
   /** [siValue, cssColor] ascending. */
@@ -60,13 +66,13 @@ export const SEA_STATE_BANDS: [number, string][] = [[0, 'smooth'], [35, 'good'],
 
 export function buildLegends(): Record<string, LegendEntry> {
   return {
-    wind: { title: 'Wind', quantity: 'speed', si_unit: 'm/s', kind: 'gradient', stops: WIND_STOPS },
-    current: { title: 'Current', quantity: 'speed', si_unit: 'm/s', kind: 'gradient', stops: CURRENT_STOPS },
-    waves: { title: 'Significant wave height', quantity: 'wave_height', si_unit: 'm', kind: 'gradient', stops: WAVE_STOPS },
-    precip: { title: 'Precipitation rate', quantity: 'precip_depth_rate', si_unit: 'm/s', kind: 'gradient', stops: PRECIP_STOPS },
-    temperature: { title: 'Air temperature (2 m)', quantity: 'temperature', si_unit: 'K', kind: 'gradient', stops: TEMP_STOPS },
-    sst: { title: 'Sea surface temperature', quantity: 'temperature', si_unit: 'K', kind: 'gradient', stops: SST_STOPS },
-    sea_state: { title: 'Sea state', quantity: 'index', si_unit: '', kind: 'bands', stops: SEA_STATE_STOPS, bands: SEA_STATE_BANDS },
-    tide: { title: 'Tide height above mean sea level', quantity: 'sea_level', si_unit: 'm', kind: 'gradient', stops: TIDE_STOPS },
+    wind: { title: 'Wind', quantity: 'speed', category: 'speed', si_unit: 'm/s', kind: 'gradient', stops: WIND_STOPS },
+    current: { title: 'Current', quantity: 'speed', category: 'speed', si_unit: 'm/s', kind: 'gradient', stops: CURRENT_STOPS },
+    waves: { title: 'Significant wave height', quantity: 'wave_height', category: 'depth', si_unit: 'm', kind: 'gradient', stops: WAVE_STOPS },
+    precip: { title: 'Precipitation rate', quantity: 'precip_depth_rate', category: null, si_unit: 'm/s', kind: 'gradient', stops: PRECIP_STOPS },
+    temperature: { title: 'Air temperature (2 m)', quantity: 'temperature', category: 'temperature', si_unit: 'K', kind: 'gradient', stops: TEMP_STOPS },
+    sst: { title: 'Sea surface temperature', quantity: 'temperature', category: 'temperature', si_unit: 'K', kind: 'gradient', stops: SST_STOPS },
+    sea_state: { title: 'Sea state', quantity: 'index', category: null, si_unit: '', kind: 'bands', stops: SEA_STATE_STOPS, bands: SEA_STATE_BANDS },
+    tide: { title: 'Tide height above mean sea level', quantity: 'sea_level', category: 'depth', si_unit: 'm', kind: 'gradient', stops: TIDE_STOPS },
   };
 }

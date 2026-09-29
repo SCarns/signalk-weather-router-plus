@@ -78,6 +78,8 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
   private readonly latStep: number;
   private readonly lonStep: number;
   private readonly cache = new Map<number, { u: Float32Array; v: Float32Array }>();
+  /** Tidal arguments per 5-min bin, for single-point predictions (tiny). */
+  private readonly argCache = new Map<number, ReturnType<typeof tidalArguments>>();
   readonly cacheBinMinutes = 5;
   readonly cacheMaxEntries: number;
 
@@ -192,9 +194,62 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
     return { u: Float32Array.from(ud), v: Float32Array.from(vd) };
   }
 
-  private cachedGrid(mjd: number): { u: Float32Array; v: Float32Array } {
+  private binKey(mjd: number): number {
     const bin = this.cacheBinMinutes / 1440;
-    const key = Math.round(mjd / bin) * bin;
+    return Math.round(mjd / bin) * bin;
+  }
+
+  /**
+   * The value predictGrid would store for one cell (float32), computed
+   * for that cell alone: the same sum in the same order.
+   */
+  private predictCell(args: ReturnType<typeof tidalArguments>, cell: number): [number, number] {
+    const { pu, pf, G } = args;
+    const per = this.lats.length * this.lons.length;
+    const DEG = Math.PI / 180;
+    let ud = 0;
+    let vd = 0;
+    for (let c = 0; c < this.constituents.length; c++) {
+      const theta = G[c] * DEG + pu[c];
+      const f = pf[c];
+      const i = c * per + cell;
+      ud += this.eastAmp[i] * f * Math.cos(theta - this.eastPha[i] * DEG);
+      vd += this.northAmp[i] * f * Math.cos(theta - this.northPha[i] * DEG);
+    }
+    return [Math.fround(ud), Math.fround(vd)];
+  }
+
+  /**
+   * One point at a time with no cached grid (e.g. a 72-hour conditions
+   * series): predict only the 4 cells around the point instead of the
+   * whole grid (NECOFS-GOM3: 501×501 cells, ~230 ms per grid on a Pi 5).
+   * Same result as interpolating the full grid.
+   */
+  private pointAt(key: number, lon: number, lat: number): [number, number] {
+    let args = this.argCache.get(key);
+    if (!args) {
+      args = tidalArguments(key, this.constituents);
+      this.argCache.set(key, args);
+      while (this.argCache.size > 4096) this.argCache.delete(this.argCache.keys().next().value as number);
+    }
+    const nLat = this.lats.length;
+    const nLon = this.lons.length;
+    const latIdx = (lat - this.lats[0]) / this.latStep;
+    const lonIdx = (lon - this.lons[0]) / this.lonStep;
+    const i0 = Math.max(0, Math.min(Math.floor(latIdx), nLat - 2));
+    const j0 = Math.max(0, Math.min(Math.floor(lonIdx), nLon - 2));
+    const di = Math.max(0, Math.min(1, latIdx - i0));
+    const dj = Math.max(0, Math.min(1, lonIdx - j0));
+    const c00 = this.predictCell(args, i0 * nLon + j0);
+    const c01 = this.predictCell(args, i0 * nLon + j0 + 1);
+    const c10 = this.predictCell(args, (i0 + 1) * nLon + j0);
+    const c11 = this.predictCell(args, (i0 + 1) * nLon + j0 + 1);
+    const bil = (k: 0 | 1): number => c00[k] * (1 - di) * (1 - dj) + c01[k] * (1 - di) * dj + c10[k] * di * (1 - dj) + c11[k] * di * dj;
+    return [bil(0), bil(1)];
+  }
+
+  private cachedGrid(mjd: number): { u: Float32Array; v: Float32Array } {
+    const key = this.binKey(mjd);
     const hit = this.cache.get(key);
     if (hit) {
       this.cache.delete(key);
@@ -237,9 +292,18 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
 
   at(lon: number, lat: number, time: Date): [number, number] {
     if (!this.contains(lon, lat)) return [0, 0];
-    const g = this.cachedGrid(dateToMjd(time));
-    const u = this.interp(g.u, lon, lat);
-    const v = this.interp(g.v, lon, lat);
+    // A grid already predicted for this time serves the point; otherwise
+    // predict only this point (a whole grid for one point is wasted work).
+    const key = this.binKey(dateToMjd(time));
+    const g = this.cache.get(key);
+    let u: number;
+    let v: number;
+    if (g) {
+      u = this.interp(g.u, lon, lat);
+      v = this.interp(g.v, lon, lat);
+    } else {
+      [u, v] = this.pointAt(key, lon, lat);
+    }
     if (Number.isNaN(u) || Number.isNaN(v)) return [0, 0];
     return [u * CM_S_TO_MS, v * CM_S_TO_MS];
   }
