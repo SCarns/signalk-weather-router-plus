@@ -11,6 +11,17 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # Type definitions follow the runtime, not the newest release:
+      # @types/node the oldest Node in `engines` (>=20.10, tested on Node 20
+      # in CI), @types/express the Express major Signal K server runs (4).
+      # Change these by hand when those move.
+      - dependency-name: '@types/node'
+        update-types:
+          - version-update:semver-major
+      - dependency-name: '@types/express'
+        update-types:
+          - version-update:semver-major
     labels:
       - dependencies
 
