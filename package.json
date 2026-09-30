@@ -31,8 +31,16 @@
     "isochrone",
     "signalk-plugin-configurator"
   ],
-  "author": "",
-  "license": "MIT",
+  "author": "Maurice Tamman",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/motamman/signalk-weather-router-plus.git"
+  },
+  "bugs": {
+    "url": "https://github.com/motamman/signalk-weather-router-plus/issues"
+  },
+  "homepage": "https://github.com/motamman/signalk-weather-router-plus#readme",
   "engines": {
     "node": ">=20.10"
   },
@@ -57,6 +65,8 @@
     "data",
     "README.md",
     "LICENSE",
+    "NOTICE",
+    "licenses",
     "CHANGELOG.md",
     "WHATSNEW.md"
   ],
@@ -65,8 +75,16 @@
   },
   "signalk": {
     "appSupport": "webapp",
-    "compatibility": ">=2.13.0",
+    "compatibility": ">=2.24.0",
     "displayName": "Weather Router Plus",
-    "appIcon": "icon.png"
+    "appIcon": "icon.png",
+    "screenshots": [
+      "./public/screenshots/01-route.jpg",
+      "./public/screenshots/02-planning.jpg",
+      "./public/screenshots/03-layers.jpg",
+      "./public/screenshots/04-conditions.jpg",
+      "./public/screenshots/05-waypoints.jpg",
+      "./public/screenshots/06-polars.jpg"
+    ]
   }
 }
