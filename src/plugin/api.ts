@@ -62,6 +62,8 @@ export interface ApiDeps {
   query: <K extends QueryKind>(kind: K, args: QueryArgs[K], signal?: AbortSignal) => Promise<unknown>;
   /** Map overlay tiles (null before the plugin has started). */
   tiles: () => TileService | null;
+  /** Why the plugin is not answering yet ("starting: downloading the coastline (40 %)"), for 503 answers. */
+  notReady: () => string;
   /** Start (or retry now) the GSHHG coastline download; progress in /api/status `coastline`. */
   downloadCoastline: () => void;
   /** The page asked for this tile (the prebuilder follows the view). */
@@ -285,7 +287,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   /** The shared tile store, or null after answering 503 when the plugin is not started. */
   const tilesOr503 = (res: Response): TileService | null => {
     const t = deps.tiles();
-    if (!t) json(res, 503, { error: 'plugin not started' });
+    if (!t) json(res, 503, { error: deps.notReady() });
     return t;
   };
   /**
@@ -388,7 +390,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     try {
       const service = deps.tiles();
       if (!service) {
-        json(res, 503, { error: 'plugin not started' });
+        json(res, 503, { error: deps.notReady() });
         return;
       }
       const layer = String(req.params.layer) as TileLayer;

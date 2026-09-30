@@ -1143,6 +1143,7 @@ function escapeHtml(v) {
 
 function _statusLine(s) {
   const f = s.forecast;
+  if (s.starting) return '<span class="warn">' + escapeHtml(s.starting) + '</span>';
   if (!f) return '<span class="warn">no forecast loaded</span>' + (s.forecast_error ? ': ' + escapeHtml(s.forecast_error) : ' (loading)');
   const cur = Array.isArray(s.currents) && s.currents.length ? s.currents.map(c => c.name).join(', ') : 'none';
   return '<span class="ok">forecast</span> ' + f.cycle.slice(0, 13) + 'Z · ' + f.steps + ' steps to ' + f.valid_to.slice(0, 13) + 'Z'
@@ -1151,6 +1152,7 @@ function _statusLine(s) {
     // A refused reload (e.g. the memory guard) while the previous forecast keeps serving.
     + (s.forecast_error ? '<br><span class="warn">' + escapeHtml(s.forecast_error) + '</span>' : '');
 }
+let _statusSoon = null;
 function loadPluginStatus() {
   const el = document.getElementById('dataStatus');
   const fi = document.getElementById('forecastInfo');
@@ -1159,6 +1161,9 @@ function loadPluginStatus() {
     .then(s => {
       _pluginStatus = s;
       if (el) el.innerHTML = _statusLine(s);
+      // First start (coastline, first forecast): check again soon, not in 30 s.
+      clearTimeout(_statusSoon);
+      if (s.starting || !s.forecast) _statusSoon = setTimeout(loadPluginStatus, 5000);
       if (fi) {
         const f = s.forecast;
         fi.innerHTML = f

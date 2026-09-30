@@ -130,6 +130,30 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let startGen = 0;
   /** Cancels the coastline download (and its retry wait) on stop. */
   let coastlineCtrl: AbortController | null = null;
+  /** A route started before the first forecast was ready: sent to the route worker when it is (see startServices). */
+  let waitingForForecast: Job | null = null;
+
+  /** Why the services are not up yet, for API answers and the status (`starting`). */
+  function notStartedReason(): string {
+    if (stopped) return 'plugin not started';
+    if (coastline.downloading) {
+      const m = (coastline.message ?? '').replace(/^coastline:\s*/, '');
+      return `starting: downloading the coastline${m ? ` (${m})` : ' (GSHHG, 149 MB, once)'}`;
+    }
+    if (coastline.error)
+      return `starting: the coastline download failed (${coastline.error}); it is tried again every 10 minutes, or press Download coastline in the plugin configuration`;
+    return 'starting';
+  }
+
+  /** Send a job waiting for the first forecast to the route worker. */
+  function releaseWaitingJob(note: string): void {
+    const job = waitingForForecast;
+    if (!job) return;
+    waitingForForecast = null;
+    jobs?.onProgress(job.id, 0, 0, note);
+    post('route', { type: 'route', id: job.id, request: job.request });
+  }
+
   /** Downloaded-coastline state (status `coastline`, config panel). */
   const coastline: {
     downloading: boolean;
@@ -469,6 +493,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         // The route and tiles workers read from the same run on disk.
         post('route', { type: 'forecast', run: msg.run });
         prebuilder?.broadcast({ type: 'forecast', run: msg.run });
+        releaseWaitingJob('first forecast ready');
         log(
           `forecast ${new Date(msg.run.index.cycleTimeMs).toISOString().slice(0, 13)}Z ready: decoded run ${msg.run.dir} (${(msg.run.index.bytes / 1e6).toFixed(1)} MB on disk; nothing resident)`
         );
@@ -484,6 +509,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (role !== 'data') return;
         forecastError = msg.message;
         app.error(`forecast refresh failed: ${msg.message}${forecastRun ? ' (keeping the decoded run in use)' : ''}`);
+        releaseWaitingJob(`the first forecast failed (${msg.message}); computing with what can be loaded`);
         if (!failedRefreshTimer) {
           failedRefreshTimer = setTimeout(() => {
             failedRefreshTimer = null;
@@ -825,6 +851,14 @@ export = function plugin(app: SkApp): SignalKPlugin {
     startPrebuilder(dataDir);
     jobs = new JobManager(dataDir, config.routing.keepJobs, BASE_PATH);
     jobs.on('start', (job: Job) => {
+      // First start: the first forecast is still downloading. The route waits for it
+      // rather than downloading its own copy of the same fields alongside.
+      if (!forecastRun && !forecastError) {
+        waitingForForecast = job;
+        jobs?.onProgress(job.id, 0, 0, 'waiting for the first forecast (downloading and decoding; a few minutes on a first start)');
+        updateStatus();
+        return;
+      }
       post('route', { type: 'route', id: job.id, request: job.request });
       updateStatus();
     });
@@ -859,6 +893,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     }
     rejectPendingQueries('plugin stopped');
     jobs?.failRunning('plugin stopped');
+    waitingForForecast = null;
     jobs = null;
     prebuilder?.stop();
     prebuilder = null;
@@ -880,9 +915,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
       pluginId: PLUGIN_ID,
       basePath: BASE_PATH,
       get jobs(): JobManager {
-        if (!jobs) throw new Error('plugin not started');
+        if (!jobs) throw new Error(notStartedReason());
         return jobs;
       },
+      notReady: notStartedReason,
       status: () => ({
         plugin: PLUGIN_ID,
         started: !stopped,
@@ -932,6 +968,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         overlay_land: dataStatus?.land ?? null,
         overlay_tiles: tiles ? { ...tiles.store.stats(), inflight: tiles.inflightCount } : null,
         overlay_prebuild: prebuilder ? prebuilder.status() : null,
+        starting: !jobs && !stopped ? notStartedReason() : null,
         coastline: {
           configured: pluginOptions?.landShapefiles?.trim() ? pluginOptions.landShapefiles : null,
           in_use: config?.landShapefiles ?? null,
@@ -961,7 +998,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
         return out;
       },
       refreshForecast: force => requestRefresh(force),
-      cancelRunning: () => {
+      cancelRunning: (id: string) => {
+        // Still waiting for the first forecast: nothing was sent to the worker.
+        if (waitingForForecast && waitingForForecast.id === id) {
+          waitingForForecast = null;
+          jobs?.onError(id, 'cancelled', true);
+          return;
+        }
         if (cancelFlag) Atomics.store(cancelFlag, 0, 1);
       },
       publish,

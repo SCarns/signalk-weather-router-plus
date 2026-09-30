@@ -175,6 +175,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             'stac_updated, settled, half_width_deg, horizon_hours, resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, ' +
             'point_cache: {entries, bytes, queries, hits}, memory_bytes, last_download, last_point_query: {at, lat, lon, bytes, chunks, downloaded, from_disk, seconds, cached} | null, ' +
             'downloaded_bytes_total, disk_cache_bytes, layouts, mean_window_days}. ' +
+            '`starting`: why the plugin is not answering yet (e.g. "starting: downloading the coastline (40 %)"), null once started; 503 answers carry the same text. ' +
             '`overlay_tiles` (null before start): saved map tiles {dir, cap_bytes, files, bytes, hits, misses, writes, not_kept, generations, inflight}. ' +
             '`overlay_prebuild` (null before start): tiles built ahead of time {enabled, workers, workers_ready, paused, areas: [{kind: "view" | "boat", lat, lon, radius_m}], ' +
             'window: {from, to} | null, max_zoom, walk_started_at, seen, built, skipped, not_kept, errors, last_error, at: {area, hour, z} | null, complete, built_total, build_ms_avg}.',

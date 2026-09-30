@@ -8,6 +8,19 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [0.1.0-beta.3] - 2026-09-30
 
+### Changed
+
+- **First start:** while the coastline downloads, the API answers and the
+  web app's status line say so ("starting: downloading the coastline
+  (40 %)") instead of "plugin not started" (status field `starting`), and
+  the page checks the status every 5 s until the first forecast is in.
+- **A route started before the first forecast** waits for it ("waiting
+  for the first forecast") instead of downloading its own copy of the
+  same fields alongside: on a fresh install such a route took 170 s
+  (brain, measured); it now runs as soon as the forecast is ready. It can
+  be cancelled while waiting; if the forecast download fails, it runs as
+  before.
+
 ### Fixed
 
 - On a fresh install the first forecast download could fail with

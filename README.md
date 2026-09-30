@@ -1429,6 +1429,7 @@ Plugin, forecast, currents, tides and queue status. Access: readonly.
 | `tides_error` | last tide source error, or null |
 | `overlay_land` | overlay land-raster cache: `{entries, cells, bytes, index_bytes, builds, hits, last_build_ms, disk_hits, disk_writes, disk}`, or null |
 | `overlay_tiles` | saved map tiles: `{dir, cap_bytes, files, bytes, hits, misses, writes, not_kept, generations, inflight}` (`files`/`bytes` after the first scan; `not_kept`: answered but not saved because an on-demand current or tide load was late or failed; `generations`: the data each layer group was built from; `inflight`: tile queries waiting or running), or null before start |
+| `starting` | while the plugin is starting and not answering yet, why (e.g. `"starting: downloading the coastline (40 %)"`); null once started. 503 answers carry the same text |
 | `overlay_prebuild` | tiles built ahead of time: `{enabled, workers, workers_ready, paused, areas, window, max_zoom, walk_started_at, seen, built, skipped, not_kept, errors, last_error, at, complete, built_total, build_ms_avg}`; `areas`: `[{kind: "view" or "boat", lat, lon, radius_m}]`; `at`: `{area, hour, z}` of the last tile started; `complete`: every tile of the window is saved. Null before start |
 | `weather_provider_registered` | the Weather API provider is registered |
 | `jobs` | `{running: id or null, queued, total}`, or null before start |
