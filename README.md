@@ -16,6 +16,12 @@ server and no S-57 charts. It does **not** do near-shore chart
 navigation (fairways, depths, bridges); it routes between open-water
 positions and treats the coastline as the only obstacle.
 
+![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
+
+
+**Status: beta** (0.1.0-beta.1, the first public release). Please report
+problems at https://github.com/motamman/signalk-weather-router-plus/issues.
+
 What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
 [CHANGELOG.md](CHANGELOG.md).
 
@@ -122,9 +128,13 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   coastline edge count as land (an exact supercover of every edge, so a
   water cell contains no coastline). Where the corridor passes a passage
   only a few cells wide, finer patches (down to 0.0005°, about 55 m) are
-  rasterised locally. Endpoints and the finished route are checked
-  against the exact polygons (only samples in land or coastline cells
-  need the polygon test).
+  rasterised locally. A leg is checked against every raster cell its
+  path crosses (the finest patch where one covers it), not points along
+  it, so land narrower than the spacing of points cannot be stepped over.
+  Endpoints and every leg of the finished route are checked against the
+  exact polygons: a leg crossing or touching any coastline edge is a
+  land crossing, whatever the width of the land (legs whose cells are all
+  water need no polygon test).
 - **Depth:** none in this version. There is no bathymetry gate; a
   vessel's draught only matters through the configured values carried in
   the output.
@@ -203,7 +213,7 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   `/api/currents`), SMOC and RTOFS fill an empty grid cell that has
   valid cells within 2 grid cells from those cells (inverse-distance²
   weights, no fade; valid cells never change), so colour and arrows
-  reach the coast, where the page's screen-resolution land mask cuts
+  reach the coast, where the map's coastline tiles cut
   them. Routing, the conditions popup and the sea-state layer use the
   raw values only.
 
@@ -307,7 +317,14 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   waypoints stay in placing order), or **Conditions here**. Holding on
   the map does the direct action (start, then destination, then extend
   the course). Drag any pin to move it. Holding on a computed route pins
-  that point as a waypoint.
+  that point as a waypoint. The button under the zoom buttons (⌖)
+  centres the map on the boat's Signal K position (`navigation.position`),
+  keeping the zoom. The route summary (distance, time, arrival, sail and
+  motor time, waypoints, highest waves, validation) shows on the Route tab
+  and at the top of the Itinerary tab.
+
+  ![Planning: start, destination and waypoints on the map, with the click menu open](public/screenshots/02-planning.jpg)
+
 - **Waypoint behaviour** (Setup tab): **Precision** Precise (each leg
   ends exactly at its waypoint) or Approximate (one search carries the
   route through the circle around each waypoint instead of stopping at
@@ -327,14 +344,23 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   On the tide and current layers, water the source model has no value
   for (narrower than its ~9 km grid) is hatched and labelled "no model
   data".
+
+  ![Current speed and direction in the Aegean, cut at the coastline, with "no model data" hatching in the Euboean Gulf](public/screenshots/03-layers.jpg)
+
 - **Conditions popup** (shift-click, or the menu): 72-hour charts for
   Wind, Waves, Sea state (index / Beaufort / Douglas), **Tide & current**
   (tide height, total water level and surge on the left axis; current
   speed as a filled area on the right axis; the current's set as arrows;
   high and low water marked), Pressure, Temp, Precip, and a Raw table.
   Click the chart to move every map layer to that hour.
+
+  ![Conditions popup, Tide & current tab: tide height, total water level and surge against current speed and set, with high and low waters](public/screenshots/04-conditions.jpg)
+
 - **Polars**: the picker lists the default polar and the polars
   directory; "Create polar from boat specs…" generates one.
+
+  ![Polar diagram of the selected polar, and the sailing strategy modes](public/screenshots/06-polars.jpg)
+
 - **Settings tab**: the web-app settings below, in the selected units.
 - The page references its scripts with `?v=<tag>`, a tag that changes
   whenever a file in `public/` changes, so browsers and proxies in front
@@ -409,6 +435,9 @@ duplicate junction point is dropped, distances and sailing/motoring
 times are summed, and the junction point of each waypoint carries
 `role: "via"` in the GeoJSON (automatic vias stay in `auto_vias` and are
 never `role: "via"`). Progress messages are prefixed `leg 2/4: …`.
+
+![A route with waypoints off Rhode Island: an approximate waypoint circle, legs coloured by tack, and the itinerary cards](public/screenshots/05-waypoints.jpg)
+
 
 `precision` decides where an intermediate leg ends:
 
@@ -525,16 +554,49 @@ resolution L1 (`GSHHS_f_L1.shp`):
 
 ## Install
 
+### Requirements
+
+- Signal K server 2.24.0 or later (the configuration panel uses the
+  React 19 Admin UI that came with 2.24.0); tested on 2.33.0. Read-only users can use
+  the web app on servers that support per-route access (see
+  [API](#api)); on older servers every route is admin-only.
+- Node.js 20.10 or later (the server's own Node).
+- Internet access for the forecast, current, tide and coastline
+  downloads.
+- Disk in the Signal K data directory: the decoded forecast (about
+  1.1 GB for 72 h with the extra fields, 3.9 GB at 360 h), the GRIB files
+  of the cached cycles, the coastline (about 156 MB when downloaded),
+  current and tide caches, and the saved map tiles (up to the configured
+  cap, 20 GB by default).
+- Memory: tested on a Raspberry Pi 5 with 8 GB. The resource guard keeps
+  the configured amount free (default 1 GB) and refuses a forecast or a
+  route that would not fit.
+
+### From the Signal K App Store
+
+Admin UI → **Appstore** → **Available**, search for **Weather Router
+Plus**, **Install**, then restart the server. Enable the plugin in
+**Server → Plugin Config**; the web app appears on the **Webapps** page.
+
+### From source (development)
+
 ```sh
+git clone https://github.com/motamman/signalk-weather-router-plus.git
 cd signalk-weather-router-plus
 npm install
 npm run build
-npm link
-cd ~/.signalk        # your Signal K config directory
-npm link signalk-weather-router-plus
 ```
 
-Restart Signal K and enable the plugin. **Coastline:** with no coastline
+Then add it to the server as a local package: in `~/.signalk/package.json`
+add `"signalk-weather-router-plus": "file:/path/to/signalk-weather-router-plus"`
+to `dependencies`, run `npm install` in `~/.signalk`, and restart the
+server. Avoid `npm link` and `npm install <tarball>` in `~/.signalk`:
+both can remove other plugins that are not listed in its `package.json`.
+After a code change, `npm run build` and restart.
+
+### First start
+
+**Coastline:** with no coastline
 shapefile configured, the plugin downloads GSHHG 2.3.7 (Wessel & Smith,
 LGPL) once from the authors' site,
 `https://www.soest.hawaii.edu/pwessel/gshhg/gshhg-shp-2.3.7.zip`
@@ -547,11 +609,15 @@ archive and starts; the plugin status shows the progress. The global
 water grid shipped with the plugin was built from this same file, so it
 is used as is. The download does not hold up the server's start-up; if
 it fails (offline, server error, short file) the plugin status says why
-and it is tried again every 10 minutes; stopping the plugin cancels it.
+and it is tried again every 10 minutes (or at once with **Download
+coastline** in the plugin's configuration panel); stopping the plugin
+cancels it.
 To use another coastline, or an existing GSHHG copy, set its path in the
 plugin configuration. A configured coastline is never replaced by the
 download: if a configured file is missing or unreadable, the plugin does
-not start and its status names the file. The package carries the `signalk-webapp` keyword and a
+not start and its status names the file.
+
+The package carries the `signalk-webapp` keyword and a
 `public/` folder, so after the restart the webapp appears on the Admin UI's
 Webapps page. Writes (computing, cancelling, publishing) need a `readwrite`
 login; the page redirects to the server login when it gets a 401. A polar file (`.csv` or `.pol`, knots) enables sailing;
@@ -1295,8 +1361,8 @@ that is switched off):
 | `swh_m` | m | significant wave height |
 | `mwp_s` | s | mean wave period |
 | `mwd_deg` | degrees true | mean wave direction FROM |
-| `current_ms` | m/s | current speed (the stacked current sources) |
-| `current_dir_deg` | degrees true | current set (TO) |
+| `current_ms` | m/s | current speed (the stacked current sources); null where no current source has data (water narrower than the models' grids, or outside them), which is not slack water |
+| `current_dir_deg` | degrees true | current set (TO); null with `current_ms`, or at exactly zero speed |
 | `msl_pa` | Pa | mean sea-level pressure |
 | `t2m_k` | K | 2 m air temperature (extra fields) |
 | `skt_k` | K | skin (sea surface) temperature (extra fields) |
@@ -1961,3 +2027,21 @@ per-route skeleton, `--allow-canals` opens the known canals.
   the rest of the day's run.
 - Routes beyond the forecast horizon use the last step's conditions.
 - One route computes at a time (single worker thread); others queue.
+- Map layers show the forecast on the hour (tiles are per hour);
+  latitudes beyond ±85.05° have no map tiles.
+- Behind a caching proxy (e.g. Cloudflare), `/signalk-weather-router-plus/`
+  can serve the previous version's scripts for a few hours after an
+  update, because Signal K serves those files itself without the
+  version tag; reload without cache, or use
+  `/plugins/signalk-weather-router-plus/ui`, which always loads the
+  current scripts.
+
+## License
+
+[Apache License 2.0](LICENSE). Third-party material included in the
+package (OpenLayers, the GSHHG-derived water grid, which is under the
+LGPL-3.0 as GSHHG is; texts in `licenses/`) and the data sources
+used at run time (ECMWF, Copernicus Marine, NOAA RTOFS, GSHHG) are
+credited in [NOTICE](NOTICE), which redistributions must carry. Forks are
+welcome; a published modified version must use its own name and icon
+(see [CONTRIBUTING.md](CONTRIBUTING.md)).

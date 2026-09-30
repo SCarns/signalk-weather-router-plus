@@ -149,3 +149,35 @@ test('alongTrackDistanceM: closest point along the track, negative behind the st
   assert.ok(Math.abs(at - half) < 1, `${at} vs ${half}`);
   assert.ok(alongTrackDistanceM(0, 0, 1, 0, -0.2, 0.01) < 0);
 });
+
+test('land checks find a spit narrower than the old 200 m sampling gap (Point Judith, job b0d324f7)', async () => {
+  const { walkGrid } = await import('./landmask');
+  // A 20 m wide north-south spit at 41.36 N; a 2 km leg crossing it east-west.
+  const spit = square(1, -71.48012, 41.35, -71.47988, 41.37);
+  const bbox = { west: -71.5, south: 41.34, east: -71.46, north: 41.38 };
+  const lm = LandMask.fromPolygons([spit], bbox, 0.0005);
+  const [a, b] = [
+    [-71.492, 41.3601],
+    [-71.468, 41.3601],
+  ];
+  // The old check tested points every 200 m: none falls on the spit.
+  const n = Math.ceil(haversineDistanceM(a[0], a[1], b[0], b[1]) / 200) + 1;
+  const lo = new Float64Array(n);
+  const la = new Float64Array(n);
+  slerpSamples(a[0], a[1], b[0], b[1], n, lo, la, 0);
+  assert.ok(![...lo].some((x, i) => lm.isLand(x, la[i])), 'the 200 m samples miss the spit (the old failure)');
+  assert.equal(lm.legsCrossLandBulk([a[0]], [a[1]], [b[0]], [b[1]], 200)[0], 1, 'cell walk finds it');
+  assert.equal(lm.legCrossesLandExact(a[0], a[1], b[0], b[1]), true, 'exact check finds it');
+  // A leg that passes 150 m north of the spit's end is clear in the exact check.
+  assert.equal(lm.legCrossesLandExact(-71.492, 41.3714, -71.468, 41.3714), false);
+  // Inside a finer patch the walk uses the patch's cells.
+  lm.refine({ west: -71.485, south: 41.355, east: -71.475, north: 41.365 }, 0.0001);
+  assert.equal(lm.legsCrossLandBulk([a[0]], [a[1]], [b[0]], [b[1]], 200)[0], 1, 'found through the patch');
+  // walkGrid visits every cell of a diagonal, including both sides of an exact corner.
+  const seen: string[] = [];
+  walkGrid(0.5, 0.5, 2.5, 2.5, (i, j) => (seen.push(`${i},${j}`), false));
+  assert.deepEqual(seen, ['0,0', '1,0', '0,1', '1,1', '2,1', '1,2', '2,2']);
+  const shallow: string[] = [];
+  walkGrid(0.2, 0.1, 3.7, 0.9, (i, j) => (shallow.push(`${i},${j}`), false));
+  assert.deepEqual(shallow, ['0,0', '1,0', '2,0', '3,0']);
+});

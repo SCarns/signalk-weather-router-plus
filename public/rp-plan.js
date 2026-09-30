@@ -596,6 +596,23 @@ function renderResultStrip(p, navWarns) {
   if (b && list) b.onclick = () => { list.hidden = !list.hidden; };
 }
 
+// The same summary at the top of the Itinerary tab: a copy of #routeInfo,
+// kept in step whenever the Route tab's card changes (rendered, marked
+// stale or cleared), with its own warnings toggle.
+(function mirrorSummaryToItinerary() {
+  const src = document.getElementById('routeInfo');
+  const dst = document.getElementById('itinSummary');
+  if (!src || !dst) return;
+  const copy = () => {
+    dst.innerHTML = src.innerHTML.replace(/id="rsBadge"/g, 'data-rs="badge"').replace(/id="rsWarnList"/g, 'data-rs="list"');
+    dst.classList.toggle('stale', src.classList.contains('stale'));
+    const b = dst.querySelector('[data-rs="badge"]'), list = dst.querySelector('[data-rs="list"]');
+    if (b && list) b.onclick = () => { list.hidden = !list.hidden; };
+  };
+  new MutationObserver(copy).observe(src, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+  copy();
+})();
+
 // Stub kept for backward-compat with any existing caller.
 function switchModalTab(tab) {
   if (tab === 'log') showTab('logSection');
@@ -1330,7 +1347,8 @@ const _COND_TABS = [
             { key: 'current_ms', unit: () => _unitOf('speed'), color: '#1baf7a', name: 'current speed', axis: 'right', width: 1.5, fill: 'rgba(27,175,122,0.16)', marine: true }],
     dir: { key: 'current_dir_deg', sense: 'to', color: '#11805a' },
     zeroLine: 'mean sea level', tideMarks: true,
-    hover: r => (r.tide_tendency ? ' · tide ' + r.tide_tendency : '') + (r.tide_extrapolated ? ' · tide extrapolated near the coast' : '') },
+    hover: r => (r.tide_tendency ? ' · tide ' + r.tide_tendency : '') + (r.tide_extrapolated ? ' · tide extrapolated near the coast' : '')
+      + (r.current_ms == null && !(_cond && _cond.isLand) ? ' · current: no model data' : '') },
   { id: 'pressure', label: 'Pressure', overlays: [['pressureToggle', 'Isobars']],
     lines: [{ key: 'msl_pa', unit: () => unitDesc('pressure'), color: '#37474f', name: 'MSL' }] },
   { id: 'temp', label: 'Temp', overlays: [['temperatureToggle', 'Air'], ['sstToggle', 'Sea surface']],
@@ -1645,7 +1663,15 @@ function _tideDetailsHtml(series) {
   } else if (_cond && _cond.tidesError) {
     h += '<div style="color:#b71c1c;">Tide data unavailable: ' + _cond.tidesError + '</div>';
   }
-  const extrap = (T && T.extrapolated) || (series || []).some(r => r.tide_extrapolated);
+  // Current: null means no current source has data here (not slack water).
+  const rows = series || [];
+  const noCur = rows.filter(r => r.current_ms == null).length;
+  if (noCur && !(_cond && _cond.isLand)) {
+    h += '<div style="color:#b35c00;"><b>No current data ' + (noCur === rows.length ? 'here' : 'for ' + noCur + ' of ' + rows.length + ' hours')
+      + '</b>: no current model covers this water (it is narrower than their ~9 km grids, or outside them), so no current speed is shown. '
+      + 'Map arrows here are extended from the nearest model water and are not a measurement.</div>';
+  }
+  const extrap = (T && T.extrapolated) || rows.some(r => r.tide_extrapolated);
   h += '<div style="color:#666;">Heights relative to mean sea level, not chart datum. Not for under-keel clearance.'
     + (extrap ? ' <b style="color:#e65100;">Extrapolated near the coast</b> (the nearest model cells are land).' : '')
     + ' Copernicus Marine hourly sea level, 1/12°' + (T && T.run ? ' (run ' + T.run + ')' : '') + '.</div>';
@@ -1867,8 +1893,10 @@ popup.on('change:position', () => {
 
   // One snapshot in the shape the sister app's /api/v1/vessel returned:
   // {lat, lon, sog_ms, cog_deg, heading_deg, twa_deg, tws_ms, updated_at}.
-  function fetchVesselSnapshot() {
-    return authFetch(SK_NAV, { cache: 'no-store' }, 'vessel')
+  // `channel`: a newer request on the same channel cancels the older one,
+  // so a caller that must not be cancelled by the poll uses its own.
+  function fetchVesselSnapshot(channel = 'vessel') {
+    return authFetch(SK_NAV, { cache: 'no-store' }, channel)
       .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(nav => {
         const pos = _skVal(nav.position);
@@ -1881,7 +1909,7 @@ popup.on('change:position', () => {
           twa_deg: null, tws_ms: null,
           updated_at: _skTs(nav.position) || (Date.now() / 1000),
         };
-        return authFetch(SK_WIND, { cache: 'no-store' }, 'vessel-wind')
+        return authFetch(SK_WIND, { cache: 'no-store' }, channel + '-wind')
           .then(r => r.ok ? r.json() : null)
           .then(w => {
             if (w) {
@@ -2294,5 +2322,40 @@ popup.on('change:position', () => {
   }
   if (vesselToggle) vesselToggle.addEventListener('change', syncPolling);
   window.addEventListener('load', syncPolling);
+
+  // "Go to the boat" button, under the zoom buttons (same control group, so
+  // it looks and lines up like them): centres the map on the Signal K
+  // position, keeping the zoom, and places the vessel marker.
+  (function addLocateButton() {
+    const zoom = map.getControls().getArray().find(c => c instanceof ol.control.Zoom);
+    if (!zoom) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'rp-locate';
+    btn.title = 'Centre the map on the boat (Signal K position)';
+    btn.setAttribute('aria-label', btn.title);
+    btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" style="vertical-align:middle">'
+      + '<circle cx="12" cy="12" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/>'
+      + '<circle cx="12" cy="12" r="2.2" fill="currentColor"/>'
+      + '<path d="M12 1v4M12 19v4M1 12h4M19 12h4" stroke="currentColor" stroke-width="2"/></svg>';
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      fetchVesselSnapshot('vessel-locate')
+        .then(snap => {
+          if (snap.lat == null || snap.lon == null) throw new Error('no position');
+          renderMarker(snap);
+          map.getView().animate({ center: ol.proj.fromLonLat([snap.lon, snap.lat]), duration: 400 });
+          btn.title = 'Centre the map on the boat (Signal K position)';
+        })
+        .catch(err => {
+          if (err && err.name === 'AbortError') return;
+          btn.title = 'No boat position from Signal K (navigation.position)';
+          btn.classList.add('rp-locate-none');
+          setTimeout(() => btn.classList.remove('rp-locate-none'), 2000);
+        })
+        .finally(() => { btn.disabled = false; });
+    });
+    zoom.element.appendChild(btn);
+  })();
   syncPolling();
 })();

@@ -398,9 +398,12 @@ export function sampleConditions(src: OverlaySources, lon: number, lat: number, 
   let currentDir: number | null = null;
   if (src.currents && !src.currents.isEmpty) {
     const [u, v] = src.currents.at(lon, lat, time);
-    const sp = Math.hypot(u, v);
-    current = sp;
-    currentDir = sp > 1e-6 ? ((Math.atan2(u, v) * 180) / Math.PI + 360) % 360 : null;
+    // Exactly (0, 0) is the stack's "no source has data here" (stack.ts), not slack water: report no value.
+    if (!(u === 0 && v === 0)) {
+      const sp = Math.hypot(u, v);
+      current = sp;
+      currentDir = sp > 1e-6 ? ((Math.atan2(u, v) * 180) / Math.PI + 360) % 360 : null;
+    }
   }
   const rh = relativeHumidity(t2m, d2m);
   const fl = feelsLike(wind === null ? t2m : t2m, wind, rh);

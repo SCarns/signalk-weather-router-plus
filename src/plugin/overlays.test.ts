@@ -85,3 +85,25 @@ test('landMaskImage: one byte per pixel, row 0 north, pixel centres match the pa
     /coastline/
   );
 });
+
+test('conditions: no current source with data here is reported as no value, not 0 kn (the Narrows)', async () => {
+  const { sampleConditions } = await import('./overlays');
+  const { CurrentStack } = await import('../currents/stack');
+  const src = (u: number, v: number) =>
+    ({
+      name: 'fake',
+      priority: 1,
+      resolutionM: 9000,
+      bbox: { west: -180, south: -90, east: 180, north: 90 },
+      contains: () => true,
+      at: () => [u, v] as [number, number],
+      atMany: (lons: Float64Array) => ({ u: new Float64Array(lons.length).fill(u), v: new Float64Array(lons.length).fill(v) }),
+    }) as never;
+  const t = new Date(Date.UTC(2026, 8, 30, 12));
+  const none = sampleConditions({ forecast: null, currents: new CurrentStack([src(0, 0)]), land: null }, -74.03, 40.59, t);
+  assert.equal(none.current_ms, null);
+  assert.equal(none.current_dir_deg, null);
+  const some = sampleConditions({ forecast: null, currents: new CurrentStack([src(0.3, 0.4)]), land: null }, -74.03, 40.59, t);
+  assert.equal(some.current_ms, 0.5);
+  assert.equal(some.current_dir_deg, 37);
+});

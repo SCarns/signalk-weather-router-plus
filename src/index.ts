@@ -335,7 +335,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
     const t = dataStatus?.tides;
     const tide = !cfg.tides.enabled ? `${coast}|off` : t ? `${coast}|${t.run}|${t.settled}|${dataSettingsRev}` : null;
     // Point answers (conditions, Weather API) read forecast, currents and tides.
-    const pt = cur && tide ? `${cur}|${tide}` : null;
+    // POINT_ANSWER_REV: bumped when the answer's content changes for the same
+    // data (2: current_ms null where no current source has data), so answers
+    // saved by an older version are not served.
+    const POINT_ANSWER_REV = 2;
+    const pt = cur && tide ? `${cur}|${tide}|rev${POINT_ANSWER_REV}` : null;
     const g: Record<TileGroup, string | null> = { wx, cur, tide, land: coast, pt };
     tiles.store.setGenerations(g);
   }

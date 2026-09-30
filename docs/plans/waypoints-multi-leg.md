@@ -51,7 +51,7 @@ branch returns. The end point, by contrast, gets a final straight hop.
 
 ## The parent's design (what to port)
 
-Source: `/Users/mauricetamman/routePlanning`.
+Source: the routePlanning repository.
 
 - `routing/engine/hybrid.py` `compute_multi_leg_route` (line 850):
   `stops = [start, via1, …, end]`; **each consecutive pair is routed as its

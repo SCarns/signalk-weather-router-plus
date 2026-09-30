@@ -789,7 +789,8 @@ function drawPolarDiagram() {
   const canvas = document.getElementById('polarDiagram');
   const info = document.getElementById('polarInfo');
   if (!canvas) return;
-  const W = 380, H = 300;
+  // PLOT_H is the diagram; the strip below it holds the caption, clear of the 180° label.
+  const W = 380, PLOT_H = 300, H = PLOT_H + 16;
   const dpr = window.devicePixelRatio || 1;
   canvas.width = W * dpr; canvas.height = H * dpr;
   const ctx = canvas.getContext('2d');
@@ -809,7 +810,7 @@ function drawPolarDiagram() {
     ctx.fillText('No speed unit from your Signal K unit preferences', W / 2, H / 2);
     return;
   }
-  const cx = 96, cy = H / 2, R = Math.min(cy - 18, W - cx - 14);
+  const cx = 96, cy = PLOT_H / 2, R = Math.min(cy - 18, W - cx - 14);
   let vmax = 0;
   for (const row of T.speeds_ms) for (const v of row) if (Number.isFinite(v)) vmax = Math.max(vmax, u.fn(v));
   if (vmax <= 0) vmax = 1;
@@ -875,7 +876,7 @@ function drawPolarDiagram() {
     ctx.fillRect(lx, ly - 4, 14, 3);
     ctx.fillStyle = '#333'; ctx.fillText(u.fn(T.tws_ms[k]).toFixed(u.p), lx + 18, ly);
     ly += 12;
-    if (ly > H - 8) break;
+    if (ly > PLOT_H - 8) break;
   }
   ctx.fillStyle = '#777'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
   ctx.fillText('rings: boat speed (' + u.u + ') · dots: beat / run VMG angles', lx, H - 4);

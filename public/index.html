@@ -190,8 +190,8 @@
   .tab-pane.active { display: block; }
   .tab-pane .section-body { padding: var(--s-2) var(--s-1); }
   /* Result strip — one line of what the route is, plus a badge. */
-  #routeInfo:empty { display: none; }
-  #routeInfo {
+  #routeInfo:empty, #itinSummary:empty { display: none; }
+  #routeInfo, #itinSummary {
     margin-top: var(--s-2); padding: var(--s-2) var(--s-3);
     background: var(--surface-2); border: 1px solid var(--border);
     border-radius: var(--r-md); font-size: var(--f-sm); line-height: 1.5;
@@ -211,7 +211,8 @@
   .rs-warnlist div { padding: 1px 0; }
   .rs-warnlist .land { color: var(--danger); font-weight: 600; }
   .rs-stale { margin-top: 2px; font-size: var(--f-xs); color: var(--warn); font-weight: 600; }
-  #routeInfo.stale .rs-main { opacity: 0.55; }
+  #routeInfo.stale .rs-main, #itinSummary.stale .rs-main { opacity: 0.55; }
+  #itinSummary { margin: var(--s-2) var(--s-2) 0; color: var(--text); }
   /* Itinerary warnings block + per-card marks. */
   #itinWarnings {
     margin: var(--s-2) var(--s-3) 0; padding: var(--s-2) var(--s-3);
@@ -512,6 +513,7 @@
     border-radius: 3px; cursor: pointer; font-size: 14px; line-height: 1;
   }
   /* Polar diagram (Setup → Vessel) */
+  .ol-zoom .rp-locate.rp-locate-none { color: #c62828; }
   #polarDiagram { display: block; width: 100%; height: auto; margin-top: var(--s-1); border: 1px solid var(--border); border-radius: var(--r-sm); background: #fff; }
   #polarInfo { font-size: var(--f-xs); color: var(--text-2); margin-top: 2px; min-height: 14px; }
 </style>
@@ -657,7 +659,7 @@
   <div class="sail-only ctl-hint">Overrides the plugin's default polar for this route. Hull geometry (draught, clearance) comes from the Settings tab.</div>
   <input type="text" id="polarFilter" class="sail-only" placeholder="Filter boats…">
   <select id="polarSelect" class="sail-only" size="6"><option value="">Loading…</option></select>
-  <canvas id="polarDiagram" class="sail-only" width="380" height="300"></canvas>
+  <canvas id="polarDiagram" class="sail-only" width="380" height="316"></canvas>
   <div id="polarInfo" class="sail-only"></div>
   <button id="openVesselForm" type="button" class="sail-only" style="width:100%;padding:7px;margin-top:var(--s-1);background:var(--surface-2);border:1px solid var(--border-hard);border-radius:var(--r-sm);font-size:var(--f-sm);cursor:pointer;color:var(--text);">Create polar from boat specs…</button>
 
@@ -829,6 +831,7 @@
       <button id="routeDelete" type="button" title="Delete this route job" style="padding:4px 10px;font-size:var(--f-xs);background:var(--danger);color:#fff;border:0;border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Delete</button>
       <span id="routeNameStatus" style="color:var(--ink-text-muted);min-width:28px;"></span>
     </div>
+    <div id="itinSummary"></div>
     <div id="modalItinerary"></div>
   </div>
   </section>

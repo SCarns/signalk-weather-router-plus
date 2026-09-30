@@ -5,7 +5,7 @@
  * (routing/engine/smoother.py), run in the same order, per leg.
  *
  * Land checks are the plugin's own: the leg's land raster
- * (`legsCrossLandBulk`, same sampling step as the propagator) and, for
+ * (`legsCrossLandBulk`, every cell the leg crosses, as the propagator) and, for
  * the smoother, the exact polygons (`legCrossesLandExact`, as the final
  * validation). The plugin has no bathymetry or chart data, so the
  * parent's depth and S-57 passage checks have no counterpart.

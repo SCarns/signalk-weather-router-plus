@@ -3,10 +3,12 @@
  * polygons), rasterised over a route bounding box.
  *
  * Two query paths, mirroring the routing engine this is ported from:
- *  - `isLandBulk` / `legsCrossLandBulk`: raster lookup, O(1) per sample,
- *    used in the propagator's hot per-stage candidate filter.
- *  - `isLandExact`: even-odd point-in-polygon against the source
- *    polygons, used for endpoints and the final validation pass.
+ *  - `isLandBulk` / `legsCrossLandBulk`: raster lookup; a leg is walked
+ *    cell by cell (every cell its path crosses, finest patch first), used
+ *    in the propagator's hot per-stage candidate filter.
+ *  - `isLandExact` / `legCrossesLandExact`: even-odd point-in-polygon and
+ *    segment-against-coastline-edge tests on the source polygons, used for
+ *    endpoints and the final validation pass.
  *
  * The raster is conservative: a cell is land if its centre is inside a
  * polygon OR a polygon edge passes through it. That second rule stands
@@ -525,8 +527,13 @@ export class LandMask {
   }
 
   /**
-   * For each leg a→b, does its great-circle path touch land at any
-   * sample spaced ≤ stepM apart (endpoints included)?
+   * For each leg a→b, does its great-circle path pass through a land cell?
+   * Every raster cell the path crosses is checked (finest patch where one
+   * covers it), not samples along it, so land narrower than the gap
+   * between samples cannot be stepped over. The raster is conservative
+   * (every cell a coastline edge passes through is land), so a leg whose
+   * cells are all water does not cross land. `stepM` is kept for the call
+   * signature and no longer used.
    */
   legsCrossLandBulk(
     lonsA: ArrayLike<number>,
@@ -538,36 +545,104 @@ export class LandMask {
     if (!(stepM > 0)) throw new Error(`legsCrossLandBulk: stepM must be > 0 (got ${stepM})`);
     const n = lonsA.length;
     const out = new Uint8Array(n);
-    let maxSamples = 2;
-    for (let k = 0; k < n; k++) {
-      const d = haversineDistanceM(lonsA[k], latsA[k], lonsB[k], latsB[k]);
-      const s = Math.max(2, Math.ceil(d / stepM) + 1);
-      if (s > maxSamples) maxSamples = s;
-    }
-    const sLon = new Float64Array(maxSamples);
-    const sLat = new Float64Array(maxSamples);
-    for (let k = 0; k < n; k++) {
-      const d = haversineDistanceM(lonsA[k], latsA[k], lonsB[k], latsB[k]);
-      const s = Math.max(2, Math.ceil(d / stepM) + 1);
-      slerpSamples(lonsA[k], latsA[k], lonsB[k], latsB[k], s, sLon, sLat, 0);
-      for (let q = 0; q < s; q++) {
-        if (this.isLand(sLon[q], sLat[q])) {
-          out[k] = 1;
-          break;
-        }
-      }
-    }
+    for (let k = 0; k < n; k++) if (this.legCrossesRaster(lonsA[k], latsA[k], lonsB[k], latsB[k])) out[k] = 1;
     return out;
   }
 
-  /** Exact-polygon variant of legsCrossLandBulk for the final validation pass. */
+  /** Does the great-circle path a→b pass through a land cell (base raster or patch)? */
+  legCrossesRaster(lonA: number, latA: number, lonB: number, latB: number): boolean {
+    const { lons, lats } = greatCirclePieces(lonA, latA, lonB, latB);
+    for (let k = 0; k + 1 < lons.length; k++) if (this.pieceHitsRaster(lons[k], lats[k], lons[k + 1], lats[k + 1])) return true;
+    return false;
+  }
+
+  /** One straight piece (lon/lat plane) against the base raster, walking into a patch where one covers a base cell. */
+  private pieceHitsRaster(lonP: number, latP: number, lonQ: number, latQ: number): boolean {
+    const r = this.resolutionDeg;
+    const xP = lonOffsetFromWest(this.bbox, lonP);
+    let xQ = lonOffsetFromWest(this.bbox, lonQ);
+    if (xQ - xP > 180) xQ -= 360;
+    else if (xP - xQ > 180) xQ += 360;
+    const yP = latP - this.bbox.south;
+    const yQ = latQ - this.bbox.south;
+    return walkGrid(xP / r, yP / r, xQ / r, yQ / r, (i, j, t0, t1) => {
+      if (i < 0 || i >= this.nx || j < 0 || j >= this.ny) return false; // outside the raster: water, as isLand
+      if (this.patches.length) {
+        const lonC = this.bbox.west + (i + 0.5) * r;
+        const latC = this.bbox.south + (j + 0.5) * r;
+        for (const p of this.patches) {
+          // Patches cover whole base cells, finest first, as isLand looks them up.
+          if (patchIndex(p, lonC, latC) >= 0) {
+            const xa = xP + (xQ - xP) * t0;
+            const xb = xP + (xQ - xP) * t1;
+            const ya = yP + (yQ - yP) * t0;
+            const yb = yP + (yQ - yP) * t1;
+            return this.pieceHitsPatch(p, this.bbox.west + xa, this.bbox.south + ya, this.bbox.west + xb, this.bbox.south + yb);
+          }
+        }
+      }
+      return this.raster[j * this.nx + i] === 1;
+    });
+  }
+
+  private pieceHitsPatch(p: LandPatch, lonA: number, latA: number, lonB: number, latB: number): boolean {
+    const r = p.resolutionDeg;
+    const xa = lonOffsetFromWest(p.bbox, lonA);
+    let xb = lonOffsetFromWest(p.bbox, lonB);
+    if (xb - xa > 180) xb -= 360;
+    else if (xa - xb > 180) xb += 360;
+    return walkGrid(xa / r, (latA - p.bbox.south) / r, xb / r, (latB - p.bbox.south) / r, (i, j) => {
+      // The piece lies in base cells the patch covers; clamp rounding at its edges.
+      const ii = Math.min(p.nx - 1, Math.max(0, i));
+      const jj = Math.min(p.ny - 1, Math.max(0, j));
+      return p.raster[jj * p.nx + ii] === 1;
+    });
+  }
+
+  /**
+   * Exact check for the final validation: does the great-circle path a→b
+   * touch land in the polygons? An end point inside land, or any crossing
+   * or touching of a coastline edge, counts. Legs whose raster cells are
+   * all water are clear without a polygon test (the raster is
+   * conservative). No sampling: land of any width is found. `stepM` is
+   * kept for the call signature and no longer used.
+   */
   legCrossesLandExact(lonA: number, latA: number, lonB: number, latB: number, stepM = 100): boolean {
-    const d = haversineDistanceM(lonA, latA, lonB, latB);
-    const s = Math.max(2, Math.ceil(d / stepM) + 1);
-    const sLon = new Float64Array(s);
-    const sLat = new Float64Array(s);
-    slerpSamples(lonA, latA, lonB, latB, s, sLon, sLat, 0);
-    for (let q = 0; q < s; q++) if (this.isLandExact(sLon[q], sLat[q])) return true;
+    void stepM;
+    // The raster only speaks for its own box: outside it, fall through to the polygons.
+    const inside = this.cellIndex(lonA, latA) >= 0 && this.cellIndex(lonB, latB) >= 0;
+    if (inside && this.edgeCells && this.shapes.length && !this.legCrossesRaster(lonA, latA, lonB, latB)) return false;
+    if (!this.shapes.length) return this.legCrossesRaster(lonA, latA, lonB, latB);
+    if (this.isLandPolygons(lonA, latA) || this.isLandPolygons(lonB, latB)) return true;
+    const { lons, lats } = greatCirclePieces(lonA, latA, lonB, latB);
+    for (let k = 0; k + 1 < lons.length; k++) {
+      const x1 = lons[k];
+      const y1 = lats[k];
+      let x2 = lons[k + 1];
+      const y2 = lats[k + 1];
+      if (x2 - x1 > 180) x2 -= 360;
+      else if (x1 - x2 > 180) x2 += 360;
+      const minX = Math.min(x1, x2);
+      const maxX = Math.max(x1, x2);
+      const minY = Math.min(y1, y2);
+      const maxY = Math.max(y1, y2);
+      for (const s of this.shapes) {
+        if (s.maxLon < minX || s.minLon > maxX || s.maxLat < minY || s.minLat > maxY) continue;
+        for (const ring of s.rings) {
+          if (ring.maxLon < minX || ring.minLon > maxX || ring.maxLat < minY || ring.minLat > maxY) continue;
+          const c = ring.coords;
+          const m = c.length / 2;
+          for (let i = 0, j = m - 1; i < m; j = i++) {
+            const ax = c[2 * j];
+            const ay = c[2 * j + 1];
+            const bx = c[2 * i];
+            const by = c[2 * i + 1];
+            if (Math.max(ax, bx) < minX || Math.min(ax, bx) > maxX || Math.max(ay, by) < minY || Math.min(ay, by) > maxY) continue;
+            if (segmentsTouch(x1, y1, x2, y2, ax, ay, bx, by)) return true;
+          }
+        }
+      }
+    }
     return false;
   }
 
@@ -595,4 +670,89 @@ function bboxCovers(outer: BBox, inner: BBox): boolean {
   let off = lonOffsetFromWest(outer, inner.west);
   if (off > 360 - eps) off = 0;
   return off + bboxWidth(inner) <= bboxWidth(outer) + eps;
+}
+
+/** Longest straight (lon/lat) piece a great circle is split into: at most a few centimetres off the arc. */
+const PIECE_MAX_M = 1000;
+
+/** The great circle a→b as points ≤ PIECE_MAX_M apart (end points included). */
+function greatCirclePieces(lonA: number, latA: number, lonB: number, latB: number): { lons: Float64Array; lats: Float64Array } {
+  const d = haversineDistanceM(lonA, latA, lonB, latB);
+  const n = Math.max(2, Math.ceil(d / PIECE_MAX_M) + 1);
+  const lons = new Float64Array(n);
+  const lats = new Float64Array(n);
+  slerpSamples(lonA, latA, lonB, latB, n, lons, lats, 0);
+  lons[0] = lonA;
+  lats[0] = latA;
+  lons[n - 1] = lonB;
+  lats[n - 1] = latB;
+  return { lons, lats };
+}
+
+/**
+ * Visit, in order, every grid cell (column i, row j; unit cells) the
+ * straight segment (x0, y0)–(x1, y1) passes through, with the parameter
+ * range of the segment inside it. Where the segment passes exactly
+ * through a cell corner, the two side cells are visited too
+ * (conservative). Stops, returning true, as soon as `visit` does.
+ */
+export function walkGrid(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  visit: (i: number, j: number, t0: number, t1: number) => boolean
+): boolean {
+  let i = Math.floor(x0);
+  let j = Math.floor(y0);
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const stepX = dx > 0 ? 1 : dx < 0 ? -1 : 0;
+  const stepY = dy > 0 ? 1 : dy < 0 ? -1 : 0;
+  const tDeltaX = stepX ? Math.abs(1 / dx) : Infinity;
+  const tDeltaY = stepY ? Math.abs(1 / dy) : Infinity;
+  let tMaxX = stepX > 0 ? (i + 1 - x0) / dx : stepX < 0 ? (x0 - i) / -dx : Infinity;
+  let tMaxY = stepY > 0 ? (j + 1 - y0) / dy : stepY < 0 ? (y0 - j) / -dy : Infinity;
+  let t = 0;
+  const guard = Math.abs(Math.floor(x1) - i) + Math.abs(Math.floor(y1) - j) + 4;
+  for (let k = 0; k <= guard; k++) {
+    const tNext = Math.min(tMaxX, tMaxY, 1);
+    if (visit(i, j, t, tNext)) return true;
+    if (tNext >= 1) return false;
+    if (Math.abs(tMaxX - tMaxY) < 1e-12) {
+      if (visit(i + stepX, j, tNext, tNext) || visit(i, j + stepY, tNext, tNext)) return true;
+      i += stepX;
+      j += stepY;
+      tMaxX += tDeltaX;
+      tMaxY += tDeltaY;
+    } else if (tMaxX < tMaxY) {
+      i += stepX;
+      tMaxX += tDeltaX;
+    } else {
+      j += stepY;
+      tMaxY += tDeltaY;
+    }
+    t = tNext;
+  }
+  return false;
+}
+
+/** Do segments p1–p2 and q1–q2 intersect or touch? */
+function segmentsTouch(p1x: number, p1y: number, p2x: number, p2y: number, q1x: number, q1y: number, q2x: number, q2y: number): boolean {
+  const o = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number): number => {
+    const v = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    return v > 0 ? 1 : v < 0 ? -1 : 0;
+  };
+  const on = (ax: number, ay: number, bx: number, by: number, cx: number, cy: number): boolean =>
+    Math.min(ax, bx) <= cx && cx <= Math.max(ax, bx) && Math.min(ay, by) <= cy && cy <= Math.max(ay, by);
+  const o1 = o(p1x, p1y, p2x, p2y, q1x, q1y);
+  const o2 = o(p1x, p1y, p2x, p2y, q2x, q2y);
+  const o3 = o(q1x, q1y, q2x, q2y, p1x, p1y);
+  const o4 = o(q1x, q1y, q2x, q2y, p2x, p2y);
+  if (o1 !== o2 && o3 !== o4) return true;
+  if (o1 === 0 && on(p1x, p1y, p2x, p2y, q1x, q1y)) return true;
+  if (o2 === 0 && on(p1x, p1y, p2x, p2y, q2x, q2y)) return true;
+  if (o3 === 0 && on(q1x, q1y, q2x, q2y, p1x, p1y)) return true;
+  if (o4 === 0 && on(q1x, q1y, q2x, q2y, p2x, p2y)) return true;
+  return false;
 }

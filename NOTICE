@@ -1,0 +1,89 @@
+Weather Router Plus (signalk-weather-router-plus)
+Copyright 2026 Maurice Tamman
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The Apache License does not grant permission to use the names
+"Weather Router Plus" or "signalk-weather-router-plus", or the project's
+icons, for a modified or forked version (Apache License 2.0, section 6).
+See CONTRIBUTING.md.
+
+===========================================================================
+Third-party material included in this distribution
+===========================================================================
+
+OpenLayers 9.1.0 (public/ol.js, public/ol.css)
+https://openlayers.org/
+
+  BSD 2-Clause License
+
+  Copyright 2005-present, OpenLayers Contributors
+  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are met:
+
+  1. Redistributions of source code must retain the above copyright notice, this
+     list of conditions and the following disclaimer.
+
+  2. Redistributions in binary form must reproduce the above copyright notice,
+     this list of conditions and the following disclaimer in the documentation
+     and/or other materials provided with the distribution.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+  AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+  IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+  DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+  FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+  SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Global water grid (data/water-grid-0.02.bin.gz)
+
+  Built from the GSHHG 2.3.7 full-resolution level-1 shoreline
+  (GSHHS_f_L1.shp): Wessel, P., and W. H. F. Smith, A Global
+  Self-consistent, Hierarchical, High-resolution Shoreline Database,
+  J. Geophys. Res., 101, 8741-8743, 1996.
+
+  GSHHG is distributed under the GNU Lesser General Public License,
+  version 3 or later, with the permission notice in
+  licenses/GSHHG-LICENSE.txt. This file, as a work derived from GSHHG, is
+  provided under the same terms: licenses/LGPL-3.0.txt, which
+  supplements licenses/GPL-3.0.txt. The GSHHG data it was built from is
+  available from https://www.soest.hawaii.edu/pwessel/gshhg/ (and
+  https://router.zeddisplay.com/downloads/gshhg-shp-2.3.7.zip); the
+  program that builds this file from it is tools/build_water_grid.ts in
+  the source repository (npm run build:water-grid). The rest of this
+  package is licensed under the Apache License 2.0; the LGPL applies to
+  this data file only.
+
+===========================================================================
+Data the plugin downloads at run time (not included in this distribution)
+===========================================================================
+
+GSHHG 2.3.7 shoreline (when no coastline is configured)
+  Wessel & Smith, GNU Lesser General Public License.
+  https://www.soest.hawaii.edu/pwessel/gshhg/ (an identical copy is served
+  at https://router.zeddisplay.com/downloads/gshhg-shp-2.3.7.zip).
+
+Weather forecasts: ECMWF open data
+  Source: European Centre for Medium-Range Weather Forecasts (ECMWF),
+  https://www.ecmwf.int/en/forecasts/datasets/open-data . Licensed under
+  Creative Commons Attribution 4.0 International (CC BY 4.0,
+  https://creativecommons.org/licenses/by/4.0/) and the ECMWF Terms of Use
+  (https://apps.ecmwf.int/datasets/licences/general/).
+
+Ocean currents and sea level: Copernicus Marine Service
+  Generated using E.U. Copernicus Marine Service Information;
+  https://doi.org/10.48670/moi-00016 . Licence:
+  https://marine.copernicus.eu/user-corner/service-commitments-and-licence
+
+Ocean currents: NOAA Global RTOFS
+  U.S. National Oceanic and Atmospheric Administration, National Centers
+  for Environmental Prediction. A work of the U.S. Government.
+
+Tidal harmonics (FES2014, NECOFS) and polar files are supplied by the user
+and remain under their own terms.
