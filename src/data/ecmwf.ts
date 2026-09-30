@@ -350,9 +350,17 @@ export class EcmwfClient {
       throw new EcmwfError(`fetched bytes for ${param} step ${step} do not start with GRIB`);
     }
     fs.mkdirSync(path.dirname(cached), { recursive: true });
-    const tmp = `${cached}.tmp-${process.pid}`;
+    // Unique per writer: the data worker and the route worker (first boot, no
+    // decoded run yet) can fetch the same field at once, and threads share a pid.
+    const tmp = `${cached}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
     fs.writeFileSync(tmp, msg);
-    fs.renameSync(tmp, cached);
+    try {
+      fs.renameSync(tmp, cached);
+    } catch (err) {
+      fs.rmSync(tmp, { force: true });
+      // Another writer put the same field in place meanwhile: that is the answer.
+      if (!fs.existsSync(cached)) throw err;
+    }
     return msg;
   }
 

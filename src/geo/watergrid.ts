@@ -515,7 +515,8 @@ export class WaterGrid {
   save(file: string): number {
     const buf = this.toBuffer();
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.tmp-${process.pid}`;
+    // Unique per writer (worker threads share a pid).
+    const tmp = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
     fs.writeFileSync(tmp, buf);
     fs.renameSync(tmp, file);
     return buf.length;

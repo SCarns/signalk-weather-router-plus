@@ -6,6 +6,18 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0-beta.3] - 2026-09-30
+
+### Fixed
+
+- On a fresh install the first forecast download could fail with
+  `ENOENT … rename …grib2.tmp-<pid>` (it was retried and succeeded 10
+  minutes later): two threads fetching the same GRIB field at once, e.g.
+  a route computed before the first forecast was ready, wrote the same
+  temporary file. Temporary files (GRIB downloads, the water grid rebuild,
+  generated polars) are now unique per writer, and a field
+  another writer has just saved is taken as it is.
+
 ## [0.1.0-beta.2] - 2026-09-30
 
 ### Added
@@ -159,6 +171,7 @@ builds before this release, with their measurements, is in
   current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.2...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.3...HEAD
+[0.1.0-beta.3]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.2...v0.1.0-beta.3
 [0.1.0-beta.2]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.1...v0.1.0-beta.2
 [0.1.0-beta.1]: https://github.com/motamman/signalk-weather-router-plus/releases/tag/v0.1.0-beta.1

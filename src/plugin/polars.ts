@@ -291,7 +291,7 @@ export function polarFromSpecs(cfg: PolarLibraryConfig, raw: unknown): PolarFrom
     return { status: 500, body: { error: `VPP failed: ${(err as Error).message}` } };
   }
   fs.mkdirSync(userDir, { recursive: true });
-  const tmp = `${outPath}.${process.pid}.tmp`;
+  const tmp = `${outPath}.${process.pid}-${Math.random().toString(36).slice(2)}.tmp`;
   fs.writeFileSync(tmp, polarCsv(table, slug));
   fs.renameSync(tmp, outPath);
   // Read back through the library path so the response is exactly what
