@@ -1,0 +1,445 @@
+{
+    "metadata": {
+        ".zattrs": {
+            "Conventions": "CF-1.6",
+            "area": "GLOBAL",
+            "contact": "servicedesk.cmems@mercator-ocean.eu",
+            "credit": "E.U. Copernicus Marine Service Information (CMEMS)",
+            "institution": "MERCATOR OCEAN",
+            "licence": "http://marine.copernicus.eu/services-portfolio/service-commitments-and-licence/",
+            "producer": "CMEMS - Global Monitoring and Forecasting Centre",
+            "product_user_manual": "http://marine.copernicus.eu/documents/PUM/CMEMS-GLO-PUM-001-024.pdf",
+            "quality_information_document": "http://marine.copernicus.eu/documents/QUID/CMEMS-GLO-QUID-001-024.pdf",
+            "references": "http://marine.copernicus.eu",
+            "source": "MERCATOR GLO12, mfwamglo, FES2014",
+            "title": "hourly mean merged surface currents from oceanic circulation, tides and waves"
+        },
+        ".zgroup": {
+            "zarr_format": 2
+        },
+        "elevation/.zarray": {
+            "chunks": [
+                1
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": "NaN",
+            "filters": null,
+            "order": "C",
+            "shape": [
+                1
+            ],
+            "zarr_format": 2
+        },
+        "elevation/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "elevation"
+            ],
+            "axis": "Z",
+            "long_name": "Depth",
+            "positive": "Down",
+            "standard_name": "depth",
+            "units": "m"
+        },
+        "latitude/.zarray": {
+            "chunks": [
+                2041
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": "NaN",
+            "filters": null,
+            "order": "C",
+            "shape": [
+                2041
+            ],
+            "zarr_format": 2
+        },
+        "latitude/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "latitude"
+            ],
+            "axis": "Y",
+            "long_name": "Latitude",
+            "standard_name": "latitude",
+            "units": "degrees_north",
+            "valid_max": 90.0,
+            "valid_min": -80.0
+        },
+        "longitude/.zarray": {
+            "chunks": [
+                4320
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": "NaN",
+            "filters": null,
+            "order": "C",
+            "shape": [
+                4320
+            ],
+            "zarr_format": 2
+        },
+        "longitude/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "longitude"
+            ],
+            "axis": "X",
+            "long_name": "Longitude",
+            "standard_name": "longitude",
+            "units": "degrees_east",
+            "valid_max": 179.91668701171875,
+            "valid_min": -180.0
+        },
+        "time/.zarray": {
+            "chunks": [
+                21312
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": "NaN",
+            "filters": null,
+            "order": "C",
+            "shape": [
+                52008
+            ],
+            "zarr_format": 2
+        },
+        "time/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "time"
+            ],
+            "calendar": "gregorian",
+            "units": "hours since 1950-01-01"
+        },
+        "uo/.zarray": {
+            "chunks": [
+                1,
+                1,
+                512,
+                2048
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": 9.969209968386869e+36,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                52008,
+                1,
+                2041,
+                4320
+            ],
+            "zarr_format": 2
+        },
+        "uo/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "time",
+                "elevation",
+                "latitude",
+                "longitude"
+            ],
+            "least_significant_digit": 3,
+            "long_name": "Eastward Eulerian velocity (Navier-Stokes current)",
+            "standard_name": "eastward_sea_water_velocity",
+            "units": "m s-1"
+        },
+        "utide/.zarray": {
+            "chunks": [
+                1,
+                1,
+                512,
+                2048
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": 9.969209968386869e+36,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                52008,
+                1,
+                2041,
+                4320
+            ],
+            "zarr_format": 2
+        },
+        "utide/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "time",
+                "elevation",
+                "latitude",
+                "longitude"
+            ],
+            "least_significant_digit": 3,
+            "long_name": "Eastward tide-induced velocity (Tide current)",
+            "standard_name": "surface_sea_water_x_velocity_due_to_tide",
+            "units": "m s-1"
+        },
+        "utotal/.zarray": {
+            "chunks": [
+                1,
+                1,
+                512,
+                2048
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": 9.969209968386869e+36,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                52008,
+                1,
+                2041,
+                4320
+            ],
+            "zarr_format": 2
+        },
+        "utotal/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "time",
+                "elevation",
+                "latitude",
+                "longitude"
+            ],
+            "least_significant_digit": 3,
+            "long_name": "Eastward total velocity (Eulerian + Waves + Tide)",
+            "standard_name": "surface_sea_water_x_velocity",
+            "units": "m s-1"
+        },
+        "vo/.zarray": {
+            "chunks": [
+                1,
+                1,
+                512,
+                2048
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": 9.969209968386869e+36,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                52008,
+                1,
+                2041,
+                4320
+            ],
+            "zarr_format": 2
+        },
+        "vo/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "time",
+                "elevation",
+                "latitude",
+                "longitude"
+            ],
+            "least_significant_digit": 3,
+            "long_name": "Northward Eulerian velocity (Navier-Stokes current)",
+            "standard_name": "northward_sea_water_velocity",
+            "units": "m s-1"
+        },
+        "vsdx/.zarray": {
+            "chunks": [
+                1,
+                1,
+                512,
+                2048
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": 9.969209968386869e+36,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                52008,
+                1,
+                2041,
+                4320
+            ],
+            "zarr_format": 2
+        },
+        "vsdx/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "time",
+                "elevation",
+                "latitude",
+                "longitude"
+            ],
+            "least_significant_digit": 3,
+            "long_name": "Eastward wave-induced velocity (Stokes drift)",
+            "standard_name": "sea_surface_wave_stokes_drift_x_velocity",
+            "units": "m s-1"
+        },
+        "vsdy/.zarray": {
+            "chunks": [
+                1,
+                1,
+                512,
+                2048
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": 9.969209968386869e+36,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                52008,
+                1,
+                2041,
+                4320
+            ],
+            "zarr_format": 2
+        },
+        "vsdy/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "time",
+                "elevation",
+                "latitude",
+                "longitude"
+            ],
+            "least_significant_digit": 3,
+            "long_name": "Northward wave-induced velocity (Stokes drift)",
+            "standard_name": "sea_surface_wave_stokes_drift_y_velocity",
+            "units": "m s-1"
+        },
+        "vtide/.zarray": {
+            "chunks": [
+                1,
+                1,
+                512,
+                2048
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": 9.969209968386869e+36,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                52008,
+                1,
+                2041,
+                4320
+            ],
+            "zarr_format": 2
+        },
+        "vtide/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "time",
+                "elevation",
+                "latitude",
+                "longitude"
+            ],
+            "least_significant_digit": 3,
+            "long_name": "Northward tide-induced velocity (Tide current)",
+            "standard_name": "surface_sea_water_y_velocity_due_to_tide",
+            "units": "m s-1"
+        },
+        "vtotal/.zarray": {
+            "chunks": [
+                1,
+                1,
+                512,
+                2048
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": 9.969209968386869e+36,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                52008,
+                1,
+                2041,
+                4320
+            ],
+            "zarr_format": 2
+        },
+        "vtotal/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "time",
+                "elevation",
+                "latitude",
+                "longitude"
+            ],
+            "least_significant_digit": 3,
+            "long_name": "Northward total velocity (Eulerian + Waves + Tide) ",
+            "standard_name": "surface_sea_water_y_velocity",
+            "units": "m s-1"
+        }
+    },
+    "zarr_consolidated_format": 1
+}

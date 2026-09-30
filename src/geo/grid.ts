@@ -13,7 +13,10 @@ export class GridSpec {
   readonly nx: number;
   readonly ny: number;
 
-  constructor(readonly bbox: BBox, readonly resolutionDeg: number) {
+  constructor(
+    readonly bbox: BBox,
+    readonly resolutionDeg: number
+  ) {
     if (!(resolutionDeg > 0)) throw new Error(`GridSpec: resolution must be > 0 (got ${resolutionDeg})`);
     this.nx = Math.max(1, Math.ceil(bboxWidth(bbox) / resolutionDeg));
     this.ny = Math.max(1, Math.ceil(bboxHeight(bbox) / resolutionDeg));
@@ -46,7 +49,7 @@ export class NavigabilityGrid {
   constructor(
     readonly spec: GridSpec,
     /** 1 = passable water, 0 = land. Length nx*ny, row-major from the south. */
-    readonly passable: Uint8Array,
+    readonly passable: Uint8Array
   ) {
     if (passable.length !== spec.cells) {
       throw new Error(`NavigabilityGrid: passable has ${passable.length} cells, spec has ${spec.cells}`);
@@ -67,7 +70,7 @@ export function buildCoarseGrid(landMask: LandMask, bbox: BBox, resolutionDeg: n
   if (spec.cells > maxCells) {
     throw new Error(
       `buildCoarseGrid: ${spec.nx} x ${spec.ny} = ${(spec.cells / 1e6).toFixed(1)}M cells exceeds the cap of ` +
-      `${(maxCells / 1e6).toFixed(0)}M; use a coarser resolution or a smaller bbox`,
+        `${(maxCells / 1e6).toFixed(0)}M; use a coarser resolution or a smaller bbox`
     );
   }
   const passable = new Uint8Array(spec.cells);

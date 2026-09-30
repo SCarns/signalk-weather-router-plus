@@ -33,6 +33,12 @@ export interface Waypoint {
   currentDirDeg?: number;
   leg?: string;
   role?: 'via';
+  /**
+   * Sailing and motoring seconds of the leg arriving here, set when the
+   * shortcut smoother merged several legs into one (mixed modes); totals
+   * use it in place of the binary `mode`.
+   */
+  arrivingSplit?: [number, number];
 }
 
 export interface RouteWarning {
@@ -55,6 +61,28 @@ export interface Route {
   forecastHorizonExceededS?: number;
   /** Forecast cycle used, ISO string, when any. */
   forecastCycle?: string;
+  /** Names of the current sources that were stacked, when any. */
+  currentSources?: string[];
+  /** Coarse A* skeleton that guided the heading sweep, when one was found. */
+  skeleton?: { lon: number; lat: number }[];
+  /** Waypoints the shortcut smoother dropped (RDP thinning not counted, as in the parent). */
+  smootherDrops?: number;
+  /** Automatic vias the router placed at narrow passages (not waypoints). */
+  autoVias?: { lon: number; lat: number; radiusM: number; widthM: number; name: string }[];
+}
+
+export function skeletonToGeoJSON(route: Route): Record<string, unknown> | null {
+  if (!route.skeleton || route.skeleton.length < 2) return null;
+  return {
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: route.skeleton.map(p => [p.lon, p.lat]) },
+        properties: { kind: 'skeleton', points: route.skeleton.length },
+      },
+    ],
+  };
 }
 
 /** Recompute cog / twa / sog on every waypoint from the final geometry. */
@@ -65,7 +93,7 @@ export function recomputePerWaypointMetadata(route: Route): void {
     const cur = wps[k];
     cur.cogDeg = haversineBearing(prev.lon, prev.lat, cur.lon, cur.lat);
     if (cur.windDirDeg !== undefined) {
-      const raw = ((cur.cogDeg - cur.windDirDeg) % 360 + 360) % 360;
+      const raw = (((cur.cogDeg - cur.windDirDeg) % 360) + 360) % 360;
       cur.twaDeg = raw <= 180 ? raw : 360 - raw;
     }
     const dt = (cur.time.getTime() - prev.time.getTime()) / 1000;
@@ -119,23 +147,31 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
     waypoint_count: wps.length,
     validated: route.validated,
     repairs_applied: 0,
-    smoother_drops: 0,
+    smoother_drops: route.smootherDrops ?? 0,
   };
   if (route.forecastCycle) props.forecast_cycle = route.forecastCycle;
+  if (route.autoVias && route.autoVias.length) {
+    props.auto_vias = route.autoVias.map(v => ({
+      name: v.name,
+      lat: round(v.lat, 6),
+      lon: round(v.lon, 6),
+      width_m: Math.round(v.widthM),
+      radius_m: Math.round(v.radiusM),
+    }));
+  }
   if (route.forecastHorizonExceededS && route.forecastHorizonExceededS > 0) {
     props.forecast_horizon_exceeded_s = round(route.forecastHorizonExceededS, 0);
-    props.forecast_horizon_note =
-      'the route arrives after the last forecast step; conditions beyond it are held at the last step';
+    props.forecast_horizon_note = 'the route arrives after the last forecast step; conditions beyond it are held at the last step';
   }
   if (route.warnings && route.warnings.length) {
     props.warnings = route.warnings;
-    const land = route.warnings.filter((w) => w.violation === 'leg_crosses_land').length;
+    const land = route.warnings.filter(w => w.violation === 'leg_crosses_land').length;
     if (land) {
       props.land_crossings = land;
       props.has_land_crossing = true;
     }
   }
-  const swh = wps.map((w) => w.swhM).filter(finite);
+  const swh = wps.map(w => w.swhM).filter(finite);
   if (swh.length) {
     props.max_swh_m = round(Math.max(...swh), 2);
     props.avg_swh_m = round(swh.reduce((a, b) => a + b, 0) / swh.length, 2);
@@ -143,7 +179,7 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
   const features: Record<string, unknown>[] = [
     {
       type: 'Feature',
-      geometry: { type: 'LineString', coordinates: wps.map((w) => [w.lon, w.lat]) },
+      geometry: { type: 'LineString', coordinates: wps.map(w => [w.lon, w.lat]) },
       properties: props,
     },
   ];
@@ -178,7 +214,7 @@ export function routeToSignalKRoute(route: Route, name: string, description?: st
     end: wps.length ? wps[wps.length - 1].time.toISOString() : undefined,
     feature: {
       type: 'Feature',
-      geometry: { type: 'LineString', coordinates: wps.map((w) => [w.lon, w.lat]) },
+      geometry: { type: 'LineString', coordinates: wps.map(w => [w.lon, w.lat]) },
       properties: {
         source: 'signalk-weather-router-plus',
         total_time_s: round(route.totalTimeS, 1),

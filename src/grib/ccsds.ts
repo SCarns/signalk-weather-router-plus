@@ -59,9 +59,7 @@ class BitReader {
   readBits(n: number): number {
     while (this.nbits < n) {
       if (this.bytePos >= this.buf.length) {
-        throw new AecError(
-          `compressed stream exhausted (need ${n} bits, have ${this.nbits})`,
-        );
+        throw new AecError(`compressed stream exhausted (need ${n} bits, have ${this.nbits})`);
       }
       this.acc = this.acc * 256 + this.buf[this.bytePos++];
       this.nbits += 8;
@@ -153,6 +151,8 @@ export function aecDecode(
   p: AecParams,
   nSamples: number,
   stats?: AecStats,
+  /** Optional reusable output (length >= nSamples); every sample is overwritten. */
+  outBuf?: Uint32Array
 ): Uint32Array {
   const { bitsPerSample: bps, blockSize, rsi, flags } = p;
 
@@ -191,7 +191,7 @@ export function aecDecode(
   let ref = pp ? 1 : 0;
   let ebs = blockSize - ref; // encoded block size
 
-  const out = new Uint32Array(nSamples);
+  const out = outBuf && outBuf.length >= nSamples ? outBuf.subarray(0, nSamples) : new Uint32Array(nSamples);
   let produced = 0; // samples flushed into `out`
 
   const reader = new BitReader(input);
@@ -230,7 +230,7 @@ export function aecDecode(
         const d = rsiBuf[i];
         const halfD = (d >>> 1) + (d & 1);
         const mask = (d32 & med) !== 0 ? xmax : 0;
-        if (halfD <= ((mask ^ d32) >>> 0)) {
+        if (halfD <= (mask ^ d32) >>> 0) {
           const t = d & 1 ? ~(d >>> 1) : d >>> 1;
           d32 = (d32 + t) >>> 0;
         } else {
@@ -313,9 +313,7 @@ export function aecDecode(
         }
         const zeroSamples = zeroBlocks * blockSize - ref;
         if (rsiSize - rsip < zeroSamples) {
-          throw new AecError(
-            `zero block of ${zeroSamples} samples overruns the reference sample interval`,
-          );
+          throw new AecError(`zero block of ${zeroSamples} samples overruns the reference sample interval`);
         }
         rsiBuf.fill(0, rsip, rsip + zeroSamples);
         rsip += zeroSamples;

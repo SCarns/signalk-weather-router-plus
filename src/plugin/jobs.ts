@@ -28,6 +28,7 @@ export interface Job {
   error?: string;
   geojson?: Record<string, unknown>;
   skRoute?: Record<string, unknown>;
+  skeleton?: Record<string, unknown> | null;
   /** Resources API id when published. */
   resourceId?: string;
   publishError?: string;
@@ -56,7 +57,11 @@ export class JobManager extends EventEmitter {
   private running: string | null = null;
   private readonly dir: string;
 
-  constructor(dataDir: string, private readonly keepJobs: number, private readonly basePath: string) {
+  constructor(
+    dataDir: string,
+    private keepJobs: number,
+    private readonly basePath: string
+  ) {
     super();
     this.dir = path.join(dataDir, 'jobs');
     fs.mkdirSync(this.dir, { recursive: true });
@@ -64,9 +69,9 @@ export class JobManager extends EventEmitter {
   }
 
   private loadPersisted(): void {
-    let files: string[] = [];
+    let files: string[];
     try {
-      files = fs.readdirSync(this.dir).filter((f) => f.endsWith('.json'));
+      files = fs.readdirSync(this.dir).filter(f => f.endsWith('.json'));
     } catch {
       return;
     }
@@ -94,9 +99,15 @@ export class JobManager extends EventEmitter {
     fs.renameSync(tmp, path.join(this.dir, `${job.id}.json`));
   }
 
+  /** Change how many finished jobs are kept (settings) and trim now. */
+  setKeepJobs(n: number): void {
+    this.keepJobs = n;
+    this.trim();
+  }
+
   private trim(): void {
     const finished = [...this.jobs.values()]
-      .filter((j) => j.status !== 'queued' && j.status !== 'running')
+      .filter(j => j.status !== 'queued' && j.status !== 'running')
       .sort((a, b) => (b.finishedAt ?? b.createdAt).localeCompare(a.finishedAt ?? a.createdAt));
     for (const j of finished.slice(this.keepJobs)) this.delete(j.id);
   }
@@ -110,7 +121,14 @@ export class JobManager extends EventEmitter {
 
   links(id: string): Record<string, string> {
     const b = `${this.basePath}/api/routes/${id}`;
-    return { self: b, events: `${b}/events`, result: `${b}/result`, cancel: `${b}/cancel`, publish: `${b}/publish` };
+    return {
+      self: b,
+      events: `${b}/events`,
+      result: `${b}/result`,
+      skeleton: `${b}/skeleton`,
+      cancel: `${b}/cancel`,
+      publish: `${b}/publish`,
+    };
   }
 
   toPublic(job: Job): JobPublic {
@@ -188,13 +206,20 @@ export class JobManager extends EventEmitter {
     this.emitEvent(job, 'progress', p as unknown as Record<string, unknown>);
   }
 
-  onDone(id: string, geojson: Record<string, unknown>, skRoute: Record<string, unknown>, summary: RouteSummary): void {
+  onDone(
+    id: string,
+    geojson: Record<string, unknown>,
+    skRoute: Record<string, unknown>,
+    summary: RouteSummary,
+    skeleton: Record<string, unknown> | null = null
+  ): void {
     const job = this.jobs.get(id);
     if (!job) return;
     job.status = 'done';
     job.finishedAt = new Date().toISOString();
     job.geojson = geojson;
     job.skRoute = skRoute;
+    job.skeleton = skeleton;
     job.summary = summary;
     this.emitEvent(job, 'route', geojson);
     this.emitEvent(job, 'done', { status: 'done', summary });
@@ -233,7 +258,7 @@ export class JobManager extends EventEmitter {
     const job = this.jobs.get(id);
     if (!job) return null;
     if (job.status === 'queued') {
-      this.queue = this.queue.filter((q) => q !== id);
+      this.queue = this.queue.filter(q => q !== id);
       this.onError(id, 'cancelled', true);
       return 'queued';
     }
@@ -245,7 +270,7 @@ export class JobManager extends EventEmitter {
     const job = this.jobs.get(id);
     if (!job) return false;
     if (job.status === 'running') return false;
-    this.queue = this.queue.filter((q) => q !== id);
+    this.queue = this.queue.filter(q => q !== id);
     this.jobs.delete(id);
     try {
       fs.unlinkSync(path.join(this.dir, `${id}.json`));

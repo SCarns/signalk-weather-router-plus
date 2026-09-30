@@ -1,8 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  bboxFromLonLat, bboxContains, haversineBearing, haversineDistanceM, perpendicularOffsetM,
-  projectAlongBearing, segmentWithinDisc, slerpSamples, wrapLon,
+  alongTrackDistanceM,
+  bboxFromLonLat,
+  bboxContains,
+  haversineBearing,
+  haversineDistanceM,
+  perpendicularOffsetM,
+  projectAlongBearing,
+  segmentWithinDisc,
+  slerpSamples,
+  wrapLon,
 } from './geodesy';
 import { LandMask } from './landmask';
 import type { ShapePolygon } from './shapefile';
@@ -13,7 +21,13 @@ function square(recordNumber: number, lon0: number, lat0: number, lon1: number, 
   const ring = (c: number[]): { coords: Float64Array; minLon: number; minLat: number; maxLon: number; maxLat: number } => {
     const xs = c.filter((_, i) => i % 2 === 0);
     const ys = c.filter((_, i) => i % 2 === 1);
-    return { coords: Float64Array.from(c), minLon: Math.min(...xs), minLat: Math.min(...ys), maxLon: Math.max(...xs), maxLat: Math.max(...ys) };
+    return {
+      coords: Float64Array.from(c),
+      minLon: Math.min(...xs),
+      minLat: Math.min(...ys),
+      maxLon: Math.max(...xs),
+      maxLat: Math.max(...ys),
+    };
   };
   const outer = [lon0, lat0, lon1, lat0, lon1, lat1, lon0, lat1, lon0, lat0];
   return { recordNumber, minLon: lon0, minLat: lat0, maxLon: lon1, maxLat: lat1, rings: [ring(outer), ...holes.map(ring)] };
@@ -21,9 +35,9 @@ function square(recordNumber: number, lon0: number, lat0: number, lon1: number, 
 
 test('haversine distance and bearing', () => {
   // Newport RI to Bermuda, roughly 1170 km at ~150°.
-  const d = haversineDistanceM(-71.31, 41.49, -64.78, 32.30);
+  const d = haversineDistanceM(-71.31, 41.49, -64.78, 32.3);
   assert.ok(d > 1_150_000 && d < 1_190_000, `distance ${d}`);
-  const b = haversineBearing(-71.31, 41.49, -64.78, 32.30);
+  const b = haversineBearing(-71.31, 41.49, -64.78, 32.3);
   assert.ok(b > 145 && b < 155, `bearing ${b}`);
   assert.equal(haversineBearing(0, 0, 0, 1), 0);
   assert.equal(haversineBearing(0, 0, 1, 0), 90);
@@ -93,7 +107,13 @@ test('land mask rasterises polygons with holes and tests legs', () => {
   assert.equal(lm.isLandExact(0.2, 0.2), true);
   assert.equal(lm.isLandExact(0.5, 0.5), false);
   // Leg passing over the island is blocked; a leg passing south of it is clear.
-  const cross = lm.legsCrossLandBulk(Float64Array.of(-0.5, -0.5), Float64Array.of(0.5, -0.5), Float64Array.of(1.5, 1.5), Float64Array.of(0.5, -0.5), 500);
+  const cross = lm.legsCrossLandBulk(
+    Float64Array.of(-0.5, -0.5),
+    Float64Array.of(0.5, -0.5),
+    Float64Array.of(1.5, 1.5),
+    Float64Array.of(0.5, -0.5),
+    500
+  );
   assert.equal(cross[0], 1);
   assert.equal(cross[1], 0);
   // Land fraction ≈ (1 - 0.04) / 9 with conservative boundary cells.
@@ -120,4 +140,12 @@ test('chooseResolution respects the cell budget', () => {
   assert.equal(r, 0.005); // 10.2° × 15.2° at 0.002° would be 38.8M cells
   const r2 = LandMask.chooseResolution({ west: -72, south: 41, east: -70, north: 42 }, 25_000_000);
   assert.equal(r2, 0.0005);
+});
+
+test('alongTrackDistanceM: closest point along the track, negative behind the start', () => {
+  // Equator east from (0, 0): a point at (0.5, 0.01) is abreast of lon 0.5.
+  const at = alongTrackDistanceM(0, 0, 1, 0, 0.5, 0.01);
+  const half = haversineDistanceM(0, 0, 0.5, 0);
+  assert.ok(Math.abs(at - half) < 1, `${at} vs ${half}`);
+  assert.ok(alongTrackDistanceM(0, 0, 1, 0, -0.2, 0.01) < 0);
 });

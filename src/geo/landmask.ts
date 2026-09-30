@@ -11,12 +11,43 @@
  * The raster is conservative: a cell is land if its centre is inside a
  * polygon OR a polygon edge passes through it. That second rule stands
  * in for the buffered-polygon test in the original (peninsulas narrower
- * than a cell must still block a leg).
+ * than a cell must still block a leg). `rasterStreamed` can also build a
+ * centre-sampled raster (land iff the cell centre is inside a polygon),
+ * used by the global water grid build.
+ *
+ * Local refinement: `refine(bbox, res)` rasterises a finer patch over a
+ * small box (from the loaded polygons) that then answers `isLand` inside
+ * it, so a passage the base resolution closes (a strait narrower than
+ * two base cells) can be opened locally without a finer raster for the
+ * whole route.
  */
 
 import type { BBox } from './geodesy';
 import { bboxHeight, bboxWidth, lonOffsetFromWest, slerpSamples, haversineDistanceM } from './geodesy';
 import { pointInShape, readShapefilePolygons, type ShapePolygon } from './shapefile';
+
+export interface SerializedLandRaster {
+  bbox: BBox;
+  resolutionDeg: number;
+  raster: Uint8Array;
+}
+
+/** Finer raster over a small box that overrides the base raster inside it. */
+export interface LandPatch {
+  bbox: BBox;
+  resolutionDeg: number;
+  nx: number;
+  ny: number;
+  raster: Uint8Array;
+}
+
+export interface RasterStreamOptions {
+  /** Also mark every cell a polygon edge passes through (default true: conservative). */
+  edgeCells?: boolean;
+  /** Explicit raster size (avoids ceil() rounding of width / res); must cover the bbox. */
+  nx?: number;
+  ny?: number;
+}
 
 export interface LandMaskOptions {
   /** Raster cell size in degrees. 0.002° ≈ 220 m at the equator. */
@@ -33,22 +64,52 @@ export class LandMask {
   /** 1 = land, 0 = water. Row 0 is the southernmost row. */
   readonly raster: Uint8Array;
   readonly shapes: ShapePolygon[];
+  /** Finer local rasters (see refine()); checked before the base raster. */
+  readonly patches: LandPatch[] = [];
+  /** Mark cells crossed by polygon edges (conservative raster). */
+  private edgeCells = true;
 
-  private constructor(shapes: ShapePolygon[], bbox: BBox, resolutionDeg: number) {
+  private constructor(
+    shapes: ShapePolygon[],
+    bbox: BBox,
+    resolutionDeg: number,
+    raster?: Uint8Array,
+    dims?: { nx?: number; ny?: number; edgeCells?: boolean }
+  ) {
     this.shapes = shapes;
     this.bbox = bbox;
     this.resolutionDeg = resolutionDeg;
-    this.nx = Math.max(1, Math.ceil(bboxWidth(bbox) / resolutionDeg));
-    this.ny = Math.max(1, Math.ceil(bboxHeight(bbox) / resolutionDeg));
+    this.nx = dims?.nx ?? Math.max(1, Math.ceil(bboxWidth(bbox) / resolutionDeg));
+    this.ny = dims?.ny ?? Math.max(1, Math.ceil(bboxHeight(bbox) / resolutionDeg));
+    if (dims?.edgeCells === false) this.edgeCells = false;
     const cells = this.nx * this.ny;
     if (cells > 400_000_000) {
       throw new Error(
         `LandMask raster of ${this.nx}x${this.ny} = ${(cells / 1e6).toFixed(0)}M cells is too large; ` +
-        'use a coarser resolution or a smaller bbox',
+          'use a coarser resolution or a smaller bbox'
       );
     }
-    this.raster = new Uint8Array(cells);
-    this.rasterize();
+    if (raster) {
+      if (raster.length !== cells) throw new Error(`LandMask raster has ${raster.length} cells, expected ${cells}`);
+      this.raster = raster;
+    } else {
+      this.raster = new Uint8Array(cells);
+      this.rasterize();
+    }
+  }
+
+  /** Structured-clone friendly raster form (no polygons; isLandExact is unavailable). */
+  serializeRaster(): SerializedLandRaster {
+    return { bbox: this.bbox, resolutionDeg: this.resolutionDeg, raster: this.raster };
+  }
+
+  static fromRaster(s: SerializedLandRaster): LandMask {
+    return new LandMask([], s.bbox, s.resolutionDeg, s.raster);
+  }
+
+  /** True when polygon geometry is available for exact tests. */
+  get hasPolygons(): boolean {
+    return this.shapes.length > 0;
   }
 
   /**
@@ -90,10 +151,101 @@ export class LandMask {
     return new LandMask(shapes, bbox, resolutionDeg);
   }
 
+  /**
+   * Raster-only mask fed one polygon at a time: `feed` calls `add` for
+   * each polygon, which is rasterised and can then be dropped, so memory
+   * is bounded by the largest single polygon rather than all of them.
+   * The raster equals fromPolygons(all, bbox, res).raster; no polygons
+   * are kept (isLandExact is unavailable).
+   */
+  static rasterStreamed(
+    bbox: BBox,
+    resolutionDeg: number,
+    feed: (add: (s: ShapePolygon) => void) => void,
+    opts: RasterStreamOptions = {}
+  ): LandMask {
+    const m = new LandMask([], bbox, resolutionDeg, undefined, { nx: opts.nx, ny: opts.ny, edgeCells: opts.edgeCells });
+    feed(s => m.rasterizeShape(s));
+    return m;
+  }
+
+  // -------------------------------------------------------------------
+  // Local refinement
+
+  /**
+   * Rasterise a finer conservative patch over `bbox` (clipped to the base
+   * raster) from the loaded polygons; `isLand` then answers from it inside
+   * the box. Needs polygons (a mask from fromShapefiles/fromPolygons).
+   * Returns the patch, or null when the box is outside the base raster or
+   * an equal-or-finer patch already covers it.
+   */
+  refine(bbox: BBox, resolutionDeg: number, maxCells = 4_000_000): LandPatch | null {
+    if (!this.hasPolygons) throw new Error('LandMask.refine needs polygons (raster-only masks cannot be refined)');
+    if (!(resolutionDeg > 0) || resolutionDeg >= this.resolutionDeg) return null;
+    // Snap the box to base-cell boundaries inside the base raster.
+    const res0 = this.resolutionDeg;
+    const x0 = Math.max(0, Math.floor(lonOffsetFromWest(this.bbox, bbox.west) / res0));
+    const w = bboxWidth(bbox);
+    const x1 = Math.min(this.nx, Math.ceil((lonOffsetFromWest(this.bbox, bbox.west) + w) / res0));
+    const y0 = Math.max(0, Math.floor((bbox.south - this.bbox.south) / res0));
+    const y1 = Math.min(this.ny, Math.ceil((bbox.north - this.bbox.south) / res0));
+    if (x1 <= x0 || y1 <= y0) return null;
+    const west = this.bbox.west + x0 * res0;
+    const south = this.bbox.south + y0 * res0;
+    const k = Math.max(2, Math.round(res0 / resolutionDeg));
+    const res = res0 / k;
+    const nx = (x1 - x0) * k;
+    const ny = (y1 - y0) * k;
+    if (nx * ny > maxCells) throw new Error(`LandMask.refine: patch ${nx}x${ny} exceeds ${maxCells} cells`);
+    const pb: BBox = {
+      west: ((west + 540) % 360) - 180,
+      south,
+      east: ((west + (x1 - x0) * res0 + 540) % 360) - 180,
+      north: south + (y1 - y0) * res0,
+    };
+    for (const p of this.patches) {
+      if (p.resolutionDeg <= res * 1.0001 && bboxCovers(p.bbox, pb)) return null;
+    }
+    const m = new LandMask([], pb, res, undefined, { nx, ny });
+    for (const s of this.shapes) {
+      if (s.maxLat < pb.south || s.minLat > pb.north) continue;
+      m.rasterizeShape(s);
+    }
+    const patch: LandPatch = { bbox: pb, resolutionDeg: res, nx, ny, raster: m.raster };
+    // Finest first, so lookups hit the finest patch covering a point.
+    this.patches.push(patch);
+    this.patches.sort((a, b) => a.resolutionDeg - b.resolutionDeg);
+    return patch;
+  }
+
+  /** Drop all local patches (a cached mask reused for another route). */
+  clearPatches(): void {
+    this.patches.length = 0;
+  }
+
+  /** Resolution that answers isLand at a position (finest patch covering it, else the base). */
+  resolutionAt(lon: number, lat: number): number {
+    for (const p of this.patches) {
+      if (patchIndex(p, lon, lat) >= 0) return p.resolutionDeg;
+    }
+    return this.resolutionDeg;
+  }
+
+  /** Bytes held by the base raster and patches. */
+  rasterBytes(): number {
+    let b = this.raster.length;
+    for (const p of this.patches) b += p.raster.length;
+    return b;
+  }
+
   // -------------------------------------------------------------------
   // Rasterisation
 
   private rasterize(): void {
+    for (const shape of this.shapes) this.rasterizeShape(shape);
+  }
+
+  private rasterizeShape(shape: ShapePolygon): void {
     const { nx, ny, resolutionDeg: res, raster } = this;
     const width = bboxWidth(this.bbox);
     const south = this.bbox.south;
@@ -101,7 +253,7 @@ export class LandMask {
     // Row centre latitude and the row index range covering a lat span.
     const rowOfLat = (lat: number): number => Math.floor((lat - south) / res);
 
-    for (const shape of this.shapes) {
+    {
       // Longitudes are converted to the offset frame (degrees east of
       // bbox.west). Rings crossing the frame seam are unwrapped so
       // consecutive vertices differ by < 180°, then processed in up to
@@ -109,7 +261,7 @@ export class LandMask {
       // [0, width] gets filled.
       const rMinRow = Math.max(0, rowOfLat(shape.minLat));
       const rMaxRow = Math.min(ny - 1, rowOfLat(shape.maxLat));
-      if (rMinRow > rMaxRow) continue;
+      if (rMinRow > rMaxRow) return;
 
       const rings: Float64Array[] = [];
       for (const ring of shape.rings) {
@@ -158,10 +310,24 @@ export class LandMask {
    * raster, plus conservative marking of every cell an edge passes through.
    */
   private fillShape(
-    rings: Float64Array[], shift: number, rowLo: number, rowHi: number,
-    nx: number, res: number, south: number, raster: Uint8Array, width: number,
+    rings: Float64Array[],
+    shift: number,
+    rowLo: number,
+    rowHi: number,
+    nx: number,
+    res: number,
+    south: number,
+    raster: Uint8Array,
+    width: number
   ): void {
-    interface Edge { x0: number; y0: number; x1: number; y1: number; rowStart: number; rowEnd: number; }
+    interface Edge {
+      x0: number;
+      y0: number;
+      x1: number;
+      y1: number;
+      rowStart: number;
+      rowEnd: number;
+    }
     const buckets = new Map<number, Edge[]>();
     let edgeCount = 0;
     for (const xs of rings) {
@@ -172,7 +338,7 @@ export class LandMask {
         const xb = xs[2 * i] + shift;
         const yb = xs[2 * i + 1];
         // Conservative boundary marking: every cell the edge touches.
-        this.markEdgeCells(xa, ya, xb, yb, nx, res, south, raster, width);
+        if (this.edgeCells) this.markEdgeCells(xa, ya, xb, yb, nx, res, south, raster, width);
         if (ya === yb) continue; // horizontal edges do not cross scanlines
         const y0 = Math.min(ya, yb);
         const y1 = Math.max(ya, yb);
@@ -211,7 +377,7 @@ export class LandMask {
         active = [];
         continue;
       }
-      if (row % 64 === 0) active = active.filter((e) => row <= e.rowEnd);
+      if (row % 64 === 0) active = active.filter(e => row <= e.rowEnd);
       xsRow.sort((a, b) => a - b);
       const base = row * nx;
       for (let k = 0; k + 1 < xsRow.length; k += 2) {
@@ -225,27 +391,71 @@ export class LandMask {
     }
   }
 
-  /** Mark every raster cell an edge passes through (grid traversal). */
+  /**
+   * Mark every raster cell an edge passes through: an exact supercover
+   * walk (Amanatides–Woo), including the cells around a corner the edge
+   * passes exactly through, so a cell left as water has no polygon
+   * boundary inside it (isLandExact relies on this).
+   */
   private markEdgeCells(
-    xa: number, ya: number, xb: number, yb: number,
-    nx: number, res: number, south: number, raster: Uint8Array, width: number,
+    xa: number,
+    ya: number,
+    xb: number,
+    yb: number,
+    nx: number,
+    res: number,
+    south: number,
+    raster: Uint8Array,
+    width: number
   ): void {
     const ny = this.ny;
     // Quick reject when the edge is entirely outside the raster.
     if (Math.max(xa, xb) < 0 || Math.min(xa, xb) > width) return;
     if (Math.max(ya, yb) < south || Math.min(ya, yb) > south + ny * res) return;
-    // Walk in steps of half a cell along the edge.
-    const dx = xb - xa;
-    const dy = yb - ya;
-    const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / (res * 0.5)));
-    for (let s = 0; s <= steps; s++) {
-      const f = s / steps;
-      const x = xa + f * dx;
-      const y = ya + f * dy;
-      const j = Math.floor(x / res);
-      const i = Math.floor((y - south) / res);
+    const x1 = xa / res;
+    const y1 = (ya - south) / res;
+    const x2 = xb / res;
+    const y2 = (yb - south) / res;
+    const mark = (j: number, i: number): void => {
       if (i >= 0 && i < ny && j >= 0 && j < nx) raster[i * nx + j] = 1;
+    };
+    let cx = Math.floor(x1);
+    let cy = Math.floor(y1);
+    const ex = Math.floor(x2);
+    const ey = Math.floor(y2);
+    mark(cx, cy);
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const sx = dx > 0 ? 1 : -1;
+    const sy = dy > 0 ? 1 : -1;
+    const tDx = dx !== 0 ? Math.abs(1 / dx) : Infinity;
+    const tDy = dy !== 0 ? Math.abs(1 / dy) : Infinity;
+    let tMaxX = dx !== 0 ? (sx > 0 ? cx + 1 - x1 : x1 - cx) * tDx : Infinity;
+    let tMaxY = dy !== 0 ? (sy > 0 ? cy + 1 - y1 : y1 - cy) * tDy : Infinity;
+    // A vertex exactly on a cell border also touches the neighbour.
+    if (x1 === cx) mark(cx - 1, cy);
+    if (y1 === cy) mark(cx, cy - 1);
+    const steps = Math.abs(ex - cx) + Math.abs(ey - cy);
+    for (let s = 0; s < steps && Math.min(tMaxX, tMaxY) <= 1; s++) {
+      if (Math.abs(tMaxX - tMaxY) < 1e-12) {
+        // Through a corner: all four cells around it.
+        mark(cx + sx, cy);
+        mark(cx, cy + sy);
+        cx += sx;
+        cy += sy;
+        tMaxX += tDx;
+        tMaxY += tDy;
+        s++;
+      } else if (tMaxX < tMaxY) {
+        cx += sx;
+        tMaxX += tDx;
+      } else {
+        cy += sy;
+        tMaxY += tDy;
+      }
+      mark(cx, cy);
     }
+    mark(ex, ey);
   }
 
   // -------------------------------------------------------------------
@@ -260,8 +470,14 @@ export class LandMask {
     return i * this.nx + j;
   }
 
-  /** Raster land test. Positions outside the raster are reported as water. */
+  /** Raster land test (finest patch first). Positions outside the raster are reported as water. */
   isLand(lon: number, lat: number): boolean {
+    if (this.patches.length) {
+      for (const p of this.patches) {
+        const pi = patchIndex(p, lon, lat);
+        if (pi >= 0) return p.raster[pi] === 1;
+      }
+    }
     const idx = this.cellIndex(lon, lat);
     return idx >= 0 && this.raster[idx] === 1;
   }
@@ -274,11 +490,37 @@ export class LandMask {
     return out;
   }
 
-  /** Exact even-odd polygon test against the loaded shapes. */
+  /**
+   * Exact even-odd polygon test against the loaded shapes. A point in a
+   * water cell of the conservative raster (or of a patch) is water without
+   * a polygon test: no polygon boundary passes through such a cell and its
+   * centre is outside every polygon, so the whole cell is outside.
+   */
   isLandExact(lon: number, lat: number): boolean {
+    if (this.edgeCells && this.shapes.length) {
+      for (const p of this.patches) {
+        const pi = patchIndex(p, lon, lat);
+        if (pi >= 0) {
+          if (p.raster[pi] === 0) return false;
+          break;
+        }
+      }
+      const idx = this.cellIndex(lon, lat);
+      if (idx >= 0 && this.raster[idx] === 0 && !this.inAnyPatch(lon, lat)) return false;
+    }
+    return this.isLandPolygons(lon, lat);
+  }
+
+  /** Point-in-polygon over every loaded shape (no raster shortcut). */
+  isLandPolygons(lon: number, lat: number): boolean {
     for (const s of this.shapes) {
       if (pointInShape(s, lon, lat)) return true;
     }
+    return false;
+  }
+
+  private inAnyPatch(lon: number, lat: number): boolean {
+    for (const p of this.patches) if (patchIndex(p, lon, lat) >= 0) return true;
     return false;
   }
 
@@ -287,9 +529,11 @@ export class LandMask {
    * sample spaced ≤ stepM apart (endpoints included)?
    */
   legsCrossLandBulk(
-    lonsA: ArrayLike<number>, latsA: ArrayLike<number>,
-    lonsB: ArrayLike<number>, latsB: ArrayLike<number>,
-    stepM = 200,
+    lonsA: ArrayLike<number>,
+    latsA: ArrayLike<number>,
+    lonsB: ArrayLike<number>,
+    latsB: ArrayLike<number>,
+    stepM = 200
   ): Uint8Array {
     if (!(stepM > 0)) throw new Error(`legsCrossLandBulk: stepM must be > 0 (got ${stepM})`);
     const n = lonsA.length;
@@ -333,4 +577,22 @@ export class LandMask {
     for (let i = 0; i < this.raster.length; i++) c += this.raster[i];
     return c / this.raster.length;
   }
+}
+
+/** Cell index of a position in a patch, or -1 outside it. */
+function patchIndex(p: LandPatch, lon: number, lat: number): number {
+  const i = Math.floor((lat - p.bbox.south) / p.resolutionDeg);
+  if (i < 0 || i >= p.ny) return -1;
+  const j = Math.floor(lonOffsetFromWest(p.bbox, lon) / p.resolutionDeg);
+  if (j < 0 || j >= p.nx) return -1;
+  return i * p.nx + j;
+}
+
+/** Does `outer` contain `inner` (antimeridian-aware)? */
+function bboxCovers(outer: BBox, inner: BBox): boolean {
+  const eps = 1e-9;
+  if (inner.south < outer.south - eps || inner.north > outer.north + eps) return false;
+  let off = lonOffsetFromWest(outer, inner.west);
+  if (off > 360 - eps) off = 0;
+  return off + bboxWidth(inner) <= bboxWidth(outer) + eps;
 }

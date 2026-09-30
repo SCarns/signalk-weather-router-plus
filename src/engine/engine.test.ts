@@ -14,7 +14,11 @@ import { KTS_TO_MS, haversineDistanceM } from '../geo/geodesy';
 function rect(recordNumber: number, lon0: number, lat0: number, lon1: number, lat1: number): ShapePolygon {
   const c = [lon0, lat0, lon1, lat0, lon1, lat1, lon0, lat1, lon0, lat0];
   return {
-    recordNumber, minLon: lon0, minLat: lat0, maxLon: lon1, maxLat: lat1,
+    recordNumber,
+    minLon: lon0,
+    minLat: lat0,
+    maxLon: lon1,
+    maxLat: lat1,
     rings: [{ coords: Float64Array.from(c), minLon: lon0, minLat: lat0, maxLon: lon1, maxLat: lat1 }],
   };
 }
@@ -44,13 +48,24 @@ test('polar interpolation, mirroring, no-go floor and extrapolation', () => {
 
 test('leg simulation: motor timing and stuck detection', () => {
   const vessel = makeVessel({ motorSpeedMs: 5 });
-  const r = simulateLegTime(0, 0, new Date(0), 0.1, 0, vessel, null, new NoWind(), new NoCurrent(), { modePolicy: 'motor', sailThreshMs: 2.5, simStepM: 200 });
+  const r = simulateLegTime(0, 0, new Date(0), 0.1, 0, vessel, null, new NoWind(), new NoCurrent(), {
+    modePolicy: 'motor',
+    sailThreshMs: 2.5,
+    simStepM: 200,
+  });
   const d = haversineDistanceM(0, 0, 0.1, 0);
   assert.ok(Math.abs(r.seconds - d / 5) < 1e-6);
   assert.equal(r.dominantMode, 'motoring');
   // Head current stronger than the boat → stuck.
-  const strong = { at: () => [-10, 0] as [number, number], atMany: (l: Float64Array) => ({ u: new Float64Array(l.length).fill(-10), v: new Float64Array(l.length) }) };
-  const s = simulateLegTime(0, 0, new Date(0), 0.1, 0, vessel, null, new NoWind(), strong, { modePolicy: 'motor', sailThreshMs: 2.5, simStepM: 200 });
+  const strong = {
+    at: () => [-10, 0] as [number, number],
+    atMany: (l: Float64Array) => ({ u: new Float64Array(l.length).fill(-10), v: new Float64Array(l.length) }),
+  };
+  const s = simulateLegTime(0, 0, new Date(0), 0.1, 0, vessel, null, new NoWind(), strong, {
+    modePolicy: 'motor',
+    sailThreshMs: 2.5,
+    simStepM: 200,
+  });
   assert.equal(s.seconds, Infinity);
   assert.equal(s.dominantMode, 'stuck');
 });
@@ -59,7 +74,11 @@ test('leg simulation sails when the polar allows it', () => {
   const p = PolarDiagram.parse(POLAR_CSV, ',');
   const vessel = makeVessel({ motorSpeedMs: 3 });
   // Wind from the north at 12 kt, leg due east → TWA 90°, boat speed 6.5 kt > motor.
-  const r = simulateLegTime(0, 0, new Date(0), 0.2, 0, vessel, p, new ConstantWind(12 * KTS_TO_MS, 0), new NoCurrent(), { modePolicy: 'sail_max', sailThreshMs: 2.5, simStepM: 500 });
+  const r = simulateLegTime(0, 0, new Date(0), 0.2, 0, vessel, p, new ConstantWind(12 * KTS_TO_MS, 0), new NoCurrent(), {
+    modePolicy: 'sail_max',
+    sailThreshMs: 2.5,
+    simStepM: 500,
+  });
   assert.equal(r.dominantMode, 'sailing');
   assert.ok(Math.abs(r.seconds - haversineDistanceM(0, 0, 0.2, 0) / (6.5 * KTS_TO_MS)) < 1);
 });
@@ -86,7 +105,8 @@ test('A* routes around an island and refuses impossible starts', () => {
   const r = astarRoute(grid, [0, 0.5], [1, 0.5], 3);
   assert.ok(r.path.length > 3);
   // Path must clear the wall: every point is outside the island's box.
-  for (const p of r.path) assert.ok(!(p.lon > 0.3 && p.lon < 0.7 && p.lat > -0.5 && p.lat < 1.5), `path enters the wall at ${p.lon},${p.lat}`);
+  for (const p of r.path)
+    assert.ok(!(p.lon > 0.3 && p.lon < 0.7 && p.lat > -0.5 && p.lat < 1.5), `path enters the wall at ${p.lon},${p.lat}`);
   assert.throws(() => astarRoute(grid, [0.5, 0.5], [1, 0.5], 3), AstarError);
 });
 
@@ -96,7 +116,13 @@ test('propagator finds a land-free route around an island under motor', () => {
   const lm = LandMask.fromPolygons([island], bbox, 0.005);
   const prop = new OceanPropagator(lm, { stages: 12, subsectors: 20, headings: 30 });
   const vessel = makeVessel({ motorSpeedMs: 3 });
-  const route = prop.computeRoute({ start: [0, 0.5], end: [1, 0.5], departureTime: new Date('2026-01-01T00:00:00Z'), vessel, modePolicy: 'motor' });
+  const route = prop.computeRoute({
+    start: [0, 0.5],
+    end: [1, 0.5],
+    departureTime: new Date('2026-01-01T00:00:00Z'),
+    vessel,
+    modePolicy: 'motor',
+  });
   assert.ok(route.waypoints.length >= 3);
   assert.equal(route.warnings, undefined);
   assert.equal(route.validated, true);
@@ -119,14 +145,28 @@ test('propagator honours a via disc and rejects endpoints on land', () => {
   const prop = new OceanPropagator(lm, { stages: 10, subsectors: 20, headings: 30 });
   const vessel = makeVessel({ motorSpeedMs: 3 });
   const via = { lon: 0.5, lat: 0.9, radiusM: 2000 };
-  const route = prop.computeRoute({ start: [0, 0.5], end: [1, 0.5], departureTime: new Date('2026-01-01T00:00:00Z'), vessel, modePolicy: 'motor', vias: [via] });
+  const route = prop.computeRoute({
+    start: [0, 0.5],
+    end: [1, 0.5],
+    departureTime: new Date('2026-01-01T00:00:00Z'),
+    vessel,
+    modePolicy: 'motor',
+    vias: [via],
+  });
   // Some consecutive pair of waypoints must pass within the disc.
   let crossed = false;
   for (let i = 1; i < route.waypoints.length; i++) {
     const a = route.waypoints[i - 1];
     const b = route.waypoints[i];
-    if (haversineDistanceM(b.lon, b.lat, via.lon, via.lat) <= via.radiusM || haversineDistanceM(a.lon, a.lat, via.lon, via.lat) <= via.radiusM) crossed = true;
+    if (
+      haversineDistanceM(b.lon, b.lat, via.lon, via.lat) <= via.radiusM ||
+      haversineDistanceM(a.lon, a.lat, via.lon, via.lat) <= via.radiusM
+    )
+      crossed = true;
   }
-  assert.ok(route.waypoints.some((w) => w.role === 'via') || crossed);
-  assert.throws(() => prop.computeRoute({ start: [1.7, 1.7], end: [1, 0.5], departureTime: new Date(), vessel, modePolicy: 'motor' }), RouteError);
+  assert.ok(route.waypoints.some(w => w.role === 'via') || crossed);
+  assert.throws(
+    () => prop.computeRoute({ start: [1.7, 1.7], end: [1, 0.5], departureTime: new Date(), vessel, modePolicy: 'motor' }),
+    RouteError
+  );
 });

@@ -1,25 +1,53 @@
 /**
- * Plugin configuration: the shape stored by Signal K, its JSON schema
- * for the admin UI, and normalisation into SI engine settings.
+ * Plugin configuration.
  *
- * Configuration values are entered in sailors' units (knots) where
- * noted; everything is converted to SI here and stays SI in memory.
+ * Two sources, merged into one ResolvedConfig (SI in memory):
+ *  - the Signal K plugin config (admin UI, CONFIG_SCHEMA below): only
+ *    server / installation settings — file paths, the download mirror,
+ *    Weather API registration and the map overlay cache;
+ *  - the web-app settings (settings.ts, stored in the plugin data dir as
+ *    settings.json, edited in the page's Settings tab): vessel, forecast
+ *    horizon and extras, currents, routing engine and publishing.
+ *
+ * Older versions kept everything in the plugin config; those keys are
+ * described by LegacyPluginConfig and read once, to migrate them into
+ * settings.json (settings.ts migrateLegacy). After that they are ignored.
  */
 
-import { KTS_TO_MS } from '../geo/geodesy';
-import type { BBox } from '../geo/geodesy';
 import { makeVessel, type VesselParams } from '../vessel/vessel';
+import type { AppSettings } from './settings';
+import type { RouteRequest } from './protocol';
 
-export interface RegionConfig {
-  west: number;
-  south: number;
-  east: number;
-  north: number;
-}
-
+/** What the Signal K plugin config holds now. */
 export interface PluginConfig {
   landShapefiles?: string;
   polarFile?: string;
+  polarsDir?: string;
+  forecast?: {
+    mirror?: 'ecmwf' | 'aws' | 'google';
+  };
+  currents?: {
+    harmonicDir?: string;
+  };
+  weatherProvider?: {
+    enabled?: boolean;
+  };
+  overlayCache?: {
+    enabled?: boolean;
+    /** m */
+    radius?: number;
+    /** s; 0 = the whole forecast */
+    window?: number;
+    maxZoom?: number;
+    /** bytes */
+    diskCap?: number;
+    workers?: number;
+    followView?: boolean;
+  };
+}
+
+/** Plugin-config keys of earlier versions, read only by the settings migration. */
+export interface LegacyPluginConfig {
   vessel?: {
     name?: string;
     draughtM?: number;
@@ -35,10 +63,14 @@ export interface PluginConfig {
   forecast?: {
     horizonHours?: number;
     refreshMinutes?: number;
-    mirror?: 'ecmwf' | 'aws' | 'google';
-    region?: Partial<RegionConfig>;
-    regionFromVesselDeg?: number;
     keepCycles?: number;
+    extraFields?: boolean;
+  };
+  currents?: {
+    rtofsEnabled?: boolean;
+    rtofsRegion?: string;
+    rtofsHorizonHours?: number;
+    rtofsStepHours?: number;
   };
   routing?: {
     stages?: number;
@@ -48,7 +80,6 @@ export interface PluginConfig {
     sailThresholdKts?: number;
     simStepM?: number;
     landRasterMaxCells?: number;
-    maxConcurrentJobs?: number;
     keepJobs?: number;
   };
   publish?: {
@@ -56,22 +87,39 @@ export interface PluginConfig {
     routeNamePrefix?: string;
     notifications?: boolean;
   };
-  weatherProvider?: {
-    enabled?: boolean;
-  };
 }
 
 export interface ResolvedConfig {
   landShapefiles: string[];
   polarFile: string | null;
+  polarsDir: string | null;
   vessel: VesselParams;
   forecast: {
     horizonHours: number;
     refreshMinutes: number;
     mirror: 'ecmwf' | 'aws' | 'google';
-    region: BBox | null;
-    regionFromVesselDeg: number;
     keepCycles: number;
+    /** Also fetch 2t, tprate, skt, 2d, ptype (temperature, precipitation, SST, humidity, precip type). */
+    extraFields: boolean;
+    /** Memory guard: bytes that must remain free after a forecast load. */
+    memoryHeadroomBytes: number;
+  };
+  currents: {
+    harmonicDir: string | null;
+    smocEnabled: boolean;
+    smocHorizonHours: number;
+    smocStepHours: number;
+    smocHalfWidthDeg: number;
+    rtofsEnabled: boolean;
+    rtofsRegion: string;
+    rtofsHorizonHours: number;
+    rtofsStepHours: number;
+  };
+  tides: {
+    /** Copernicus Marine hourly sea level (tide height, water level, surge; tide map layer). */
+    enabled: boolean;
+    halfWidthDeg: number;
+    horizonHours: number;
   };
   routing: {
     stages: number;
@@ -81,6 +129,11 @@ export interface ResolvedConfig {
     sailThreshMs: number;
     simStepM: number;
     landRasterMaxCells: number;
+    /** Open the known canals' edges in the global water grid. */
+    allowCanals: boolean;
+    simplifyM: number;
+    smoother: boolean;
+    smootherTolerance: number;
     keepJobs: number;
   };
   publish: {
@@ -91,168 +144,260 @@ export interface ResolvedConfig {
   weatherProvider: {
     enabled: boolean;
   };
+  /** Map overlay tiles saved on disk and built ahead of time (tiles.ts, prebuild.ts). SI. */
+  overlayCache: {
+    enabled: boolean;
+    radiusM: number;
+    /** Seconds ahead built; null = the whole forecast. */
+    windowS: number | null;
+    maxZoom: number;
+    diskCapBytes: number;
+    workers: number;
+    followView: boolean;
+  };
 }
+
+/** Overlay cache defaults (SI). */
+export const OVERLAY_CACHE_DEFAULTS = {
+  enabled: true,
+  radius: 250_000,
+  window: 0,
+  maxZoom: 15,
+  diskCap: 20e9,
+  workers: 2,
+  followView: true,
+} as const;
+
+export const MIRRORS = ['ecmwf', 'aws', 'google'] as const;
 
 export const CONFIG_SCHEMA = {
   type: 'object',
-  required: ['landShapefiles'],
+  description:
+    'Server and installation settings only. Vessel, forecast horizon, currents, routing and publishing are set in the ' +
+    'web app (Weather Router Plus → Settings tab) and shared by every client.',
   properties: {
     landShapefiles: {
       type: 'string',
       title: 'Coastline shapefile(s)',
       description:
-        'Absolute path(s) to polygon land shapefiles, comma-separated. GSHHG "GSHHS_f_L1.shp" (full resolution) is recommended; ' +
-        'add "GSHHS_f_L6.shp" for Antarctica. OSM land-polygons-split-4326 also works.',
+        'Absolute path(s) to polygon land shapefiles, comma-separated. Blank: GSHHG 2.3.7 full-resolution level 1 is downloaded once ' +
+        '(149 MB from www.soest.hawaii.edu) into the plugin data directory and used. Add GSHHS_f_L6.shp for Antarctica.',
     },
     polarFile: {
       type: 'string',
-      title: 'Polar file (.csv or .pol)',
-      description: 'Boat speed table in knots: header "twa/tws,4,6,8,...", rows "twa,speed,...". Leave blank to route under motor only.',
+      title: 'Default polar file (.csv or .pol)',
+      description: 'Boat speed table in knots. Blank = motor-only routes unless a route picks a polar from the library.',
     },
-    vessel: {
+    polarsDir: {
+      type: 'string',
+      title: 'Polar library directory',
+      description: "Directory of .pol/.csv polars offered in the web app's vessel picker.",
+    },
+    currents: {
       type: 'object',
-      title: 'Vessel',
+      title: 'Currents',
       properties: {
-        name: { type: 'string', title: 'Name', default: 'Vessel' },
-        draughtM: { type: 'number', title: 'Draught (m)', default: 1.8 },
-        airDraftM: { type: 'number', title: 'Air draft (m)', default: 16 },
-        loaM: { type: 'number', title: 'Length overall (m)', default: 11 },
-        beamM: { type: 'number', title: 'Beam (m)', default: 3.7 },
-        underKeelClearanceM: { type: 'number', title: 'Under-keel safety margin (m)', default: 0.5 },
-        overheadClearanceM: { type: 'number', title: 'Overhead safety margin (m)', default: 1.0 },
-        motorSpeedKts: { type: 'number', title: 'Cruising speed under power (kt)', default: 6 },
-        maxSwhM: { type: 'number', title: 'Maximum significant wave height (m, informational)' },
-        tackPenaltySeconds: { type: 'number', title: 'Tack penalty (s)', default: 30 },
+        harmonicDir: {
+          type: 'string',
+          title: 'Tidal harmonics directory (.npz)',
+          description: 'Directory of FES2014 / NECOFS .npz extracts; every *.npz in it is loaded.',
+        },
       },
     },
     forecast: {
       type: 'object',
-      title: 'Forecast (ECMWF open data, IFS 0.25°)',
+      title: 'Forecast download',
       properties: {
-        horizonHours: { type: 'number', title: 'Forecast horizon (h)', default: 72, minimum: 3, maximum: 240 },
-        refreshMinutes: { type: 'number', title: 'Check for a new cycle every (min)', default: 60, minimum: 10 },
-        mirror: { type: 'string', title: 'Download mirror', enum: ['ecmwf', 'aws', 'google'], default: 'ecmwf' },
-        regionFromVesselDeg: {
-          type: 'number',
-          title: 'Region half-width around the vessel (°)',
-          description: 'When no explicit region is set, the resident forecast covers this many degrees around the vessel position.',
-          default: 10,
-          minimum: 1,
-          maximum: 60,
-        },
-        region: {
-          type: 'object',
-          title: 'Explicit region (overrides vessel-centred region)',
-          properties: {
-            west: { type: 'number', title: 'West (°)' },
-            south: { type: 'number', title: 'South (°)' },
-            east: { type: 'number', title: 'East (°)' },
-            north: { type: 'number', title: 'North (°)' },
-          },
-        },
-        keepCycles: { type: 'number', title: 'Cached cycles to keep on disk', default: 2, minimum: 1, maximum: 10 },
-      },
-    },
-    routing: {
-      type: 'object',
-      title: 'Routing engine',
-      properties: {
-        stages: { type: 'number', title: 'Isochrone stages', default: 20, minimum: 4, maximum: 200 },
-        subsectors: { type: 'number', title: 'Subsectors (k)', default: 30, minimum: 4, maximum: 200 },
-        headings: { type: 'number', title: 'Headings each side (m)', default: 30, minimum: 4, maximum: 180 },
-        headingIncrementDeg: { type: 'number', title: 'Heading increment (°)', default: 1, minimum: 0.25, maximum: 10 },
-        sailThresholdKts: { type: 'number', title: 'Sail when boat speed exceeds (kt)', default: 4.9, minimum: 0 },
-        simStepM: { type: 'number', title: 'Leg simulation step (m)', default: 200, minimum: 50, maximum: 5000 },
-        landRasterMaxCells: { type: 'number', title: 'Land raster cell budget', default: 25000000, minimum: 1000000 },
-        keepJobs: { type: 'number', title: 'Finished jobs to keep', default: 50, minimum: 1, maximum: 500 },
-      },
-    },
-    publish: {
-      type: 'object',
-      title: 'Publishing',
-      properties: {
-        toResources: { type: 'boolean', title: 'Save finished routes to the Resources API (routes)', default: true },
-        routeNamePrefix: { type: 'string', title: 'Route name prefix', default: 'WRP' },
-        notifications: { type: 'boolean', title: 'Emit notifications.weatherRouterPlus.<jobId>', default: true },
+        mirror: { type: 'string', title: 'ECMWF open-data mirror', enum: [...MIRRORS], default: 'ecmwf' },
       },
     },
     weatherProvider: {
       type: 'object',
       title: 'Weather API',
       properties: {
-        enabled: { type: 'boolean', title: 'Register as a Weather API provider (point forecasts from the resident region)', default: true },
+        enabled: { type: 'boolean', title: 'Register as a Signal K Weather API provider', default: true },
+      },
+    },
+    overlayCache: {
+      type: 'object',
+      title: 'Map overlay cache',
+      description:
+        'Map overlay tiles (colour layers, wind barbs, current arrows, coastline) are saved on disk and answered without waiting for the ' +
+        'data worker. Tiles around the boat, and around the area the map shows, are built ahead of time for every hour of the window: ' +
+        'the full radius down to zoom 8, half the radius at each deeper zoom. Values are SI (metres, seconds, bytes).',
+      properties: {
+        enabled: { type: 'boolean', title: 'Build tiles ahead of time', default: OVERLAY_CACHE_DEFAULTS.enabled },
+        radius: {
+          type: 'number',
+          title: 'Radius (m)',
+          description: 'Around the boat and the map view, at zoom 8 and below; halved at each deeper zoom.',
+          default: OVERLAY_CACHE_DEFAULTS.radius,
+          minimum: 1000,
+          maximum: 2_000_000,
+        },
+        window: {
+          type: 'number',
+          title: 'Window (s)',
+          description: 'How far ahead tiles are built, from now. 0 = the whole forecast.',
+          default: OVERLAY_CACHE_DEFAULTS.window,
+          minimum: 0,
+          maximum: 360 * 3600,
+        },
+        maxZoom: {
+          type: 'integer',
+          title: 'Deepest zoom built ahead',
+          default: OVERLAY_CACHE_DEFAULTS.maxZoom,
+          minimum: 6,
+          maximum: 18,
+        },
+        diskCap: {
+          type: 'number',
+          title: 'Disk cap (bytes)',
+          description: 'Least recently used tiles are removed above this. 20e9 = 20 GB.',
+          default: OVERLAY_CACHE_DEFAULTS.diskCap,
+          minimum: 100e6,
+        },
+        workers: {
+          type: 'integer',
+          title: 'Build workers',
+          description: 'Threads building tiles ahead of time, at lower priority than the map and routes.',
+          default: OVERLAY_CACHE_DEFAULTS.workers,
+          minimum: 1,
+          maximum: 8,
+        },
+        followView: {
+          type: 'boolean',
+          title: 'Also build around the area the map shows',
+          default: OVERLAY_CACHE_DEFAULTS.followView,
+        },
       },
     },
   },
 };
 
-function num(v: unknown, def: number, min: number, max: number, name: string): number {
+function cacheNumber(v: unknown, def: number, min: number, max: number, name: string, integer = false): number {
   if (v === undefined || v === null || v === '') return def;
   const n = Number(v);
-  if (!Number.isFinite(n) || n < min || n > max) throw new Error(`config ${name}: ${String(v)} is outside [${min}, ${max}]`);
+  if (!Number.isFinite(n) || n < min || n > max || (integer && !Number.isInteger(n)))
+    throw new Error(`config overlayCache.${name}: ${String(v)} is not ${integer ? 'an integer' : 'a number'} in [${min}, ${max}]`);
   return n;
 }
 
-export function resolveConfig(raw: PluginConfig | undefined): ResolvedConfig {
+/**
+ * Merge the plugin config (installation) with the web-app settings (SI)
+ * into the engine's ResolvedConfig. `settings` must already be valid
+ * (SettingsStore validates on load and on every update).
+ */
+export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettings): ResolvedConfig {
   const c = raw ?? {};
-  const land = (c.landShapefiles ?? '').split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
-  const v = c.vessel ?? {};
-  const f = c.forecast ?? {};
-  const r = c.routing ?? {};
-  const p = c.publish ?? {};
-  const w = c.weatherProvider ?? {};
-
-  let region: BBox | null = null;
-  const reg = f.region ?? {};
-  const regionVals = [reg.west, reg.south, reg.east, reg.north];
-  if (regionVals.some((x) => x !== undefined && x !== null && (x as unknown) !== '')) {
-    if (regionVals.some((x) => x === undefined || x === null || !Number.isFinite(Number(x)))) {
-      throw new Error('config forecast.region: all four of west/south/east/north are required');
-    }
-    region = { west: Number(reg.west), south: Number(reg.south), east: Number(reg.east), north: Number(reg.north) };
-    if (region.south >= region.north) throw new Error('config forecast.region: south must be < north');
-  }
-
+  const land = (c.landShapefiles ?? '')
+    .split(/[,\n]/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  const mirror = c.forecast?.mirror ?? 'ecmwf';
+  if (!(MIRRORS as readonly string[]).includes(mirror))
+    throw new Error(`config forecast.mirror: ${String(mirror)} is not one of ${MIRRORS.join(', ')}`);
+  const harmonicDir = c.currents?.harmonicDir;
+  const v = settings.vessel;
+  const f = settings.forecast;
+  const cu = settings.currents;
+  const r = settings.routing;
+  const p = settings.publish;
   return {
     landShapefiles: land,
     polarFile: c.polarFile && c.polarFile.trim() ? c.polarFile.trim() : null,
+    polarsDir: c.polarsDir && c.polarsDir.trim() ? c.polarsDir.trim() : null,
     vessel: makeVessel({
-      name: v.name && v.name.trim() ? v.name.trim() : undefined,
-      draught: v.draughtM,
-      airDraft: v.airDraftM,
-      loa: v.loaM,
-      beam: v.beamM,
-      underKeelClearance: v.underKeelClearanceM,
-      overheadClearance: v.overheadClearanceM,
-      motorSpeedMs: v.motorSpeedKts !== undefined && v.motorSpeedKts !== null ? Number(v.motorSpeedKts) * KTS_TO_MS : undefined,
-      maxSwh: v.maxSwhM !== undefined && v.maxSwhM !== null && (v.maxSwhM as unknown) !== '' ? Number(v.maxSwhM) : undefined,
-      tackPenaltySeconds: v.tackPenaltySeconds,
+      name: v.name,
+      draught: v.draught,
+      airDraft: v.airDraft,
+      loa: v.loa,
+      beam: v.beam,
+      underKeelClearance: v.underKeelClearance,
+      overheadClearance: v.overheadClearance,
+      motorSpeedMs: v.motorSpeed,
+      maxSwh: v.maxSwh ?? undefined,
+      tackPenaltySeconds: v.tackPenalty,
+      polarPerformance: v.polarPerformance,
     }),
     forecast: {
-      horizonHours: num(f.horizonHours, 72, 3, 240, 'forecast.horizonHours'),
-      refreshMinutes: num(f.refreshMinutes, 60, 10, 24 * 60, 'forecast.refreshMinutes'),
-      mirror: (f.mirror as ResolvedConfig['forecast']['mirror']) ?? 'ecmwf',
-      region,
-      regionFromVesselDeg: num(f.regionFromVesselDeg, 10, 1, 60, 'forecast.regionFromVesselDeg'),
-      keepCycles: num(f.keepCycles, 2, 1, 10, 'forecast.keepCycles'),
+      horizonHours: f.horizon / 3600,
+      refreshMinutes: f.refreshInterval / 60,
+      mirror,
+      keepCycles: f.keepCycles,
+      extraFields: f.extraFields,
+      memoryHeadroomBytes: f.memoryHeadroom,
+    },
+    currents: {
+      harmonicDir: harmonicDir && harmonicDir.trim() ? harmonicDir.trim() : null,
+      smocEnabled: cu.smocEnabled,
+      smocHorizonHours: cu.smocHorizon / 3600,
+      smocStepHours: cu.smocStep / 3600,
+      smocHalfWidthDeg: cu.smocHalfWidth,
+      rtofsEnabled: cu.rtofsEnabled,
+      rtofsRegion: cu.rtofsRegion,
+      rtofsHorizonHours: cu.rtofsHorizon / 3600,
+      rtofsStepHours: cu.rtofsStep / 3600,
+    },
+    tides: {
+      enabled: settings.tides.enabled,
+      halfWidthDeg: settings.tides.halfWidth,
+      horizonHours: settings.tides.horizon / 3600,
     },
     routing: {
-      stages: num(r.stages, 20, 4, 200, 'routing.stages'),
-      subsectors: num(r.subsectors, 30, 4, 200, 'routing.subsectors'),
-      headings: num(r.headings, 30, 4, 180, 'routing.headings'),
-      headingIncrementDeg: num(r.headingIncrementDeg, 1, 0.25, 10, 'routing.headingIncrementDeg'),
-      sailThreshMs: num(r.sailThresholdKts, 4.9, 0, 50, 'routing.sailThresholdKts') * KTS_TO_MS,
-      simStepM: num(r.simStepM, 200, 50, 5000, 'routing.simStepM'),
-      landRasterMaxCells: num(r.landRasterMaxCells, 25_000_000, 1_000_000, 1_000_000_000, 'routing.landRasterMaxCells'),
-      keepJobs: num(r.keepJobs, 50, 1, 500, 'routing.keepJobs'),
+      stages: r.stages,
+      subsectors: r.subsectors,
+      headings: r.headings,
+      headingIncrementDeg: r.headingIncrement,
+      sailThreshMs: r.sailThreshold,
+      simStepM: r.simStep,
+      landRasterMaxCells: r.landRasterMaxCells,
+      allowCanals: r.allowCanals,
+      simplifyM: r.simplify,
+      smoother: r.smoother,
+      smootherTolerance: r.smootherTolerance,
+      keepJobs: r.keepJobs,
     },
     publish: {
-      toResources: p.toResources ?? true,
-      routeNamePrefix: p.routeNamePrefix && p.routeNamePrefix.trim() ? p.routeNamePrefix.trim() : 'WRP',
-      notifications: p.notifications ?? true,
+      toResources: p.toResources,
+      routeNamePrefix: p.routeNamePrefix,
+      notifications: p.notifications,
     },
     weatherProvider: {
-      enabled: w.enabled ?? true,
+      enabled: c.weatherProvider?.enabled ?? true,
     },
+    overlayCache: (() => {
+      const o = c.overlayCache ?? {};
+      const d = OVERLAY_CACHE_DEFAULTS;
+      const windowS = cacheNumber(o.window, d.window, 0, 360 * 3600, 'window');
+      return {
+        enabled: o.enabled ?? d.enabled,
+        radiusM: cacheNumber(o.radius, d.radius, 1000, 2_000_000, 'radius'),
+        windowS: windowS > 0 ? windowS : null,
+        maxZoom: cacheNumber(o.maxZoom, d.maxZoom, 6, 18, 'maxZoom', true),
+        diskCapBytes: cacheNumber(o.diskCap, d.diskCap, 100e6, Number.MAX_SAFE_INTEGER, 'diskCap'),
+        workers: cacheNumber(o.workers, d.workers, 1, 8, 'workers', true),
+        followView: o.followView ?? d.followView,
+      };
+    })(),
   };
+}
+
+/**
+ * The vessel for one route: values in the request take precedence; the
+ * rest come from the vessel settings (never the built-in defaults).
+ */
+export function routeVessel(cfg: ResolvedConfig, rv: RouteRequest['vessel']): VesselParams {
+  return makeVessel({
+    ...cfg.vessel,
+    name: rv?.name ?? cfg.vessel.name,
+    draught: rv?.draught ?? cfg.vessel.draught,
+    airDraft: rv?.air_draft ?? cfg.vessel.airDraft,
+    loa: rv?.loa ?? cfg.vessel.loa,
+    beam: rv?.beam ?? cfg.vessel.beam,
+    motorSpeedMs: rv?.motor_speed_ms ?? cfg.vessel.motorSpeedMs,
+    underKeelClearance: rv?.under_keel_clearance ?? cfg.vessel.underKeelClearance,
+    tackPenaltySeconds: rv?.tack_penalty_s ?? cfg.vessel.tackPenaltySeconds,
+    polarPerformance: rv?.polar_performance ?? cfg.vessel.polarPerformance,
+  });
 }

@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same versions as signalk-parquet and Signal K's plugin CI. The
+        # declared floor (engines.node >= 20.10) is exercised by the
+        # armv7 job in plugin-ci.yml, which runs Node 20.
+        node-version: [22.x, 24.x]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run CI checks
+        run: npm run ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build project
+        run: npm run build
+
+      - name: Run tests
+        if: matrix.node-version != '24.x'
+        run: npm test
+
+      - name: Run tests with coverage
+        if: matrix.node-version == '24.x'
+        shell: bash
+        run: |
+          set -eo pipefail
+          npm run coverage | tee coverage.log
+
+      - name: Coverage step summary
+        if: matrix.node-version == '24.x'
+        shell: bash
+        run: |
+          {
+            echo '## Test Coverage'
+            echo
+            echo '```'
+            cat coverage.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage (lcov) as artifact
+        if: matrix.node-version == '24.x'
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-lcov
+          path: coverage/lcov.info
+          if-no-files-found: error
+          retention-days: 30

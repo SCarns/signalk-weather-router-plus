@@ -46,7 +46,9 @@ test('ECMWF CCSDS-packed GRIB2 decodes to exactly what eccodes produces', () => 
     const vals = m.decode();
     assert.equal(vals.length, t.count);
     // Full-array hash of the little-endian float64 bytes, as eccodes wrote them.
-    const hash = createHash('sha256').update(Buffer.from(vals.buffer, vals.byteOffset, vals.byteLength)).digest('hex');
+    const hash = createHash('sha256')
+      .update(Buffer.from(vals.buffer, vals.byteOffset, vals.byteLength))
+      .digest('hex');
     assert.equal(hash, t.sha256_f64le, `${t.shortName} +${t.step}h: decoded values differ from eccodes`);
     let mn = Infinity;
     let mx = -Infinity;
