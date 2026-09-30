@@ -1,5 +1,28 @@
 # What's new
 
+## 0.1.0-beta.5
+
+- **Simpler vessel settings.** Draught, air draft, length, beam,
+  under-keel and overhead margins, maximum wave height and tack penalty
+  are gone from the Settings tab and the Plan tab: the router never used
+  them (it has no depth or bridge data). What is left is what it does
+  use: name, speed under power and polar performance. A working tack
+  penalty and wave-height limit are on the to-do list.
+- **First setup fixed.** On a fresh install the configuration panel's
+  Save button was greyed out until you changed something; it now reads
+  "Save and enable the plugin" and works straight away. If you updated
+  from an earlier beta, hard-refresh the Admin UI once to get the new
+  panel.
+
+## 0.1.0-beta.3 and beta.4
+
+- First start shows "starting: downloading the coastline (…)" instead of
+  "plugin not started", and a route requested before the first forecast
+  waits for it instead of downloading its own copy.
+- Fixed a first-forecast download failure (`ENOENT … rename …grib2.tmp`)
+  when two threads fetched the same field at once.
+- README corrections.
+
 ## 0.1.0-beta.2
 
 - **Polars included.** About 700 boat polars (the OpenCPN

@@ -29,7 +29,20 @@ uses [Semantic Versioning](https://semver.org/).
   out until some field was changed, yet a save is the only way the Admin
   UI enables a plugin that has no saved configuration ("Save
   configuration to enable this plugin"). The button is now enabled at
-  first setup and reads "Save and enable the plugin".
+  first setup and reads "Save and enable the plugin". (Verified on a
+  fresh App Store install on Signal K 2.33.0. The browser keeps the old
+  panel script for up to four hours after an update: hard-refresh the
+  Admin UI to see the change.)
+
+### Known issues
+
+- Right after installing the plugin from the App Store and restarting
+  the server, an Admin UI page that was open before the restart shows
+  *Module "signalk-weather-router-plus" is not available* instead of the
+  configuration panel, until it is reloaded once. This is the server's
+  doing (it lists configuration panels once at start and writes them
+  into the Admin UI page as it is served); no plugin change can avoid
+  it.
 
 ## [0.1.0-beta.4] - 2026-09-30
 
@@ -214,11 +227,11 @@ builds before this release, with their measurements, is in
   horizon use the last forecast step.
 - Map layers show the forecast on the hour; latitudes beyond ±85° have no
   map tiles.
-- Behind a caching proxy (e.g. Cloudflare), the web app at
-  `/signalk-weather-router-plus/` can run the previous version's scripts
-  for a few hours after an update; reload without cache, or open
-  `/plugins/signalk-weather-router-plus/ui`, which always loads the
-  current scripts.
+- After an update, the browser can keep the previous version's scripts
+  (web app and configuration panel) for up to four hours; Signal K
+  serves them with a 4-hour cache lifetime and no version tag. Hard-
+  refresh, or open `/plugins/signalk-weather-router-plus/ui`, which
+  always loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
 [Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.5...HEAD

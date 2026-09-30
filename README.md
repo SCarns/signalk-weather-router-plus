@@ -2027,12 +2027,19 @@ per-route skeleton, `--allow-canals` opens the known canals.
 - One route computes at a time (single worker thread); others queue.
 - Map layers show the forecast on the hour (tiles are per hour);
   latitudes beyond ±85.05° have no map tiles.
-- Behind a caching proxy (e.g. Cloudflare), `/signalk-weather-router-plus/`
-  can serve the previous version's scripts for a few hours after an
-  update, because Signal K serves those files itself without the
-  version tag; reload without cache, or use
+- After an update, the browser can keep running the previous version's
+  scripts for up to four hours: Signal K serves the web app's files and
+  the configuration panel's script with `cache-control: max-age=14400`
+  and no version tag (a caching proxy such as Cloudflare adds to this).
+  Hard-refresh the page (reload without cache), or for the web app use
   `/plugins/signalk-weather-router-plus/ui`, which always loads the
   current scripts.
+- Right after installing the plugin from the App Store and restarting
+  the server, an Admin UI page that was open before the restart shows
+  *Module "signalk-weather-router-plus" is not available* instead of the
+  configuration panel: the server lists configuration panels once at
+  start and writes them into the Admin UI page when it is served. Reload
+  the Admin UI once.
 
 ## License
 
