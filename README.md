@@ -10,16 +10,18 @@ in-process Blosc/LZ4 decoder, avoids land with GSHHG coastline polygons, and run
 isochrone router against the vessel's polar in a worker thread. No
 runtime npm dependencies.
 
-It is the "plus" sibling of `signalk-weather-router`, which is a thin
-client to the routePlanning server. This plugin needs no routePlanning
-server and no S-57 charts. It does **not** do near-shore chart
-navigation (fairways, depths, bridges); it routes between open-water
-positions and treats the coastline as the only obstacle.
+The "plus" is the overlays: wind, temperature, tide, current and more,
+drawn from the same data the routing uses.
+
+What it does not do: it routes in open water and avoids land, but knows
+nothing about depths, channels or bridges. (US inshore routing was too
+much for a plugin; it lives in the separate
+[router.zeddisplay.com](https://router.zeddisplay.com).)
 
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
 
-**Status: beta** (0.1.0-beta.3). Please report
+**Status: beta** (0.1.0-beta.4). Please report
 problems at https://github.com/motamman/signalk-weather-router-plus/issues.
 
 What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:

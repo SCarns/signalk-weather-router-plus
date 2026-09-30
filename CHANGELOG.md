@@ -6,6 +6,16 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0-beta.4] - 2026-09-30
+
+### Fixed
+
+- README: the introduction wrongly described this plugin as a
+  server-free sibling of `signalk-weather-router`. It now says what the
+  "plus" is (the map overlays, drawn from the same data the routing
+  uses) and that inshore routing (depths, channels, bridges) is not done
+  here but by the separate router.zeddisplay.com.
+
 ## [0.1.0-beta.3] - 2026-09-30
 
 ### Changed
@@ -184,7 +194,8 @@ builds before this release, with their measurements, is in
   current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.3...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.4...HEAD
+[0.1.0-beta.4]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.3...v0.1.0-beta.4
 [0.1.0-beta.3]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.2...v0.1.0-beta.3
 [0.1.0-beta.2]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.1...v0.1.0-beta.2
 [0.1.0-beta.1]: https://github.com/motamman/signalk-weather-router-plus/releases/tag/v0.1.0-beta.1
