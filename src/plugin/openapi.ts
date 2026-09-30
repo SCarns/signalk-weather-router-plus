@@ -146,7 +146,11 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
     info: {
       title: 'signalk-weather-router-plus',
       version: packageVersion(),
-      description: 'Standalone open-water weather routing on ECMWF open data. All values SI (m, m/s, s, degrees true).',
+      description:
+        'Standalone open-water weather routing on ECMWF open data. All values SI (m, m/s, s, degrees true). ' +
+        'Map endpoints (/api/field, /api/wind-points, /api/currents, /api/land-mask, /api/pressure) are answered from the saved map tiles ' +
+        '(/api/tile): the tiles covering bbox at the tile spacing nearest res (the answer reports it), time rounded to the hour, no data beyond ±85.05°. ' +
+        '/api/conditions, Weather API point forecasts and /api/forecast samples are saved in the same store.',
     },
     servers: [{ url: basePath }],
     paths: {
@@ -154,7 +158,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         get: {
           summary: 'Plugin, forecast (decoded run on disk, memory held), currents, overlay land cache and queue status',
           description:
-            'Top level: plugin, started, workers {data, route}, forecast, forecast_error, currents, currents_route_worker, rtofs_run, overlay_land, ' +
+            'Top level: plugin, started, workers {data, route}, forecast, forecast_error, currents, currents_route_worker, rtofs_run, overlay_land, overlay_tiles, overlay_prebuild, ' +
             'weather_provider_registered, jobs, vessel, polar, land, harmonic_dir, extra_fields, tides, tides_enabled, tides_error, process_rss_bytes. ' +
             '`forecast` (null until a run is ready): {cycle, valid_from, valid_to, steps, params, coverage, storage: "decoded-on-disk", loaded_at, has_waves, ' +
             'source: "disk" (a complete decoded run was already on disk, no decode) | "grib" (decoded from the GRIB cache / download), ready_ms, fields_downloaded, ' +
@@ -170,7 +174,10 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             '`tides` (null when off or not loaded; `tides_enabled`, `tides_error`): the Copernicus Marine sea-level source {name, doi, datum, run, run_last_time, ' +
             'stac_updated, settled, half_width_deg, horizon_hours, resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, ' +
             'point_cache: {entries, bytes, queries, hits}, memory_bytes, last_download, last_point_query: {at, lat, lon, bytes, chunks, downloaded, from_disk, seconds, cached} | null, ' +
-            'downloaded_bytes_total, disk_cache_bytes, layouts, mean_window_days}.',
+            'downloaded_bytes_total, disk_cache_bytes, layouts, mean_window_days}. ' +
+            '`overlay_tiles` (null before start): saved map tiles {dir, cap_bytes, files, bytes, hits, misses, writes, not_kept, generations, inflight}. ' +
+            '`overlay_prebuild` (null before start): tiles built ahead of time {enabled, workers, workers_ready, paused, areas: [{kind: "view" | "boat", lat, lon, radius_m}], ' +
+            'window: {from, to} | null, max_zoom, walk_started_at, seen, built, skipped, not_kept, errors, last_error, at: {area, hour, z} | null, complete, built_total, build_ms_avg}.',
           responses: { 200: { description: 'OK' } },
         },
       },
@@ -468,6 +475,40 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               description: 'gzip-encoded bytes, one per pixel (1 = land), row 0 at the north edge; X-Mask-Width/X-Mask-Height headers',
             },
             400: { description: 'Bad bbox, w or h' },
+          },
+        },
+      },
+      '/api/tile/{layer}/{z}/{x}/{y}': {
+        get: {
+          summary: 'One web-map tile of a layer at a whole hour, saved on the server and answered again from disk',
+          description:
+            'Colour layers: the /api/field body for the tile box extended by one sample spacing (tile width / 64, 0.002°–2°). barbs: /api/wind-points body, 7 across. ' +
+            "arrows: /api/currents body, 5 across (points on the tile's east and north edges belong to the neighbour). land: 256 × 256 bytes, 1 = land, row 0 north, " +
+            'rows evenly spaced in Web Mercator y. Identical requests are computed once; a request whose client goes away before its query starts is dropped.',
+          parameters: [
+            {
+              name: 'layer',
+              in: 'path',
+              required: true,
+              schema: {
+                type: 'string',
+                enum: ['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current', 'tide', 'barbs', 'arrows', 'land'],
+              },
+            },
+            { name: 'z', in: 'path', required: true, schema: { type: 'integer', minimum: 0, maximum: 18 } },
+            { name: 'x', in: 'path', required: true, schema: { type: 'integer', minimum: 0 }, description: '0 to 2^z − 1, from 180° W' },
+            { name: 'y', in: 'path', required: true, schema: { type: 'integer', minimum: 0 }, description: '0 to 2^z − 1, from the north' },
+            {
+              name: 'time',
+              in: 'query',
+              schema: { type: 'string', format: 'date-time' },
+              description: 'Default now; rounded to the nearest hour. Ignored for land',
+            },
+          ],
+          responses: {
+            200: { description: 'gzip-encoded body (see description); X-Tile-Cache: hit | miss' },
+            400: { description: 'Bad layer, z, x, y or time, or the layer has no data (e.g. no wave data in the forecast)' },
+            503: { description: 'Plugin not started' },
           },
         },
       },

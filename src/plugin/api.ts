@@ -46,6 +46,9 @@ import { listPolars, loadPolarCached, PolarNotFoundError, polarAngles, polarFrom
 import type { BBox } from '../geo/geodesy';
 import { SettingsValidationError, type AppSettings, type SettingsGroup, type SettingSpec } from './settings';
 import { validateLegOptions } from '../engine/multileg';
+import { checkTile, roundHour, TILE_LAYERS, type TileLayer, type TileService } from './tiles';
+import { joinField, joinLandMask, joinPoints, joinPressure, type TileGetter } from './tilejoin';
+import type { FieldLayer } from './overlays';
 
 export interface ApiDeps {
   pluginId: string;
@@ -56,7 +59,13 @@ export interface ApiDeps {
   refreshForecast: (force: boolean) => void;
   cancelRunning: (id: string) => void;
   publish: (id: string) => Promise<string>;
-  query: <K extends QueryKind>(kind: K, args: QueryArgs[K]) => Promise<unknown>;
+  query: <K extends QueryKind>(kind: K, args: QueryArgs[K], signal?: AbortSignal) => Promise<unknown>;
+  /** Map overlay tiles (null before the plugin has started). */
+  tiles: () => TileService | null;
+  /** Start (or retry now) the GSHHG coastline download; progress in /api/status `coastline`. */
+  downloadCoastline: () => void;
+  /** The page asked for this tile (the prebuilder follows the view). */
+  noteTileRequest: (z: number, x: number, y: number) => void;
   publicDir: string;
   /** Polar library configuration (null before the plugin has started). */
   polarLibrary: () => { polarFile: string | null; polarsDir: string | null } | null;
@@ -119,6 +128,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     }
   };
   const fail = (res: Response, err: unknown, code = 400): void => {
+    if (res.headersSent || res.destroyed) return; // client gone (cancelled query)
     json(res, err instanceof PolarNotFoundError ? 404 : code, { error: (err as Error).message });
   };
 
@@ -206,6 +216,12 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     }
   });
 
+  // The config panel's Download coastline button (works before the plugin has a coastline).
+  rw.post('/api/coastline/download', (_req: Request, res: Response) => {
+    deps.downloadCoastline();
+    json(res, 202, { status: 'download requested; see /api/status coastline' });
+  });
+
   rw.post('/api/forecast/refresh', (req: Request, res: Response) => {
     deps.refreshForecast(req.query.force === 'true' || req.query.force === '1');
     json(res, 202, { status: 'refresh requested' });
@@ -257,6 +273,33 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     json(res, 200, buildLegends());
   });
 
+  /** Aborts when the client goes away before the answer is sent (its query then leaves the worker's queue). */
+  const clientGone = (res: Response): AbortSignal => {
+    const ctrl = new AbortController();
+    res.on('close', () => {
+      if (!res.writableFinished) ctrl.abort();
+    });
+    return ctrl.signal;
+  };
+
+  /** The shared tile store, or null after answering 503 when the plugin is not started. */
+  const tilesOr503 = (res: Response): TileService | null => {
+    const t = deps.tiles();
+    if (!t) json(res, 503, { error: 'plugin not started' });
+    return t;
+  };
+  /**
+   * Decoded tiles for a request (cancelled with it). Every map request also
+   * tells the prebuilder where a view is (not the coastline or pressure
+   * tiles: they are read at other zooms than the view's).
+   */
+  const getter =
+    (service: TileService, signal: AbortSignal): TileGetter =>
+    t => {
+      if (t.layer !== 'land' && t.layer !== 'msl') deps.noteTileRequest(t.z, t.x, t.y);
+      return service.decoded(t, signal);
+    };
+
   const cacheHeaders = (res: Response, t: Date): void => {
     res.setHeader('Cache-Control', t.getTime() < Date.now() - 3600_000 ? 'public, max-age=86400' : 'public, max-age=1800');
   };
@@ -269,8 +312,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const bbox = parseBBox(req.query.bbox);
       const time = parseTime(req.query.time);
       const resDeg = num(req.query.res, 0.25, 0.002, 2, 'res');
-      const out = await deps.query('field', { layer, bbox, timeMs: time.getTime(), res: resDeg });
-      cacheHeaders(res, time);
+      const service = tilesOr503(res);
+      if (!service) return;
+      const hour = roundHour(time.getTime());
+      const out = await joinField(getter(service, clientGone(res)), layer as FieldLayer, bbox, hour, resDeg);
+      cacheHeaders(res, new Date(hour));
       json(res, 200, out);
     } catch (err) {
       fail(res, err);
@@ -285,7 +331,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const bbox = parseBBox(req.query.bbox);
       const w = Math.round(num(req.query.w, 1024, 16, 2048, 'w'));
       const h = Math.round(num(req.query.h, 1024, 16, 2048, 'h'));
-      const out = (await deps.query('land_mask', { bbox, w, h })) as Uint8Array;
+      const service = tilesOr503(res);
+      if (!service) return;
+      const out = await joinLandMask(getter(service, clientGone(res)), bbox, w, h);
       const body = zlib.gzipSync(Buffer.from(out.buffer, out.byteOffset, out.byteLength));
       res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Encoding', 'gzip');
@@ -304,8 +352,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const bbox = parseBBox(req.query.bbox);
       const time = parseTime(req.query.time);
       const resDeg = num(req.query.res, 0.5, 0.02, 5, 'res');
-      const out = await deps.query('wind_points', { bbox, timeMs: time.getTime(), res: resDeg });
-      cacheHeaders(res, time);
+      const service = tilesOr503(res);
+      if (!service) return;
+      const hour = roundHour(time.getTime());
+      const out = await joinPoints(getter(service, clientGone(res)), 'barbs', bbox, hour, resDeg);
+      cacheHeaders(res, new Date(hour));
       json(res, 200, out);
     } catch (err) {
       fail(res, err);
@@ -317,9 +368,47 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const bbox = parseBBox(req.query.bbox);
       const time = parseTime(req.query.time);
       const resDeg = num(req.query.res, 0.05, 0.005, 5, 'res');
-      const out = await deps.query('currents', { bbox, timeMs: time.getTime(), res: resDeg });
-      cacheHeaders(res, time);
+      const service = tilesOr503(res);
+      if (!service) return;
+      const hour = roundHour(time.getTime());
+      const out = await joinPoints(getter(service, clientGone(res)), 'arrows', bbox, hour, resDeg);
+      cacheHeaders(res, new Date(hour));
       json(res, 200, out);
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // Fixed web-map tiles at whole hours (tiles.ts): answered from disk when
+  // saved, else computed by the data worker and saved. Body gzip JSON
+  // (colour layers: as /api/field; barbs: as /api/wind-points; arrows:
+  // as /api/currents), or for `land` gzip bytes 256 × 256, 1 = land, row
+  // 0 north, rows evenly spaced in Web Mercator y.
+  ro.get('/api/tile/:layer/:z/:x/:y', async (req: Request, res: Response) => {
+    try {
+      const service = deps.tiles();
+      if (!service) {
+        json(res, 503, { error: 'plugin not started' });
+        return;
+      }
+      const layer = String(req.params.layer) as TileLayer;
+      if (!(TILE_LAYERS as readonly string[]).includes(layer)) throw new Error(`layer must be one of ${TILE_LAYERS.join(', ')}`);
+      const z = Number(req.params.z);
+      const x = Number(req.params.x);
+      const y = Number(req.params.y);
+      checkTile(z, x, y);
+      const time = parseTime(req.query.time);
+      const hourMs = layer === 'land' ? 0 : roundHour(time.getTime());
+      if (layer !== 'land') deps.noteTileRequest(z, x, y);
+      const { gz, cached } = await service.get({ layer, z, x, y, hourMs }, clientGone(res));
+      if (res.destroyed) return;
+      res.setHeader('Content-Type', layer === 'land' ? 'application/octet-stream' : 'application/json');
+      res.setHeader('Content-Encoding', 'gzip');
+      res.setHeader('X-Tile-Cache', cached ? 'hit' : 'miss');
+      res.setHeader('Access-Control-Expose-Headers', 'X-Tile-Cache');
+      if (layer === 'land') res.setHeader('Cache-Control', 'public, max-age=86400');
+      else cacheHeaders(res, new Date(hourMs));
+      res.status(200).end(gz);
     } catch (err) {
       fail(res, err);
     }
@@ -330,8 +419,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const bbox = parseBBox(req.query.bbox);
       const time = parseTime(req.query.time);
       const interval = num(req.query.interval, 4, 1, 20, 'interval');
-      const out = await deps.query('pressure', { bbox, timeMs: time.getTime(), intervalHpa: interval });
-      cacheHeaders(res, time);
+      const service = tilesOr503(res);
+      if (!service) return;
+      const hour = roundHour(time.getTime());
+      const out = await joinPressure(getter(service, clientGone(res)), bbox, hour, interval);
+      cacheHeaders(res, new Date(hour));
       json(res, 200, out);
     } catch (err) {
       fail(res, err);
@@ -350,7 +442,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
           : new Date(Math.floor(Date.now() / 3600_000) * 3600_000);
       const hours = num(req.query.hours, 72, 1, 240, 'hours');
       const stepH = num(req.query.step_h, 1, 1, 24, 'step_h');
-      const out = await deps.query('conditions', { lon, lat, fromMs: from.getTime(), hours, stepH });
+      const service = tilesOr503(res);
+      if (!service) return;
+      const out = await service.point('conditions', { lon, lat, fromMs: from.getTime(), hours, stepH }, clientGone(res));
       json(res, 200, out);
     } catch (err) {
       fail(res, err);

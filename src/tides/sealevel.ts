@@ -399,7 +399,11 @@ export class TideSource {
   }
 
   /** Map area on demand (see ArcoAreaSet.ensure). */
-  ensure(bbox: BBox, steps: number[], opts: { reason: string; deadlineMs?: number; coarseOk?: boolean }): Promise<boolean> {
+  ensure(
+    bbox: BBox,
+    steps: number[],
+    opts: { reason: string; deadlineMs?: number; coarseOk?: boolean; onIncomplete?: () => void }
+  ): Promise<boolean> {
     return this.set.ensure(bbox, steps, TIDE_MARGIN_CELLS, opts);
   }
 

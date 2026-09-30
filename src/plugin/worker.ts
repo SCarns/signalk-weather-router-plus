@@ -401,7 +401,7 @@ function tideSettings(cfg: ResolvedConfig): TideSettings {
 }
 
 function makeSeaLevelClient(cfg: ResolvedConfig): SeaLevelClient | null {
-  if (role !== 'data' || !cfg.tides.enabled) return null;
+  if (role === 'route' || !cfg.tides.enabled) return null;
   return new SeaLevelClient({ cacheDir: path.join(cacheRoot, 'sealevel'), log: m => log('debug', m) });
 }
 
@@ -479,18 +479,31 @@ async function refreshTides(): Promise<void> {
   }
 }
 
-/** Before a tide map query: load the view's hour on demand when not resident (bounded wait). */
-async function prepareTidesForQuery(kind: string, args: QueryArgs[keyof QueryArgs]): Promise<void> {
-  if (!tides || kind !== 'field') return;
+/**
+ * Before a tide map query: load the view's hour on demand when not
+ * resident (bounded wait). False when the answer will lack tide data it
+ * should have (no run adopted yet, deadline passed or the load failed).
+ */
+async function prepareTidesForQuery(kind: string, args: QueryArgs[keyof QueryArgs]): Promise<boolean> {
+  if (kind !== 'field') return true;
   const a = args as QueryArgs['field'];
-  if (a.layer !== 'tide') return;
+  if (a.layer !== 'tide') return true;
+  if (!tides) return !config?.tides.enabled; // enabled but no run adopted yet: the answer lacks tide data
   const steps = tides.bracketSteps(a.timeMs);
-  if (!steps.length) return;
+  if (!steps.length) return true;
+  let complete = true;
   try {
-    await tides.ensure(a.bbox, steps, { reason: 'tide map query', deadlineMs: TIDE_QUERY_DEADLINE_MS, coarseOk: a.res >= 0.25 });
+    await tides.ensure(a.bbox, steps, {
+      reason: 'tide map query',
+      deadlineMs: TIDE_QUERY_DEADLINE_MS,
+      coarseOk: a.res >= 0.25,
+      onIncomplete: () => (complete = false),
+    });
   } catch (err) {
     log('error', (err as Error).message);
+    complete = false;
   }
+  return complete;
 }
 
 /** A promise with a deadline: rejects with `message` when it takes longer (the work itself continues). */
@@ -541,10 +554,11 @@ async function tideSeriesQuery(a: QueryArgs['tide_series']): Promise<TideSeriesR
 
 /**
  * Before an overlay / conditions query: load SMOC for the query box on
- * demand when it is not resident (bounded wait; see ensure()).
+ * demand when it is not resident (bounded wait; see ensure()). False
+ * when the answer will lack SMOC data it should have.
  */
-async function prepareSmocForQuery(kind: string, args: QueryArgs[keyof QueryArgs]): Promise<void> {
-  if (!smoc || !config?.currents.smocEnabled) return;
+async function prepareSmocForQuery(kind: string, args: QueryArgs[keyof QueryArgs]): Promise<boolean> {
+  if (!smoc || !config?.currents.smocEnabled) return true;
   const src = smoc;
   let bbox: BBox | null;
   let steps: number[];
@@ -552,7 +566,7 @@ async function prepareSmocForQuery(kind: string, args: QueryArgs[keyof QueryArgs
   switch (kind) {
     case 'field': {
       const a = args as QueryArgs['field'];
-      if (a.layer !== 'current' && a.layer !== 'sea_state') return;
+      if (a.layer !== 'current' && a.layer !== 'sea_state') return true;
       bbox = a.bbox;
       steps = src.bracketSteps(a.timeMs);
       coarseOk = a.res >= 0.25;
@@ -573,14 +587,22 @@ async function prepareSmocForQuery(kind: string, args: QueryArgs[keyof QueryArgs
       break;
     }
     default:
-      return;
+      return true;
   }
-  if (!bbox || steps.length === 0) return;
+  if (!bbox || steps.length === 0) return true;
+  let complete = true;
   try {
-    await src.ensure(bbox, steps, { reason: `${kind} query`, deadlineMs: SMOC_QUERY_DEADLINE_MS, coarseOk });
+    await src.ensure(bbox, steps, {
+      reason: `${kind} query`,
+      deadlineMs: SMOC_QUERY_DEADLINE_MS,
+      coarseOk,
+      onIncomplete: () => (complete = false),
+    });
   } catch (err) {
     log('error', (err as Error).message);
+    complete = false;
   }
+  return complete;
 }
 
 function loadHarmonic(dir: string | null): void {
@@ -763,6 +785,7 @@ async function refresh(force: boolean): Promise<void> {
     await refreshSmoc();
     sendCurrents();
     await refreshTides();
+    send({ type: 'tides-run', run: tides?.run ?? null });
   }
 }
 
@@ -1346,11 +1369,18 @@ async function queryWindow(kind: string, args: QueryArgs[keyof QueryArgs]): Prom
 /** Largest on-demand SMOC / tide area set the data worker keeps between queries (see README, Data). */
 const QUERY_AREA_RETAIN_BYTES = 16 * 1024 * 1024;
 
+/** Queries the main thread cancelled before they started (its client went away). */
+const cancelledQueries = new Set<number>();
+
 async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs]): Promise<void> {
+  if (cancelledQueries.delete(id)) {
+    send({ type: 'query-error', id, message: 'cancelled' });
+    return;
+  }
   let win: ForecastStore | null = null;
   try {
-    await prepareSmocForQuery(kind, args);
-    await prepareTidesForQuery(kind, args);
+    const smocComplete = await prepareSmocForQuery(kind, args);
+    const tidesComplete = await prepareTidesForQuery(kind, args);
     const tide = kind === 'conditions' ? await conditionsTide(args as QueryArgs['conditions']) : null;
     win = await queryWindow(kind, args);
     const src = overlaySources(win);
@@ -1382,7 +1412,7 @@ async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs])
       }
       case 'land_mask': {
         const a = args as QueryArgs['land_mask'];
-        result = landMaskImage(src, a.bbox, a.w, a.h);
+        result = landMaskImage(src, a.bbox, a.w, a.h, a.mercator ?? false);
         break;
       }
       case 'pressure': {
@@ -1426,7 +1456,10 @@ async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs])
     // On-demand SMOC / tide areas loaded for this query: keep at most a small set.
     smoc?.trimOnDemand(QUERY_AREA_RETAIN_BYTES);
     tides?.trimOnDemand(QUERY_AREA_RETAIN_BYTES);
-    send({ type: 'query-result', id, result });
+    cancelledQueries.delete(id); // a cancel that arrived after the query started
+    // A conditions tide series that is still downloading (or failed) is not an answer to keep; outside the grid is.
+    const tideComplete = !tide || !!tide.series || /outside the sea-level grid/.test(tide.error ?? '');
+    send({ type: 'query-result', id, result, complete: smocComplete && tidesComplete && tideComplete });
     // A new overlay land raster was built: refresh the status the main thread reports.
     // …or SMOC loaded an on-demand area.
     const smocRev = smoc ? smoc.revision : -1;
@@ -1445,6 +1478,7 @@ async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs])
     }
   } catch (err) {
     releaseWindow(win);
+    cancelledQueries.delete(id);
     send({ type: 'query-error', id, message: (err as Error).message });
   }
 }
@@ -1506,7 +1540,7 @@ async function handle(msg: MainToWorker): Promise<void> {
       }
       if (config.landShapefiles.length === 0) throw new Error('no land shapefile configured');
       overlayLand =
-        role === 'data'
+        role === 'data' || role === 'tiles'
           ? new OnDemandLand(config.landShapefiles, {
               log: m => log('debug', m),
               // Rasters saved on disk: a map box seen once is never rasterised again.
@@ -1542,8 +1576,8 @@ async function handle(msg: MainToWorker): Promise<void> {
       send({ type: 'data-status', status: dataStatus() });
       return;
     case 'forecast': {
-      // Route worker: where the current decoded run is (nothing is read until a route needs it).
-      if (role !== 'route') return;
+      // Route / tiles worker: where the current decoded run is (nothing is read until a route or tile needs it).
+      if (role === 'data') return;
       run = msg.run ? new DecodedRun(msg.run.dir, msg.run.index) : null;
       runInfo = msg.run;
       if (run)
@@ -1581,6 +1615,11 @@ async function handle(msg: MainToWorker): Promise<void> {
           `currents reloaded for the new settings (SMOC ${config.currents.smocEnabled ? `${config.currents.smocStepHours} h steps, ${config.currents.smocHorizonHours} h, ±${config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${config.currents.rtofsEnabled ? config.currents.rtofsRegion : 'off'})`
         );
       }
+      if (msg.reload.tides && role === 'tiles') {
+        // The data worker sends its tide run again after its reload.
+        seaLevelClient = makeSeaLevelClient(config);
+        tides = null;
+      }
       if (msg.reload.tides && role === 'data') {
         if (msg.position !== undefined) vesselPos = msg.position;
         // A provisional run's cached chunks may predate its update: drop them with the old client.
@@ -1589,6 +1628,8 @@ async function handle(msg: MainToWorker): Promise<void> {
         tides = null;
         tidesError = null;
         await refreshTides();
+        // refreshTides set `tides` (narrowed to null above for the compiler).
+        send({ type: 'tides-run', run: (tides as TideSource | null)?.run ?? null });
         log(
           'info',
           `tides reloaded for the new settings (${config.tides.enabled ? `map area ±${config.tides.halfWidthDeg}°, ${config.tides.horizonHours} h` : 'off'})`
@@ -1616,8 +1657,8 @@ async function handle(msg: MainToWorker): Promise<void> {
       await query(msg.id, msg.kind, msg.args);
       return;
     case 'harmonic': {
-      // Route worker: the data worker's tidal-harmonic sources (shared constituent blocks).
-      if (role !== 'route') return;
+      // Route / tiles worker: the data worker's tidal-harmonic sources (shared constituent blocks).
+      if (role === 'data') return;
       harmonic = msg.sources.map(s => new HarmonicCurrentSource(s));
       rebuildStack();
       sendCurrents();
@@ -1628,8 +1669,8 @@ async function handle(msg: MainToWorker): Promise<void> {
       return;
     }
     case 'smoc': {
-      // Route worker: the data worker's run and resident area (shared memory).
-      if (role !== 'route') return;
+      // Route / tiles worker: the data worker's run and resident area (shared memory).
+      if (role === 'data') return;
       const s = msg.smoc;
       const cfgNow = requireInit().config;
       if (!s || !cfgNow.currents.smocEnabled) smoc = null;
@@ -1650,6 +1691,15 @@ async function handle(msg: MainToWorker): Promise<void> {
         );
       return;
     }
+    case 'tides-run': {
+      // Tiles worker: open the data worker's tide run (areas load on demand from the shared disk cache).
+      if (role !== 'tiles') return;
+      const cfgNow = requireInit().config;
+      if (!msg.run || !cfgNow.tides.enabled || !seaLevelClient) tides = null;
+      else if (!tides || tides.run.key !== msg.run.key || tides.run.settled !== msg.run.settled)
+        tides = new TideSource(msg.run, tideSettings(cfgNow), seaLevelClient, m => log('debug', m));
+      return;
+    }
     case 'shutdown':
       if (gridBuilder) await gridBuilder.terminate();
       process.exit(0);
@@ -1658,6 +1708,11 @@ async function handle(msg: MainToWorker): Promise<void> {
 
 let chain: Promise<void> = Promise.resolve();
 port.on('message', (msg: MainToWorker) => {
+  // Not chained: it must reach the queue ahead of the query it cancels.
+  if (msg.type === 'query-cancel') {
+    cancelledQueries.add(msg.id);
+    return;
+  }
   chain = chain
     .then(() => handle(msg))
     .catch(err => {

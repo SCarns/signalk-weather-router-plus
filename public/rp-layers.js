@@ -298,13 +298,66 @@ function _noteOverlay(key, msg) {
 }
 function _bboxParam(b) { return b.map(v => +v.toFixed(5)).join(','); }
 
+// Point overlays (wind barbs, current arrows) loaded per web-map tile at
+// the overlay hour (GET /api/tile/barbs|arrows/{z}/{x}/{y}). The source
+// keeps the tiles of one zoom level and one hour: a new level or hour
+// starts afresh, so zooming out never shows the denser deeper-level points.
+const _POINT_TILE_GRID = ol.tilegrid.createXYZ({ tileSize: 256, maxZoom: 18 });
+function _pointTileSource(tileLayer, toggleId, toFeature, attributions) {
+  const src = new ol.source.Vector({
+    attributions,
+    strategy: ol.loadingstrategy.tile(_POINT_TILE_GRID),
+    loader: function (extent, resolution, projection, success, failure) {
+      const z = _POINT_TILE_GRID.getZForResolution(resolution);
+      const n = 2 ** z;
+      const c = _POINT_TILE_GRID.getTileCoordForCoordAndZ([(extent[0] + extent[2]) / 2, (extent[1] + extent[3]) / 2], z);
+      const x = ((c[1] % n) + n) % n, y = c[2];
+      if (src._hour === undefined) { src._hour = _overlayHourIso(); src._z = z; }
+      // Mid-zoom: this level is not the source's; moveend starts the new level.
+      if (z !== src._z) { failure(); return; }
+      const hour = src._hour, level = src._z;
+      _tileFetch(_tileUrl(tileLayer, z, x, y, hour))
+        .then(r => r.json())
+        .then(points => {
+          // A newer hour or zoom level has cleared the source meanwhile.
+          if (src._hour !== hour || src._z !== level || z !== level) { failure(); return; }
+          const features = (Array.isArray(points) ? points : []).map(toFeature);
+          src.addFeatures(features);
+          _noteOverlay(toggleId, null);
+          success(features);
+        })
+        .catch(err => {
+          if (err.message !== 'auth-gate-tripped') { console.log(tileLayer + ' tile error: ' + err.message); _noteOverlay(toggleId, err.message); }
+          failure();
+        });
+    },
+  });
+  return src;
+}
+// Start a point source afresh when the hour or the zoom level changed.
+function _syncPointSource(src) {
+  const hour = _overlayHourIso();
+  const z = _POINT_TILE_GRID.getZForResolution(map.getView().getResolution());
+  if (src._hour === hour && src._z === z) return;
+  src._hour = hour;
+  src._z = z;
+  src.clear(true);
+}
+
 // --- Tidal current overlay ---
 // Credit required by the Copernicus Marine licence (section 2.4) wherever
 // its products are shown; NOAA RTOFS is the backup source. Shown by the
 // map's attribution control while a current layer is visible.
 const CURRENT_ATTRIBUTION = 'Currents: Generated using E.U. Copernicus Marine Service Information; '
   + '<a href="https://doi.org/10.48670/moi-00016" target="_blank" rel="noopener">doi:10.48670/moi-00016</a>. NOAA Global RTOFS.';
-const currentSource = new ol.source.Vector({ attributions: CURRENT_ATTRIBUTION });
+const currentSource = _pointTileSource('arrows', 'currentToggle', p => {
+  const f = new ol.Feature({ geometry: new ol.geom.Point(ol.proj.fromLonLat([p.lon, p.lat])) });
+  f.set('speed_ms', p.speed_ms);
+  f.set('dir_deg', p.dir_deg);
+  f.set('u_ms', p.u_ms);
+  f.set('v_ms', p.v_ms);
+  return f;
+}, CURRENT_ATTRIBUTION);
 // Tide height layer: Copernicus Marine hourly sea level (ocean_tide, FES2014).
 const TIDE_ATTRIBUTION = 'Tide height: Generated using E.U. Copernicus Marine Service Information; '
   + '<a href="https://doi.org/10.48670/moi-00016" target="_blank" rel="noopener">doi:10.48670/moi-00016</a>. Relative to mean sea level, not chart datum.';
@@ -375,40 +428,9 @@ const currentLayer = new ol.layer.Vector({
   zIndex: 8
 });
 
-let _currentDebounce = null;
 function loadCurrentOverlay() {
   if (!currentLayer.getVisible()) return;
-  if (_currentDebounce) clearTimeout(_currentDebounce);
-  _currentDebounce = setTimeout(_doLoadCurrents, 300);
-}
-
-function _doLoadCurrents() {
-  const view = map.getView();
-  const zoom = view.getZoom();
-  const bbox = _viewBBox();
-
-  // Resolution: ~0.02° at zoom 12, ~0.01° at zoom 14, ~0.005° at zoom 16
-  const res = Math.min(5, Math.max(0.005, 0.3 / Math.pow(2, zoom - 8)));
-  const timeStr = _overlayTimeIso();
-
-  authFetch(ROUTER + `/currents?bbox=${_bboxParam(bbox)}&time=${encodeURIComponent(timeStr)}&res=${res}`, {}, 'currents')
-    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
-    .then(points => {
-      currentSource.clear();
-      _noteOverlay('currentToggle', null);
-      if (!Array.isArray(points) || points.length === 0) return;
-      const features = points.map(p => {
-        const f = new ol.Feature({
-          geometry: new ol.geom.Point(ol.proj.fromLonLat([p.lon, p.lat]))
-        });
-        f.set('speed_ms', p.speed_ms);
-        f.set('dir_deg', p.dir_deg);
-        f.set('u_ms', p.u_ms);
-        f.set('v_ms', p.v_ms);
-        return f;
-      });
-      currentSource.addFeatures(features);
-    }).catch(e => { if (e.name !== 'AbortError') { console.log('Current overlay error: ' + e); _noteOverlay('currentToggle', e.message); } });
+  _syncPointSource(currentSource);
 }
 
 // Refresh currents when departure time changes
@@ -424,7 +446,12 @@ document.getElementById('departure').addEventListener('change', function() {
 // feather = 5 kt. Below ~2.5 kt we draw an open circle (calm). Color
 // codes speed on a cool→warm ramp so a glance tells wind strength
 // without reading the feathers.
-const windSource = new ol.source.Vector();
+const windSource = _pointTileSource('barbs', 'windToggle', p => {
+  const f = new ol.Feature({ geometry: new ol.geom.Point(ol.proj.fromLonLat([p.lon, p.lat])) });
+  f.set('speed_ms', p.speed_ms);
+  f.set('dir_deg', p.dir_deg);
+  return f;
+});
 const _windStyleCache = new Map();
 
 // Barb colour classes, lower bound in knots. Shared with the legend.
@@ -539,39 +566,9 @@ const windLayer = new ol.layer.Vector({
   visible: false,
 });
 
-let _windDebounce = null;
 function loadWindOverlay() {
   if (!windLayer.getVisible()) return;
-  if (_windDebounce) clearTimeout(_windDebounce);
-  _windDebounce = setTimeout(_doLoadWind, 300);
-}
-
-function _doLoadWind() {
-  const view = map.getView();
-  const zoom = view.getZoom();
-  const bbox = _viewBBox();
-
-  // ECMWF is 0.25°. Barbs are chunky so we sample much sparser
-  // than currents: ~0.4° at z6, ~0.1° at z10, ~0.02° at z14+.
-  const res = Math.min(5, Math.max(0.02, 0.8 / Math.pow(2, zoom - 6)));
-  const timeStr = _overlayTimeIso();
-  authFetch(ROUTER + `/wind-points?bbox=${_bboxParam(bbox)}&time=${encodeURIComponent(timeStr)}&res=${res}`, {}, 'wind')
-    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
-    .then(points => {
-      windSource.clear();
-      _noteOverlay('windToggle', null);
-      if (!Array.isArray(points) || points.length === 0) return;
-      const features = points.map(p => {
-        const f = new ol.Feature({
-          geometry: new ol.geom.Point(ol.proj.fromLonLat([p.lon, p.lat]))
-        });
-        f.set('speed_ms', p.speed_ms);
-        f.set('dir_deg', p.dir_deg);
-        return f;
-      });
-      windSource.addFeatures(features);
-    })
-    .catch(err => { if (err.name !== 'AbortError') { console.log('Wind overlay error: ' + err); _noteOverlay('windToggle', err.message); } });
+  _syncPointSource(windSource);
 }
 
 document.getElementById('departure').addEventListener('change', function() {
@@ -725,69 +722,6 @@ function _attachLandMask(owner, f) {
   fetchLandMask(f.bbox, W, H).then(m => { if (owner.vectorField === f) owner.landMask = m; })
     .catch(err => console.log('land mask unavailable for flow lines: ' + err.message));
 }
-// Draw the grid onto a canvas in the map's own projection (Web Mercator)
-// over `ext3857`, the view extent at request time in unwrapped map
-// coordinates, so the image sits exactly on the viewed world copy even
-// when the view crosses the date line. Each pixel's lon/lat comes from
-// the projection; the grid and the land mask (fetched for grid.bbox,
-// equirectangular) are looked up with longitude wrapped from their west
-// edge.
-function renderHeatmapImage(grid, spec, landMask, ext3857) {
-  const [w, s, e, n] = grid.bbox;
-  const [W, H] = landMask ? [landMask.W, landMask.H] : _heatmapCanvasSize();
-  const maskBytes = landMask ? landMask.bytes : null;
-  const mW = landMask ? landMask.W : 0, mH = landMask ? landMask.H : 0, spanLon = (e - w) || 360;
-  const maskAt = (lon, lat) => {
-    if (!maskBytes) return 0;
-    const mx = Math.floor((((lon - w) % 360 + 360) % 360) / spanLon * mW);
-    const my = Math.floor((n - lat) / (n - s) * mH);
-    if (mx < 0 || mx >= mW || my < 0 || my >= mH) return 0;
-    return maskBytes[my * mW + mx];
-  };
-  const [ex0, ey0, ex1, ey1] = ext3857;
-  const canvas = document.createElement('canvas');
-  canvas.width = W; canvas.height = H;
-  const ctx = canvas.getContext('2d');
-  const img = ctx.createImageData(W, H);
-  const data = img.data;
-  const { v0, v1, lut } = _rampLut(spec.stops || _legendStops(spec.legend));
-  const sample = _gridSampler(grid, grid.fields[spec.field]);
-  // Coarse fallback when the screen-resolution mask is unavailable.
-  const sampleLand = spec.maskLand && !maskBytes ? _gridSampler(grid, grid.land) : null;
-  const sampleAlpha = spec.alphaField ? _gridSampler(grid, grid.fields[spec.alphaField]) : null;
-  const baseA = spec.alpha == null ? 0.55 : spec.alpha;
-  const span = (v1 - v0) || 1;
-  const R = 6378137;
-  for (let y = 0; y < H; y++) {
-    const my = ey1 - (y + 0.5) / H * (ey1 - ey0);
-    const lat = (2 * Math.atan(Math.exp(my / R)) - Math.PI / 2) * 180 / Math.PI;
-    for (let x = 0; x < W; x++) {
-      const lon = (ex0 + (x + 0.5) / W * (ex1 - ex0)) / R * 180 / Math.PI;
-      if (spec.maskLand && maskBytes && maskAt(lon, lat)) continue;
-      const v = sample(lon, lat);
-      if (v == null) {
-        // Water (per the coastline) the source model has no value for:
-        // channels narrower than its grid. Hatch it so a gap never reads as
-        // zero. Needs the screen-resolution mask to know it is water.
-        if (spec.hatchNoData && maskBytes && ((x + y) % 7) < 1) {
-          const o = (y * W + x) * 4;
-          data[o] = 96; data[o + 1] = 96; data[o + 2] = 96; data[o + 3] = 150;
-        }
-        continue;
-      }
-      if (sampleLand) { const l = sampleLand(lon, lat); if (l != null && l > 0.5) continue; }
-      let a = baseA;
-      if (sampleAlpha) { const sg = sampleAlpha(lon, lat); a *= sg == null ? 0 : Math.max(0, Math.min(1, sg)); }
-      if (spec.fadeBelow) a *= Math.max(0, Math.min(1, v / spec.fadeBelow));
-      if (a <= 0.002) continue;
-      const idx = Math.max(0, Math.min(255, Math.round((v - v0) / span * 255)));
-      const o = (y * W + x) * 4;
-      data[o] = lut[idx * 3]; data[o + 1] = lut[idx * 3 + 1]; data[o + 2] = lut[idx * 3 + 2]; data[o + 3] = Math.round(a * 255);
-    }
-  }
-  ctx.putImageData(img, 0, 0);
-  return canvas.toDataURL('image/png');
-}
 // Grid resolution for a viewport: enough cells for a smooth picture,
 // within the plugin's 40k-cell cap (it coarsens further itself).
 function _fieldRes(bbox) {
@@ -806,16 +740,107 @@ function fetchField(layer, channel) {
   return authFetch(url, {}, channel).then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(g => { if (g && typeof g === 'object') g._ext3857 = ext3857; return g; });
 }
-// Symmetric auto-scale for a diverging layer (tide height): stretch the
-// legend's stops so the largest |value| over water in this grid sits at
-// the ends, never tighter than spec.minScale. Keeps the colour readable
-// when the tide is small or near half-tide; the legend shows the numbers.
+// Tide-height stops as drawn (auto-scaled), for the legend.
 const _autoScaleStops = {};
-function _applyAutoScale(grid, spec) {
+// ─────────── Overlay tiles ───────────
+// Colour layers are drawn tile by tile from GET /api/tile/{layer}/{z}/{x}/{y}
+// (fixed web-map tiles at whole hours, which the plugin saves on disk and
+// answers without its data worker). Each tile is its grid painted through
+// the legend ramp and clipped by its own coastline tile (256 × 256, rows
+// in Web Mercator like the map). OpenLayers loads the visible tiles and
+// drops queued ones that scroll away. Overlay times are rounded to the
+// hour: the colour changes once an hour as the time moves.
+const OVERLAY_TILE_PX = 256;
+function _overlayHourIso() {
+  const t = new Date(_overlayTimeIso()).getTime();
+  return new Date(Math.round(t / 3600e3) * 3600e3).toISOString();
+}
+function _tileUrl(layer, z, x, y, hourIso) {
+  return ROUTER + '/tile/' + layer + '/' + z + '/' + x + '/' + y + (hourIso ? '?time=' + encodeURIComponent(hourIso) : '');
+}
+// Tile fetch: the same auth breaker as authFetch but not its rate
+// limiter — OpenLayers already caps concurrent tile loads, and saved
+// tiles answer in milliseconds.
+async function _tileFetch(url) {
+  if (AuthGate.tripped) throw new Error('auth-gate-tripped');
+  const r = await fetch(url, { credentials: 'same-origin' });
+  if (r.status === 401) { AuthGate.trip(401); throw new Error('auth 401'); }
+  if (!r.ok) throw new Error(await _apiErrorText(r));
+  return r;
+}
+// Small in-page caches so a redraw (tide rescale, hour back and forth)
+// does not refetch.
+function _lruGet(m, key, make, max) {
+  if (m.has(key)) { const v = m.get(key); m.delete(key); m.set(key, v); return v; }
+  const v = make().catch(err => { m.delete(key); throw err; });
+  m.set(key, v);
+  while (m.size > max) m.delete(m.keys().next().value);
+  return v;
+}
+const _tileGridCache = new Map();
+const _landTileCache = new Map();
+function _tileGrid(layer, z, x, y, hourIso) {
+  const url = _tileUrl(layer, z, x, y, hourIso);
+  return _lruGet(_tileGridCache, url, () => _tileFetch(url).then(r => r.json()), 600);
+}
+function _landTile(z, x, y) {
+  return _lruGet(_landTileCache, z + '/' + x + '/' + y, () => _tileFetch(_tileUrl('land', z, x, y)).then(r => r.arrayBuffer()).then(buf => {
+    const bytes = new Uint8Array(buf);
+    if (bytes.length !== OVERLAY_TILE_PX * OVERLAY_TILE_PX) throw new Error('land tile size ' + bytes.length);
+    return bytes;
+  }), 600);
+}
+// Paint one tile: RGBA bytes, pixel (x, y) at the tile's Web Mercator
+// extent `ext`. `mask` is the tile's coastline (same pixel grid) or null.
+// `gx0`/`gy0`: the tile's first pixel in the world, so the no-data hatch
+// runs on across tile edges.
+function _paintTile(grid, spec, mask, ext, gx0, gy0) {
+  const N = OVERLAY_TILE_PX;
+  const data = new Uint8ClampedArray(N * N * 4);
+  const { v0, v1, lut } = _rampLut(spec.stops || _legendStops(spec.legend));
+  const sample = _gridSampler(grid, grid.fields[spec.field]);
+  const sampleLand = spec.maskLand && !mask ? _gridSampler(grid, grid.land) : null;
+  const sampleAlpha = spec.alphaField ? _gridSampler(grid, grid.fields[spec.alphaField]) : null;
+  const baseA = spec.alpha == null ? 0.55 : spec.alpha;
+  const span = (v1 - v0) || 1;
+  const R = 6378137;
+  const [ex0, ey0, ex1, ey1] = ext;
+  for (let y = 0; y < N; y++) {
+    const my = ey1 - (y + 0.5) / N * (ey1 - ey0);
+    const lat = (2 * Math.atan(Math.exp(my / R)) - Math.PI / 2) * 180 / Math.PI;
+    for (let x = 0; x < N; x++) {
+      if (spec.maskLand && mask && mask[y * N + x]) continue;
+      const lon = (ex0 + (x + 0.5) / N * (ex1 - ex0)) / R * 180 / Math.PI;
+      const v = sample(lon, lat);
+      if (v == null) {
+        // Water (per the coastline) the source model has no value for:
+        // channels narrower than its grid. Hatch it so a gap never reads as
+        // zero. Needs the coastline tile to know it is water.
+        if (spec.hatchNoData && mask && ((gx0 + x + gy0 + y) % 7) < 1) {
+          const o = (y * N + x) * 4;
+          data[o] = 96; data[o + 1] = 96; data[o + 2] = 96; data[o + 3] = 150;
+        }
+        continue;
+      }
+      if (sampleLand) { const l = sampleLand(lon, lat); if (l != null && l > 0.5) continue; }
+      let a = baseA;
+      if (sampleAlpha) { const sg = sampleAlpha(lon, lat); a *= sg == null ? 0 : Math.max(0, Math.min(1, sg)); }
+      if (spec.fadeBelow) a *= Math.max(0, Math.min(1, v / spec.fadeBelow));
+      if (a <= 0.002) continue;
+      const idx = Math.max(0, Math.min(255, Math.round((v - v0) / span * 255)));
+      const o = (y * N + x) * 4;
+      data[o] = lut[idx * 3]; data[o + 1] = lut[idx * 3 + 1]; data[o + 2] = lut[idx * 3 + 2]; data[o + 3] = Math.round(a * 255);
+    }
+  }
+  return data;
+}
+// Symmetric auto-scale (tide height) across tiles: the scale grows to the
+// largest |value| over water in the tiles loaded for this hour; when it
+// grows, the layer redraws from the in-page cache.
+function _noteTileScale(layer, spec, grid) {
   if (!spec.autoScaleSym) return;
   const base = _legendStops(spec.legend);
   if (!base) return;
-  const baseMax = Math.max(...base.map(s => Math.abs(s[0]))) || 1;
   const rows = grid.fields[spec.field] || [];
   let m = 0;
   for (let j = 0; j < rows.length; j++) {
@@ -828,43 +853,76 @@ function _applyAutoScale(grid, spec) {
     }
   }
   const S = Math.max(spec.minScale || 0.5, Math.ceil(m * 4) / 4);
+  if (spec._scale != null && S <= spec._scale) return;
+  const first = spec._scale == null;
+  spec._scale = S;
+  const baseMax = Math.max(...base.map(s => Math.abs(s[0]))) || 1;
   spec.stops = base.map(([v, c]) => [+(v * S / baseMax).toFixed(4), c]);
   _autoScaleStops[spec.legend] = spec.stops;
+  if (typeof updateLegends === 'function') updateLegends();
+  if (!first) {
+    clearTimeout(spec._redraw);
+    spec._redraw = setTimeout(() => { if (layer.getSource()) layer.setSource(_colourTileSource(layer, spec, spec._hour)); }, 250);
+  }
 }
-function _setHeatmap(layer, grid, spec, landMask) {
-  _applyAutoScale(grid, spec);
-  // The view extent the grid was requested for, in map coordinates.
-  const ext = grid._ext3857 || map.getView().calculateExtent(map.getSize());
-  layer.setSource(new ol.source.ImageStatic({
-    url: renderHeatmapImage(grid, spec, landMask, ext),
-    imageExtent: ext,
-    projection: 'EPSG:3857',
+// OpenLayers 9.1's canvas tile layer draws only image tiles (a DataTile
+// source needs its WebGL layer), so each tile is painted into a canvas and
+// handed to the image tile. The tile "URL" is just its key: layer, hour and
+// the wrapped z/x/y.
+function _colourTileSource(layer, spec, hourIso) {
+  const grid = ol.tilegrid.createXYZ({ tileSize: OVERLAY_TILE_PX, maxZoom: 18 });
+  const src = new ol.source.TileImage({
+    tileGrid: grid,
+    wrapX: true,
+    interpolate: true,
+    transition: 0,
     attributions: spec.attributions,
-  }));
+    tileUrlFunction: c => spec.tileLayer + '|' + hourIso + '|' + c[0] + '|' + c[1] + '|' + c[2],
+    tileLoadFunction: (tile, key) => {
+      const [, , zs, xs, ys] = key.split('|');
+      const z = +zs, x = +xs, y = +ys;
+      const ext = grid.getTileCoordExtent([z, x, y]);
+      Promise.all([
+        _tileGrid(spec.tileLayer, z, x, y, hourIso),
+        spec.maskLand ? _landTile(z, x, y).catch(err => { console.log('coastline tile unavailable, using grid land flags: ' + err.message); return null; }) : null,
+      ]).then(([g, mask]) => {
+        _noteTileScale(layer, spec, g);
+        _noteOverlay(spec.toggleId, null);
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = OVERLAY_TILE_PX;
+        canvas.getContext('2d').putImageData(new ImageData(_paintTile(g, spec, mask, ext, x * OVERLAY_TILE_PX, y * OVERLAY_TILE_PX), OVERLAY_TILE_PX, OVERLAY_TILE_PX), 0, 0);
+        tile.setImage(canvas);
+      }).catch(err => {
+        if (err.message !== 'auth-gate-tripped') { console.log(spec.tileLayer + ' tile error: ' + err.message); _noteOverlay(spec.toggleId, err.message); }
+        tile.setState(3);   // TileState.ERROR
+      });
+    },
+  });
+  src._hour = hourIso;
+  return src;
 }
-function _heatmapLoader(layer, toggleId, fieldLayer, spec, channel) {
+// Loader for a colour layer: (re)creates its tile source when the layer
+// is shown without one or the overlay hour changed; panning and zooming
+// need nothing (OpenLayers loads the tiles).
+function _heatmapLoader(layer, toggleId, fieldLayer, spec) {
+  spec.toggleId = toggleId;
+  spec.tileLayer = fieldLayer;
   return function () {
-    fetchField(fieldLayer, channel)
-      .then(grid => {
-        if (!spec.maskLand) return { grid, mask: null };
-        const [W, H] = _heatmapCanvasSize();
-        // A mask failure falls back to the grid's land flags rather than dropping the layer.
-        return fetchLandMask(grid.bbox, W, H).then(mask => ({ grid, mask }), err => {
-          console.log('land mask unavailable, using grid land flags: ' + err.message);
-          return { grid, mask: null };
-        });
-      })
-      .then(({ grid, mask }) => { _setHeatmap(layer, grid, spec, mask); _noteOverlay(toggleId, null); })
-      .catch(err => { if (err.name !== 'AbortError') { console.log(fieldLayer + ' heatmap error: ' + err.message); layer.setSource(null); _noteOverlay(toggleId, err.message); } });
+    const hour = _overlayHourIso();
+    const cur = layer.getSource();
+    if (cur && cur._hour === hour) return;
+    if (spec.autoScaleSym) { spec._scale = null; spec.stops = null; }
+    spec._hour = hour;
+    layer.setSource(_colourTileSource(layer, spec, hour));
   };
 }
 
 // ─────────── Wind-speed heatmap ───────────
 // Same ramp as the barbs (0–50 kt, 8 stops), alpha 0.55, not land
 // masked (wind is a real field over land, as on the routing server).
-const windHeatmapLayer = new ol.layer.Image({ source: null, opacity: 1.0, zIndex: 6, visible: false });
+const windHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
 let _windHeatmapDebounce = null;
-const _doLoadWindHeatmap = _heatmapLoader(windHeatmapLayer, 'windCombinedToggle', 'wind', { field: 'speed_ms', legend: 'wind', maskLand: false }, 'wind-heatmap');
+const _doLoadWindHeatmap = _heatmapLoader(windHeatmapLayer, 'windCombinedToggle', 'wind', { field: 'speed_ms', legend: 'wind', maskLand: false });
 function loadWindHeatmap() {
   if (!windHeatmapLayer.getVisible()) return;
   if (_windHeatmapDebounce) clearTimeout(_windHeatmapDebounce);
@@ -873,9 +931,9 @@ function loadWindHeatmap() {
 
 // ─────────── Current-speed heatmap ───────────
 // Land masked so the coasts stay sharp.
-const currentHeatmapLayer = new ol.layer.Image({ source: null, opacity: 1.0, zIndex: 6, visible: false });
+const currentHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
 let _currentHeatmapDebounce = null;
-const _doLoadCurrentHeatmap = _heatmapLoader(currentHeatmapLayer, 'currentHeatmapToggle', 'current', { field: 'speed_ms', legend: 'current', maskLand: true, hatchNoData: true, attributions: CURRENT_ATTRIBUTION }, 'current-heatmap');
+const _doLoadCurrentHeatmap = _heatmapLoader(currentHeatmapLayer, 'currentHeatmapToggle', 'current', { field: 'speed_ms', legend: 'current', maskLand: true, hatchNoData: true, attributions: CURRENT_ATTRIBUTION });
 function loadCurrentHeatmap() {
   if (!currentHeatmapLayer.getVisible()) return;
   if (_currentHeatmapDebounce) clearTimeout(_currentHeatmapDebounce);
@@ -886,9 +944,9 @@ function loadCurrentHeatmap() {
 // Combined wind + swell + current index, painted blue→red (RdYlBu_r,
 // 0–150). Alpha is 0.55 × the grid's `signal` (0..1 fade from calm),
 // 0 over land.
-const roughnessLayer = new ol.layer.Image({ source: null, opacity: 1.0, zIndex: 6, visible: false });
+const roughnessLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
 let _roughnessDebounce = null;
-const _doLoadRoughness = _heatmapLoader(roughnessLayer, 'roughnessToggle', 'sea_state', { field: 'index', legend: 'sea_state', maskLand: true, alphaField: 'signal', attributions: CURRENT_ATTRIBUTION }, 'roughness');
+const _doLoadRoughness = _heatmapLoader(roughnessLayer, 'roughnessToggle', 'sea_state', { field: 'index', legend: 'sea_state', maskLand: true, alphaField: 'signal', attributions: CURRENT_ATTRIBUTION });
 function loadRoughness() {
   if (!roughnessLayer.getVisible()) return;
   if (_roughnessDebounce) clearTimeout(_roughnessDebounce);
@@ -896,9 +954,9 @@ function loadRoughness() {
 }
 
 // ─────────── Wave height heatmap (0–6 m, 7 stops, land masked) ───────────
-const waveHeatmapLayer = new ol.layer.Image({ source: null, opacity: 1.0, zIndex: 6, visible: false });
+const waveHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
 let _waveHeatmapDebounce = null;
-const _doLoadWaveHeatmap = _heatmapLoader(waveHeatmapLayer, 'wavesCombinedToggle', 'waves', { field: 'swh', legend: 'waves', maskLand: true }, 'wave-heatmap');
+const _doLoadWaveHeatmap = _heatmapLoader(waveHeatmapLayer, 'wavesCombinedToggle', 'waves', { field: 'swh', legend: 'waves', maskLand: true });
 function loadWaveHeatmap() {
   if (!waveHeatmapLayer.getVisible()) return;
   if (_waveHeatmapDebounce) clearTimeout(_waveHeatmapDebounce);
@@ -909,9 +967,9 @@ function loadWaveHeatmap() {
 // Alpha fades to 0 below 0.5 mm/h (linear ramp across [0, 0.5 mm/h])
 // so the broad zero-precip background does not wash out the basemap;
 // land masked like the routing server's PNG.
-const precipHeatmapLayer = new ol.layer.Image({ source: null, opacity: 1.0, zIndex: 6, visible: false });
+const precipHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
 let _precipHeatmapDebounce = null;
-const _doLoadPrecipHeatmap = _heatmapLoader(precipHeatmapLayer, 'precipToggle', 'precip', { field: 'rate', legend: 'precip', maskLand: true, fadeBelow: 0.5 * MMH_MS }, 'precip-heatmap');
+const _doLoadPrecipHeatmap = _heatmapLoader(precipHeatmapLayer, 'precipToggle', 'precip', { field: 'rate', legend: 'precip', maskLand: true, fadeBelow: 0.5 * MMH_MS });
 function loadPrecipHeatmap() {
   if (!precipHeatmapLayer.getVisible()) return;
   if (_precipHeatmapDebounce) clearTimeout(_precipHeatmapDebounce);
@@ -921,9 +979,9 @@ function loadPrecipHeatmap() {
 // ─────────── 2-m air temperature heatmap ─────────────
 // Constant alpha, no land mask: air temp is meaningful everywhere and a
 // sailor at anchor still cares about the shore-side temp.
-const temperatureLayer = new ol.layer.Image({ source: null, opacity: 1.0, zIndex: 5, visible: false });
+const temperatureLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 5, visible: false });
 let _temperatureDebounce = null;
-const _doLoadTemperature = _heatmapLoader(temperatureLayer, 'temperatureToggle', 'temperature', { field: 't2m', legend: 'temperature', maskLand: false }, 'temperature');
+const _doLoadTemperature = _heatmapLoader(temperatureLayer, 'temperatureToggle', 'temperature', { field: 't2m', legend: 'temperature', maskLand: false });
 function loadTemperature() {
   if (!temperatureLayer.getVisible()) return;
   if (_temperatureDebounce) clearTimeout(_temperatureDebounce);
@@ -932,9 +990,9 @@ function loadTemperature() {
 
 // ─────────── Sea-surface (skin) temperature heatmap ──
 // Land masked: over land `skt` is the land-surface temperature, not SST.
-const sstLayer = new ol.layer.Image({ source: null, opacity: 1.0, zIndex: 5, visible: false });
+const sstLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 5, visible: false });
 let _sstDebounce = null;
-const _doLoadSst = _heatmapLoader(sstLayer, 'sstToggle', 'sst', { field: 'skt', legend: 'sst', maskLand: true }, 'sst');
+const _doLoadSst = _heatmapLoader(sstLayer, 'sstToggle', 'sst', { field: 'skt', legend: 'sst', maskLand: true });
 function loadSst() {
   if (!sstLayer.getVisible()) return;
   if (_sstDebounce) clearTimeout(_sstDebounce);
@@ -945,9 +1003,9 @@ function loadSst() {
 // Land masked at the true coastline; the plugin extends the 1/12° field
 // up to 2 cells towards the coast for display. Hourly: reloads with the
 // overlay time like the other layers.
-const tideLayer = new ol.layer.Image({ source: null, opacity: 1.0, zIndex: 5, visible: false });
+const tideLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 5, visible: false });
 let _tideDebounce = null;
-const _doLoadTide = _heatmapLoader(tideLayer, 'tideToggle', 'tide', { field: 'tide_m', legend: 'tide', maskLand: true, hatchNoData: true, autoScaleSym: true, minScale: 0.5, attributions: TIDE_ATTRIBUTION }, 'tide-heatmap');
+const _doLoadTide = _heatmapLoader(tideLayer, 'tideToggle', 'tide', { field: 'tide_m', legend: 'tide', maskLand: true, hatchNoData: true, autoScaleSym: true, minScale: 0.5, attributions: TIDE_ATTRIBUTION });
 function loadTide() {
   if (!tideLayer.getVisible()) return;
   if (_tideDebounce) clearTimeout(_tideDebounce);

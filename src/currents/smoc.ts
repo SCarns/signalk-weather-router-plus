@@ -364,7 +364,9 @@ export class SmocCurrentSource implements CurrentSourceLike {
   ensure(
     bbox: BBox,
     steps: number[],
-    opts: { reason: string; deadlineMs?: number; shouldCancel?: () => boolean; coarseOk?: boolean } = { reason: 'on demand' }
+    opts: { reason: string; deadlineMs?: number; shouldCancel?: () => boolean; coarseOk?: boolean; onIncomplete?: () => void } = {
+      reason: 'on demand',
+    }
   ): Promise<boolean> {
     return this.set.ensure(bbox, steps, AREA_MARGIN_CELLS, opts);
   }

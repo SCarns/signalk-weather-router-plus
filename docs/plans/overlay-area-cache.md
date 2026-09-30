@@ -1,7 +1,21 @@
 # Plan: disk cache of the map overlays and conditions around the boat and the view
 
-Status: **decided** 2026-09-29, not built yet (except the land-raster disk
-cache, see "Already done").
+Status: **decided** 2026-09-29; steps 1–5 built and deployed to brain
+2026-09-29 (step 6, the Admin UI panel, not started).
+
+Measured on brain after the restart (19:24 EDT, 2026-09-29): the build
+workers saved 36,672 tiles in the first ~4 minutes (12 ms per tile on
+average, no errors, 198 MB); saved tiles answer in 11–27 ms (curl on
+brain, one at a time) against the earlier 10 s median; memory in use
++384 MB over the previous run (`free`), 5.8 GB still available.
+Conditions requests took 0.10–1.72 s (4 points), so conditions are not
+cached (step 5).
+
+Correction (2026-09-29): an earlier version said the page asks per
+web-map tile. It does not: every overlay request is for the exact
+on-screen box (`_viewBBox()`), with a resolution from the fractional zoom
+and a time to the minute, so almost no request repeats. Step 2 therefore
+starts by making the page request fixed tiles at whole hours.
 
 Decisions (user, 2026-09-29):
 - Deepest pre-built zoom: **15**.
@@ -33,9 +47,9 @@ as far as the data goes, as an optional setting. All values SI.
 
 ## What a map view costs (measured on brain, one tile, one hour)
 
-The page asks per web-map tile (zoom 6: 5.625° wide … zoom 12: 0.0879°).
-A colour-layer grid is capped at 40,000 cells, so a tile's response is
-about the same size at every zoom.
+The sizes below were measured for one web-map tile's box (zoom 6:
+5.625° wide … zoom 12: 0.0879°). A colour-layer grid is capped at 40,000
+cells, so a tile's response is about the same size at every zoom.
 
 | Layer | gzip size | Compute |
 |---|---|---|
@@ -112,6 +126,16 @@ about the same size at every zoom.
 
 ### 3. Serving
 
+- **Fixed tiles:** `GET /api/tile/{layer}/{z}/{x}/{y}?time=<whole hour>`.
+  The box is the web-map tile z/x/y and the grid resolution is fixed by z,
+  so the same tile is always the same request. The page draws the colour
+  layers as OpenLayers tile layers (one grid and one coastline mask per
+  tile) and fetches wind barbs and current arrows per tile. Overlay times
+  are rounded to the hour. Isobars and flow lines stay per view (contours,
+  labels and particles break at tile edges; isobars cost 0.03 s).
+- The existing per-box endpoints stay for other clients.
+- A request the browser cancels is removed from the data worker's queue
+  if it has not started.
 - A cached tile is answered by the **main thread** from disk (gzip bytes
   sent with `Content-Encoding: gzip`), never through the data worker, so
   cached views do not queue.
@@ -169,8 +193,9 @@ the panel (upstream `EmbeddedPluginConfigurationForm.tsx`).
 ## Build order
 
 1. Forecast length limit raised to 360 h (after the checks in 5).
-2. Cache store on disk + main-thread serving of cached tiles; page aborts
-   stale requests. Measure the 10 s median again.
+2. Page requests fixed tiles at whole hours; tile endpoint; cache store
+   on disk + main-thread serving of cached tiles; cancelled requests
+   leave the worker queue. Measure the 10 s median again.
 3. Pre-build workers, boat-area pyramid, cycle invalidation, disk cap.
 4. View-following area.
 5. Conditions: measure; cache only if needed.

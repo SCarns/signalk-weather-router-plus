@@ -1113,13 +1113,15 @@ export class ArcoAreaSet<A extends ArcoArea> {
    * steps, outside the grid, no client). With `deadlineMs`, resolves
    * false when the load takes longer; it then completes in the
    * background and serves later queries. `coarseOk` (a zoomed-out
-   * view) takes the 1/3° level when it fits.
+   * view) takes the 1/3° level when it fits. `onIncomplete` is called
+   * when the answer will lack data it should have (deadline passed or the
+   * load failed), so the caller does not keep that answer.
    */
   async ensure(
     bbox: BBox,
     steps: number[],
     marginCells: number,
-    opts: { reason: string; deadlineMs?: number; shouldCancel?: () => boolean; coarseOk?: boolean }
+    opts: { reason: string; deadlineMs?: number; shouldCancel?: () => boolean; coarseOk?: boolean; onIncomplete?: () => void }
   ): Promise<boolean> {
     if (steps.length === 0) return false;
     const full = regionForBBox(this.run.levels.time.grid, bbox, marginCells);
@@ -1176,6 +1178,7 @@ export class ArcoAreaSet<A extends ArcoArea> {
     p.catch(err => this.log(`${this.opts.tag}: ${opts.reason}: load failed: ${(err as Error).message}`));
     const got = await Promise.race([p.catch(() => null), deadline]);
     if (timer) clearTimeout(timer);
+    if (got === null) opts.onIncomplete?.();
     if (got === null)
       this.log(
         `${this.opts.tag}: ${opts.reason}: still loading after ${(opts.deadlineMs / 1000).toFixed(0)} s; answering without it (the area is used once loaded)`

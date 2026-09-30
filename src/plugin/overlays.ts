@@ -536,7 +536,7 @@ export function conditionsSeries(
  * resolution follows the pixel size (finest 0.002°), so the coastline is
  * as sharp as the screen, independent of the data grid.
  */
-export function landMaskImage(src: OverlaySources, bbox: BBox, w: number, h: number): Uint8Array {
+export function landMaskImage(src: OverlaySources, bbox: BBox, w: number, h: number, mercator = false): Uint8Array {
   if (!src.land) throw new Error('no coastline configured');
   const width = bboxWidth(bbox);
   const height = bbox.north - bbox.south;
@@ -545,8 +545,14 @@ export function landMaskImage(src: OverlaySources, bbox: BBox, w: number, h: num
   // forBBox picks a raster resolution of spacing/4; ask for 4× the pixel so the raster matches the pixel.
   const lm = src.land.forBBox(bbox, Math.min(dx, dy) * 4);
   const out = new Uint8Array(w * h);
+  // Web Mercator y of the edges (radians of the projection), for tile rows.
+  const my = (lat: number): number => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
+  const yN = my(bbox.north);
+  const yS = my(bbox.south);
   for (let y = 0; y < h; y++) {
-    const lat = bbox.north - (y + 0.5) * dy;
+    const lat = mercator
+      ? (2 * Math.atan(Math.exp(yN - ((y + 0.5) / h) * (yN - yS))) - Math.PI / 2) * (180 / Math.PI)
+      : bbox.north - (y + 0.5) * dy;
     const row = y * w;
     for (let x = 0; x < w; x++) {
       const lon = ((((bbox.west + (x + 0.5) * dx + 180) % 360) + 360) % 360) - 180;

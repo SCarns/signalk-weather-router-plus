@@ -3,8 +3,8 @@
  *
  * Two sources, merged into one ResolvedConfig (SI in memory):
  *  - the Signal K plugin config (admin UI, CONFIG_SCHEMA below): only
- *    server / installation settings — file paths, the download mirror
- *    and Weather API registration;
+ *    server / installation settings — file paths, the download mirror,
+ *    Weather API registration and the map overlay cache;
  *  - the web-app settings (settings.ts, stored in the plugin data dir as
  *    settings.json, edited in the page's Settings tab): vessel, forecast
  *    horizon and extras, currents, routing engine and publishing.
@@ -31,6 +31,18 @@ export interface PluginConfig {
   };
   weatherProvider?: {
     enabled?: boolean;
+  };
+  overlayCache?: {
+    enabled?: boolean;
+    /** m */
+    radius?: number;
+    /** s; 0 = the whole forecast */
+    window?: number;
+    maxZoom?: number;
+    /** bytes */
+    diskCap?: number;
+    workers?: number;
+    followView?: boolean;
   };
 }
 
@@ -132,7 +144,29 @@ export interface ResolvedConfig {
   weatherProvider: {
     enabled: boolean;
   };
+  /** Map overlay tiles saved on disk and built ahead of time (tiles.ts, prebuild.ts). SI. */
+  overlayCache: {
+    enabled: boolean;
+    radiusM: number;
+    /** Hours ahead built; null = the whole forecast. */
+    windowS: number | null;
+    maxZoom: number;
+    diskCapBytes: number;
+    workers: number;
+    followView: boolean;
+  };
 }
+
+/** Overlay cache defaults (SI). */
+export const OVERLAY_CACHE_DEFAULTS = {
+  enabled: true,
+  radius: 250_000,
+  window: 0,
+  maxZoom: 15,
+  diskCap: 20e9,
+  workers: 2,
+  followView: true,
+} as const;
 
 export const MIRRORS = ['ecmwf', 'aws', 'google'] as const;
 
@@ -141,13 +175,13 @@ export const CONFIG_SCHEMA = {
   description:
     'Server and installation settings only. Vessel, forecast horizon, currents, routing and publishing are set in the ' +
     'web app (Weather Router Plus → Settings tab) and shared by every client.',
-  required: ['landShapefiles'],
   properties: {
     landShapefiles: {
       type: 'string',
       title: 'Coastline shapefile(s)',
       description:
-        'Absolute path(s) to polygon land shapefiles, comma-separated. GSHHG GSHHS_f_L1.shp is recommended (add GSHHS_f_L6.shp for Antarctica).',
+        'Absolute path(s) to polygon land shapefiles, comma-separated. Blank: GSHHG 2.3.7 full-resolution level 1 is downloaded once ' +
+        '(149 MB from www.soest.hawaii.edu) into the plugin data directory and used. Add GSHHS_f_L6.shp for Antarctica.',
     },
     polarFile: {
       type: 'string',
@@ -184,8 +218,70 @@ export const CONFIG_SCHEMA = {
         enabled: { type: 'boolean', title: 'Register as a Signal K Weather API provider', default: true },
       },
     },
+    overlayCache: {
+      type: 'object',
+      title: 'Map overlay cache',
+      description:
+        'Map overlay tiles (colour layers, wind barbs, current arrows, coastline) are saved on disk and answered without waiting for the ' +
+        'data worker. Tiles around the boat, and around the area the map shows, are built ahead of time for every hour of the window: ' +
+        'the full radius down to zoom 8, half the radius at each deeper zoom. Values are SI (metres, seconds, bytes).',
+      properties: {
+        enabled: { type: 'boolean', title: 'Build tiles ahead of time', default: OVERLAY_CACHE_DEFAULTS.enabled },
+        radius: {
+          type: 'number',
+          title: 'Radius (m)',
+          description: 'Around the boat and the map view, at zoom 8 and below; halved at each deeper zoom.',
+          default: OVERLAY_CACHE_DEFAULTS.radius,
+          minimum: 1000,
+          maximum: 2_000_000,
+        },
+        window: {
+          type: 'number',
+          title: 'Window (s)',
+          description: 'How far ahead tiles are built, from now. 0 = the whole forecast.',
+          default: OVERLAY_CACHE_DEFAULTS.window,
+          minimum: 0,
+          maximum: 360 * 3600,
+        },
+        maxZoom: {
+          type: 'integer',
+          title: 'Deepest zoom built ahead',
+          default: OVERLAY_CACHE_DEFAULTS.maxZoom,
+          minimum: 6,
+          maximum: 18,
+        },
+        diskCap: {
+          type: 'number',
+          title: 'Disk cap (bytes)',
+          description: 'Least recently used tiles are removed above this. 20e9 = 20 GB.',
+          default: OVERLAY_CACHE_DEFAULTS.diskCap,
+          minimum: 100e6,
+        },
+        workers: {
+          type: 'integer',
+          title: 'Build workers',
+          description: 'Threads building tiles ahead of time, at lower priority than the map and routes.',
+          default: OVERLAY_CACHE_DEFAULTS.workers,
+          minimum: 1,
+          maximum: 8,
+        },
+        followView: {
+          type: 'boolean',
+          title: 'Also build around the area the map shows',
+          default: OVERLAY_CACHE_DEFAULTS.followView,
+        },
+      },
+    },
   },
 };
+
+function cacheNumber(v: unknown, def: number, min: number, max: number, name: string, integer = false): number {
+  if (v === undefined || v === null || v === '') return def;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < min || n > max || (integer && !Number.isInteger(n)))
+    throw new Error(`config overlayCache.${name}: ${String(v)} is not ${integer ? 'an integer' : 'a number'} in [${min}, ${max}]`);
+  return n;
+}
 
 /**
  * Merge the plugin config (installation) with the web-app settings (SI)
@@ -270,6 +366,20 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
     weatherProvider: {
       enabled: c.weatherProvider?.enabled ?? true,
     },
+    overlayCache: (() => {
+      const o = c.overlayCache ?? {};
+      const d = OVERLAY_CACHE_DEFAULTS;
+      const windowS = cacheNumber(o.window, d.window, 0, 360 * 3600, 'window');
+      return {
+        enabled: o.enabled ?? d.enabled,
+        radiusM: cacheNumber(o.radius, d.radius, 1000, 2_000_000, 'radius'),
+        windowS: windowS > 0 ? windowS : null,
+        maxZoom: cacheNumber(o.maxZoom, d.maxZoom, 6, 18, 'maxZoom', true),
+        diskCapBytes: cacheNumber(o.diskCap, d.diskCap, 100e6, Number.MAX_SAFE_INTEGER, 'diskCap'),
+        workers: cacheNumber(o.workers, d.workers, 1, 8, 'workers', true),
+        followView: o.followView ?? d.followView,
+      };
+    })(),
   };
 }
 

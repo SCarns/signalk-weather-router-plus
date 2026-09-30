@@ -28,7 +28,8 @@
     "signalk-category-route-planning",
     "weather-routing",
     "ecmwf",
-    "isochrone"
+    "isochrone",
+    "signalk-plugin-configurator"
   ],
   "author": "",
   "license": "MIT",
@@ -66,6 +67,6 @@
     "appSupport": "webapp",
     "compatibility": ">=2.13.0",
     "displayName": "Weather Router Plus",
-    "appIcon": "icon.svg"
+    "appIcon": "icon.png"
   }
 }

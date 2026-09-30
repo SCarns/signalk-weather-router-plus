@@ -315,12 +315,18 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   **Waypoint radius** 50–2000 m, default 200 (Approximate only). See
   [Waypoints](#waypoints-legs).
 - **Layers** (Base / Weather / Water): each layer is named for the
-  quantity it shows. Colour layers are exclusive (one at a time) and are
-  cut at the coastline with a screen-resolution land mask from
-  `/api/land-mask`. The tide colour scale stretches to the largest tide
-  in view (at least ±0.5 m). On the tide and current layers, water the
-  source model has no value for (narrower than its ~9 km grid) is hatched
-  and labelled "no model data".
+  quantity it shows. Colour layers are exclusive (one at a time). Colour
+  layers, wind barbs and current arrows are drawn tile by tile from
+  `/api/tile` (web-map tiles at whole hours, saved on the server, see
+  [Map tiles](#get-apitilelayerzxy)); each colour tile is cut at the
+  coastline with its own 256 × 256 coastline tile. Their time is the
+  overlay time rounded to the hour. Isobars and flow lines are drawn for
+  the whole view, from the same saved tiles (see [Map
+  layers](#map-layers)). The tide colour scale
+  stretches to the largest tide in the tiles loaded (at least ±0.5 m).
+  On the tide and current layers, water the source model has no value
+  for (narrower than its ~9 km grid) is hatched and labelled "no model
+  data".
 - **Conditions popup** (shift-click, or the menu): 72-hour charts for
   Wind, Waves, Sea state (index / Beaufort / Douglas), **Tide & current**
   (tide height, total water level and surge on the left axis; current
@@ -528,8 +534,22 @@ cd ~/.signalk        # your Signal K config directory
 npm link signalk-weather-router-plus
 ```
 
-Restart Signal K, enable the plugin, and configure at least the coastline
-shapefile path. The package carries the `signalk-webapp` keyword and a
+Restart Signal K and enable the plugin. **Coastline:** with no coastline
+shapefile configured, the plugin downloads GSHHG 2.3.7 (Wessel & Smith,
+LGPL) once from the authors' site,
+`https://www.soest.hawaii.edu/pwessel/gshhg/gshhg-shp-2.3.7.zip`
+(149 MB), extracts the full-resolution level-1 shoreline
+(`GSHHS_f_L1.shp` with its `.shx` and `.prj`, about 156 MB) into
+`coastline/gshhg-2.3.7/` in the plugin data directory, deletes the
+archive and starts; the plugin status shows the progress. The global
+water grid shipped with the plugin was built from this same file, so it
+is used as is. The download does not hold up the server's start-up; if
+it fails (offline, server error, short file) the plugin status says why
+and it is tried again every 10 minutes; stopping the plugin cancels it.
+To use another coastline, or an existing GSHHG copy, set its path in the
+plugin configuration. A configured coastline is never replaced by the
+download: if a configured file is missing or unreadable, the plugin does
+not start and its status names the file. The package carries the `signalk-webapp` keyword and a
 `public/` folder, so after the restart the webapp appears on the Admin UI's
 Webapps page. Writes (computing, cancelling, publishing) need a `readwrite`
 login; the page redirects to the server login when it gets a 401. A polar file (`.csv` or `.pol`, knots) enables sailing;
@@ -540,16 +560,52 @@ without one every route is motor-only.
 Settings are split in two.
 
 **Signal K plugin configuration** (Admin UI → Server → Plugin Config):
-installation settings only.
+installation settings only. The plugin ships its own configuration panel
+(keyword `signalk-plugin-configurator`, `public/remoteEntry.js`), which
+the Admin UI shows in place of the generated form: the coastline with a
+**Download coastline** button and its progress (and **Use the downloaded
+coastline** when a path is set), the map overlay cache with the radius
+and window in the Signal K user's distance and time units (stored in m
+and s; a unit that cannot be read shows "—" and cannot be edited there),
+and the other options below. **Save** stores the configuration and
+restarts the plugin. The panel is a hand-written Module Federation
+container that uses the Admin UI's own React, so the package carries no
+React and needs no build step for it.
 
 | Field | Notes |
 |---|---|
-| `landShapefiles` | comma-separated absolute paths |
+| `landShapefiles` | comma-separated absolute paths; blank = download GSHHG 2.3.7 full-resolution level 1 once (see [Install](#install)) |
 | `polarFile` | `.csv` (`twa/tws,4,6,…`) or `.pol` (tab-delimited); the default polar (token `default`) |
 | `polarsDir` | directory of `.pol`/`.csv` polars listed by `/api/polars`; needed to pick a named polar per route |
 | `currents.harmonicDir` | directory of tidal-harmonic `.npz` files |
 | `forecast.mirror` | `ecmwf`, `aws` or `google` |
 | `weatherProvider.enabled` | register with the Weather API (default on) |
+| `overlayCache.enabled` | build map tiles ahead of time (default on) |
+| `overlayCache.radius` | m, around the boat and the map view at zoom 8 and below; halved at each deeper zoom (default 250000, 1000–2000000) |
+| `overlayCache.window` | s, how far ahead tiles are built from now; 0 = the whole forecast (default 0, max 1296000) |
+| `overlayCache.maxZoom` | deepest zoom built ahead (default 15, 6–18) |
+| `overlayCache.diskCap` | bytes for saved tiles, least recently used removed first (default 20e9 = 20 GB, min 100e6) |
+| `overlayCache.workers` | threads building tiles ahead (default 2, 1–8) |
+| `overlayCache.followView` | also build around the area the map shows (default on) |
+
+Stored in SI (metres, seconds, bytes); the configuration panel shows
+the radius and window in the user's units and the disk cap in GB.
+Tiles the page asks for are saved, whether or not tiles are built
+ahead, except those computed while an on-demand current or tide area is
+still loading: those are answered but not saved. What is built ahead of time: the colour layers the page
+draws (wind, waves, sea state, current, rain, air temperature, sea
+temperature, tide height), wind barbs, current arrows and coastline
+tiles, for every hour from now to the end of the window (tide height:
+to the end of the tide run), at zooms 6 to `maxZoom`. Order: the map
+view's area, then the boat's; within each, nearest hour first, then
+shallower zoom, then nearest the centre. Tiles already saved are
+skipped. A new forecast cycle, currents run or tide run removes the
+tiles made from the old one and the walk starts again; so do a new
+hour, a boat move of more than 1 km, a new view and a settings change.
+No new tile is started while a route runs or the map's own queries are
+waiting. The boat's last position is kept in `last-position.json` in
+the plugin data directory, so the boat's area is known after a restart
+before a fix arrives.
 
 **Web-app settings** (the webapp's **Settings** tab, or `GET`/`PUT
 /api/settings`): stored on the server in `settings.json` in the plugin
@@ -1302,7 +1358,9 @@ Plugin, forecast, currents, tides and queue status. Access: readonly.
 | `tides` | Copernicus Marine sea-level source status (run, resident and on-demand areas, point cache, memory, downloads), or null when off or not loaded |
 | `tides_enabled` | the tides setting, or null before start |
 | `tides_error` | last tide source error, or null |
-| `overlay_land` | overlay land-raster cache: `{entries, cells, bytes, index_bytes, builds, hits, last_build_ms}`, or null |
+| `overlay_land` | overlay land-raster cache: `{entries, cells, bytes, index_bytes, builds, hits, last_build_ms, disk_hits, disk_writes, disk}`, or null |
+| `overlay_tiles` | saved map tiles: `{dir, cap_bytes, files, bytes, hits, misses, writes, not_kept, generations, inflight}` (`files`/`bytes` after the first scan; `not_kept`: answered but not saved because an on-demand current or tide load was late or failed; `generations`: the data each layer group was built from; `inflight`: tile queries waiting or running), or null before start |
+| `overlay_prebuild` | tiles built ahead of time: `{enabled, workers, workers_ready, paused, areas, window, max_zoom, walk_started_at, seen, built, skipped, not_kept, errors, last_error, at, complete, built_total, build_ms_avg}`; `areas`: `[{kind: "view" or "boat", lat, lon, radius_m}]`; `at`: `{area, hour, z}` of the last tile started; `complete`: every tile of the window is saved. Null before start |
 | `weather_provider_registered` | the Weather API provider is registered |
 | `jobs` | `{running: id or null, queued, total}`, or null before start |
 | `vessel`, `polar`, `land`, `harmonic_dir`, `extra_fields` | the resolved configuration: vessel parameters (internal camelCase names), default polar file, coastline shapefiles, tidal-harmonic directory, extra fields on/off |
@@ -1332,6 +1390,7 @@ nested `smoc` and `tides` fields in full.
 | GET | `/api/currents` | readonly | current arrow points |
 | GET | `/api/pressure` | readonly | isobars and highs/lows as GeoJSON |
 | GET | `/api/land-mask` | readonly | binary land mask at screen resolution |
+| GET | `/api/tile/{layer}/{z}/{x}/{y}` | readonly | one web-map tile of a layer at a whole hour, saved on the server |
 | GET | `/api/legends` | readonly | colour ramps for every layer |
 
 **Common parameters.**
@@ -1345,9 +1404,35 @@ Invalid values give `400` with messages such as `bbox must be w,s,e,n`,
 `bbox latitudes invalid`, `time "x" is not ISO 8601` or `res must be a
 number in [0.002, 2]`.
 
-**Caching.** `/api/field`, `/api/wind-points`, `/api/currents` and
-`/api/pressure` send `Cache-Control: public, max-age=86400` when `time`
-is more than an hour in the past, else `public, max-age=1800`.
+**One cache for every client.** These endpoints are answered from the
+same saved tiles as the page (see [`/api/tile`](#get-apitilelayerzxy)),
+so a box another app asks for is built from tiles already on disk (or
+built ahead of time), and what it causes to be computed is saved for
+everyone:
+
+- `/api/field`, `/api/wind-points`, `/api/currents`: the tiles covering
+  `bbox` at the zoom whose sample spacing is nearest `res`, joined. At one
+  zoom all tiles sample the same global lattice, so the values are the
+  same as a grid computed for the box at that spacing (not resampled).
+  The spacing used is in the answer (`res` in `/api/field`); it is the
+  tile spacing nearest the one asked for, at most √2 × finer or coarser,
+  coarsened as before when the box would exceed the sample cap.
+- `/api/land-mask`: read from the coastline tiles at the nearest pixel
+  size.
+- `/api/pressure`: the pressure tiles at zoom 5 (0.176°) joined, sampled
+  at 0.25° as before, and contoured.
+- `time` is rounded to the nearest hour for all of them.
+- Latitudes beyond ±85.05° (the web-map limit) have no tiles and answer
+  null (no points, water in the land mask).
+
+`/api/conditions`, the Weather API point forecasts and tide series, and
+the `/api/forecast` samples are saved in the same store, keyed by the
+exact query (a Weather API request without a start date starts at the
+current hour), and replaced with the data they were computed from.
+
+**Caching headers.** `/api/field`, `/api/wind-points`, `/api/currents`
+and `/api/pressure` send `Cache-Control: public, max-age=86400` when the
+hour is more than an hour in the past, else `public, max-age=1800`.
 
 #### GET /api/field
 
@@ -1462,6 +1547,46 @@ clients do this themselves), the body is `w × h` bytes, one per pixel,
 and latitude `north − (y + 0.5) × (north − south) / h`. The raster
 follows the pixel size (finest 0.002°). `400 {error: "no coastline
 configured"}` without coastline shapefiles.
+
+#### GET /api/tile/{layer}/{z}/{x}/{y}
+
+One web-map tile (the usual XYZ scheme: zoom `z`, column `x` from 180° W,
+row `y` from the north) of one layer at a whole hour. The tile's box and
+sample spacing are fixed by `z`/`x`/`y`, so the same tile at the same
+hour is always the same answer: the plugin saves it on disk and answers
+it again from disk without its data worker. A tile being computed for
+several clients is computed once; a request whose client goes away
+before its query has started is dropped from the data worker's queue.
+
+| Path / query | Values |
+|---|---|
+| `layer` | `wind`, `waves`, `msl`, `temperature`, `sst`, `precip`, `sea_state`, `current`, `tide` (colour layers), `barbs` (wind barbs), `arrows` (current arrows), `land` (coastline) |
+| `z` | 0–18 |
+| `x`, `y` | 0 to 2^z − 1 |
+| `time` | ISO 8601, default now; rounded to the nearest hour. Ignored for `land` |
+
+`200`, `Content-Encoding: gzip`, `X-Tile-Cache: hit` (from disk) or
+`miss` (computed now), and the caching headers of the map layers
+(`land`: `max-age=86400`). Bodies after gzip decoding:
+
+- colour layers: as [`/api/field`](#get-apifield) for the tile's box
+  extended by one sample spacing on every side (so a tile's edge pixels
+  interpolate between samples), spacing = tile width ÷ 64, clamped to 0.002°–2°;
+- `barbs`: as [`/api/wind-points`](#get-apiwind-points), 7 across a tile;
+- `arrows`: as [`/api/currents`](#get-apicurrents), 5 across a tile;
+  for both, points on the tile's east and north edges belong to the
+  neighbouring tile;
+- `land`: 256 × 256 bytes, 1 = land, row 0 at the north edge, rows
+  evenly spaced in Web Mercator y (the map's own rows), columns evenly
+  spaced in longitude.
+
+`400` as for the per-box endpoints (e.g. `no wave data in the
+forecast`), or for a layer, zoom or tile number out of range. Saved
+tiles live in `overlay-tiles/` in the plugin data directory, one
+directory per data generation (a new forecast cycle, currents run or
+tide run replaces its layers' tiles), under the `overlayCache.diskCap`
+byte cap. A tile computed while an on-demand current or tide area was
+still loading (60 s wait) is answered but not saved.
 
 #### GET /api/legends
 

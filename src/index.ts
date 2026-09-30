@@ -21,6 +21,10 @@ import { mergeSettings, reloadsFor, settingsSchema, SettingsStore, SettingsValid
 import { checkDecodeResources } from './plugin/memguard';
 import { JobManager, type Job } from './plugin/jobs';
 import { registerApi } from './plugin/api';
+import { TileService, TileStore, type TileGroup, type TileLayer } from './plugin/tiles';
+import { TilePrebuilder } from './plugin/prebuild';
+import { runLastMs, type ArcoRun } from './data/arco';
+import { ensureGshhg, gshhgInstalled, unreadableCoastlines } from './geo/gshhg';
 import { openApiDocument } from './plugin/openapi';
 import { makeWeatherProvider, startMsOf, type WeatherData } from './plugin/weather';
 import type {
@@ -67,15 +71,18 @@ interface SignalKPlugin {
   getOpenApi?: () => Record<string, unknown>;
 }
 
+/** Roles of the two workers this file runs (tiles workers: prebuild.ts). */
+type MainRole = Exclude<WorkerRole, 'tiles'>;
+
 interface WorkerHandle {
-  role: WorkerRole;
+  role: MainRole;
   worker: Worker | null;
   ready: boolean;
 }
 
 export = function plugin(app: SkApp): SignalKPlugin {
   let config: ResolvedConfig | null = null;
-  const workers: Record<WorkerRole, WorkerHandle> = {
+  const workers: Record<MainRole, WorkerHandle> = {
     data: { role: 'data', worker: null, ready: false },
     route: { role: 'route', worker: null, ready: false },
   };
@@ -104,7 +111,149 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let stopped = true;
   let pendingRefresh: { force: boolean } | null = null;
   let queryId = 0;
-  const pendingQueries = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  const pendingQueries = new Map<
+    number,
+    { resolve: (v: { result: unknown; complete: boolean }) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
+  >();
+  /** Map overlay tiles on disk (null before start). */
+  let tiles: TileService | null = null;
+  /** Bumped by settings changes that reload forecast, currents or tides (tile generations). */
+  let dataSettingsRev = 0;
+  /** Tiles built ahead of time (null before start or when off). */
+  let prebuilder: TilePrebuilder | null = null;
+  /** The data worker's tide run (relayed to the tiles workers). */
+  let tidesRun: ArcoRun | null = null;
+  /** Downloaded GSHHG coastline, used when the plugin config names none (geo/gshhg.ts). */
+  let autoCoastline: string | null = null;
+  /** Bumped by every start/stop, so a start still downloading the coastline does not carry on after a stop. */
+  let startGen = 0;
+  /** Cancels the coastline download (and its retry wait) on stop. */
+  let coastlineCtrl: AbortController | null = null;
+  /** Downloaded-coastline state (status `coastline`, config panel). */
+  const coastline: {
+    downloading: boolean;
+    message: string | null;
+    error: string | null;
+    path: string | null;
+    startedAt: string | null;
+    finishedAt: string | null;
+  } = { downloading: false, message: null, error: null, path: null, startedAt: null, finishedAt: null };
+  /** The download running, if any (one at a time), with the signal that cancels it. */
+  let coastlineRun: { promise: Promise<string | null>; signal: AbortSignal } | null = null;
+  /** Wakes a start waiting to retry the download. */
+  let coastlineWake: (() => void) | null = null;
+  /** Cancels a download started from the config panel, on stop. */
+  let coastlineManualCtrl: AbortController | null = null;
+  /** A failed coastline download is tried again after this long. */
+  const COASTLINE_RETRY_MS = 10 * 60_000;
+
+  /**
+   * No coastline configured: download GSHHG (geo/gshhg.ts), trying again
+   * every 10 minutes after a failure, until it is in place or the plugin
+   * stops. True when the coastline is ready and this start is still current.
+   */
+  async function downloadCoastline(gen: number, dataDir: string): Promise<boolean> {
+    const ctrl = new AbortController();
+    coastlineCtrl = ctrl;
+    const current = (): boolean => gen === startGen && !stopped && !ctrl.signal.aborted;
+    app.setPluginStatus('no coastline configured: downloading GSHHG (149 MB, once)');
+    for (;;) {
+      const shp = await fetchCoastline(dataDir, ctrl.signal, m => {
+        if (current()) app.setPluginStatus(m);
+      });
+      if (!current()) return false; // stopped
+      if (shp) {
+        autoCoastline = shp;
+        return true;
+      }
+      const at = new Date(Date.now() + COASTLINE_RETRY_MS).toISOString().slice(11, 16);
+      app.setPluginError(
+        `coastline download failed: ${coastline.error}; trying again at ${at} UTC (or press Download coastline in the plugin config, or set a coastline shapefile)`
+      );
+      // Wait for the retry time, a Download press (wakes it) or a stop.
+      const ok = await new Promise<boolean>(resolve => {
+        const timer = setTimeout(() => done(true), COASTLINE_RETRY_MS);
+        const done = (v: boolean): void => {
+          clearTimeout(timer);
+          coastlineWake = null;
+          resolve(v);
+        };
+        coastlineWake = () => done(true);
+        ctrl.signal.addEventListener('abort', () => done(false));
+      });
+      if (!ok || !current()) return false;
+    }
+  }
+
+  /**
+   * One GSHHG download (geo/gshhg.ts) with its state for the status and
+   * the config panel. Resolves the .shp, or null on failure (the error is
+   * in `coastline.error`); a download already running is joined.
+   */
+  function fetchCoastline(dataDir: string, signal: AbortSignal, onProgress: (m: string) => void = () => undefined): Promise<string | null> {
+    // An aborted run (stopped) is not joined: a new start downloads afresh.
+    if (coastlineRun && !coastlineRun.signal.aborted) return coastlineRun.promise;
+    // This run's token: a stale run's late callbacks must not touch a newer run's state.
+    const run: { promise: Promise<string | null>; signal: AbortSignal } = { promise: Promise.resolve(null), signal };
+    const isCurrent = (): boolean => coastlineRun === run;
+    coastlineRun = run;
+    coastline.downloading = true;
+    coastline.error = null;
+    coastline.path = null;
+    coastline.startedAt = new Date().toISOString();
+    run.promise = ensureGshhg(
+      dataDir,
+      m => {
+        log(m);
+        if (isCurrent()) coastline.message = m;
+        onProgress(m);
+      },
+      { signal }
+    )
+      .then(
+        shp => {
+          if (isCurrent()) {
+            coastline.path = shp;
+            coastline.message = `ready: ${shp}`;
+          }
+          return shp;
+        },
+        (err: Error) => {
+          if (isCurrent()) coastline.error = err.message;
+          return null;
+        }
+      )
+      .finally(() => {
+        if (!isCurrent()) return;
+        coastline.downloading = false;
+        coastline.finishedAt = new Date().toISOString();
+        coastlineRun = null;
+      });
+    return run.promise;
+  }
+
+  /**
+   * Download pressed in the config panel: wake a start waiting to retry,
+   * or download now (also while a coastline is configured: the panel then
+   * offers to switch to it).
+   */
+  function requestCoastlineDownload(): void {
+    if (coastlineRun && !coastlineRun.signal.aborted) return;
+    if (coastlineWake) {
+      coastlineWake();
+      return;
+    }
+    const ctrl = new AbortController();
+    coastlineManualCtrl = ctrl;
+    void fetchCoastline(app.getDataDirPath(), ctrl.signal);
+  }
+
+  /** The resolved config, with the downloaded coastline when none is configured. */
+  function resolve(options: PluginConfig | undefined, values: SettingsStore['values']): ResolvedConfig {
+    const c = resolveConfig(options, values);
+    if (c.landShapefiles.length === 0 && autoCoastline) c.landShapefiles = [autoCoastline];
+    return c;
+  }
 
   const log = (msg: string): void => app.debug(msg);
 
@@ -116,22 +265,79 @@ export = function plugin(app: SkApp): SignalKPlugin {
     }
   }
 
-  function post(role: WorkerRole, msg: MainToWorker): void {
+  function post(role: MainRole, msg: MainToWorker): void {
     workers[role].worker?.postMessage(msg);
   }
 
-  function query<K extends QueryKind>(kind: K, args: QueryArgs[K]): Promise<unknown> {
+  /**
+   * A data-worker query. `signal`: when it aborts before the worker has
+   * started the query, the query is dropped (it then rejects with
+   * "cancelled"); one already running completes. `complete` is false when
+   * an on-demand current / tide load was late or failed.
+   */
+  function queryFull<K extends QueryKind>(
+    kind: K,
+    args: QueryArgs[K],
+    signal?: AbortSignal
+  ): Promise<{ result: unknown; complete: boolean }> {
     const h = workers.data;
     if (!h.worker || !h.ready) return Promise.reject(new Error('data worker not ready'));
+    if (signal?.aborted) return Promise.reject(new Error('cancelled'));
     const id = ++queryId;
     return new Promise((resolve, reject) => {
+      const onAbort = (): void => {
+        if (pendingQueries.has(id)) post('data', { type: 'query-cancel', id });
+      };
+      const done = (): void => signal?.removeEventListener('abort', onAbort);
       const timer = setTimeout(() => {
         pendingQueries.delete(id);
+        done();
         reject(new Error('query timed out'));
       }, QUERY_TIMEOUT_MS);
-      pendingQueries.set(id, { resolve, reject, timer });
+      pendingQueries.set(id, {
+        resolve: v => {
+          done();
+          resolve(v);
+        },
+        reject: e => {
+          done();
+          reject(e);
+        },
+        timer,
+      });
+      signal?.addEventListener('abort', onAbort, { once: true });
       post('data', { type: 'query', id, kind, args });
     });
+  }
+
+  function query<K extends QueryKind>(kind: K, args: QueryArgs[K], signal?: AbortSignal): Promise<unknown> {
+    return queryFull(kind, args, signal).then(r => r.result);
+  }
+
+  /** A point query through the shared store (tiles.ts TileService.point). */
+  function pointQuery<K extends QueryKind>(kind: K, args: QueryArgs[K]): Promise<unknown> {
+    return tiles ? tiles.point(kind, args) : query(kind, args);
+  }
+
+  /**
+   * Tile generations: what each group of overlay layers is computed
+   * from. A change removes that group's saved tiles (tiles.ts).
+   */
+  function updateTileGenerations(): void {
+    if (!tiles || !config) return;
+    const cfg = config;
+    const coast = `${cfg.landShapefiles.join('|')}`;
+    const wx = forecastRun
+      ? `${coast}|${forecastRun.index.cycleTimeMs}|${forecastRun.index.request.params.join(',')}|${dataSettingsRev}`
+      : null;
+    const smoc = smocShared ? `${smocShared.run.key}|${smocShared.run.settled}` : 'off';
+    const cur = wx && dataStatus ? `${wx}|${currentsKey}|${smoc}|${cfg.currents.harmonicDir ?? ''}` : null;
+    const t = dataStatus?.tides;
+    const tide = !cfg.tides.enabled ? `${coast}|off` : t ? `${coast}|${t.run}|${t.settled}|${dataSettingsRev}` : null;
+    // Point answers (conditions, Weather API) read forecast, currents and tides.
+    const pt = cur && tide ? `${cur}|${tide}` : null;
+    const g: Record<TileGroup, string | null> = { wx, cur, tide, land: coast, pt };
+    tiles.store.setGenerations(g);
   }
 
   /** Own-vessel position from Signal K (navigation.position), or null. */
@@ -217,7 +423,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     }
   }
 
-  function onWorkerMessage(role: WorkerRole, msg: WorkerToMain): void {
+  function onWorkerMessage(role: MainRole, msg: WorkerToMain): void {
     switch (msg.type) {
       case 'ready':
         workers[role].ready = true;
@@ -240,14 +446,16 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'forecast':
         if (role !== 'data') return;
         forecastRun = msg.run;
+        updateTileGenerations();
         forecastError = null;
         if (failedRefreshTimer) {
           clearTimeout(failedRefreshTimer);
           failedRefreshTimer = null;
         }
         registerWeather();
-        // The route worker reads route areas from the same run on disk.
+        // The route and tiles workers read from the same run on disk.
         post('route', { type: 'forecast', run: msg.run });
+        prebuilder?.broadcast({ type: 'forecast', run: msg.run });
         log(
           `forecast ${new Date(msg.run.index.cycleTimeMs).toISOString().slice(0, 13)}Z ready: decoded run ${msg.run.dir} (${(msg.run.index.bytes / 1e6).toFixed(1)} MB on disk; nothing resident)`
         );
@@ -280,7 +488,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
           if (key !== currentsKey) {
             const first = currentsKey === '';
             currentsKey = key;
-            if (!first || msg.rtofsRun) post('route', { type: 'refresh', force: false });
+            updateTileGenerations();
+            if (!first || msg.rtofsRun) {
+              post('route', { type: 'refresh', force: false });
+              prebuilder?.broadcast({ type: 'refresh', force: false });
+            }
           }
         }
         return;
@@ -289,6 +501,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           // Shared constituent blocks: the route worker adopts the same memory.
           harmonicShared = msg.sources;
           post('route', { type: 'harmonic', sources: msg.sources });
+          prebuilder?.broadcast({ type: 'harmonic', sources: msg.sources });
         }
         return;
       case 'smoc':
@@ -296,11 +509,20 @@ export = function plugin(app: SkApp): SignalKPlugin {
           // SharedArrayBuffer views: the route worker gets the same memory.
           smocShared = msg.smoc;
           post('route', { type: 'smoc', smoc: msg.smoc });
+          prebuilder?.broadcast({ type: 'smoc', smoc: msg.smoc });
+          updateTileGenerations();
+        }
+        return;
+      case 'tides-run':
+        if (role === 'data') {
+          tidesRun = msg.run;
+          prebuilder?.broadcast({ type: 'tides-run', run: msg.run });
         }
         return;
       case 'data-status':
         if (role === 'data') {
           dataStatus = msg.status;
+          updateTileGenerations();
           updateStatus();
         }
         return;
@@ -334,7 +556,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (p) {
           clearTimeout(p.timer);
           pendingQueries.delete(msg.id);
-          p.resolve(msg.result);
+          p.resolve({ result: msg.result, complete: msg.complete });
         }
         return;
       }
@@ -350,7 +572,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     }
   }
 
-  function startWorker(role: WorkerRole): void {
+  function startWorker(role: MainRole): void {
     if (!cancelFlag) cancelFlag = new Int32Array(new SharedArrayBuffer(4));
     const isTs = __filename.endsWith('.ts');
     const workerPath = path.join(__dirname, 'plugin', isTs ? 'worker.ts' : 'worker.js');
@@ -403,7 +625,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       // Water level for point forecasts comes from the data worker's tide point series (on demand).
       const tideSeries = async (lat: number, lon: number, fromMs: number, hours: number): Promise<TideSeriesResult | null> => {
         if (!config?.tides.enabled) return null;
-        return (await query('tide_series', { lat, lon, fromMs, hours })) as TideSeriesResult;
+        return (await pointQuery('tide_series', { lat, lon, fromMs, hours })) as TideSeriesResult;
       };
       // Point forecasts are read by the data worker from the decoded run (this thread holds no forecast).
       const points = async (
@@ -411,10 +633,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
         options?: { startDate?: string; maxCount?: number }
       ): Promise<WeatherData[]> => {
         if (!forecastRun) throw new Error('no forecast loaded yet');
-        return (await query('weather_point', {
+        return (await pointQuery('weather_point', {
           lat: position.latitude,
           lon: position.longitude,
-          startMs: startMsOf(options),
+          // No start given: from the start of this hour (not this millisecond), so the answer can be kept for the hour.
+          startMs: startMsOf(options) ?? Math.floor(Date.now() / 3600_000) * 3600_000,
           maxCount: options?.maxCount ?? null,
         })) as WeatherData[];
       };
@@ -448,8 +671,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
     };
     if (stopped || !settings || changed.length === 0)
       return { forecast: false, currents: false, tides: false, refresh_timer: false, jobs: false };
-    config = resolveConfig(pluginOptions, settings.values);
+    config = resolve(pluginOptions, settings.values);
     if (out.currents) smocShared = null;
+    if (out.forecast || out.currents || out.tides) {
+      dataSettingsRev++;
+      updateTileGenerations();
+    }
     post('data', {
       type: 'config',
       config,
@@ -457,6 +684,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       position: vesselPosition(),
     });
     post('route', { type: 'config', config, reload: { forecast: false, currents: out.currents } });
+    prebuilder?.broadcast({ type: 'config', config, reload: { forecast: false, currents: out.currents, tides: out.tides } });
     if (out.refresh_timer) {
       if (refreshTimer) clearInterval(refreshTimer);
       refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshMinutes * 60_000);
@@ -467,6 +695,71 @@ export = function plugin(app: SkApp): SignalKPlugin {
     );
     updateStatus();
     return out;
+  }
+
+  /** Forecast parameters each prebuilt layer needs. */
+  const LAYER_NEEDS: Partial<Record<TileLayer, string[]>> = {
+    wind: ['10u', '10v'],
+    barbs: ['10u', '10v'],
+    waves: ['swh', 'mwp', 'mwd'],
+    sea_state: ['10u', '10v', 'swh', 'mwp', 'mwd'],
+    precip: ['tprate', 'ptype'],
+    temperature: ['2t'],
+    sst: ['skt'],
+    msl: ['msl'],
+  };
+
+  function startPrebuilder(dataDir: string): void {
+    if (!config || !tiles) return;
+    const isTs = __filename.endsWith('.ts');
+    const oc = config.overlayCache;
+    const store = tiles.store;
+    prebuilder = new TilePrebuilder(
+      {
+        enabled: oc.enabled,
+        radiusM: oc.radiusM,
+        windowS: oc.windowS,
+        maxZoom: oc.maxZoom,
+        workers: oc.workers,
+        followView: oc.followView,
+      },
+      {
+        store,
+        dataDir,
+        workerPath: path.join(__dirname, 'plugin', isTs ? 'worker.ts' : 'worker.js'),
+        execArgv: isTs ? ['--import', 'tsx'] : [],
+        // Its own flag: route cancellation must not reach the tiles workers.
+        cancelFlag: new SharedArrayBuffer(4),
+        initMessage: () => ({ type: 'init', role: 'tiles', config: config as ResolvedConfig, cacheDir: dataDir }),
+        replayMessages: () => {
+          const m: MainToWorker[] = [];
+          if (forecastRun) m.push({ type: 'forecast', run: forecastRun });
+          if (smocShared) m.push({ type: 'smoc', smoc: smocShared });
+          if (harmonicShared) m.push({ type: 'harmonic', sources: harmonicShared });
+          m.push({ type: 'tides-run', run: tidesRun });
+          m.push({ type: 'refresh', force: false });
+          return m;
+        },
+        vesselPosition,
+        lastHourMs: layer => {
+          if (layer === 'tide') return tidesRun ? runLastMs(tidesRun) : null;
+          if (!forecastRun) return null;
+          return forecastRun.index.steps[forecastRun.index.steps.length - 1].validMs;
+        },
+        layerAvailable: layer => {
+          if (!forecastRun) return false;
+          if (layer === 'tide') return !!config?.tides.enabled && !!tidesRun;
+          if (layer === 'current' || layer === 'arrows') return (dataStatus?.currents.length ?? 0) > 0;
+          if ((layer === 'waves' || layer === 'sea_state') && dataStatus?.forecast && !dataStatus.forecast.hasWaves) return false;
+          const params = forecastRun.index.request.params;
+          return (LAYER_NEEDS[layer] ?? []).every(p => params.includes(p));
+        },
+        busy: () => !!jobs?.runningId || pendingQueries.size > 0,
+        log,
+        error: m => app.error(m),
+      }
+    );
+    prebuilder.start();
   }
 
   async function start(options: PluginConfig): Promise<void> {
@@ -481,22 +774,48 @@ export = function plugin(app: SkApp): SignalKPlugin {
           `settings.json created; migrated from the plugin config: ${loaded.migrated.length ? loaded.migrated.join(', ') : 'nothing set'}`
         );
       for (const p of loaded.problems) app.error(`settings: ${p}`);
-      config = resolveConfig(options, settings.values);
+      config = resolve(options, settings.values);
     } catch (err) {
       app.setPluginError((err as Error).message);
       throw err;
     }
-    if (config.landShapefiles.length === 0) {
-      app.setPluginError('configure at least one coastline shapefile (landShapefiles)');
+    const gen = ++startGen;
+    const dataDir = app.getDataDirPath();
+    if (config.landShapefiles.length > 0) {
+      // A configured coastline must be there: it is never replaced by a download.
+      const bad = unreadableCoastlines(config.landShapefiles);
+      if (bad.length) {
+        app.setPluginError(
+          `coastline shapefile ${bad.join(', ')}: fix the path in the plugin config (Coastline shapefile(s)), or clear it to download GSHHG`
+        );
+        return;
+      }
+      startServices(dataDir);
       return;
     }
-    const dataDir = app.getDataDirPath();
+    // None configured: download GSHHG (minutes), then start. Not awaited, so the server's start-up is not held up.
+    void downloadCoastline(gen, dataDir).then(ok => {
+      if (!ok || !settings) return;
+      config = resolve(options, settings.values);
+      startServices(dataDir);
+    });
+  }
+
+  /** Workers, jobs, tiles and timers, once the coastline is known. */
+  function startServices(dataDir: string): void {
+    if (!config) return;
+    tiles = new TileService(
+      new TileStore({ root: path.join(dataDir, 'overlay-tiles'), capBytes: config.overlayCache.diskCapBytes, log }),
+      queryFull
+    );
+    updateTileGenerations();
+    startPrebuilder(dataDir);
     jobs = new JobManager(dataDir, config.routing.keepJobs, BASE_PATH);
     jobs.on('start', (job: Job) => {
       post('route', { type: 'route', id: job.id, request: job.request });
       updateStatus();
     });
-    for (const role of ['data', 'route'] as WorkerRole[]) {
+    for (const role of ['data', 'route'] as MainRole[]) {
       startWorker(role);
       post(role, { type: 'init', role, config, cacheDir: dataDir });
     }
@@ -508,10 +827,15 @@ export = function plugin(app: SkApp): SignalKPlugin {
 
   function stop(): void {
     stopped = true;
+    startGen++;
+    coastlineCtrl?.abort();
+    coastlineCtrl = null;
+    coastlineManualCtrl?.abort();
+    coastlineManualCtrl = null;
     if (refreshTimer) clearInterval(refreshTimer);
     if (failedRefreshTimer) clearTimeout(failedRefreshTimer);
     refreshTimer = failedRefreshTimer = null;
-    for (const role of ['data', 'route'] as WorkerRole[]) {
+    for (const role of ['data', 'route'] as MainRole[]) {
       const h = workers[role];
       if (h.worker) {
         post(role, { type: 'shutdown' });
@@ -523,6 +847,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
     rejectPendingQueries('plugin stopped');
     jobs?.failRunning('plugin stopped');
     jobs = null;
+    prebuilder?.stop();
+    prebuilder = null;
+    tidesRun = null;
+    tiles = null;
     forecastRun = null;
     routeForecastMemory = null;
     smocShared = null;
@@ -589,6 +917,14 @@ export = function plugin(app: SkApp): SignalKPlugin {
         tides_enabled: config?.tides.enabled ?? null,
         tides_error: dataStatus?.tidesError ?? null,
         overlay_land: dataStatus?.land ?? null,
+        overlay_tiles: tiles ? { ...tiles.store.stats(), inflight: tiles.inflightCount } : null,
+        overlay_prebuild: prebuilder ? prebuilder.status() : null,
+        coastline: {
+          configured: pluginOptions?.landShapefiles?.trim() ? pluginOptions.landShapefiles : null,
+          in_use: config?.landShapefiles ?? null,
+          downloaded: gshhgInstalled(app.getDataDirPath()),
+          ...coastline,
+        },
         weather_provider_registered: weatherRegistered,
         jobs: jobs ? { running: jobs.runningId, queued: jobs.queueLength, total: jobs.list(500).length } : null,
         vessel: config?.vessel,
@@ -608,7 +944,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           params: ix.request.params,
           coverage: 'global',
         };
-        if (lat !== undefined && lon !== undefined) out.samples = await query('forecast_info', { lat, lon });
+        if (lat !== undefined && lon !== undefined) out.samples = await pointQuery('forecast_info', { lat, lon });
         return out;
       },
       refreshForecast: force => requestRefresh(force),
@@ -617,6 +953,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
       },
       publish,
       query,
+      tiles: () => tiles,
+      downloadCoastline: requestCoastlineDownload,
+      noteTileRequest: (z, x, y) => prebuilder?.noteRequest(z, x, y),
       publicDir: path.join(__dirname, '..', 'public'),
       polarLibrary: () => (config ? { polarFile: config.polarFile, polarsDir: config.polarsDir } : null),
       getSettings: () => {

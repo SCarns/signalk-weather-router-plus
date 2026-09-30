@@ -28,6 +28,52 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Plugin configuration panel** in the Signal K Admin UI (keyword
+  `signalk-plugin-configurator`) in place of the generated form: coastline
+  with a Download coastline button and progress
+  (`POST /api/coastline/download`, status `coastline`), the map overlay
+  cache with radius and window in the user's Signal K units, and the other
+  plugin options. Uses the Admin UI's React; no bundler.
+
+- **Coastline downloaded when none is configured.** The coastline
+  shapefile is no longer required: with none set, the plugin downloads
+  GSHHG 2.3.7 (149 MB, from the authors' site at SOEST, University of
+  Hawaii) once into its data directory, extracts the full-resolution
+  level-1 shoreline (the file the shipped water grid was built from) and
+  starts; a failed download is tried again every 10 minutes and stopping
+  the plugin cancels it. The GSHHG files were never part of the package.
+  A configured coastline file that is missing or unreadable now stops the
+  plugin at start with a status naming the file (before, it started and
+  every route and map request then failed).
+
+- **Map tiles saved on disk, and built ahead of time.** The map's colour
+  layers, wind barbs and current arrows are now drawn from fixed web-map
+  tiles at whole hours (`GET /api/tile/{layer}/{z}/{x}/{y}`) instead of
+  one request per view: before, every pan, zoom or minute of time was a
+  request never seen before, and all of them queued one at a time in the
+  data worker (median wait on brain, 29 Sep: wind barbs 10.2 s, current
+  arrows 10.3 s, sea state 8.0 s). Each tile is saved on disk
+  (`overlay-tiles/`, one directory per forecast cycle / currents run /
+  tide run, 20 GB cap by default) and answered again from disk by the
+  main thread. Identical tile requests are computed once, and a request
+  whose client goes away is dropped from the data worker's queue if it
+  has not started (also for `/api/field`, `/api/wind-points`,
+  `/api/currents`, `/api/pressure`, `/api/land-mask`, `/api/conditions`).
+  Worker threads (2 by default) build the tiles around the boat and
+  around the area the map shows before they are asked for: every hour of
+  the window, zoom 6 to 15, the full radius (250 km) to zoom 8 and half
+  of it at each deeper zoom. New plugin configuration `overlayCache`
+  (radius, window, deepest zoom, disk cap, workers, follow the view), in
+  SI. Status: `overlay_tiles`, `overlay_prebuild`. Every client uses the
+  same cache: `/api/field`, `/api/wind-points` and `/api/currents` are
+  joined from the saved tiles at the tile spacing nearest the `res` asked
+  for (the answer's `res` says which; values equal a grid computed for the
+  box at that spacing), `/api/land-mask` from the coastline tiles,
+  `/api/pressure` from the pressure tiles; `/api/conditions`, Weather API
+  point forecasts and tide series, and `/api/forecast` samples are saved
+  in the same store. Map times are rounded to the hour; latitudes beyond
+  ±85.05° answer null.
+
 - **Polar performance** (vessel setting, and `vessel.polar_performance`
   per route): the share of the polar's boat speeds the boat makes under
   sail, as a ratio (default 1 = the polar as written, 0.3–1.2). Polars

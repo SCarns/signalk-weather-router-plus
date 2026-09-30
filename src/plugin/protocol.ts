@@ -22,8 +22,10 @@ import type { SerializedRtofs } from '../currents/rtofs';
 import type { SerializedSmoc, SmocStatus } from '../currents/smoc';
 import type { SerializedHarmonic } from '../currents/harmonic';
 import type { TideStatus } from '../tides/sealevel';
+import type { ArcoRun } from '../data/arco';
 
-export type WorkerRole = 'data' | 'route';
+/** data: forecast, currents, map queries; route: the engine; tiles: builds map tiles ahead of time (prebuild.ts). */
+export type WorkerRole = 'data' | 'route' | 'tiles';
 
 export interface VesselPosition {
   lat: number;
@@ -113,7 +115,8 @@ export interface QueryArgs {
   wind_points: { bbox: BBox; timeMs: number; res: number };
   conditions: { lon: number; lat: number; fromMs: number; hours: number; stepH: number };
   /** Current-hour conditions sample points for one XYZ tile. */
-  land_mask: { bbox: BBox; w: number; h: number };
+  /** `mercator`: rows evenly spaced in Web Mercator y (a map tile), else in latitude. */
+  land_mask: { bbox: BBox; w: number; h: number; mercator?: boolean };
   pressure: { bbox: BBox; timeMs: number; intervalHpa: number };
   /** Hourly tide / water level / surge at a point (Weather API); result TideSeriesResult. */
   tide_series: { lat: number; lon: number; fromMs: number; hours: number };
@@ -234,6 +237,10 @@ export type MainToWorker =
     }
   | { type: 'route'; id: string; request: RouteRequest }
   | { type: 'query'; id: number; kind: QueryKind; args: QueryArgs[QueryKind] }
+  /** tiles workers: the data worker's tide run (null: tides off or not loaded). */
+  | { type: 'tides-run'; run: ArcoRun | null }
+  /** Drop a query that has not started (its HTTP client went away); one that has started completes. */
+  | { type: 'query-cancel'; id: number }
   | { type: 'shutdown' };
 
 export type WorkerToMain =
@@ -249,6 +256,8 @@ export type WorkerToMain =
   | { type: 'data-status'; status: DataStatus }
   /** data worker: SMOC run / resident area changed (SharedArrayBuffer views: relaying shares, not copies). */
   | { type: 'smoc'; smoc: SerializedSmoc | null }
+  /** data worker: the tide run in use (relayed to tiles workers, which open it themselves). */
+  | { type: 'tides-run'; run: ArcoRun | null }
   /** data worker: tidal-harmonic sources loaded (shared constituent blocks). */
   | { type: 'harmonic'; sources: SerializedHarmonic[] }
   | { type: 'progress'; id: string; stage: number; total: number; message: string }
@@ -261,5 +270,6 @@ export type WorkerToMain =
       summary: RouteSummary;
     }
   | { type: 'error'; id: string; message: string; cancelled?: boolean }
-  | { type: 'query-result'; id: number; result: unknown }
+  /** `complete`: false when an on-demand current / tide load missed its deadline or failed (do not cache). */
+  | { type: 'query-result'; id: number; result: unknown; complete: boolean }
   | { type: 'query-error'; id: number; message: string };
