@@ -6,7 +6,7 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.1.0-beta.4] - 2026-09-30
+## [0.1.0-beta.5] - 2026-09-30
 
 ### Removed
 
@@ -22,6 +22,16 @@ uses [Semantic Versioning](https://semver.org/).
   draught and air draft in the power-boat form (they were required but
   not used; a power boat now needs only a name and a cruise speed). The
   "Solver & safety tuning" section is now "Solver tuning".
+
+### Fixed
+
+- Configuration panel: on a fresh install the Save button stayed greyed
+  out until some field was changed, yet a save is the only way the Admin
+  UI enables a plugin that has no saved configuration ("Save
+  configuration to enable this plugin"). The button is now enabled at
+  first setup and reads "Save and enable the plugin".
+
+## [0.1.0-beta.4] - 2026-09-30
 
 ### Fixed
 
@@ -92,7 +102,7 @@ builds before this release, with their measurements, is in
   motor otherwise), `fastest` and `motor`, with a motor speed. (This
   entry also listed a tack penalty, under-keel and overhead margins and a
   maximum wave height; those settings existed but the router did not use
-  them. They were removed in 0.1.0-beta.4.)
+  them. They were removed in 0.1.0-beta.5.)
 - **Routes through straits anywhere:** a global water grid shipped with
   the plugin (0.02°, built from GSHHG full-resolution level 1, with 4,987
   narrow passages) gives each route a corridor; routes such as Lisbon →
@@ -211,7 +221,8 @@ builds before this release, with their measurements, is in
   current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.4...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.5...HEAD
+[0.1.0-beta.5]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.4...v0.1.0-beta.5
 [0.1.0-beta.4]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.3...v0.1.0-beta.4
 [0.1.0-beta.3]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.2...v0.1.0-beta.3
 [0.1.0-beta.2]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.1...v0.1.0-beta.2

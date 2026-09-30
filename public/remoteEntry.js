@@ -256,11 +256,18 @@ var signalk_weather_router_plus = (function () {
           MIRRORS.map(function (m) { return h('option', { key: m, value: m }, m); }))),
       check(['weatherProvider', 'enabled'], true, 'Register as a Signal K Weather API provider'));
 
+    // First setup: the plugin has no saved configuration yet, the Admin UI
+    // hides its Enabled switch and enables the plugin on the first save
+    // (Configuration.tsx: enabled defaults to true when unset). Saving the
+    // untouched form is valid (start() applies the defaults), so Save must
+    // not wait for a field to change.
+    var firstSetup = props.configuration == null;
     return h('div', { className: 'wrp-config' },
       h('p', { className: 'text-muted' }, 'Vessel, forecast horizon, currents, routing and publishing are set in the web app (Weather Router Plus → Settings) and shared by every client.'),
       coastSection, cacheSection, otherSection,
-      h('button', { type: 'button', className: 'btn btn-primary', disabled: !dirty,
-        onClick: function () { props.save(cfg); setDirty(false); } }, 'Save (restarts the plugin)'));
+      h('button', { type: 'button', className: 'btn btn-primary', disabled: !dirty && !firstSetup,
+        onClick: function () { props.save(cfg); setDirty(false); } },
+        firstSetup ? 'Save and enable the plugin' : 'Save (restarts the plugin)'));
   }
 
   // The Admin UI's React, from the share scope it passes to init().

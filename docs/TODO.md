@@ -3,7 +3,7 @@
 ## Tack penalty
 
 Lose a fixed time (for example 30 s) on every tack or gybe, so that the
-router avoids needless tacking. Until 0.1.0-beta.4 it was a vessel
+router avoids needless tacking. Until 0.1.0-beta.5 it was a vessel
 setting (`vessel.tackPenalty`, and `vessel.tack_penalty_s` in a route
 request) that nothing in the router used; it was removed. Needs: a tack
 or gybe detected between consecutive legs in the leg simulation
@@ -14,7 +14,7 @@ and a test on brain comparing routes with and without it.
 ## Maximum wave height
 
 Avoid places and times where the significant wave height is above a
-limit the user sets. Until 0.1.0-beta.4 it was a vessel setting
+limit the user sets. Until 0.1.0-beta.5 it was a vessel setting
 (`vessel.maxSwh`, "informational") that nothing in the router used; it
 was removed. Needs: the wave field (ECMWF `swh`) sampled during the
 propagation, candidates above the limit dropped, a clear failure message
