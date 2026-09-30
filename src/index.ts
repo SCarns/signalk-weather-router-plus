@@ -150,7 +150,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
     const job = waitingForForecast;
     if (!job) return;
     waitingForForecast = null;
-    jobs?.onProgress(job.id, 0, 0, note);
+    // It may have failed meanwhile (route worker crash/exit: failRunning).
+    if (!jobs || jobs.runningId !== job.id || jobs.get(job.id)?.status !== 'running') return;
+    jobs.onProgress(job.id, 0, 0, note);
     post('route', { type: 'route', id: job.id, request: job.request });
   }
 
