@@ -8,6 +8,17 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [0.1.0-beta.4] - 2026-09-30
 
+### Removed
+
+- Eight vessel settings that the router never used: draught, air draft,
+  LOA, beam, under-keel margin, overhead margin, maximum wave height and
+  tack penalty. They are gone from the Settings tab, `GET/PUT
+  /api/settings` and the route request's `vessel` object (sent there,
+  they are ignored); an existing `settings.json` that still holds them
+  loads normally and drops them. The vessel settings that remain are
+  name, speed under power and polar performance. A working tack penalty
+  and maximum wave height are planned (docs/TODO.md).
+
 ### Fixed
 
 - README: the introduction wrongly described this plugin as a
@@ -74,8 +85,10 @@ builds before this release, with their measurements, is in
 - Isochrone router (a TypeScript port of the routePlanning subsector
   router) in a worker thread, against the vessel's polar. Modes
   `sail_max` (sail when the polar speed reaches the sail threshold,
-  motor otherwise), `fastest` and `motor`. Tack penalty, motor speed,
-  under-keel and overhead margins, maximum wave height.
+  motor otherwise), `fastest` and `motor`, with a motor speed. (This
+  entry also listed a tack penalty, under-keel and overhead margins and a
+  maximum wave height; those settings existed but the router did not use
+  them. They were removed in 0.1.0-beta.4.)
 - **Routes through straits anywhere:** a global water grid shipped with
   the plugin (0.02°, built from GSHHG full-resolution level 1, with 4,987
   narrow passages) gives each route a corridor; routes such as Lisbon →

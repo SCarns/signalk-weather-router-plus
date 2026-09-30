@@ -137,9 +137,8 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   exact polygons: a leg crossing or touching any coastline edge is a
   land crossing, whatever the width of the land (legs whose cells are all
   water need no polygon test).
-- **Depth:** none in this version. There is no bathymetry gate; a
-  vessel's draught only matters through the configured values carried in
-  the output.
+- **Depth:** none in this version. There is no bathymetry: depths,
+  draught and clearances play no part in the route.
 - **Currents:** a stack of sources; where several cover a point the
   highest priority with data wins, and exactly (0, 0) from a source
   means "no data here" (the next one is asked):
@@ -685,7 +684,7 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 
 | Group | Settings (default) | A change… |
 |---|---|---|
-| `vessel` | name, draught (1.8 m), air draft (16 m), LOA (11 m), beam (3.7 m), under-keel margin (0.5 m), overhead margin (1 m), speed under power (6 kt = 3.087 m/s), max wave height (none), tack penalty (30 s), polar performance (1 = 100%, 0.3–1.2) | applies to the next route |
+| `vessel` | name, speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2) | applies to the next route |
 | `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
@@ -710,9 +709,9 @@ saved. The global water grid
 counted as used; a water grid rebuild is checked the same way before it
 starts.
 
-`PUT` takes only the keys to change, e.g. `{"vessel": {"draught": 1.9}}`,
+`PUT` takes only the keys to change, e.g. `{"vessel": {"motorSpeed": 3}}`,
 validates all of them (same ranges and enums as before), and either saves
-all or returns `400 {errors: {"vessel.draught": "…"}}` and saves nothing.
+all or returns `400 {errors: {"vessel.motorSpeed": "…"}}` and saves nothing.
 Per-route values in a route request (`vessel.*`, `stages`,
 `sail_thresh_ms`, `publish`) still take precedence over the settings.
 
@@ -1018,13 +1017,7 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `no_currents` | boolean | | false | ignore every current source |
 | `vessel` | object | | the vessel settings | per-route overrides; absent keys use the settings ([Configuration](#configuration)) |
 | `vessel.name` | string | | setting | |
-| `vessel.draught` | number | m | setting (1.8) | 0..30 |
-| `vessel.air_draft` | number | m | setting (16) | 0..100 |
-| `vessel.loa` | number | m | setting (11) | 0.1..500 |
-| `vessel.beam` | number | m | setting (3.7) | 0.1..100 |
 | `vessel.motor_speed_ms` | number | m/s | setting (3.087) | 0.01..50 |
-| `vessel.under_keel_clearance` | number | m | setting (0.5) | 0..20 |
-| `vessel.tack_penalty_s` | number | s | setting (30) | 0..600; time lost per tack or gybe |
 | `vessel.polar_performance` | number | ratio | setting (1) | 0.3..1.2; see below |
 | `vessel.polar` | string | | the configured `polarFile` | a token from `GET /api/polars`, at most 200 characters; see below |
 
@@ -1050,13 +1043,13 @@ Validation happens in two places:
   `{lat, lon}` numbers; more than 20 waypoints; `precision`,
   `arrival_radius_m`, `radius_m`, `mode`, `departure`, `stages`,
   `sail_thresh_ms`, `simplify_m`, `smoother`, `smoother_tolerance`,
-  `name`, `vessel`, `vessel.tack_penalty_s`, `vessel.polar_performance`
+  `name`, `vessel`, `vessel.polar_performance`
   and `vessel.polar` outside the limits above. The message names the
   field, e.g. `"stages must be 4..200"`.
 - **When the job runs** (the job ends `failed` with the message):
   coordinates outside latitude −90..90 or longitude −180..360;
   the other `vessel.*` ranges above (the message uses the internal
-  name, e.g. `vessel.airDraft must be a number in [0, 100] (got 120)`);
+  name, e.g. `vessel.motorSpeedMs must be a number in [0.01, 50] (got 60)`);
   a `vessel.polar` token that is not in the library.
 
 | Status | Body |
@@ -1794,7 +1787,7 @@ Sent with `Cache-Control: no-store`. `200`: `{values, schema}`.
 
 | Field | Notes |
 |---|---|
-| `key` | `group.key`, e.g. `vessel.draught` |
+| `key` | `group.key`, e.g. `vessel.motorSpeed` |
 | `group` | group id |
 | `label`, `help` | text for display |
 | `type` | `number`, `integer`, `boolean`, `string` or `enum` |
@@ -1812,7 +1805,7 @@ Sent with `Cache-Control: no-store`. `200`: `{values, schema}`.
 #### PUT /api/settings
 
 Body: only the keys to change, nested by group, in SI, e.g.
-`{"vessel": {"draught": 1.9}}`. Every key is validated (type, range,
+`{"vessel": {"motorSpeed": 3}}`. Every key is validated (type, range,
 enum); either all are saved and applied, or none.
 
 | Status | Body |

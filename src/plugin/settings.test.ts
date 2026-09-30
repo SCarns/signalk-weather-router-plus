@@ -34,7 +34,7 @@ const LEGACY: LegacyPluginConfig & Record<string, unknown> = {
     motorSpeedKts: 6.0,
     maxSwhM: 3.0,
     tackPenaltySeconds: 30,
-  },
+  } as LegacyPluginConfig['vessel'],
   forecast: {
     horizonHours: 48,
     refreshMinutes: 60,
@@ -69,7 +69,6 @@ test('defaults resolve to the same engine config the plugin config gave before',
   assert.equal(c.currents.rtofsStepHours, 3);
   assert.ok(Math.abs(c.routing.sailThreshMs - 4.9 * KTS_TO_MS) < 1e-12);
   assert.ok(Math.abs(c.vessel.motorSpeedMs - 6 * KTS_TO_MS) < 1e-12);
-  assert.equal(c.vessel.maxSwh, undefined);
   assert.equal(c.weatherProvider.enabled, true);
   assert.throws(() => resolveConfig({ forecast: { mirror: 'nope' as 'aws' } }, defaultSettings()), /mirror/);
 });
@@ -77,11 +76,9 @@ test('defaults resolve to the same engine config the plugin config gave before',
 test('migration converts the old plugin config to SI settings and ignores region keys', () => {
   const m = migrateLegacy(LEGACY);
   assert.equal(m.values.vessel.name, 'Catalina 36');
-  assert.equal(m.values.vessel.draught, 1.0);
-  assert.equal(m.values.vessel.airDraft, 16.15);
-  assert.equal(m.values.vessel.underKeelClearance, 2.0);
   assert.ok(Math.abs(m.values.vessel.motorSpeed - 6 * 0.514444444) < 1e-6, 'kt → m/s');
-  assert.equal(m.values.vessel.maxSwh, 3);
+  // Vessel keys the router never used (draught, clearances, tack penalty…) are not carried over.
+  assert.deepEqual(Object.keys(m.values.vessel).sort(), ['motorSpeed', 'name', 'polarPerformance']);
   assert.equal(m.values.forecast.horizon, 48 * 3600, 'h → s');
   assert.equal(m.values.forecast.refreshInterval, 3600, 'min → s');
   assert.ok(Math.abs(m.values.routing.sailThreshold - 4.9 * 0.514444444) < 1e-6, 'kt → m/s');
@@ -91,25 +88,25 @@ test('migration converts the old plugin config to SI settings and ignores region
   assert.ok(m.migrated.includes('vessel.motorSpeed') && m.migrated.includes('forecast.horizon'));
   assert.deepEqual(m.skipped, []);
   // An invalid legacy value is skipped (default kept), the rest still migrate.
-  const bad = migrateLegacy({ forecast: { horizonHours: 500 }, currents: { rtofsRegion: 'mars' }, vessel: { draughtM: 2.2 } });
+  const bad = migrateLegacy({ forecast: { horizonHours: 500 }, currents: { rtofsRegion: 'mars' }, vessel: { motorSpeedKts: 5 } });
   assert.equal(bad.values.forecast.horizon, 72 * 3600);
   assert.equal(bad.values.currents.rtofsRegion, 'west_atl');
-  assert.equal(bad.values.vessel.draught, 2.2);
+  assert.ok(Math.abs(bad.values.vessel.motorSpeed - 5 * KTS_TO_MS) < 1e-12);
   assert.equal(bad.skipped.length, 2);
 });
 
 test('partial merge validates with the old ranges and enums, all-or-nothing', () => {
   const base = defaultSettings();
-  const r = mergeSettings(base, { vessel: { draught: 2.1 }, routing: { stages: 40 } });
-  assert.deepEqual(r.changed.sort(), ['routing.stages', 'vessel.draught']);
-  assert.equal(r.values.vessel.draught, 2.1);
-  assert.equal(r.values.vessel.beam, base.vessel.beam, 'untouched keys kept');
-  assert.equal(base.vessel.draught, 1.8, 'base not mutated');
+  const r = mergeSettings(base, { vessel: { motorSpeed: 2.1 }, routing: { stages: 40 } });
+  assert.deepEqual(r.changed.sort(), ['routing.stages', 'vessel.motorSpeed']);
+  assert.equal(r.values.vessel.motorSpeed, 2.1);
+  assert.equal(r.values.vessel.polarPerformance, base.vessel.polarPerformance, 'untouched keys kept');
+  assert.ok(Math.abs(base.vessel.motorSpeed - 6 * KTS_TO_MS) < 1e-12, 'base not mutated');
   // Same value → not reported as changed.
-  assert.deepEqual(mergeSettings(r.values, { vessel: { draught: 2.1 } }).changed, []);
+  assert.deepEqual(mergeSettings(r.values, { vessel: { motorSpeed: 2.1 } }).changed, []);
   try {
     mergeSettings(base, {
-      vessel: { draught: 31, name: 5, bogus: 1 },
+      vessel: { motorSpeed: 51, name: 5, draught: 1 },
       forecast: { horizon: 2 * 3600, refreshInterval: 601, keepCycles: 2.5 },
       currents: { rtofsRegion: 'mars', rtofsStep: 7 * 3600 },
       routing: { headingIncrement: 0.1, sailThreshold: -1 },
@@ -120,9 +117,9 @@ test('partial merge validates with the old ranges and enums, all-or-nothing', ()
   } catch (err) {
     assert.ok(err instanceof SettingsValidationError);
     const e = err.errors;
-    assert.match(e['vessel.draught'], /\[0, 30\] m/);
+    assert.match(e['vessel.motorSpeed'], /\[0.01, 50\] m\/s/);
     assert.match(e['vessel.name'], /string/);
-    assert.match(e['vessel.bogus'], /unknown setting/);
+    assert.match(e['vessel.draught'], /unknown setting/, 'removed settings are unknown');
     assert.match(e['forecast.horizon'], /\[10800, 1296000\] s/);
     assert.match(e['forecast.refreshInterval'], /multiple of 60/);
     assert.match(e['forecast.keepCycles'], /whole number/);
@@ -133,17 +130,15 @@ test('partial merge validates with the old ranges and enums, all-or-nothing', ()
     assert.match(e['publish.toResources'], /true or false/);
     assert.match(e.nope, /unknown settings group/);
   }
-  // Nullable: maxSwh can be cleared.
-  assert.equal(mergeSettings({ ...base, vessel: { ...base.vessel, maxSwh: 3 } }, { vessel: { maxSwh: null } }).values.vessel.maxSwh, null);
   assert.throws(() => mergeSettings(base, []), SettingsValidationError);
-  assert.throws(() => mergeSettings(base, { vessel: { draught: '2' } }), /must be a number/);
+  assert.throws(() => mergeSettings(base, { vessel: { motorSpeed: '2' } }), /must be a number/);
 });
 
 test('reload kinds per changed key', () => {
   assert.deepEqual([...reloadsFor(['forecast.horizon'])], ['forecast']);
   assert.deepEqual([...reloadsFor(['forecast.extraFields'])], ['forecast']);
   assert.deepEqual([...reloadsFor(['currents.rtofsRegion', 'currents.rtofsEnabled'])], ['currents']);
-  assert.deepEqual([...reloadsFor(['vessel.draught', 'routing.stages', 'publish.toResources'])], ['next_job']);
+  assert.deepEqual([...reloadsFor(['vessel.motorSpeed', 'routing.stages', 'publish.toResources'])], ['next_job']);
   assert.deepEqual([...reloadsFor(['forecast.refreshInterval'])], ['refresh_timer']);
   assert.deepEqual([...reloadsFor(['routing.keepJobs'])], ['jobs']);
   // Every spec entry has a label, help and SI unit where dimensional.
@@ -165,32 +160,33 @@ test('SettingsStore: first load migrates and writes settings.json; later loads i
   assert.equal(file.migratedFrom, 'plugin-config');
   assert.equal(file.values.vessel.name, 'Catalina 36');
   // Update persists; a second store reads the file, not the legacy config.
-  const u = s.update({ vessel: { draught: 1.2 }, forecast: { horizon: 72 * 3600 } });
-  assert.deepEqual(u.changed.sort(), ['forecast.horizon', 'vessel.draught']);
+  const u = s.update({ vessel: { motorSpeed: 1.2 }, forecast: { horizon: 72 * 3600 } });
+  assert.deepEqual(u.changed.sort(), ['forecast.horizon', 'vessel.motorSpeed']);
   const s2 = new SettingsStore(dir);
-  const r2 = s2.load({ vessel: { draughtM: 9 } });
+  const r2 = s2.load({ vessel: { motorSpeedKts: 9 } });
   assert.equal(r2.created, false);
-  assert.equal(s2.values.vessel.draught, 1.2);
+  assert.equal(s2.values.vessel.motorSpeed, 1.2);
   assert.equal(s2.values.forecast.horizon, 72 * 3600);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')).migratedFrom, 'plugin-config');
   // Invalid update: nothing saved.
-  assert.throws(() => s2.update({ vessel: { draught: 1.3, beam: -1 } }), SettingsValidationError);
+  assert.throws(() => s2.update({ vessel: { motorSpeed: 1.3, polarPerformance: -1 } }), SettingsValidationError);
   const s3 = new SettingsStore(dir);
   s3.load(undefined);
-  assert.equal(s3.values.vessel.draught, 1.2);
+  assert.equal(s3.values.vessel.motorSpeed, 1.2);
 });
 
 test('SettingsStore: bad stored values fall back per key; unreadable file is kept aside', () => {
   const dir = tmp();
   fs.writeFileSync(
     path.join(dir, 'settings.json'),
-    JSON.stringify({ version: 1, values: { vessel: { draught: 99, beam: 4 }, forecast: { horizon: 'x' } } })
+    JSON.stringify({ version: 1, values: { vessel: { motorSpeed: 99, polarPerformance: 0.9, draught: 1.8 }, forecast: { horizon: 'x' } } })
   );
   const s = new SettingsStore(dir);
   const r = s.load(LEGACY);
   assert.equal(r.created, false);
-  assert.equal(s.values.vessel.draught, 1.8);
-  assert.equal(s.values.vessel.beam, 4);
+  assert.ok(Math.abs(s.values.vessel.motorSpeed - 6 * KTS_TO_MS) < 1e-12);
+  assert.equal(s.values.vessel.polarPerformance, 0.9);
+  assert.ok(!('draught' in s.values.vessel), 'a removed setting in an older settings.json is dropped');
   assert.equal(r.problems.length, 2);
   const dir2 = tmp();
   fs.writeFileSync(path.join(dir2, 'settings.json'), '{not json');
@@ -268,8 +264,8 @@ test('GET/PUT /api/settings: schema + values, partial update, 400 with per-key e
   );
   const g = await call('GET', '/api/settings');
   assert.equal(g.status, 200);
-  const gb = g.body as { values: { vessel: { draught: number } }; schema: { settings: { key: string; unit?: string }[] } };
-  assert.equal(gb.values.vessel.draught, 1.8);
+  const gb = g.body as { values: { vessel: { motorSpeed: number } }; schema: { settings: { key: string; unit?: string }[] } };
+  assert.ok(Math.abs(gb.values.vessel.motorSpeed - 6 * KTS_TO_MS) < 1e-12);
   assert.equal(gb.schema.settings.find(s => s.key === 'vessel.motorSpeed')!.unit, 'm/s');
   const p = await call('PUT', '/api/settings', { forecast: { horizon: 96 * 3600 } });
   assert.equal(p.status, 200);
@@ -277,10 +273,10 @@ test('GET/PUT /api/settings: schema + values, partial update, 400 with per-key e
   assert.equal(pb.values.forecast.horizon, 96 * 3600);
   assert.deepEqual(pb.changed, ['forecast.horizon']);
   assert.equal(pb.reloaded.forecast, true);
-  const bad = await call('PUT', '/api/settings', { vessel: { draught: -1 } });
+  const bad = await call('PUT', '/api/settings', { vessel: { motorSpeed: -1 } });
   assert.equal(bad.status, 400);
-  assert.match((bad.body as { errors: Record<string, string> }).errors['vessel.draught'], /\[0, 30\]/);
-  assert.equal(store.values.vessel.draught, 1.8);
+  assert.match((bad.body as { errors: Record<string, string> }).errors['vessel.motorSpeed'], /\[0.01, 50\]/);
+  assert.ok(Math.abs(store.values.vessel.motorSpeed - 6 * KTS_TO_MS) < 1e-12);
   assert.deepEqual(applied, [['forecast.horizon']]);
 });
 
@@ -319,15 +315,10 @@ test('per-route vessel values override the settings; omitted ones come from the 
   const m = migrateLegacy(LEGACY);
   const cfg = resolveConfig({ landShapefiles: '/a.shp' }, m.values);
   const plain = routeVessel(cfg, undefined);
-  assert.equal(plain.draught, 1.0);
-  assert.equal(plain.underKeelClearance, 2.0);
-  assert.equal(plain.maxSwh, 3);
-  const o = routeVessel(cfg, { draught: 1.5, motor_speed_ms: 2.5 });
-  assert.equal(o.draught, 1.5);
+  assert.ok(Math.abs(plain.motorSpeedMs - 6 * KTS_TO_MS) < 1e-12);
+  const o = routeVessel(cfg, { motor_speed_ms: 2.5 });
   assert.equal(o.motorSpeedMs, 2.5);
-  assert.equal(o.airDraft, 16.15, 'not overridden → setting, not the 16 m default');
-  assert.equal(o.underKeelClearance, 2.0);
-  assert.equal(o.name, 'Catalina 36');
+  assert.equal(o.name, 'Catalina 36', 'not overridden → setting, not the default');
 });
 
 test('polar performance: ratio setting (default 1), per-route override, 0.3..1.2', () => {

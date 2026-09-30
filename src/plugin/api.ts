@@ -663,11 +663,6 @@ function validateRequestShape(b: RouteRequest): string | null {
   if (b.name !== undefined && typeof b.name !== 'string') return 'name must be a string';
   if (b.vessel !== undefined && (b.vessel === null || typeof b.vessel !== 'object')) return 'vessel must be an object';
   if (
-    b.vessel?.tack_penalty_s !== undefined &&
-    (typeof b.vessel.tack_penalty_s !== 'number' || b.vessel.tack_penalty_s < 0 || b.vessel.tack_penalty_s > 600)
-  )
-    return 'vessel.tack_penalty_s must be 0..600';
-  if (
     b.vessel?.polar_performance !== undefined &&
     (typeof b.vessel.polar_performance !== 'number' || !(b.vessel.polar_performance >= 0.3 && b.vessel.polar_performance <= 1.2))
   )

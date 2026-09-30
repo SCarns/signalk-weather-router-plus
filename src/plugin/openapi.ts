@@ -106,13 +106,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         description: 'Per-route overrides of the vessel settings (SI); absent keys use the settings.',
         properties: {
           name: { type: 'string' },
-          draught: { type: 'number' },
-          air_draft: { type: 'number' },
-          loa: { type: 'number' },
-          beam: { type: 'number' },
           motor_speed_ms: { type: 'number' },
-          under_keel_clearance: { type: 'number' },
-          tack_penalty_s: { type: 'number', minimum: 0, maximum: 600 },
           polar_performance: {
             type: 'number',
             minimum: 0.3,

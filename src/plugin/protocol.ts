@@ -60,14 +60,7 @@ export interface RouteRequest {
   publish?: boolean;
   vessel?: {
     name?: string;
-    draught?: number;
-    air_draft?: number;
-    loa?: number;
-    beam?: number;
     motor_speed_ms?: number;
-    under_keel_clearance?: number;
-    /** Time lost per tack or gybe, seconds (default from plugin config). */
-    tack_penalty_s?: number;
     /** Share of the polar's boat speeds achieved under sail, ratio 0.3..1.2 (default from settings). */
     polar_performance?: number;
     /** Polar token from GET /api/polars (`default` or a library file name). */

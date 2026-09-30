@@ -24,15 +24,7 @@ import type { LegacyPluginConfig } from './config';
 export interface AppSettings {
   vessel: {
     name: string;
-    draught: number;
-    airDraft: number;
-    loa: number;
-    beam: number;
-    underKeelClearance: number;
-    overheadClearance: number;
     motorSpeed: number;
-    maxSwh: number | null;
-    tackPenalty: number;
     polarPerformance: number;
   };
   forecast: {
@@ -160,85 +152,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'string',
     default: 'Vessel',
     maxLength: 60,
-    help: 'Shown in route names and the status line.',
-    reload: 'next_job',
-  },
-  {
-    key: 'vessel.draught',
-    group: 'vessel',
-    label: 'Draught',
-    type: 'number',
-    unit: 'm',
-    quantity: 'depth',
-    min: 0,
-    max: 30,
-    default: 1.8,
-    help: 'Depth of the keel below the waterline.',
-    reload: 'next_job',
-  },
-  {
-    key: 'vessel.airDraft',
-    group: 'vessel',
-    label: 'Air draft',
-    type: 'number',
-    unit: 'm',
-    quantity: 'depth',
-    min: 0,
-    max: 100,
-    default: 16,
-    help: 'Mast height above the waterline.',
-    reload: 'next_job',
-  },
-  {
-    key: 'vessel.loa',
-    group: 'vessel',
-    label: 'Length overall',
-    type: 'number',
-    unit: 'm',
-    quantity: 'depth',
-    min: 0.1,
-    max: 500,
-    default: 11,
-    help: 'LOA.',
-    reload: 'next_job',
-  },
-  {
-    key: 'vessel.beam',
-    group: 'vessel',
-    label: 'Beam',
-    type: 'number',
-    unit: 'm',
-    quantity: 'depth',
-    min: 0.1,
-    max: 100,
-    default: 3.7,
-    help: 'Maximum width.',
-    reload: 'next_job',
-  },
-  {
-    key: 'vessel.underKeelClearance',
-    group: 'vessel',
-    label: 'Under-keel margin',
-    type: 'number',
-    unit: 'm',
-    quantity: 'depth',
-    min: 0,
-    max: 20,
-    default: 0.5,
-    help: 'Safety margin kept below the keel.',
-    reload: 'next_job',
-  },
-  {
-    key: 'vessel.overheadClearance',
-    group: 'vessel',
-    label: 'Overhead margin',
-    type: 'number',
-    unit: 'm',
-    quantity: 'depth',
-    min: 0,
-    max: 20,
-    default: 1,
-    help: 'Safety margin kept above the mast.',
+    help: 'Shown in the status line.',
     reload: 'next_job',
   },
   {
@@ -252,33 +166,6 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     max: 50,
     default: 6 * KTS_TO_MS,
     help: 'Cruising speed when motoring.',
-    reload: 'next_job',
-  },
-  {
-    key: 'vessel.maxSwh',
-    group: 'vessel',
-    label: 'Maximum wave height',
-    type: 'number',
-    unit: 'm',
-    quantity: 'wave_height',
-    min: 0,
-    max: 30,
-    default: null,
-    nullable: true,
-    help: 'Significant wave height limit (informational). Empty = none.',
-    reload: 'next_job',
-  },
-  {
-    key: 'vessel.tackPenalty',
-    group: 'vessel',
-    label: 'Tack penalty',
-    type: 'number',
-    unit: 's',
-    quantity: 'seconds',
-    min: 0,
-    max: 3600,
-    default: 30,
-    help: 'Time lost per tack or gybe.',
     reload: 'next_job',
   },
   {
@@ -734,14 +621,14 @@ export function validateValue(spec: SettingSpec, raw: unknown): number | boolean
 }
 
 /**
- * Validate a partial update (nested: `{vessel: {draught: 2}}`) against
+ * Validate a partial update (nested: `{vessel: {motorSpeed: 3}}`) against
  * `base`, returning the merged settings and the dotted keys whose value
  * changed. Every problem is collected; any problem throws
  * SettingsValidationError and nothing is merged.
  */
 export function mergeSettings(base: AppSettings, partial: unknown): { values: AppSettings; changed: string[] } {
   if (partial === null || typeof partial !== 'object' || Array.isArray(partial)) {
-    throw new SettingsValidationError({ '': 'body must be an object of setting groups, e.g. {"vessel": {"draught": 1.9}}' });
+    throw new SettingsValidationError({ '': 'body must be an object of setting groups, e.g. {"vessel": {"motorSpeed": 3}}' });
   }
   const errors: Record<string, string> = {};
   const out = cloneSettings(base);
@@ -813,15 +700,7 @@ export function migrateLegacy(legacy: LegacyPluginConfig | undefined): { values:
     v === undefined || v === null || v === '' ? undefined : typeof v === 'number' ? v * k : Number.isFinite(Number(v)) ? Number(v) * k : v;
   const v = l.vessel ?? {};
   set(src.vessel, 'name', v.name);
-  set(src.vessel, 'draught', num(v.draughtM));
-  set(src.vessel, 'airDraft', num(v.airDraftM));
-  set(src.vessel, 'loa', num(v.loaM));
-  set(src.vessel, 'beam', num(v.beamM));
-  set(src.vessel, 'underKeelClearance', num(v.underKeelClearanceM));
-  set(src.vessel, 'overheadClearance', num(v.overheadClearanceM));
   set(src.vessel, 'motorSpeed', num(v.motorSpeedKts, KTS_TO_MS));
-  set(src.vessel, 'maxSwh', num(v.maxSwhM));
-  set(src.vessel, 'tackPenalty', num(v.tackPenaltySeconds));
   const f = l.forecast ?? {};
   set(src.forecast, 'horizon', num(f.horizonHours, H));
   set(src.forecast, 'refreshInterval', num(f.refreshMinutes, 60));

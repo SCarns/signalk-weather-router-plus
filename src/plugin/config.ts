@@ -50,15 +50,7 @@ export interface PluginConfig {
 export interface LegacyPluginConfig {
   vessel?: {
     name?: string;
-    draughtM?: number;
-    airDraftM?: number;
-    loaM?: number;
-    beamM?: number;
-    underKeelClearanceM?: number;
-    overheadClearanceM?: number;
     motorSpeedKts?: number;
-    maxSwhM?: number;
-    tackPenaltySeconds?: number;
   };
   forecast?: {
     horizonHours?: number;
@@ -314,15 +306,7 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
     polarUserDir: null,
     vessel: makeVessel({
       name: v.name,
-      draught: v.draught,
-      airDraft: v.airDraft,
-      loa: v.loa,
-      beam: v.beam,
-      underKeelClearance: v.underKeelClearance,
-      overheadClearance: v.overheadClearance,
       motorSpeedMs: v.motorSpeed,
-      maxSwh: v.maxSwh ?? undefined,
-      tackPenaltySeconds: v.tackPenalty,
       polarPerformance: v.polarPerformance,
     }),
     forecast: {
@@ -396,13 +380,7 @@ export function routeVessel(cfg: ResolvedConfig, rv: RouteRequest['vessel']): Ve
   return makeVessel({
     ...cfg.vessel,
     name: rv?.name ?? cfg.vessel.name,
-    draught: rv?.draught ?? cfg.vessel.draught,
-    airDraft: rv?.air_draft ?? cfg.vessel.airDraft,
-    loa: rv?.loa ?? cfg.vessel.loa,
-    beam: rv?.beam ?? cfg.vessel.beam,
     motorSpeedMs: rv?.motor_speed_ms ?? cfg.vessel.motorSpeedMs,
-    underKeelClearance: rv?.under_keel_clearance ?? cfg.vessel.underKeelClearance,
-    tackPenaltySeconds: rv?.tack_penalty_s ?? cfg.vessel.tackPenaltySeconds,
     polarPerformance: rv?.polar_performance ?? cfg.vessel.polarPerformance,
   });
 }
