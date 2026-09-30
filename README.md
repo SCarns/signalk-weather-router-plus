@@ -538,7 +538,9 @@ Restart Signal K and enable the plugin. **Coastline:** with no coastline
 shapefile configured, the plugin downloads GSHHG 2.3.7 (Wessel & Smith,
 LGPL) once from the authors' site,
 `https://www.soest.hawaii.edu/pwessel/gshhg/gshhg-shp-2.3.7.zip`
-(149 MB), extracts the full-resolution level-1 shoreline
+(149 MB; if that fails, the identical copy at
+`https://router.zeddisplay.com/downloads/gshhg-shp-2.3.7.zip`; the
+archive's SHA-256 is checked either way), extracts the full-resolution level-1 shoreline
 (`GSHHS_f_L1.shp` with its `.shx` and `.prj`, about 156 MB) into
 `coastline/gshhg-2.3.7/` in the plugin data directory, deletes the
 archive and starts; the plugin status shows the progress. The global
