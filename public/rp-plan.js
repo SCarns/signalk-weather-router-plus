@@ -892,19 +892,12 @@ function buildRoutePayload(overrides) {
   if (document.getElementById('noCurrents').checked) body.no_currents = true;
   if (document.getElementById('noForecast').checked) body.no_forecast = true;
   const vessel = {};
-  const ukc = parseFloat(document.getElementById('underKeelClearance').value);
-  if (Number.isFinite(ukc)) vessel.under_keel_clearance = ukc;
-  const tackS = parseFloat(document.getElementById('tackPenalty').value);
-  if (Number.isFinite(tackS)) vessel.tack_penalty_s = tackS;
   // Vessel-type override. Power mode forces mode=motor, drops polar,
-  // and sends hull-def values as a per-request vessel override.
+  // and sends the boat's name and cruise speed as a per-request override.
   if (getVesselType() === 'power') {
     body.mode = 'motor';
     const pb = readPowerBoat();
     vessel.name = pb.name;
-    vessel.loa = pb.loa_m;
-    vessel.draught = pb.draught_m;
-    vessel.air_draft = pb.air_draft_m;
     vessel.motor_speed_ms = pb.cruise_kts * MS_PER_KT;
   } else {
     const polarPath = document.getElementById('polarSelect').value;

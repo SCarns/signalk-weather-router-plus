@@ -242,7 +242,6 @@ function unitDesc(key) {
 const SLIDER_DISPLAY = {
   sailThresh:         { q: 'speed',          toSI: v => v * 0.5144444444 },
   arrivalRadiusM:     { q: 'short_distance', toSI: v => v },
-  underKeelClearance: { q: 'depth',          toSI: v => v },
   proximityRadiusM:   { q: 'short_distance', toSI: v => v },
   xteThresholdM:      { q: 'short_distance', toSI: v => v },
 };
@@ -262,7 +261,7 @@ function refreshSliderLabels() {
 }
 (function () {
   const SLIDER_IDS = [
-    'sailThresh', 'tackPenalty', 'stages', 'underKeelClearance', 'arrivalRadiusM',
+    'sailThresh', 'stages', 'arrivalRadiusM',
     'proximityRadiusM', 'xteThresholdM', 'xteSustainSec',
   ];
   for (const id of SLIDER_IDS) {
@@ -916,7 +915,7 @@ document.getElementById('polarSelect').addEventListener('change', function() {
 // labels update to match.
 (function() {
   const PERSIST_IDS = [
-    'mode', 'sailThresh', 'tackPenalty', 'stages', 'underKeelClearance', 'arrivalRadiusM', 'precision',
+    'mode', 'sailThresh', 'stages', 'arrivalRadiusM', 'precision',
     'publishSel', 'proximityRadiusM', 'xteThresholdM', 'xteSustainSec',
   ];
   const CHECK_IDS = ['noCurrents', 'noForecast'];
@@ -1344,11 +1343,10 @@ document.getElementById('routeHistoryRefresh').addEventListener('click', () => l
 
 // ─────────── Vessel type (sail / power) ───────────
 // Toggle in Setup switches the UI between a sailing run (polar picker +
-// sail sliders, mode dropdown) and a motoring run with a user-defined
-// hull. Power mode forces `mode=motor` on the POST /api/routes payload
-// and sends the hull-def values as a vessel override so the engine uses
-// them without editing the plugin configuration. Selection and the
-// hull-def fields persist in localStorage.
+// sail sliders, mode dropdown) and a motoring run. Power mode forces
+// `mode=motor` on the POST /api/routes payload and sends the boat's name
+// and cruise speed as a vessel override. Selection and the power-boat
+// fields persist in localStorage.
 function getVesselType() {
   try { return localStorage.getItem('vesselType') === 'power' ? 'power' : 'sail'; }
   catch (_) { return 'sail'; }
@@ -1360,9 +1358,6 @@ function readPowerBoat() {
   };
   return {
     name: (document.getElementById('pb_name').value || '').trim(),
-    loa_m: num('pb_loa'),
-    draught_m: num('pb_draught'),
-    air_draft_m: num('pb_air_draft'),
     cruise_kts: num('pb_cruise_kts'),
   };
 }
@@ -1370,9 +1365,6 @@ function validatePowerBoat() {
   const pb = readPowerBoat();
   const missing = [];
   if (!pb.name) missing.push('name');
-  if (pb.loa_m == null || pb.loa_m <= 0) missing.push('LOA');
-  if (pb.draught_m == null || pb.draught_m <= 0) missing.push('draught');
-  if (pb.air_draft_m == null || pb.air_draft_m <= 0) missing.push('air draft');
   if (pb.cruise_kts == null || pb.cruise_kts <= 0) missing.push('cruise speed');
   return missing;
 }
@@ -1387,15 +1379,12 @@ function loadPowerBoat() {
     if (!j) return;
     const pb = JSON.parse(j);
     if (pb.name != null) document.getElementById('pb_name').value = pb.name;
-    if (pb.loa_m != null) document.getElementById('pb_loa').value = pb.loa_m;
-    if (pb.draught_m != null) document.getElementById('pb_draught').value = pb.draught_m;
-    if (pb.air_draft_m != null) document.getElementById('pb_air_draft').value = pb.air_draft_m;
     if (pb.cruise_kts != null) document.getElementById('pb_cruise_kts').value = pb.cruise_kts;
   } catch (_) {}
 }
 function refreshFindRouteEnabled() {
   // Find Route stays disabled until start + end are set; power mode
-  // additionally requires all hull-def fields to be filled.
+  // additionally requires the boat's name and cruise speed.
   const btn = document.getElementById('findRoute');
   const haveEndpoints = !!(startCoord && endCoord);
   let blocked = !haveEndpoints;
@@ -1430,7 +1419,7 @@ function applyVesselType(vt) {
 document.querySelectorAll('#vesselTypeToggle .vt-btn').forEach(b => {
   b.addEventListener('click', () => applyVesselType(b.dataset.val));
 });
-['pb_name', 'pb_loa', 'pb_draught', 'pb_air_draft', 'pb_cruise_kts'].forEach(id => {
+['pb_name', 'pb_cruise_kts'].forEach(id => {
   const el = document.getElementById(id);
   if (!el) return;
   el.addEventListener('input', () => { savePowerBoat(); refreshFindRouteEnabled(); });

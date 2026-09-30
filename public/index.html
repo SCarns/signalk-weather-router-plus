@@ -644,19 +644,13 @@
     <div style="font-size:var(--f-xs);color:var(--text);margin-bottom:var(--s-1);font-weight:600;">Define your boat</div>
     <label style="font-size:var(--f-xs);">Boat name</label>
     <input type="text" id="pb_name" placeholder="My Trawler">
-    <label style="font-size:var(--f-xs);">LOA (m)</label>
-    <input type="number" step="0.1" min="2" max="100" id="pb_loa">
-    <label style="font-size:var(--f-xs);">Draught (m)</label>
-    <input type="number" step="0.1" min="0.1" max="10" id="pb_draught">
-    <label style="font-size:var(--f-xs);">Air draft (m)</label>
-    <input type="number" step="0.1" min="1" max="50" id="pb_air_draft">
     <label style="font-size:var(--f-xs);">Cruise speed (kts)</label>
     <input type="number" step="0.1" min="1" max="60" id="pb_cruise_kts">
     <div id="pb_status" style="font-size:var(--f-xs);color:var(--warn);margin-top:var(--s-1);"></div>
   </div>
 
   <label class="sail-only">Vessel polar</label>
-  <div class="sail-only ctl-hint">Overrides the plugin's default polar for this route. Hull geometry (draught, clearance) comes from the Settings tab.</div>
+  <div class="sail-only ctl-hint">Overrides the plugin's default polar for this route.</div>
   <input type="text" id="polarFilter" class="sail-only" placeholder="Filter boats…">
   <select id="polarSelect" class="sail-only" size="6"><option value="">Loading…</option></select>
   <canvas id="polarDiagram" class="sail-only" width="380" height="316"></canvas>
@@ -681,10 +675,6 @@
   <label>Min sail speed: <span id="sailThreshLabel">5.0</span> <span class="unitOf" data-for="sailThreshLabel"></span></label>
   <div class="ctl-hint">Below this speed, skip sailing and motor instead. Lower = more sailing segments.</div>
   <input type="range" id="sailThresh" min="0" max="10" step="0.5" value="5.0" aria-label="Minimum sailing speed in knots">
-
-  <label>Tack penalty: <span id="tackPenaltyLabel">30</span> sec</label>
-  <div class="ctl-hint">Time lost per tack or jibe. Higher = fewer, longer tacks.</div>
-  <input type="range" id="tackPenalty" min="0" max="120" step="5" value="30" aria-label="Tack penalty in seconds">
 
   </div>
   </details>
@@ -712,18 +702,14 @@
   </div>
   </details>
 
-  <!-- Solver / safety tuning. -->
+  <!-- Solver tuning. -->
   <details class="subsection">
-  <summary>Solver &amp; safety tuning</summary>
+  <summary>Solver tuning</summary>
   <div class="subsection-body">
 
   <label>Isochrone stages: <span id="stagesLabel">auto</span></label>
   <div class="ctl-hint">Number of propagation stages between start and end. 0 = the plugin's configured default. More stages = finer route, slower solve.</div>
   <input type="range" id="stages" min="0" max="200" step="4" value="0" aria-label="Isochrone stages (0 = default)">
-
-  <label>Under-keel clearance: <span id="underKeelClearanceLabel">0.5</span> <span class="unitOf" data-for="underKeelClearanceLabel"></span></label>
-  <div class="ctl-hint">Safety margin below the keel. User choice, not hull spec.</div>
-  <input type="range" id="underKeelClearance" min="0" max="3" step="0.1" value="0.5" aria-label="Under-keel clearance in metres">
 
   <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="noCurrents">Ignore currents</label>
   <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="noForecast">Ignore forecast (route in calm wind)</label>

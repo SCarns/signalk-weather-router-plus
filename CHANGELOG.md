@@ -18,6 +18,10 @@ uses [Semantic Versioning](https://semver.org/).
   loads normally and drops them. The vessel settings that remain are
   name, speed under power and polar performance. A working tack penalty
   and maximum wave height are planned (docs/TODO.md).
+- Web app: the Tack penalty and Under-keel clearance sliders, and LOA,
+  draught and air draft in the power-boat form (they were required but
+  not used; a power boat now needs only a name and a cruise speed). The
+  "Solver & safety tuning" section is now "Solver tuning".
 
 ### Fixed
 
