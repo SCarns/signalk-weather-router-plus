@@ -19,7 +19,7 @@ positions and treats the coastline as the only obstacle.
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
 
-**Status: beta** (0.1.0-beta.1, the first public release). Please report
+**Status: beta** (0.1.0-beta.2). Please report
 problems at https://github.com/motamman/signalk-weather-router-plus/issues.
 
 What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
@@ -643,8 +643,8 @@ React and needs no build step for it.
 | Field | Notes |
 |---|---|
 | `landShapefiles` | comma-separated absolute paths; blank = download GSHHG 2.3.7 full-resolution level 1 once (see [Install](#install)) |
-| `polarFile` | `.csv` (`twa/tws,4,6,…`) or `.pol` (tab-delimited); the default polar (token `default`) |
-| `polarsDir` | directory of `.pol`/`.csv` polars listed by `/api/polars`; needed to pick a named polar per route |
+| `polarFile` | `.csv` (`twa/tws,4,6,…`) or `.pol` (tab-delimited); the default polar (token `default`). Blank = the bundled Catalina 36 |
+| `polarsDir` | directory of `.pol`/`.csv` polars listed by `/api/polars`. Blank = the library bundled with the plugin (`data/polars/`: the ~700 polars of the OpenCPN [weather_routing_pi](https://github.com/seandepagnier/weather_routing_pi) library, GPL-3.0), with user polars (generated ones included) kept in `polars/user/` in the plugin data directory, so an update never removes them. Set, user polars are in `<polarsDir>/user/` |
 | `currents.harmonicDir` | directory of tidal-harmonic `.npz` files |
 | `forecast.mirror` | `ecmwf`, `aws` or `google` |
 | `weatherProvider.enabled` | register with the Weather API (default on) |
@@ -1027,9 +1027,10 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `vessel.polar` | string | | the configured `polarFile` | a token from `GET /api/polars`, at most 200 characters; see below |
 
 `vessel.polar` is a token from `GET /api/polars`. A file name such as
-`a_boat.pol` resolves only inside the configured `polarsDir`. Use
-`"default"`, or omit the field, for the configured `polarFile`. Without
-any polar every route is motor-only.
+`a_boat.pol` resolves only inside the polar library (the configured
+`polarsDir`, or the bundled library), `user/…` inside the user polar
+directory. Use `"default"`, or omit the field, for the default polar
+(the configured `polarFile`, or the bundled Catalina 36).
 
 `vessel.polar_performance` (ratio, 0.3..1.2) is the share of the polar's
 boat speeds the boat makes under sail; it overrides the vessel setting
@@ -1685,18 +1686,19 @@ colours.
 | GET | `/api/polars/table` | readonly | polar speed table in m/s |
 | POST | `/api/polar-from-specs` | readwrite | generate a polar from boat specs |
 
-A polar is named by a token. `default` is the configured `polarFile`;
-any other token is a `.pol` or `.csv` file name relative to `polarsDir`
-(for example `a_boat.pol`, `user/my_boat.csv` or
-`user/<account>/<file>`). Tokens outside the library are refused.
+A polar is named by a token. `default` is the default polar (the
+configured `polarFile`, or the bundled Catalina 36); any other token is
+a `.pol` or `.csv` file name in the library (for example `a_boat.pol`)
+or in the user polar directory (`user/my_boat.csv`,
+`user/<account>/<file>`). Tokens outside them are refused.
 
 #### GET /api/polars
 
 `200`: `[{path, label, source}]`. `path` is the token, `label` the name
 to show (`"<name> (default)"` for the default, `"user: <name>"` for
 user polars), and `source` is `"default"` or `"library"`. The list
-holds the default polar, then every `.pol`/`.csv` in `polarsDir`, then
-those in `polarsDir/user/` and in each `polarsDir/user/<account>/`; a
+holds the default polar, then every `.pol`/`.csv` in the library, then
+those in the user polar directory and in each `<account>/` inside it; a
 file that is the same as one already listed is left out.
 
 #### GET /api/polar-angles

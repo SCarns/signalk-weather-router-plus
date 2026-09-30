@@ -1,5 +1,13 @@
 # What's new
 
+## 0.1.0-beta.2
+
+- **Polars included.** About 700 boat polars (the OpenCPN
+  weather_routing_pi library) now come with the plugin, with a Catalina
+  36 as the default, so routes sail straight after installing. Pick your
+  boat in the web app's polar list, or create one from your boat's specs.
+  Polars you create are kept safe across plugin updates.
+
 ## 0.1.0-beta.1: first public beta
 
 Weather routing that runs entirely inside your Signal K server, with no

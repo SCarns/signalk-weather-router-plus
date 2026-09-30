@@ -26,6 +26,21 @@ export interface PolarEntry {
 export interface PolarLibraryConfig {
   polarFile: string | null;
   polarsDir: string | null;
+  /**
+   * Where `user/…` polars live (generated ones are written there).
+   * Default `<polarsDir>/user`; with the bundled library it is in the
+   * plugin data directory, so an update of the package never removes them.
+   */
+  userDir?: string | null;
+}
+
+/** The polar library shipped with the package (weather_routing_pi, GPL-3.0) and its default polar. */
+export const BUNDLED_POLARS_DIR = path.join(__dirname, '..', '..', 'data', 'polars');
+export const BUNDLED_DEFAULT_POLAR = path.join(BUNDLED_POLARS_DIR, 'catalina36.csv');
+
+function userDirOf(cfg: PolarLibraryConfig): string | null {
+  if (cfg.userDir) return cfg.userDir;
+  return cfg.polarsDir ? path.join(cfg.polarsDir, 'user') : null;
 }
 
 const EXT = new Set(['.pol', '.csv']);
@@ -47,10 +62,16 @@ export function listPolars(cfg: PolarLibraryConfig): PolarEntry[] {
   }
   if (cfg.polarsDir) {
     const dir = cfg.polarsDir;
+    const userDir = userDirOf(cfg);
+    // A path under `user` lives in the user directory; anything else in the library.
+    const pathOf = (rel: string): string | null =>
+      rel === 'user' || rel.startsWith('user/') ? (userDir ? path.join(userDir, rel.slice(5)) : null) : path.join(dir, rel);
+    const fileOf = (token: string): string => pathOf(token) ?? path.join(dir, token);
     const addDir = (rel: string, labelPrefix: string): void => {
       let names: string[];
       try {
-        names = fs.readdirSync(path.join(dir, rel));
+        const p = pathOf(rel);
+        names = p ? fs.readdirSync(p) : [];
       } catch {
         names = [];
       }
@@ -58,7 +79,7 @@ export function listPolars(cfg: PolarLibraryConfig): PolarEntry[] {
         if (n.startsWith('.') || !EXT.has(path.extname(n).toLowerCase())) continue;
         const token = rel ? `${rel}/${n}` : n;
         try {
-          const real = fs.realpathSync(path.join(dir, token));
+          const real = fs.realpathSync(fileOf(token));
           if (!fs.statSync(real).isFile() || seen.has(real)) continue;
           seen.add(real);
         } catch {
@@ -73,13 +94,13 @@ export function listPolars(cfg: PolarLibraryConfig): PolarEntry[] {
     addDir('user', 'user: ');
     let users: string[];
     try {
-      users = fs.readdirSync(path.join(dir, 'user')).filter(u => !u.startsWith('.'));
+      users = userDir ? fs.readdirSync(userDir).filter(u => !u.startsWith('.')) : [];
     } catch {
       users = [];
     }
     for (const u of users.sort()) {
       try {
-        if (!fs.statSync(path.join(dir, 'user', u)).isDirectory()) continue;
+        if (!userDir || !fs.statSync(path.join(userDir, u)).isDirectory()) continue;
       } catch {
         continue;
       }
@@ -109,11 +130,15 @@ export function resolvePolarPath(cfg: PolarLibraryConfig, token: string | undefi
   const okSeg = (s: string): boolean => s.length > 0 && !s.startsWith('.') && !s.includes('\\');
   if (segs.length > 3 || !segs.every(okSeg) || !EXT.has(path.extname(token).toLowerCase())) throw new PolarNotFoundError();
   if (segs.length > 1 && segs[0] !== 'user') throw new PolarNotFoundError();
+  const userDir = userDirOf(cfg);
+  const inUser = segs[0] === 'user' && segs.length > 1;
+  const base = inUser ? userDir : cfg.polarsDir;
+  if (!base) throw new PolarNotFoundError();
   let real: string;
   let dirReal: string;
   try {
-    real = fs.realpathSync(path.join(cfg.polarsDir, ...segs));
-    dirReal = fs.realpathSync(cfg.polarsDir);
+    real = fs.realpathSync(path.join(base, ...(inUser ? segs.slice(1) : segs)));
+    dirReal = fs.realpathSync(base);
   } catch {
     throw new PolarNotFoundError();
   }
@@ -238,7 +263,8 @@ function parseSpecsRequest(raw: unknown): { name: string; specs: BoatSpecs; over
  * picker label, validation warnings and the table in SI.
  */
 export function polarFromSpecs(cfg: PolarLibraryConfig, raw: unknown): PolarFromSpecsResult {
-  if (!cfg.polarsDir) return { status: 400, body: { error: 'no polars directory is configured (set polarsDir in the plugin settings)' } };
+  const userBase = userDirOf(cfg);
+  if (!userBase) return { status: 400, body: { error: 'no polars directory is configured (set polarsDir in the plugin settings)' } };
   const req = parseSpecsRequest(raw);
   if (typeof req === 'string') return { status: 400, body: { error: req } };
   let warnings: string[];
@@ -251,7 +277,7 @@ export function polarFromSpecs(cfg: PolarLibraryConfig, raw: unknown): PolarFrom
   const slug = slugifyPolarName(req.name);
   if (!slug) return { status: 400, body: { error: 'Name must contain at least one alphanumeric character' } };
 
-  const userDir = path.join(cfg.polarsDir, 'user');
+  const userDir = userBase;
   const token = `user/${slug}.csv`;
   const outPath = path.join(userDir, `${slug}.csv`);
   if (fs.existsSync(outPath) && !req.overwrite) {

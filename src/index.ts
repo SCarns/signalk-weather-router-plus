@@ -25,6 +25,7 @@ import { TileService, TileStore, type TileGroup, type TileLayer } from './plugin
 import { TilePrebuilder } from './plugin/prebuild';
 import { runLastMs, type ArcoRun } from './data/arco';
 import { ensureGshhg, gshhgInstalled, unreadableCoastlines } from './geo/gshhg';
+import { BUNDLED_DEFAULT_POLAR, BUNDLED_POLARS_DIR } from './plugin/polars';
 import { openApiDocument } from './plugin/openapi';
 import { makeWeatherProvider, startMsOf, type WeatherData } from './plugin/weather';
 import type {
@@ -252,6 +253,14 @@ export = function plugin(app: SkApp): SignalKPlugin {
   function resolve(options: PluginConfig | undefined, values: SettingsStore['values']): ResolvedConfig {
     const c = resolveConfig(options, values);
     if (c.landShapefiles.length === 0 && autoCoastline) c.landShapefiles = [autoCoastline];
+    // Polars: the bundled library and default polar unless configured. With the
+    // bundled library, user polars live in the data directory (an update of the
+    // package replaces its own files, never these).
+    if (!c.polarsDir) {
+      c.polarsDir = BUNDLED_POLARS_DIR;
+      c.polarUserDir = path.join(app.getDataDirPath(), 'polars', 'user');
+    } else c.polarUserDir = path.join(c.polarsDir, 'user');
+    if (!c.polarFile) c.polarFile = BUNDLED_DEFAULT_POLAR;
     return c;
   }
 
@@ -961,7 +970,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       downloadCoastline: requestCoastlineDownload,
       noteTileRequest: (z, x, y) => prebuilder?.noteRequest(z, x, y),
       publicDir: path.join(__dirname, '..', 'public'),
-      polarLibrary: () => (config ? { polarFile: config.polarFile, polarsDir: config.polarsDir } : null),
+      polarLibrary: () => (config ? { polarFile: config.polarFile, polarsDir: config.polarsDir, userDir: config.polarUserDir } : null),
       getSettings: () => {
         if (!settings || stopped) throw new Error('plugin not started');
         return { values: settings.values, schema: settingsSchema() };

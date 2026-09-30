@@ -156,3 +156,35 @@ test('PolarDiagram.scaled multiplies every boat speed and keeps the no-go floor'
   assert.equal(s.boatSpeed(40, 3.0867), 0, 'in irons at 6 kn stays in irons');
   assert.equal(s.noGoFloor(3.0867), p.noGoFloor(3.0867));
 });
+
+test('bundled library: every shipped polar loads; user polars live in a separate directory', async () => {
+  const { BUNDLED_POLARS_DIR, BUNDLED_DEFAULT_POLAR } = await import('./polars');
+  const userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'polars-user-'));
+  const cfg = { polarFile: BUNDLED_DEFAULT_POLAR, polarsDir: BUNDLED_POLARS_DIR, userDir };
+  const list = listPolars(cfg);
+  assert.equal(list[0].path, 'default');
+  const shipped = list.filter(e => e.source === 'library');
+  assert.ok(shipped.length >= 700, `bundled polars listed: ${shipped.length}`);
+  for (const e of shipped) {
+    const file = resolvePolarPath(cfg, e.path) as string;
+    const p = PolarDiagram.load(file);
+    assert.ok(p.tws.length > 0 && p.twa.length > 0, `${e.path} loads`);
+  }
+  // A generated polar goes to the user directory, not into the package, and resolves from there.
+  const r = polarFromSpecs(cfg, { name: 'Test Boat', specs: SPECS });
+  assert.equal(r.status, 200);
+  assert.ok(fs.existsSync(path.join(userDir, 'test_boat.csv')));
+  assert.ok(!fs.existsSync(path.join(BUNDLED_POLARS_DIR, 'user')));
+  assert.equal(resolvePolarPath(cfg, 'user/test_boat.csv'), fs.realpathSync(path.join(userDir, 'test_boat.csv')));
+  assert.ok(listPolars(cfg).some(e => e.path === 'user/test_boat.csv'));
+  assert.throws(() => resolvePolarPath(cfg, 'user/../catalina36.csv'));
+  fs.rmSync(userDir, { recursive: true, force: true });
+});
+
+test('a tab polar with an empty cell loads, the cell filled from the rows around it (weather_routing_pi Figaro_1-1.pol)', () => {
+  const text = 'TWA\\TWS\t6\t10\n60\t4.0\t6.0\n90\t5.0\t\t\n120\t4.6\t7.0\n';
+  const p = PolarDiagram.parse(text, '\t', 'test');
+  const kn = (v: number): number => Math.round((v / 0.514444) * 100) / 100;
+  assert.equal(kn(p.boatSpeed(90, 10 * 0.514444)), 6.5, 'halfway between 6.0 and 7.0');
+  assert.throws(() => PolarDiagram.parse('TWA\\TWS\t6\t10\n60\t4.0\n', '\t', 'test'), /expected 2 boat-speed columns/);
+});

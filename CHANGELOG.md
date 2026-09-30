@@ -6,36 +6,24 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0-beta.2] - 2026-09-30
+
 ### Added
 
-- **Centre on the boat:** a button under the map's zoom buttons centres
-  the map on the boat's Signal K position, keeping the zoom.
-- The route summary (distance, time, arrival, sail and motor time,
-  waypoints, highest waves, validation badge) is also shown at the top of
-  the Itinerary tab.
+- **Polars included.** The plugin now ships the ~700 polars of the
+  OpenCPN weather_routing_pi library (GPL-3.0, credited in NOTICE) and a
+  Catalina 36 default, used when no polar library or default polar is
+  configured, so routes sail out of the box; 0.1.0-beta.1 had none and
+  routed motor-only until a polar was configured. With the bundled
+  library, polars you generate are kept in `polars/user/` in the plugin
+  data directory, so updating the plugin never removes them. A configured
+  `polarsDir` / `polarFile` works as before.
 
 ### Fixed
 
-- **A route could cross a narrow point of land.** Candidate legs were
-  checked for land at points 200 m apart, so a spit narrower than that
-  could fall between two of them (job `b0d324f7`: a leg across the tip of
-  Point Judith, RI; the final check flagged it but could only warn).
-  Legs are now checked against every land-raster cell their path
-  crosses, and the final validation tests each leg against the coastline
-  polygon edges instead of points every 100 m, so land of any width is
-  found. Checked on nine routes (Gibraltar, Messina, the Dardanelles and
-  Bosphorus, Singapore, Øresund and Dover, Newport → Horta, Point
-  Judith): all succeed with no land crossing and none is slower; the
-  Aegean → Black Sea route keeps further off the shore in the straits
-  (3.8% longer).
-- The polar diagram's "180°" label overlapped its caption; the caption
-  now has its own strip below the diagram.
-- **The conditions popup showed 0.0 kn of current where no current model
-  has data** (e.g. the Narrows, New York: no source resolves it), which
-  read as slack water. `/api/conditions` now returns `current_ms` and
-  `current_dir_deg` as null there, and the popup says there is no current
-  data instead of drawing a zero line. Answers saved before this change
-  are not served again.
+- A polar with an empty cell (two tabs with nothing between, as in
+  weather_routing_pi's `Figaro_1-1.pol`) failed to load; the cell is now
+  filled from the rows around it.
 
 ## [0.1.0-beta.1] - 2026-09-30
 
@@ -70,7 +58,9 @@ builds before this release, with their measurements, is in
   clear of land and is at most 5% slower. Your own waypoints are kept.
 - **Polar performance** (default 100%, 30–120%): the share of the
   polar's speeds the boat actually makes under sail.
-- Every leg is checked against the exact coastline polygons.
+- Every leg is checked for land against every raster cell it crosses
+  during the search and against the exact coastline polygon edges at the
+  end, so land of any width is found.
 - Route jobs with progress over Server-Sent Events; results as GeoJSON,
   saved to the Signal K Resources API, with a notification on completion
   or failure. **Live mode** re-plans from the boat's position.
@@ -117,7 +107,10 @@ builds before this release, with their measurements, is in
   to zoom 8, half of it at each deeper zoom). Disk cap 20 GB by default.
 - **Conditions popup** (shift-click): 72-hour charts of wind, waves, sea
   state, tide and current, pressure, temperature and precipitation, and
-  a raw table.
+  a raw table. Where no current model has data (water narrower than
+  their grids) it says so instead of showing 0 kn.
+- **Centre on the boat** button under the zoom buttons; the route
+  summary also at the top of the Itinerary tab.
 - **Units from your Signal K unit preferences**; values are SI
   everywhere else.
 - **Settings tab** for vessel, forecast, currents, tides, routing and
@@ -166,5 +159,6 @@ builds before this release, with their measurements, is in
   current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.1...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.2...HEAD
+[0.1.0-beta.2]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.1...v0.1.0-beta.2
 [0.1.0-beta.1]: https://github.com/motamman/signalk-weather-router-plus/releases/tag/v0.1.0-beta.1

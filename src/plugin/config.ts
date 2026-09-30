@@ -93,6 +93,8 @@ export interface ResolvedConfig {
   landShapefiles: string[];
   polarFile: string | null;
   polarsDir: string | null;
+  /** Where user polars are kept and generated ones written (see polars.ts PolarLibraryConfig.userDir). */
+  polarUserDir: string | null;
   vessel: VesselParams;
   forecast: {
     horizonHours: number;
@@ -186,12 +188,14 @@ export const CONFIG_SCHEMA = {
     polarFile: {
       type: 'string',
       title: 'Default polar file (.csv or .pol)',
-      description: 'Boat speed table in knots. Blank = motor-only routes unless a route picks a polar from the library.',
+      description: 'Boat speed table in knots. Blank = the bundled Catalina 36 polar.',
     },
     polarsDir: {
       type: 'string',
       title: 'Polar library directory',
-      description: "Directory of .pol/.csv polars offered in the web app's vessel picker.",
+      description:
+        "Directory of .pol/.csv polars offered in the web app's vessel picker. Blank = the ~700 polars bundled with the plugin " +
+        '(weather_routing_pi library, GPL-3.0); polars you generate are then kept in the plugin data directory.',
     },
     currents: {
       type: 'object',
@@ -307,6 +311,7 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
     landShapefiles: land,
     polarFile: c.polarFile && c.polarFile.trim() ? c.polarFile.trim() : null,
     polarsDir: c.polarsDir && c.polarsDir.trim() ? c.polarsDir.trim() : null,
+    polarUserDir: null,
     vessel: makeVessel({
       name: v.name,
       draught: v.draught,

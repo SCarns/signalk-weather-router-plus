@@ -247,8 +247,8 @@ var signalk_weather_router_plus = (function () {
 
     var otherSection = h('div', { className: 'mb-4' },
       h('h5', null, 'Polars, currents, forecast, Weather API'),
-      field('Default polar file (.csv or .pol)', 'Boat speeds in knots. Blank = motor-only unless a route picks a polar from the library.', text(['polarFile'])),
-      field('Polar library directory', "Polars offered in the web app's vessel picker.", text(['polarsDir'])),
+      field('Default polar file (.csv or .pol)', 'Boat speeds in knots. Blank = the bundled Catalina 36 polar.', text(['polarFile'], 'blank = bundled Catalina 36')),
+      field('Polar library directory', "Polars offered in the web app's vessel picker. Blank = the ~700 polars bundled with the plugin (weather_routing_pi library, GPL-3.0); polars you generate are then kept in the plugin data directory.", text(['polarsDir'], 'blank = bundled library')),
       field('Tidal harmonics directory (.npz)', 'FES2014 / NECOFS extracts; every *.npz in it is loaded.', text(['currents', 'harmonicDir'])),
       field('ECMWF open-data mirror', null,
         h('select', { className: 'form-select form-control', value: get(['forecast', 'mirror'], 'ecmwf'),

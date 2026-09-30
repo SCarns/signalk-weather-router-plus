@@ -963,7 +963,10 @@ async function route(id: string, request: RouteRequest): Promise<void> {
     let routePolar: PolarDiagram | null = polar;
     let polarLabel: string | null = cfg.polarFile ? path.basename(cfg.polarFile) : null;
     if (request.vessel?.polar) {
-      const file = resolvePolarPath({ polarFile: cfg.polarFile, polarsDir: cfg.polarsDir }, request.vessel.polar);
+      const file = resolvePolarPath(
+        { polarFile: cfg.polarFile, polarsDir: cfg.polarsDir, userDir: cfg.polarUserDir },
+        request.vessel.polar
+      );
       if (file) {
         routePolar = loadPolarCached(file);
         polarLabel = path.basename(file);

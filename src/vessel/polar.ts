@@ -165,19 +165,53 @@ export class PolarDiagram {
     for (let r = headerIdx + 1; r < lines.length; r++) {
       const line = lines[r];
       if (line.trim() === '') continue;
-      const row = splitRow(line, delimiter);
+      let row = splitRow(line, delimiter);
+      // Tab rows split on runs of tabs (files align columns with extra tabs), so an
+      // empty cell (two tabs with nothing between) shows as a missing column. Retry
+      // with single tabs; empty cells are then filled from the rows around them.
+      if (row.length - 1 !== nW && delimiter === '\t') {
+        const exact = line.split('\t').map(x => x.trim());
+        while (exact.length > nW + 1 && exact[exact.length - 1] === '') exact.pop();
+        if (exact.length - 1 === nW && exact[0] !== '') row = exact;
+      }
       if (row.length - 1 !== nW) {
         throw new Error(`${label}, row ${r + 1}: expected ${nW} boat-speed columns, got ${row.length - 1}`);
       }
       twa.push(parseNum(row[0], `${label} row ${r + 1}`));
-      for (let k = 1; k <= nW; k++) speeds.push(parseNum(row[k], `${label} row ${r + 1}`) * KTS_TO_MS);
+      for (let k = 1; k <= nW; k++) speeds.push(row[k] === '' ? NaN : parseNum(row[k], `${label} row ${r + 1}`) * KTS_TO_MS);
     }
     if (twa.length === 0) throw new Error(`${label} has no data rows`);
+    fillEmptyCells(twa, nW, speeds, label);
     return new PolarDiagram(
       twa,
       twsKts.map(k => k * KTS_TO_MS),
       speeds
     );
+  }
+}
+
+/**
+ * Fill empty cells (NaN) in place: linear in TWA between the nearest filled
+ * rows of the same TWS column, or the nearest filled row at the table's end.
+ * A column with no value at all is an error.
+ */
+function fillEmptyCells(twa: number[], nW: number, speeds: number[], label: string): void {
+  const nA = twa.length;
+  for (let k = 0; k < nW; k++) {
+    const at = (i: number): number => speeds[i * nW + k];
+    for (let i = 0; i < nA; i++) {
+      if (!Number.isNaN(at(i))) continue;
+      let lo = i - 1;
+      while (lo >= 0 && Number.isNaN(at(lo))) lo--;
+      let hi = i + 1;
+      while (hi < nA && Number.isNaN(at(hi))) hi++;
+      if (lo < 0 && hi >= nA) throw new Error(`${label}: TWS column ${k + 1} has no values`);
+      let v: number;
+      if (lo < 0) v = at(hi);
+      else if (hi >= nA) v = at(lo);
+      else v = at(lo) + ((at(hi) - at(lo)) * (twa[i] - twa[lo])) / (twa[hi] - twa[lo] || 1);
+      speeds[i * nW + k] = v;
+    }
   }
 }
 

@@ -60,6 +60,16 @@ Global water grid (data/water-grid-0.02.bin.gz)
   package is licensed under the Apache License 2.0; the LGPL applies to
   this data file only.
 
+Polar library (data/polars/*.pol)
+
+  The ~700 boat polars of the OpenCPN weather_routing_pi plugin
+  (https://github.com/seandepagnier/weather_routing_pi, data/polars/;
+  standardised by Bill Freeman), distributed under the GNU General Public
+  License version 3 (licenses/GPL-3.0.txt), unmodified; their README is
+  data/polars/README-weather_routing_pi.md. They are data read by the
+  plugin at run time; the GPL applies to these files only.
+  data/polars/catalina36.csv is this project's own.
+
 ===========================================================================
 Data the plugin downloads at run time (not included in this distribution)
 ===========================================================================

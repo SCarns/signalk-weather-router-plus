@@ -7,10 +7,10 @@
  *   PUT  /api/settings              partial update → validated, saved, applied live
  *   GET  /api/forecast              forecast metadata (+ series at ?lat=&lon=)
  *   POST /api/forecast/refresh      re-check ECMWF / NOMADS
- *   GET  /api/polars                polar library (default + polarsDir)
+ *   GET  /api/polars                polar library (default polar, library, user polars)
  *   GET  /api/polar-angles?path=    best VMG angles per TWS
  *   GET  /api/polars/table?path=    polar table in m/s
- *   POST /api/polar-from-specs      generate a polar from boat specs (physics calculator) into polarsDir/user/
+ *   POST /api/polar-from-specs      generate a polar from boat specs (physics calculator) into the user polar directory
  *   GET  /api/legends               colour ramps (SI stops) for every layer
  *   GET  /api/field?layer=&bbox=&time=&res=     JSON grid for a heatmap/streamline layer (layer=tide: tide_m)
  *   GET  /api/wind-points?bbox=&time=&res=      wind barb points (speed_ms, dir_deg FROM)
@@ -68,7 +68,7 @@ export interface ApiDeps {
   noteTileRequest: (z: number, x: number, y: number) => void;
   publicDir: string;
   /** Polar library configuration (null before the plugin has started). */
-  polarLibrary: () => { polarFile: string | null; polarsDir: string | null } | null;
+  polarLibrary: () => { polarFile: string | null; polarsDir: string | null; userDir?: string | null } | null;
   /** Web-app settings; throws when the plugin is not started. */
   getSettings: () => {
     values: AppSettings;
@@ -227,7 +227,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     json(res, 202, { status: 'refresh requested' });
   });
 
-  const polarLib = (): { polarFile: string | null; polarsDir: string | null } => {
+  const polarLib = (): { polarFile: string | null; polarsDir: string | null; userDir?: string | null } => {
     const lib = deps.polarLibrary();
     if (!lib) throw new Error('plugin not started');
     return lib;
