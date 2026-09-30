@@ -61,7 +61,11 @@ test('coastline download: fetch, check the size, extract the level-1 files, drop
     assert.equal(got, gshhgInstalled(dir));
     assert.deepEqual(fs.readFileSync(got), shp);
     const names = fs.readdirSync(path.dirname(got)).sort();
-    assert.deepEqual(names, ['GSHHS_f_L1.prj', 'GSHHS_f_L1.shp', 'GSHHS_f_L1.shx'], 'only level 1; archive removed');
+    assert.deepEqual(names, ['GSHHS_f_L1.prj', 'GSHHS_f_L1.shp', 'GSHHS_f_L1.shx', 'complete.json'], 'only level 1; archive removed');
+    // A truncated .shp is not counted as installed.
+    fs.truncateSync(got, 10);
+    assert.equal(gshhgInstalled(dir), null);
+    fs.writeFileSync(got, shp);
     assert.ok(logs.some(l => l.includes('downloaded 100 %')));
     // In place: no second download.
     server.close();

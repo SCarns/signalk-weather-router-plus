@@ -1380,9 +1380,14 @@ async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs])
   let win: ForecastStore | null = null;
   try {
     const smocComplete = await prepareSmocForQuery(kind, args);
+    // A late background load can evict what was just loaded while this query awaits the rest.
+    const evictions = (): number => (smoc?.evictions ?? 0) + (tides?.evictions ?? 0);
+    const evicted0 = evictions();
     const tidesComplete = await prepareTidesForQuery(kind, args);
     const tide = kind === 'conditions' ? await conditionsTide(args as QueryArgs['conditions']) : null;
     win = await queryWindow(kind, args);
+    // Last await before sampling (synchronous from here), and before this query's own trim below.
+    const notEvicted = evictions() === evicted0;
     const src = overlaySources(win);
     let result: unknown;
     switch (kind) {
@@ -1459,7 +1464,7 @@ async function query(id: number, kind: string, args: QueryArgs[keyof QueryArgs])
     cancelledQueries.delete(id); // a cancel that arrived after the query started
     // A conditions tide series that is still downloading (or failed) is not an answer to keep; outside the grid is.
     const tideComplete = !tide || !!tide.series || /outside the sea-level grid/.test(tide.error ?? '');
-    send({ type: 'query-result', id, result, complete: smocComplete && tidesComplete && tideComplete });
+    send({ type: 'query-result', id, result, complete: smocComplete && tidesComplete && tideComplete && notEvicted });
     // A new overlay land raster was built: refresh the status the main thread reports.
     // …or SMOC loaded an on-demand area.
     const smocRev = smoc ? smoc.revision : -1;

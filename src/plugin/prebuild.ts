@@ -287,8 +287,12 @@ export class TilePrebuilder {
     const id = ++this.queryId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (h.pending?.id === id) h.pending = null;
-        reject(new Error('tile query timed out'));
+        // The worker may still be running it, and a running query cannot be
+        // cancelled: restart the worker (its exit handler rejects this query
+        // and starts a new one), so the worker count stays the cap.
+        if (h.pending?.id !== id) return;
+        this.deps.error(`tiles worker: tile query timed out after ${QUERY_TIMEOUT_MS / 1000} s; restarting the worker`);
+        void h.worker.terminate();
       }, QUERY_TIMEOUT_MS);
       h.pending = { id, resolve, reject, timer };
       h.worker.postMessage({ type: 'query', id, kind, args } as MainToWorker);

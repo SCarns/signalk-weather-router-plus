@@ -795,7 +795,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     }
     // None configured: download GSHHG (minutes), then start. Not awaited, so the server's start-up is not held up.
     void downloadCoastline(gen, dataDir).then(ok => {
-      if (!ok || !settings) return;
+      if (!ok || !settings || gen !== startGen || stopped) return;
       config = resolve(options, settings.values);
       startServices(dataDir);
     });

@@ -92,3 +92,22 @@ test('isobars read the pressure tiles at PRESSURE_TILE_ZOOM for a typical view',
   const { zoomFor, PRESSURE_TILE_RES, PRESSURE_TILE_ZOOM } = await import('./tilejoin');
   assert.equal(zoomFor('field', { west: -80, south: 30, east: -60, north: 45 }, PRESSURE_TILE_RES, 400_000), PRESSURE_TILE_ZOOM);
 });
+
+test('joined grid: field names come from every tile, not the first to answer', async () => {
+  const { get, hour } = await fixture();
+  const { joinField } = await import('./tilejoin');
+  let first = true;
+  // The first tile to answer has no fields (e.g. an empty answer); the rest do.
+  const getter = async (t: import('./tiles').TileId): Promise<unknown> => {
+    const g = (await get(t)) as { fields: Record<string, unknown> };
+    if (first) {
+      first = false;
+      return { ...g, fields: {} };
+    }
+    await new Promise(r => setTimeout(r, 5));
+    return g;
+  };
+  const joined = await joinField(getter, 'wind', { west: -72.3, south: 40.1, east: -68.7, north: 42.9 }, hour, 0.05);
+  assert.ok(Object.keys(joined.fields).length > 0);
+  assert.ok(Object.values(joined.fields).every(rows => rows.some(r => r.some(v => v !== null))));
+});

@@ -240,6 +240,11 @@ export class SmocCurrentSource implements CurrentSourceLike {
     return this.set.revision;
   }
 
+  /** On-demand areas dropped so far (worker.ts: an answer sampled after one was dropped is not kept). */
+  get evictions(): number {
+    return this.set.evictions;
+  }
+
   get resident(): SmocArea | null {
     return this.set.resident;
   }

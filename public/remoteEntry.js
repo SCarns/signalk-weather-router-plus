@@ -89,6 +89,30 @@ var signalk_weather_router_plus = (function () {
       .catch(function () { return null; });
   }
 
+  // A number typed in display units: kept as typed while focused, converted
+  // to SI and clamped only when the field loses focus (so typing 5000 is
+  // not cut to the minimum at the first digit, and the field can be cleared
+  // and retyped).
+  function DraftNumber(props) {
+    var h = React.createElement;
+    var ds = React.useState(null);
+    var draft = ds[0], setDraft = ds[1];
+    var shown = draft !== null ? draft : String(+props.toDisplay(props.si).toFixed(props.precision));
+    function commit() {
+      if (draft === null) return;
+      var n = Number(draft);
+      if (draft.trim() !== '' && Number.isFinite(n)) {
+        var v = props.fromDisplay(n);
+        if (Number.isFinite(v)) props.onChange(Math.min(props.maxSI, Math.max(props.minSI, v)));
+      }
+      setDraft(null);
+    }
+    return h('input', { className: 'form-control', type: 'number', value: shown, step: props.step,
+      onChange: function (e) { setDraft(e.target.value); },
+      onBlur: commit,
+      onKeyDown: function (e) { if (e.key === 'Enter') commit(); } });
+  }
+
   function Panel(props) {
     var h = React.createElement;
     var initial = props.configuration || {};
@@ -175,15 +199,9 @@ var signalk_weather_router_plus = (function () {
       if (!units.loaded) return h('input', { className: 'form-control', disabled: true, value: 'loading units…' });
       if (!u) return h('div', null, h('input', { className: 'form-control', disabled: true, value: MISSING }),
         h('small', { className: 'text-danger' }, 'Your Signal K unit preference for this quantity could not be read, so it cannot be edited here.'));
-      var si = get(path, def);
-      var shown = +u.fn(si).toFixed(u.precision);
       return h('div', { className: 'input-group' },
-        h('input', { className: 'form-control', type: 'number', value: shown, step: Math.pow(10, -u.precision),
-          onChange: function (e) {
-            if (e.target.value === '') return;
-            var v = u.inv(Number(e.target.value));
-            if (Number.isFinite(v)) set(path, Math.min(maxSI, Math.max(minSI, v)));
-          } }),
+        h(DraftNumber, { si: get(path, def), toDisplay: u.fn, fromDisplay: u.inv, precision: u.precision, step: Math.pow(10, -u.precision),
+          minSI: minSI, maxSI: maxSI, onChange: function (v) { set(path, v); } }),
         h('span', { className: 'input-group-text' }, u.unit));
     }
 
@@ -223,8 +241,8 @@ var signalk_weather_router_plus = (function () {
       field('Build workers', 'Threads building tiles ahead of time, 1–8.', number(['overlayCache', 'workers'], d.workers, { min: 1, max: 8 })),
       field('Disk cap', 'Least recently used tiles are removed above this.',
         h('div', { className: 'input-group' },
-          h('input', { className: 'form-control', type: 'number', min: 0.1, step: 0.1, value: +(get(['overlayCache', 'diskCap'], d.diskCap) / 1e9).toFixed(1),
-            onChange: function (e) { if (e.target.value !== '') set(['overlayCache', 'diskCap'], Math.max(100e6, Number(e.target.value) * 1e9)); } }),
+          h(DraftNumber, { si: get(['overlayCache', 'diskCap'], d.diskCap), toDisplay: function (b) { return b / 1e9; }, fromDisplay: function (g) { return g * 1e9; },
+            precision: 1, step: 0.1, minSI: 100e6, maxSI: Number.MAX_SAFE_INTEGER, onChange: function (v) { set(['overlayCache', 'diskCap'], v); } }),
           h('span', { className: 'input-group-text' }, 'GB'))));
 
     var otherSection = h('div', { className: 'mb-4' },

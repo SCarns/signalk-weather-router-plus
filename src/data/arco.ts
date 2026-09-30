@@ -1003,6 +1003,8 @@ export class ArcoAreaSet<A extends ArcoArea> {
   private lru: A[] = [];
   private pending = new Map<string, Promise<A | null>>();
   private rev = 0;
+  /** On-demand areas dropped so far (budget eviction, trim, expiry): a query compares it around its sampling. */
+  private evicted = 0;
   lastDownload: DownloadNote | null = null;
 
   constructor(run: ArcoRun, client: ArcoClient | null, opts: AreaSetOptions<A>) {
@@ -1014,6 +1016,10 @@ export class ArcoAreaSet<A extends ArcoArea> {
 
   get revision(): number {
     return this.rev;
+  }
+
+  get evictions(): number {
+    return this.evicted;
   }
 
   get resident(): A | null {
@@ -1204,6 +1210,7 @@ export class ArcoAreaSet<A extends ArcoArea> {
     let total = this.onDemandBytes();
     while (total > this.opts.budgetBytes && this.lru.length > 1) {
       const gone = this.lru.pop()!;
+      this.evicted++;
       total -= arcoAreaBytes(gone);
       this.log(
         `${this.opts.tag}: evicted on-demand area ${fmtBox(gone.bbox)} (${(arcoAreaBytes(gone) / 1e6).toFixed(1)} MB; budget ${(this.opts.budgetBytes / 1e6).toFixed(0)} MB)`
@@ -1223,6 +1230,7 @@ export class ArcoAreaSet<A extends ArcoArea> {
     let released = 0;
     while (total > maxBytes && this.lru.length > 0) {
       const gone = this.lru.pop()!;
+      this.evicted++;
       const b = arcoAreaBytes(gone);
       total -= b;
       released += b;
@@ -1238,7 +1246,10 @@ export class ArcoAreaSet<A extends ArcoArea> {
   expire(nowMs: number): void {
     const before = this.lru.length;
     this.lru = this.lru.filter(a => a.stepMs.length && a.stepMs[a.stepMs.length - 1] + GRACE_MS >= nowMs);
-    if (this.lru.length !== before) this.rev++;
+    if (this.lru.length !== before) {
+      this.rev++;
+      this.evicted += before - this.lru.length;
+    }
   }
 
   /** Status pieces shared by the sources. */

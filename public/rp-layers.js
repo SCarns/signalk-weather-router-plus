@@ -308,19 +308,22 @@ function _pointTileSource(tileLayer, toggleId, toFeature, attributions) {
     attributions,
     strategy: ol.loadingstrategy.tile(_POINT_TILE_GRID),
     loader: function (extent, resolution, projection, success, failure) {
+      // OpenLayers 9.1 marks the extent loaded after this returns, and
+      // failure() does not unmark it: remove it (deferred) so it is retried.
+      const fail = () => { failure(); setTimeout(() => src.removeLoadedExtent(extent), 0); };
       const z = _POINT_TILE_GRID.getZForResolution(resolution);
       const n = 2 ** z;
       const c = _POINT_TILE_GRID.getTileCoordForCoordAndZ([(extent[0] + extent[2]) / 2, (extent[1] + extent[3]) / 2], z);
       const x = ((c[1] % n) + n) % n, y = c[2];
       if (src._hour === undefined) { src._hour = _overlayHourIso(); src._z = z; }
       // Mid-zoom: this level is not the source's; moveend starts the new level.
-      if (z !== src._z) { failure(); return; }
+      if (z !== src._z) { fail(); return; }
       const hour = src._hour, level = src._z;
       _tileFetch(_tileUrl(tileLayer, z, x, y, hour))
         .then(r => r.json())
         .then(points => {
           // A newer hour or zoom level has cleared the source meanwhile.
-          if (src._hour !== hour || src._z !== level || z !== level) { failure(); return; }
+          if (src._hour !== hour || src._z !== level || z !== level) { fail(); return; }
           const features = (Array.isArray(points) ? points : []).map(toFeature);
           src.addFeatures(features);
           _noteOverlay(toggleId, null);
@@ -328,7 +331,7 @@ function _pointTileSource(tileLayer, toggleId, toFeature, attributions) {
         })
         .catch(err => {
           if (err.message !== 'auth-gate-tripped') { console.log(tileLayer + ' tile error: ' + err.message); _noteOverlay(toggleId, err.message); }
-          failure();
+          fail();
         });
     },
   });
@@ -341,7 +344,8 @@ function _syncPointSource(src) {
   if (src._hour === hour && src._z === z) return;
   src._hour = hour;
   src._z = z;
-  src.clear(true);
+  // refresh(), not clear(): clear() keeps the loaded-extent index, so tiles already seen would not load again.
+  src.refresh();
 }
 
 // --- Tidal current overlay ---

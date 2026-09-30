@@ -148,7 +148,7 @@ export interface ResolvedConfig {
   overlayCache: {
     enabled: boolean;
     radiusM: number;
-    /** Hours ahead built; null = the whole forecast. */
+    /** Seconds ahead built; null = the whole forecast. */
     windowS: number | null;
     maxZoom: number;
     diskCapBytes: number;

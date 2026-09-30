@@ -125,8 +125,10 @@ export async function joinField(
     g.lats.forEach((lat, j) => row.set(Math.round(lat / g.res), j));
     idx.set(k, { col, row });
   }
-  const first = grids.values().next().value as FieldGridResponse | undefined;
-  const names = first ? Object.keys(first.fields) : [];
+  // Every field any tile answered (completion order is arbitrary, and a tile may answer none).
+  const names = [...new Set([...grids.values()].flatMap(g => Object.keys(g.fields)))];
+  const units: Record<string, string> = {};
+  for (const g of grids.values()) for (const [k, u] of Object.entries(g.units ?? {})) units[k] ??= u;
   const fields: Record<string, (number | null)[][]> = {};
   for (const n of names) fields[n] = [];
   const land: number[][] = [];
@@ -158,7 +160,7 @@ export async function joinField(
     lats,
     fields,
     land,
-    units: first ? first.units : {},
+    units,
   };
 }
 

@@ -152,15 +152,15 @@ cells, so a tile's response is about the same size at every zoom.
   speed-up a conditions request should take well under a second; if it
   does, it is not cached. If not, cache it for points on a grid.
 
-### 5. Forecast length
+### 5. Forecast length (done, build order step 1)
 
 - ECMWF open data (ecmwf.int, "Open data"): 00z and 12z runs go to 360 h
-  (0–144 h every 3 h, 150–360 h every 6 h); 06z and 18z to 144 h.
-- The plugin's `forecast.horizon` stops at 240 h. Raise the limit to
-  360 h. Needs checking: whether the wave fields follow the same
-  schedule, how a 06z/18z cycle (144 h) is handled when the horizon is
-  longer, and the decoded run's disk size at 360 h (1.1 GB at 72 h with
-  the extra fields today).
+  (0–144 h every 3 h, 150–360 h every 6 h); 06z and 18z to 144 h. Checked
+  on data.ecmwf.int: the wave stream follows the same schedule
+  (`availableSteps` in `src/data/ecmwf.ts`).
+- `forecast.horizon` now goes to 360 h (`src/plugin/settings.ts`). A
+  horizon above 144 h can only be met by a 00z/12z cycle; 06z/18z cycles
+  (both under `oper`/`wave`) are used when the horizon is 144 h or less.
 
 ### 6. Settings (SI; shown in the user's Signal K units)
 

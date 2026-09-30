@@ -358,6 +358,11 @@ export class TideSource {
     return this.set.revision;
   }
 
+  /** On-demand areas dropped so far (worker.ts: an answer sampled after one was dropped is not kept). */
+  get evictions(): number {
+    return this.set.evictions;
+  }
+
   get resident(): ArcoArea | null {
     return this.set.resident;
   }

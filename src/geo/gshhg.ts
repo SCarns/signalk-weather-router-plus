@@ -39,11 +39,22 @@ export function gshhgDir(dataDir: string): string {
   return path.join(dataDir, 'coastline', 'gshhg-2.3.7');
 }
 
-/** The .shp when a complete download is already in place, else null. */
+/** Written after extraction: each extracted file and its size. */
+const COMPLETE_MARKER = 'complete.json';
+
+/** The .shp when a complete extraction is in place (every file present at the size recorded when extracted), else null. */
 export function gshhgInstalled(dataDir: string): string | null {
   const dir = gshhgDir(dataDir);
-  const ok = GSHHG_ENTRIES.every(e => fs.existsSync(path.join(dir, path.basename(e))));
-  return ok ? path.join(dir, 'GSHHS_f_L1.shp') : null;
+  try {
+    const sizes = JSON.parse(fs.readFileSync(path.join(dir, COMPLETE_MARKER), 'utf8')) as Record<string, number>;
+    for (const e of GSHHG_ENTRIES) {
+      const name = path.basename(e);
+      if (fs.statSync(path.join(dir, name)).size !== sizes[name]) return null;
+    }
+  } catch {
+    return null; // no marker (not extracted, or interrupted) or a file missing
+  }
+  return path.join(dir, 'GSHHS_f_L1.shp');
 }
 
 interface ZipEntry {
@@ -216,12 +227,16 @@ export async function ensureGshhg(dataDir: string, log: (msg: string) => void, o
     if (!fs.existsSync(zip)) throw new Error(failures.join('; '));
   }
   const entries = readZipDirectory(zip);
+  fs.rmSync(path.join(dir, COMPLETE_MARKER), { force: true });
+  const sizes: Record<string, number> = {};
   for (const name of GSHHG_ENTRIES) {
     signal?.throwIfAborted();
     const e = entries.find(x => x.name === name);
     if (!e) throw new Error(`coastline archive has no ${name}`);
     await extractZipEntry(zip, e, path.join(dir, path.basename(name)));
+    sizes[path.basename(name)] = e.size;
   }
+  fs.writeFileSync(path.join(dir, COMPLETE_MARKER), JSON.stringify(sizes));
   fs.rmSync(zip, { force: true });
   const shp = gshhgInstalled(dataDir);
   if (!shp) throw new Error('coastline extraction incomplete');
