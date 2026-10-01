@@ -45,6 +45,11 @@ button[disabled] { opacity: .5; cursor: default; }
 button.link { border: 0; background: none; color: var(--primary); padding: 2px 0; font-size: 13px; }
 .status { padding: 6px 8px; margin-bottom: 12px; border-radius: 6px; background: rgba(127,127,127,.12); }
 .status.error { color: var(--danger); }
+.status.warn { color: #8a5a00; background: rgba(249,168,37,.15); }
+.leg.beyond { border-style: dashed; }
+.leg.current { outline: 2px solid var(--primary); outline-offset: 1px; }
+.chip.boat { border-style: solid; color: var(--primary); border-color: var(--primary); }
+.chip { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 8px; border: 1px dashed #8a5a00; color: #8a5a00; margin-left: 4px; vertical-align: middle; }
 .muted { color: var(--muted); }
 .small { font-size: 12px; }
 /* The trip summary stays in view while the itinerary scrolls under it. */
@@ -136,6 +141,16 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       <span id="sailThreshUnit" class="muted"></span>
     </div>
     <span class="muted small">Below this boat speed under sail, motor instead. Lower = more sailing.</span>
+  </div>
+  <div class="field" id="limitsField">
+    <span class="label">Limits</span>
+    <div class="row">
+      <input id="maxWind" type="number" step="1" min="0" placeholder="max wind" aria-label="Maximum wind speed">
+      <span id="maxWindUnit" class="muted"></span>
+      <input id="maxSwh" type="number" step="0.5" min="0" placeholder="max waves" aria-label="Maximum wave height">
+      <span id="maxSwhUnit" class="muted"></span>
+    </div>
+    <span class="muted small">Legs with more wind or higher waves than this are not allowed. Empty = no limit.</span>
   </div>
   <div class="row">
     <button id="cancel" type="button" hidden>Cancel</button>
@@ -300,7 +315,9 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   var units = null;
   var vessel = null;        // {lat, lon}
   var job = null;           // {id, links, es, onDone}
-  var result = null;        // {routeId, created: bool, original: points|null, props}
+  var result = null;        // {routeId, created: bool, original: points|null, props, href?}
+  var course = null;        // Signal K navigation.course.activeRoute (href, pointIndex, pointTotal, reverse) or null
+  var courseRoute = null;   // {href, first: [lon, lat], last: [lon, lat], n} of the active route, fetched once per href
   var visible = [];         // the host's visible routes: {routeId, name, pointCount, saved, dirty}
   var autoSelected = false;
 
@@ -452,8 +469,36 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       var st = sailThreshMs();
       if (st !== null) body.sail_thresh_ms = st;
     }
+    var mw = limitSI('maxWind', speedUnit());
+    if (mw !== null) body.max_wind_ms = mw;
+    var mh = limitSI('maxSwh', lengthUnit());
+    if (mh !== null) body.max_swh_m = mh;
     return body;
   }
+
+  // ---- wind and wave limits: typed in the host's units, remembered in SI.
+  function lengthUnit() { return units && units.length === 'foot' ? [3.28084, 'ft'] : units && units.length === 'm' ? [1, 'm'] : null; }
+  function limitSI(id, u) { var v = num(id); return u && v !== null ? v / u[0] : null; }
+  var limitDefaultsMs = { maxWind: null, maxSwh: null };
+  function showLimits() {
+    [['maxWind', speedUnit()], ['maxSwh', lengthUnit()]].forEach(function (pair) {
+      var id = pair[0], u = pair[1];
+      $(id).disabled = !u;
+      $(id + 'Unit').textContent = u ? u[1] : '';
+      if (!u || $(id).value !== '' || $(id).dataset.touched) return;
+      var ms = null;
+      try { var s = localStorage.getItem('wrp-plotterext-' + id + '-ms'); if (s !== null && s !== '' && isFinite(+s)) ms = +s; } catch (_) {}
+      if (ms === null) ms = limitDefaultsMs[id];
+      if (ms !== null) $(id).value = (ms * u[0]).toFixed(id === 'maxWind' ? 0 : 1);
+    });
+  }
+  ['maxWind', 'maxSwh'].forEach(function (id) {
+    $(id).addEventListener('change', function () {
+      this.dataset.touched = '1';
+      var ms = limitSI(id, id === 'maxWind' ? speedUnit() : lengthUnit());
+      try { localStorage.setItem('wrp-plotterext-' + id + '-ms', ms === null ? '' : String(ms)); } catch (_) {}
+    });
+  });
 
   // ---- min sail speed (sail_thresh_ms): the plugin's routing setting as the
   // default, edited in the host's speed unit, remembered in this browser.
@@ -479,10 +524,13 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   }
   function loadSailThreshDefault() {
     return get(API + '/settings').then(function (s) {
-      var v = s && s.values && s.values.routing && s.values.routing.sailThreshold;
-      if (isFinite(v)) sailThreshDefaultMs = v;
+      var r = (s && s.values && s.values.routing) || {};
+      if (isFinite(r.sailThreshold)) sailThreshDefaultMs = r.sailThreshold;
+      if (r.maxWind !== null && isFinite(r.maxWind)) limitDefaultsMs.maxWind = r.maxWind;
+      if (r.maxSwh !== null && isFinite(r.maxSwh)) limitDefaultsMs.maxSwh = r.maxSwh;
       showSailThresh();
-    }).catch(function () { showSailThresh(); });
+      showLimits();
+    }).catch(function () { showSailThresh(); showLimits(); });
   }
   $('mode').addEventListener('change', showSailThresh);
   $('sailThresh').addEventListener('change', function () {
@@ -527,7 +575,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var last = i === feats.length - 1;
     var n = last ? null : feats[i + 1].properties;
     var a = f.geometry.coordinates;
-    var out = { time: p.time, last: last, lat: fin(p.lat) ? p.lat : a[1], lon: fin(p.lon) ? p.lon : a[0], via: p.role === 'via', mode: last ? 'arrival' : (n.mode || null) };
+    var out = { time: p.time, last: last, lat: fin(p.lat) ? p.lat : a[1], lon: fin(p.lon) ? p.lon : a[0], via: p.role === 'via', mode: last ? 'arrival' : (n.mode || null), beyond: !!(last ? p.beyond_forecast : n.beyond_forecast) };
     if (last) {
       out.windMs = p.wind_ms; out.windDir = p.wind_dir_deg; out.curMs = p.current_ms; out.curDir = p.current_dir_deg;
       out.swh = p.swh_m; out.mwp = p.mwp_s; out.mwd = p.mwd_deg;
@@ -573,7 +621,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   // One line per point, for the chartplotter's point descriptions (Info and Points views).
   function legText(feats, i) {
     var l = leg(feats, i);
-    var head = fmtTime(l.time) + ' · ' + (l.mode || '—') + (l.tack ? ' (' + l.tack + ')' : '');
+    var head = fmtTime(l.time) + ' · ' + (l.mode || '—') + (l.tack ? ' (' + l.tack + ')' : '') + (l.beyond ? ' · beyond the forecast (conditions held at its last step)' : '');
     return [head].concat(legFields(l).map(function (r) { return r[0] + ' ' + r[1]; })).join(' · ');
   }
   // One line for the route's own description.
@@ -586,7 +634,10 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     parts.push(n + ' waypoints');
     if (p.departure) parts.push('departs ' + fmtTime(p.departure));
     if (p.arrival) parts.push('arrives ' + fmtTime(p.arrival));
-    return 'Weather route: ' + parts.join(', ') + '.';
+    var s = 'Weather route: ' + parts.join(', ') + '.';
+    var beyond = p.legs_beyond_forecast || 0;
+    if (beyond > 0) s += ' Forecast ends ' + (p.forecast_valid_to ? fmtTime(p.forecast_valid_to) : 'before the route does') + '; the last ' + beyond + ' leg' + (beyond > 1 ? 's' : '') + ' ran on conditions held at that step.';
+    return s;
   }
   function renderItinerary(feats, points) {
     var el = $('itinerary');
@@ -594,17 +645,63 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     feats.forEach(function (f, i) {
       var l = leg(feats, i);
       var card = document.createElement('div');
-      card.className = 'leg ' + (l.mode || '') + (l.tack ? ' tack-' + l.tack : '');
+      card.className = 'leg ' + (l.mode || '') + (l.tack ? ' tack-' + l.tack : '') + (l.beyond ? ' beyond' : '');
       var grid = legFields(l).map(function (r) {
         return '<span class="k">' + esc(r[0]) + '</span><span class="v' + (r[2] ? ' ' + r[2] : '') + '">' + esc(r[1]) + '</span>';
       }).join('');
       card.innerHTML =
-        '<div class="leg-head"><span><b>' + (i + 1) + '.</b> ' + esc(fmtTime(l.time)) + ' <span class="muted">' + esc(points[i] ? points[i].name : '') + '</span></span>'
+        '<div class="leg-head"><span><b>' + (i + 1) + '.</b> ' + esc(fmtTime(l.time)) + ' <span class="muted">' + esc(points[i] ? points[i].name : '') + '</span>' + (l.beyond ? '<span class="chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '') + '</span>'
         + '<span class="leg-mode">' + esc(l.mode || '—') + (l.tack ? ' · ' + esc(l.tack) : '') + '</span></div>'
         + '<div class="leg-grid">' + (grid || '<span class="muted">—</span>') + '</div>'
         + '<div class="leg-foot">' + l.lat.toFixed(4) + ', ' + l.lon.toFixed(4) + (l.via ? ' · via' : '') + '</div>';
       el.appendChild(card);
     });
+    followCourse();
+  }
+  // Follow the boat: when the result is the route Freeboard is navigating
+  // (Signal K's navigation.course.activeRoute), the card of the leg the boat
+  // is on is marked and scrolled into view, and moves on as points are
+  // passed. The chartplotter has no event for a tap on a route point
+  // (PR-7 in docs/plans/freeboard-sk-integration.md), so this is the only
+  // way the cards can advance by themselves.
+  function tail(h) { return h ? String(h).split('/').pop() : ''; }
+  function samePos(a, b) { return !!a && !!b && Math.abs(a[0] - b[0]) < 1e-4 && Math.abs(a[1] - b[1]) < 1e-4; }
+  function activeIsResult() {
+    if (!result || !course || !course.href) return false;
+    if (result.href) return tail(result.href) === tail(course.href);
+    // No stored id known for the result (a route that was already saved when
+    // it was weather-routed): compare the active route's ends with the result's.
+    if (!courseRoute || courseRoute.href !== course.href || !result.points) return false;
+    var pts = result.points;
+    return courseRoute.n === pts.length && samePos(courseRoute.first, pts[0].position) && samePos(courseRoute.last, pts[pts.length - 1].position);
+  }
+  function followCourse() {
+    var cards = $('itinerary').children;
+    for (var i = 0; i < cards.length; i++) { cards[i].classList.remove('current'); var c = cards[i].querySelector('.chip.boat'); if (c) c.remove(); }
+    if (!activeIsResult() || typeof course.pointIndex !== 'number') return;
+    if (course.pointTotal !== undefined && course.pointTotal !== cards.length) return;   // the route was edited after routing
+    if (course.reverse) return;   // a weather route sailed backwards has no itinerary to follow
+    // pointIndex is the point the boat is heading to; its card is the leg leaving the point before it.
+    var card = cards[Math.max(0, Math.min(cards.length - 1, course.pointIndex - 1))];
+    if (!card) return;
+    card.classList.add('current');
+    var head = card.querySelector('.leg-head > span');
+    if (head) head.insertAdjacentHTML('beforeend', '<span class="chip boat" title="The leg the boat is on (the active course)">boat</span>');
+    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  function setCourse(v) {
+    course = v && typeof v === 'object' && v.href ? v : null;
+    if (course && (!courseRoute || courseRoute.href !== course.href)) {
+      var href = course.href;
+      courseRoute = null;
+      get('/signalk/v2/api/resources/routes/' + encodeURIComponent(tail(href))).then(function (r) {
+        var coords = r && r.feature && r.feature.geometry && r.feature.geometry.coordinates;
+        if (!Array.isArray(coords) || !coords.length) return;
+        courseRoute = { href: href, first: coords[0], last: coords[coords.length - 1], n: coords.length };
+        followCourse();
+      }).catch(function () {});
+    }
+    followCourse();
   }
 
   // The result's waypoints as host route points. A point that coincides with
@@ -636,7 +733,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         var out = resultPoints(geojson, pts);
         if (out.points.length < 2) { finishJob('The result has no waypoints'); return; }
         host.call('route.replace', { routeId: routeId, points: out.points }).then(function () {
-          result = { routeId: routeId, created: false, original: pts, props: out.props, saved: r.saved, n: out.points.length, hasDescription: !!(r.description && String(r.description).trim()) };
+          result = { routeId: routeId, created: false, original: pts, props: out.props, saved: r.saved, n: out.points.length, points: out.points, hasDescription: !!(r.description && String(r.description).trim()) };
           finishJob('');
           showResult(out.props, out.points.length);
           renderItinerary(out.feats, out.points);
@@ -687,7 +784,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       if (out.points.length < 2) { finishJob('The result has no waypoints'); return; }
       var name = 'Weather route, ' + fmtTime(out.props.departure || new Date().toISOString());
       host.call('route.create', { points: out.points, name: name }).then(function (r) {
-        result = { routeId: r.routeId, created: true, original: null, props: out.props, saved: false, n: out.points.length, hasDescription: false };
+        result = { routeId: r.routeId, created: true, original: null, props: out.props, saved: false, n: out.points.length, points: out.points, hasDescription: false };
         finishJob('');
         showResult(out.props, out.points.length);
         renderItinerary(out.feats, out.points);
@@ -723,7 +820,12 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       + (p.forecast_cycle ? kv('Forecast', fmtTime(p.forecast_cycle)) : '')
       + '</div>';
     if (land > 0 || p.has_land_crossing) html += '<div class="status error">A leg crosses land. Do not use this route.</div>';
-    if (p.forecast_horizon_note) html += '<div class="muted small">' + esc(p.forecast_horizon_note) + '</div>';
+    var beyond = p.legs_beyond_forecast || 0;
+    if (beyond > 0) {
+      html += '<div class="status warn">Forecast ends ' + esc(p.forecast_valid_to ? fmtTime(p.forecast_valid_to) : 'before the route does') + '; the last ' + beyond + ' leg' + (beyond > 1 ? 's' : '') + ' ran on conditions held at that step'
+        + (p.limits_beyond_forecast ? ', and the wind/wave limit was checked against those held conditions' : '')
+        + '. A longer forecast horizon (the web app\'s Settings tab) covers more of the passage.</div>';
+    } else if (p.forecast_horizon_note) html += '<div class="muted small">' + esc(p.forecast_horizon_note) + '</div>';
     $('sumBody').innerHTML = html;
     $('result').hidden = false;
     $('saved').textContent = '';
@@ -740,6 +842,8 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       $('saved').textContent = 'Saved as ' + r.href;
       $('save').disabled = false;
       result.saved = true;
+      result.href = r.href;
+      followCourse();
       $('save').textContent = 'Save changes';
     }).catch(function (e) {
       $('saved').textContent = e.reason === 'routes.saveCancelled' ? '' : 'Not saved: ' + e.message;
@@ -795,7 +899,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       if (!ev || !ev.routeId) return;
       if (name === 'route.visible') upsertVisible({ routeId: ev.routeId, name: ev.name, pointCount: ev.pointCount, saved: ev.saved, dirty: ev.dirty });
       else if (name === 'route.hidden') { removeVisible(ev.routeId); if (result && result.routeId === ev.routeId) clearResult(); }
-      else if (name === 'route.saved') upsertVisible({ routeId: ev.routeId, name: ev.name, saved: true, dirty: false });
+      else if (name === 'route.saved') { upsertVisible({ routeId: ev.routeId, name: ev.name, saved: true, dirty: false }); if (result && result.routeId === ev.routeId && ev.href) { result.href = ev.href; followCourse(); } }
       else if (name === 'route.dirty') upsertVisible({ routeId: ev.routeId, dirty: true });
       renderRoutes();
     }).then(function () { return host.call('route.list'); }).then(function (r) {
@@ -808,7 +912,12 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         var v = ev && ev.value;
         if (v) setVessel(v.latitude, v.longitude);
       }).then(function () { return host.call('signalk.subscribe', { paths: ['navigation.position'] }); }).catch(function () {});
+      // The active course (the route Freeboard is navigating), to follow the boat along the cards.
+      host.subscribe(['sk.navigation.course.activeRoute'], function (_name, ev) {
+        setCourse(ev ? ev.value : null);
+      }).then(function () { return host.call('signalk.subscribe', { paths: ['navigation.course.activeRoute'] }); }).catch(function () {});
     }
+    get('/signalk/v2/api/vessels/self/navigation/course').then(function (c) { if (c && c.activeRoute) setCourse(c.activeRoute); }).catch(function () {});
     get('/signalk/v1/api/vessels/self/navigation/position').then(function (p) {
       var v = p && (p.value || p);
       if (!vessel && v) setVessel(v.latitude, v.longitude);

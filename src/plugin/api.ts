@@ -565,6 +565,23 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     json(res, 200, job.skeleton);
   });
 
+  // Every search stage's front and best path, compact (display only):
+  // [{leg, stage, total, points: [[lon, lat, timeMs, viaCount], …], best: [[lon, lat], …]}, …].
+  ro.get('/api/routes/:id/fronts', (req: Request, res: Response) => {
+    const jobs = jobsOr503(res);
+    if (!jobs) return;
+    const job = jobs.get(req.params.id);
+    if (!job) {
+      json(res, 404, { error: 'job not found' });
+      return;
+    }
+    if (!job.fronts) {
+      json(res, 404, { error: 'no fronts for this job' });
+      return;
+    }
+    json(res, 200, job.fronts);
+  });
+
   ro.get('/api/routes/:id/signalk', (req: Request, res: Response) => {
     const jobs = jobsOr503(res);
     if (!jobs) return;
@@ -690,6 +707,10 @@ function validateRequestShape(b: RouteRequest): string | null {
   if (b.stages !== undefined && (typeof b.stages !== 'number' || b.stages < 4 || b.stages > 200)) return 'stages must be 4..200';
   if (b.sail_thresh_ms !== undefined && (typeof b.sail_thresh_ms !== 'number' || b.sail_thresh_ms < 0))
     return 'sail_thresh_ms must be >= 0';
+  if (b.max_wind_ms !== undefined && (typeof b.max_wind_ms !== 'number' || !(b.max_wind_ms >= 0 && b.max_wind_ms <= 100)))
+    return 'max_wind_ms must be 0..100';
+  if (b.max_swh_m !== undefined && (typeof b.max_swh_m !== 'number' || !(b.max_swh_m >= 0 && b.max_swh_m <= 30)))
+    return 'max_swh_m must be 0..30';
   if (b.simplify_m !== undefined && (typeof b.simplify_m !== 'number' || !(b.simplify_m >= 0 && b.simplify_m <= 5000)))
     return 'simplify_m must be 0..5000';
   if (b.smoother !== undefined && typeof b.smoother !== 'boolean') return 'smoother must be true or false';

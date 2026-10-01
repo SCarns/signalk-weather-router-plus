@@ -584,8 +584,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'progress':
         jobs?.onProgress(msg.id, msg.stage, msg.total, msg.message);
         return;
+      case 'frontier':
+        jobs?.onFrontier(msg.id, { leg: msg.leg, stage: msg.stage, total: msg.total, points: msg.points, best: msg.best });
+        return;
       case 'done': {
-        jobs?.onDone(msg.id, msg.geojson, msg.skRoute, msg.summary, msg.skeleton);
+        jobs?.onDone(msg.id, msg.geojson, msg.skRoute, msg.summary, msg.skeleton, msg.fronts ?? null);
         const job = jobs?.get(msg.id);
         if (job) {
           notify(
@@ -827,13 +830,15 @@ export = function plugin(app: SkApp): SignalKPlugin {
    * is empty, which is how a host learns the extension is gone.
    */
   /** A short hash of the files under a directory (name and content), or 'nofiles'. */
-  function filesHash(dir: string): string {
+  function filesHash(dir: string, exclude: string[] = []): string {
     const h = createHash('sha1');
     const walk = (d: string): void => {
       for (const f of fs.readdirSync(d).sort()) {
         const p = path.join(d, f);
+        const rel = path.relative(dir, p);
+        if (exclude.includes(rel)) continue;
         if (fs.statSync(p).isDirectory()) walk(p);
-        else h.update(path.relative(dir, p)).update(fs.readFileSync(p));
+        else h.update(rel).update(fs.readFileSync(p));
       }
     };
     try {
@@ -855,11 +860,27 @@ export = function plugin(app: SkApp): SignalKPlugin {
    * script and the plotter panel alike, until the URL changes. So on the
    * first start after the files changed (by their content), set their dates
    * to now, and the next conditional request gets the new file.
+   *
+   * That is not enough for the web app's own scripts and stylesheet: a
+   * browser keeps a subresource without asking for a while after a
+   * Last-Modified date (heuristic freshness), so a plain reload of the page
+   * could still run the old scripts. index.html therefore references them
+   * with `?v=<hash of the web files>`, rewritten here when they change (the
+   * hash leaves index.html itself out, so the rewrite does not move it).
    */
+  function versionIndexHtml(pub: string, hash: string): void {
+    const file = path.join(pub, 'index.html');
+    const html = fs.readFileSync(file, 'utf8');
+    const out = html.replace(
+      /\b(src|href)="([A-Za-z0-9_.-]+\.(?:js|css))(?:\?v=[^"]*)?"/g,
+      (_m, attr: string, name: string) => `${attr}="${name}?v=${hash}"`
+    );
+    if (out !== html) fs.writeFileSync(file, out);
+  }
   function refreshPublicFileDates(dataDir: string): void {
     const pub = path.join(__dirname, '..', 'public');
     const stamp = path.join(dataDir, 'public-files.hash');
-    const hash = filesHash(pub);
+    const hash = filesHash(pub, ['index.html']);
     let previous: string;
     try {
       previous = fs.readFileSync(stamp, 'utf8').trim();
@@ -880,10 +901,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
       }
     };
     try {
+      versionIndexHtml(pub, hash);
       walk(pub);
       fs.mkdirSync(dataDir, { recursive: true });
       fs.writeFileSync(stamp, hash);
-      log(`web files changed since the last start: dated ${n} files now, so browsers refetch them`);
+      log(
+        `web files changed since the last start: dated ${n} files now and versioned the page's scripts (?v=${hash}), so browsers refetch them`
+      );
     } catch (err) {
       app.error(`could not re-date the web files: ${(err as Error).message}`);
     }
@@ -1130,7 +1154,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
             for (const k of CHART_OVERRIDE_KEYS) {
               if (!(k in v)) continue;
               const x = v[k];
-              if (k === 'defaultOpacity' && !(typeof x === 'number' && x >= 0 && x <= 1)) throw new Error(`${k} must be a number from 0 to 1`);
+              if (k === 'defaultOpacity' && !(typeof x === 'number' && x >= 0 && x <= 1))
+                throw new Error(`${k} must be a number from 0 to 1`);
               if (k === 'displayMinZoom' && !(typeof x === 'number' && Number.isInteger(x) && x >= 0 && x <= 24))
                 throw new Error(`${k} must be a whole number from 0 to 24`);
               if (k === 'imageAdjustment' && !(x && typeof x === 'object' && !Array.isArray(x))) throw new Error(`${k} must be an object`);

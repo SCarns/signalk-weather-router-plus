@@ -180,8 +180,11 @@ export function stitchLegs(legs: Route[]): Route {
   const warnings: RouteWarning[] = (legs[0].warnings ?? []).map(w => ({ ...w }));
   const autoVias = [...(legs[0].autoVias ?? [])];
   const skeleton = legs[0].skeleton ? [...legs[0].skeleton] : undefined;
+  const fronts = legs.flatMap((leg, li) => (leg.fronts ?? []).map(f => ({ ...f, leg: li })));
   let validated = legs[0].validated;
   let horizon = legs[0].forecastHorizonExceededS ?? 0;
+  let validTo = legs[0].forecastValidToMs;
+  let limitsBeyond = legs[0].limitsBeyondForecast ?? false;
   let drops = legs[0].smootherDrops ?? 0;
   for (let li = 1; li < legs.length; li++) {
     const leg = legs[li];
@@ -209,6 +212,9 @@ export function stitchLegs(legs: Route[]): Route {
       skeleton.push(...(samePoint(skeleton[skeleton.length - 1], leg.skeleton[0]) ? leg.skeleton.slice(1) : leg.skeleton));
     validated = validated && leg.validated;
     horizon = Math.max(horizon, leg.forecastHorizonExceededS ?? 0);
+    if (leg.forecastValidToMs !== undefined)
+      validTo = validTo === undefined ? leg.forecastValidToMs : Math.min(validTo, leg.forecastValidToMs);
+    limitsBeyond = limitsBeyond || (leg.limitsBeyondForecast ?? false);
     drops += leg.smootherDrops ?? 0;
   }
   const route: Route = {
@@ -222,7 +228,10 @@ export function stitchLegs(legs: Route[]): Route {
   if (warnings.length) route.warnings = warnings;
   if (autoVias.length) route.autoVias = autoVias;
   if (skeleton) route.skeleton = skeleton;
+  if (fronts.length) route.fronts = fronts;
   if (horizon > 0) route.forecastHorizonExceededS = horizon;
+  if (validTo !== undefined) route.forecastValidToMs = validTo;
+  if (limitsBeyond) route.limitsBeyondForecast = true;
   if (drops) route.smootherDrops = drops;
   recomputePerWaypointMetadata(route);
   return route;

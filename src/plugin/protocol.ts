@@ -47,6 +47,9 @@ export interface RouteRequest {
   departure?: string;
   mode?: ModePolicy;
   sail_thresh_ms?: number;
+  /** Wind speed (m/s) and significant wave height (m) a leg must not exceed; default from routing.maxWind / routing.maxSwh. */
+  max_wind_ms?: number;
+  max_swh_m?: number;
   /** RDP simplification tolerance, metres (0 = off); default from routing.simplify. */
   simplify_m?: number;
   /** Run the shortcut smoother; default from routing.smoother. */
@@ -254,12 +257,16 @@ export type WorkerToMain =
   /** data worker: tidal-harmonic sources loaded (shared constituent blocks). */
   | { type: 'harmonic'; sources: SerializedHarmonic[] }
   | { type: 'progress'; id: string; stage: number; total: number; message: string }
+  /** route worker: a search stage's front for display (streamed, never stored): points [lon, lat, timeMs, viaCount], best path [lon, lat]. */
+  | { type: 'frontier'; id: string; leg: number; stage: number; total: number; points: number[][]; best: number[][] }
   | {
       type: 'done';
       id: string;
       geojson: Record<string, unknown>;
       skRoute: Record<string, unknown>;
       skeleton: Record<string, unknown> | null;
+      /** Every stage's front and best path (see route.ts StageFront), compact: points [lon, lat, timeMs, viaCount]. */
+      fronts?: { leg: number; stage: number; total: number; points: number[][]; best: number[][] }[] | null;
       summary: RouteSummary;
     }
   | { type: 'error'; id: string; message: string; cancelled?: boolean }

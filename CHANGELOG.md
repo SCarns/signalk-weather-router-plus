@@ -48,6 +48,60 @@ uses [Semantic Versioning](https://semver.org/).
   temperature, Sea temperature), each holding the layers whose data is
   there.
 
+- **The search, live on the map.** The web app's new **Stage fronts**
+  layer (Layers, on by default) draws the router's search as it runs: the
+  front of every stage (the candidates kept after pruning, sorted across
+  the track, coloured blue → amber by stage; each point keeps its own
+  arrival time, so these are not isochrones) and the best path so far
+  (dashed). Streamed as `frontier` events on the job's event stream
+  (never stored with the job); the finished job's fronts come from
+  `GET /api/routes/:id/fronts` and are drawn faintly, also for past
+  routes from the log.
+- **Wind and wave limits.** Settings `routing.maxWind` and
+  `routing.maxSwh` (empty = none) and per-request `max_wind_ms` /
+  `max_swh_m`: a leg is not allowed where the forecast wind speed or the
+  significant wave height exceeds the limit. The search samples waves
+  along every candidate (batched, only when a wave limit is set), the
+  single-leg simulator, the final hop and the smoother respect the same
+  limits, a route with no way through says so ("… or over the wind/wave
+  limit"), and legs whose waypoints exceed a limit carry a
+  `wind_over_limit` / `waves_over_limit` warning. Fields in the web app's
+  Plan tab (in your units) and in the Freeboard panel.
+- **The Freeboard panel follows the boat.** When the weather route is the
+  route Freeboard is navigating (Signal K `navigation.course.activeRoute`),
+  the card of the leg the boat is on is outlined, tagged "boat" and
+  scrolled into view, and moves on as points are passed. The route is
+  matched by its stored id (after a save) or by its ends and point count;
+  a route edited after routing, or sailed in reverse, is not followed.
+  Freeboard has no event for a tap on a route point, so the cards cannot
+  follow a tap (PR-7 in docs/plans/freeboard-sk-integration.md).
+- **Where the forecast ends is now visible on the route.** When a route
+  arrives after the forecast's last step, the result strip shows an amber
+  "N legs beyond the forecast" badge (it opens Settings) with the end
+  time, the legs after it are drawn dashed with a "forecast ends" marker
+  where the route crosses that time, the itinerary cards carry a chip,
+  and the saved route's description and point descriptions say so; the
+  Freeboard panel shows the same warning and marks its leg cards. The
+  GeoJSON carries `forecast_valid_to`, `legs_beyond_forecast` and
+  `beyond_forecast` on each point after the end; `limits_beyond_forecast`
+  says a wind/wave limit was checked against held conditions there.
+  Before, the only sign was one line in the Log tab and a grey note in
+  the panel.
+- **A boxed-in search says why.** Once the planned stages are used, three
+  stages in a row without any candidate coming closer to the destination
+  end the search with "the search is boxed in", counting how many of the
+  last stage's candidates were over the wind/wave limit, crossed land or
+  had no boat speed, and naming the forecast end (and how far past it the
+  search was) when it had run beyond the forecast. The per-stage progress
+  line carries the same counts, and a run that exhausts its stages far
+  from the destination reports that instead of "terminal hop … could not
+  be simulated". Found on a Cadiz → Greenland test with a 15.4 m/s wind
+  limit and a 72 h forecast: the front shuffled 1,340 km from the goal for
+  28 stages, held on conditions frozen 10 days earlier. The counts tell
+  no-go-angle candidates ("dead upwind") from the rest, and each stage
+  line gives the date of its best candidate, so the forecast end can be
+  seen going past.
+
 ### Removed
 
 - Eight vessel settings that the router never used: draught, air draft,
@@ -65,6 +119,46 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A long beat no longer tacks in place.** The wider heading sweeps
+  (±120°, then half step, then the full circle at a quarter step) used to
+  run only when a whole stage's primary sweep was empty. On a passage dead
+  to windward with a narrow primary sweep (±30° at 1°, the default) the
+  parents facing upwind got nothing whenever one sibling had a survivor,
+  so the front shrank to 1–4 members and alternated between two positions
+  (an eastern Mediterranean test: best remaining 1,356 → 1,430 → 1,356 km
+  for seven stages). The fallback ladder now runs per parent, for the
+  parents whose own sweep came up empty. On a 600 km synthetic beat the
+  route went from 1,175 km / 82 h to 997 km / 72 h and the best remaining
+  distance falls at every stage.
+- **The leading branch can no longer be pruned away.** The subsector
+  pruning keeps one candidate per cross-track bin by elapsed time plus
+  remaining distance at cruise (motor) speed, which is optimistic to
+  windward: on a Samothrace → Egypt test a branch 217 km further back but
+  30 h earlier took every bin of the leader and the best remaining
+  distance jumped from 545 km to 762 km. The candidate nearest each goal
+  now always survives the stage, so the best remaining distance never
+  increases. The stall detector that stops a boxed-in search waits for
+  the hard stage ceiling when the front is beating (a tenth or more of
+  its water candidates dead upwind), since a beat sails well beyond the
+  planned distance; otherwise it fires once the planned stages are used.
+  Progress is measured towards the deepest branch's next via (or the
+  destination once every via is crossed), and a search boxed in before
+  every via is crossed raises the vias-not-crossed error, so the router
+  retries without the corridor's automatic vias as it does when the
+  stages run out (a Samothrace → Libya test: the Kythira branch died on
+  the wind limit, the branch east of Crete reached 7 km from the
+  destination with that via behind it, and the plain "boxed in" error
+  had skipped the retry).
+- **The final approach to windward is now sailed as a beat.** The last
+  straight hop into a waypoint or the destination has one bearing; when
+  that lay inside the polar's no-go angle the route failed ("terminal
+  hop … stuck under sail_max"). The router now beats to it on two
+  close-hauled legs (the polar's tightest sailable angle plus 3°) meeting
+  at a tack point, in whichever order is faster and clear of land, and
+  says so in the log. Mid-route, candidates the polar cannot sail stay
+  "stuck" rather than motoring, which is what makes the router widen its
+  heading sweep and tack; a min sail speed of 0 therefore means "sail
+  whenever the polar gives any speed".
 - Configuration panel: on a fresh install the Save button stayed greyed
   out until some field was changed, yet a save is the only way the Admin
   UI enables a plugin that has no saved configuration ("Save

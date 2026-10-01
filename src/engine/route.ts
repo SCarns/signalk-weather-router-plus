@@ -43,10 +43,29 @@ export interface Waypoint {
 
 export interface RouteWarning {
   leg_index: number;
-  violation: 'leg_crosses_land' | 'leg_too_shallow';
+  violation: 'leg_crosses_land' | 'leg_too_shallow' | 'wind_over_limit' | 'waves_over_limit';
   from: [number, number];
   to: [number, number];
   repaired: boolean;
+}
+
+export interface FrontPoint {
+  lon: number;
+  lat: number;
+  timeMs: number;
+  /** Which goal (waypoint) the point is heading for; 0 before the first via. */
+  viaCount: number;
+}
+
+export interface StageFront {
+  /** Leg index for multi-leg routes (0 for a single leg). */
+  leg: number;
+  stage: number;
+  totalStages: number;
+  /** Sorted across the track within each viaCount. */
+  points: FrontPoint[];
+  /** The best candidate's path back to the start, [lon, lat] from the start. */
+  best: [number, number][];
 }
 
 export interface Route {
@@ -59,12 +78,22 @@ export interface Route {
   validated: boolean;
   /** Set by the caller when the route runs past the forecast's last step. */
   forecastHorizonExceededS?: number;
+  /** The forecast's last valid step (ms since epoch), set by the caller; waypoints after it ran on held conditions. */
+  forecastValidToMs?: number;
+  /** Set by the caller when a wind or wave limit was in force on legs past the forecast's last step. */
+  limitsBeyondForecast?: boolean;
   /** Forecast cycle used, ISO string, when any. */
   forecastCycle?: string;
   /** Names of the current sources that were stacked, when any. */
   currentSources?: string[];
   /** Coarse A* skeleton that guided the heading sweep, when one was found. */
   skeleton?: { lon: number; lat: number }[];
+  /**
+   * The front of every search stage (the candidates kept after pruning, each
+   * with its own arrival time; not equal-time isochrones) and the best path
+   * back to the start at that stage. For display only.
+   */
+  fronts?: StageFront[];
   /** Waypoints the shortcut smoother dropped (RDP thinning not counted, as in the parent). */
   smootherDrops?: number;
   /** Automatic vias the router placed at narrow passages (not waypoints). */
@@ -104,6 +133,21 @@ export function recomputePerWaypointMetadata(route: Route): void {
 function round(v: number, digits: number): number {
   const f = 10 ** digits;
   return Math.round(v * f) / f;
+}
+
+/**
+ * Where the forecast ends relative to the route: its last valid step, how many
+ * legs end after it (they ran on conditions held at that step) and by how much
+ * the arrival is past it. Null when the caller gave no forecast end.
+ */
+export function forecastEnd(route: Route): { validTo: Date; legsBeyond: number; beyondS: number } | null {
+  if (route.forecastValidToMs === undefined) return null;
+  const validTo = new Date(route.forecastValidToMs);
+  const wps = route.waypoints;
+  let legsBeyond = 0;
+  for (let i = 1; i < wps.length; i++) if (wps[i].time.getTime() > route.forecastValidToMs) legsBeyond++;
+  const arrival = wps.length ? wps[wps.length - 1].time.getTime() : route.forecastValidToMs;
+  return { validTo, legsBeyond, beyondS: Math.max(0, (arrival - route.forecastValidToMs) / 1000) };
 }
 
 function finite(v: number | undefined): v is number {
@@ -159,9 +203,15 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
       radius_m: Math.round(v.radiusM),
     }));
   }
-  if (route.forecastHorizonExceededS && route.forecastHorizonExceededS > 0) {
-    props.forecast_horizon_exceeded_s = round(route.forecastHorizonExceededS, 0);
-    props.forecast_horizon_note = 'the route arrives after the last forecast step; conditions beyond it are held at the last step';
+  const fe = forecastEnd(route);
+  if (fe) {
+    props.forecast_valid_to = fe.validTo.toISOString();
+    if (fe.legsBeyond > 0) {
+      props.forecast_horizon_exceeded_s = round(route.forecastHorizonExceededS ?? fe.beyondS, 0);
+      props.legs_beyond_forecast = fe.legsBeyond;
+      props.forecast_horizon_note = `the route arrives after the last forecast step; the last ${fe.legsBeyond} leg${fe.legsBeyond === 1 ? '' : 's'} ran on conditions held at that step`;
+      if (route.limitsBeyondForecast) props.limits_beyond_forecast = true;
+    }
   }
   if (route.warnings && route.warnings.length) {
     props.warnings = route.warnings;
@@ -185,6 +235,7 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
   ];
   for (let i = 0; i < wps.length; i++) {
     const p = waypointProperties(wps[i]);
+    if (fe && wps[i].time.getTime() > fe.validTo.getTime()) p.beyond_forecast = true;
     if (i + 1 < wps.length) {
       const nxt = wps[i + 1];
       p.leg_distance_m = round(haversineDistanceM(wps[i].lon, wps[i].lat, nxt.lon, nxt.lat), 1);
@@ -206,13 +257,18 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
  */
 export function routeToSignalKRoute(route: Route, name: string, description?: string): Record<string, unknown> {
   const wps = route.waypoints;
+  const fe = forecastEnd(route);
+  const beyondNote =
+    fe && fe.legsBeyond > 0
+      ? ` Forecast ends ${fe.validTo.toISOString().slice(0, 16).replace('T', ' ')} UTC; the last ${fe.legsBeyond} leg${fe.legsBeyond === 1 ? '' : 's'} ran on conditions held at that step.`
+      : '';
   return {
     name,
     // Unit-free: the web app rewrites this (and each point's description) in the
     // user's display units once the route is published.
     description:
       description ??
-      `Weather route: ${wps.length} waypoints, sailing ${route.totalTimeS > 0 ? Math.round((100 * route.sailingTimeS) / route.totalTimeS) : 0}% of the time`,
+      `Weather route: ${wps.length} waypoints, sailing ${route.totalTimeS > 0 ? Math.round((100 * route.sailingTimeS) / route.totalTimeS) : 0}% of the time.${beyondNote}`,
     distance: round(route.totalDistanceM, 1),
     start: wps.length ? wps[0].time.toISOString() : undefined,
     end: wps.length ? wps[wps.length - 1].time.toISOString() : undefined,
@@ -226,9 +282,12 @@ export function routeToSignalKRoute(route: Route, name: string, description?: st
         sailing_time_s: round(route.sailingTimeS, 1),
         departure: wps.length ? wps[0].time.toISOString() : null,
         arrival: wps.length ? wps[wps.length - 1].time.toISOString() : null,
+        ...(fe ? { forecast_valid_to: fe.validTo.toISOString() } : {}),
+        ...(fe && fe.legsBeyond > 0 ? { legs_beyond_forecast: fe.legsBeyond } : {}),
         coordinatesMeta: wps.map((w, i) => ({
           name: i === 0 ? 'Start' : i === wps.length - 1 ? 'End' : `WP${i}`,
           ...waypointProperties(w),
+          ...(fe && w.time.getTime() > fe.validTo.getTime() ? { beyond_forecast: true } : {}),
         })),
       },
     },

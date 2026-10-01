@@ -536,6 +536,18 @@ function _segAtMeridian(a, b) {
 // in the Itinerary name bar.
 let _currentRouteName = '';
 
+// Padding for fitting the map to a route: the side panel (desktop) or the
+// bottom sheet (mobile) covers part of the map, so the fit leaves it out.
+function _mapFitPadding() {
+  const pad = [60, 60, 60, 60];
+  const panel = document.getElementById('panel');
+  if (!panel) return pad;
+  const r = panel.getBoundingClientRect(), w = window.innerWidth, h = window.innerHeight;
+  if (r.width >= w * 0.9 && r.top > h * 0.3) pad[2] = Math.round(h - r.top) + 20;
+  else if (r.left > w * 0.3) pad[1] = Math.round(w - r.left) + 20;
+  return pad;
+}
+
 function displayRoute(geojson) {
   _selectedRouteFeature = null;
   routeSource.clear();
@@ -624,6 +636,10 @@ function displayRoute(geojson) {
     prev.set('next_swh_m', curr.get('swh_m'));
     prev.set('next_mwp_s', curr.get('mwp_s'));
     prev.set('next_mwd_deg', curr.get('mwd_deg'));
+    // The leg ends after the forecast's last step: drawn dashed, the point
+    // flagged for the itinerary card and the saved description.
+    const beyond = !!curr.get('beyond_forecast');
+    prev.set('next_beyond_forecast', beyond);
     const _ac = prev.getGeometry().getCoordinates();
     const _bc = curr.getGeometry().getCoordinates();
     const _aLL = ol.proj.toLonLat(_ac);
@@ -641,10 +657,24 @@ function displayRoute(geojson) {
         geometry: new ol.geom.LineString([_sp[0], _sp[1]])
       });
       segLine.setStyle(new ol.style.Style({
-        stroke: new ol.style.Stroke({ color: segColor, width: 3 })
+        stroke: new ol.style.Stroke({ color: segColor, width: 3, lineDash: beyond ? [10, 7] : undefined })
       }));
       routeSource.addFeature(segLine);
     }
+  }
+  // Where the forecast runs out along the route: a marker on the first leg
+  // that ends after the last forecast step, placed by time along that leg.
+  const _validTo = _snapProps.forecast_valid_to ? Date.parse(_snapProps.forecast_valid_to) : NaN;
+  const _firstBeyond = pts.findIndex(f => f.get('beyond_forecast'));
+  if (Number.isFinite(_validTo) && _firstBeyond > 0) {
+    const a = pts[_firstBeyond - 1], b = pts[_firstBeyond];
+    const ta = Date.parse(a.get('time')), tb = Date.parse(b.get('time'));
+    const frac = tb > ta ? Math.min(1, Math.max(0, (_validTo - ta) / (tb - ta))) : 0;
+    const aLL = ol.proj.toLonLat(a.getGeometry().getCoordinates()), bLL = ol.proj.toLonLat(b.getGeometry().getCoordinates());
+    let dLon = bLL[0] - aLL[0];
+    if (dLon > 180) dLon -= 360; else if (dLon < -180) dLon += 360;
+    const at = ol.proj.fromLonLat([aLL[0] + dLon * frac, aLL[1] + (bLL[1] - aLL[1]) * frac]);
+    routeSource.addFeature(new ol.Feature({ geometry: new ol.geom.Point(at), kind: 'forecast_end', valid_to: _snapProps.forecast_valid_to }));
   }
 
   const lineFeat = features.find(f => f.getGeometry().getType() === 'LineString');
@@ -689,9 +719,6 @@ function displayRoute(geojson) {
     if (p.end_snap_distance_m > 0) {
       _navWarns.push('End not navigable — anchored '
         + Math.round(p.end_snap_distance_m) + ' m away');
-    }
-    if (p.forecast_horizon_exceeded_s > 0) {
-      _navWarns.push('Arrival ' + fmtTime(p.forecast_horizon_exceeded_s) + ' past the last forecast step — conditions beyond it are held at the last step');
     }
     _routeWarnings = Array.isArray(p.warnings) ? p.warnings : [];
     renderResultStrip(p, _navWarns);
@@ -1234,11 +1261,11 @@ function _loadRouteJob(id) {
       _routeStale = false;
       if (typeof updatePlanHint === 'function') updatePlanHint();
       // Zoom to the loaded route's extent with padding so the map
-      // frames the entire track.
+      // frames the entire track beside the panel (not under it).
       const ext = routeSource.getExtent();
       if (ext && ext.every(Number.isFinite)) {
         map.getView().fit(ext, {
-          padding: [60, 60, 60, 60],
+          padding: _mapFitPadding(),
           duration: 400,
           maxZoom: 14,
         });
@@ -1260,6 +1287,7 @@ function _loadRouteJob(id) {
       skeletonSource.addFeatures(features);
     })
     .catch(() => skeletonSource.clear());
+  if (typeof _loadFronts === 'function') _loadFronts(id);
 }
 
 function _clearDisplayedRoute() {
@@ -1267,6 +1295,7 @@ function _clearDisplayedRoute() {
   _currentRouteName = '';
   routeSource.clear();
   skeletonSource.clear();
+  frontSource.clear();
   startFeature.setGeometry(null);
   endFeature.setGeometry(null);
   const routeInfo = document.getElementById('routeInfo');

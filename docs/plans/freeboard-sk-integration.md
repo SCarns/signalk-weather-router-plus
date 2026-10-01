@@ -218,6 +218,44 @@ currents, the tidal-currents plugin). Chart resources tagged
 toggle and time control, so the weather layers sit with the other weather
 items instead of among nautical charts.
 
+### PR-7: route point selection event (added 2026-10-01)
+
+The host emits four route events (`route.visible`, `route.dirty`,
+`route.saved`, `route.hidden`) and nothing when the user taps a point or a
+leg of a visible route on the chart; an iframe panel cannot see pointer
+events outside itself. A `route.pointSelected` event — `{ routeId, rev,
+pointIndex }`, origin-transparent like the others, emitted when a route
+point (or its popover) is tapped — would let our panel open the matching
+leg card. The reverse, `route.selectPoint({ routeId, pointIndex })` to
+highlight a point from the panel, is the same small change in the host's
+route layer. Until then the panel follows the boat instead: with the route
+active as the course it subscribes to `navigation.course.activeRoute.href`
+and `.pointIndex` through `signalk.subscribe` and highlights the current
+leg's card (done 2026-10-01).
+
+### PR-8: Freeboard follows the Signal K unit preferences (added 2026-10-01)
+
+Freeboard keeps its own unit settings (speed, distance, depth, temperature;
+length follows depth, `app.config.ts:120`) and reports them to extensions
+through `units.get`. Signal K has per-user unit preferences (the
+`unitpreferences` application data, presets such as `nautical-imperial-us`
+and `metric`) that the Admin UI and this plugin's web app use. For a user
+whose two settings differ, Freeboard shows kilometres and metres while the
+same user's Signal K apps show nautical miles and feet. Two steps:
+
+1. Freeboard reads the Signal K unit preferences of the logged-in user as
+   its units (and reports them through `units.get`), with its own settings
+   kept only for a server without preferences.
+2. Freeboard's existing Settings → Units controls **edit the underlying
+   Signal K preferences** instead of a separate copy, so a change made in
+   Freeboard applies to every Signal K app and the user never has to leave
+   Freeboard to keep the units consistent.
+
+Until this lands the extension panel stays on Freeboard's units: units
+must not change from one part of the Freeboard interface to another, so
+the panel matches Freeboard's own route list and distances even when they
+differ from the Signal K preferences (decision 2026-10-01).
+
 ### Signal K server PR: static files served without ETags (added 2026-10-01)
 
 Files installed by npm carry npm's fixed date (26 Oct 1985); the server

@@ -83,6 +83,19 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       departure: { type: 'string', format: 'date-time', description: 'Empty or absent = now' },
       mode: { type: 'string', enum: ['sail_max', 'fastest', 'motor'], default: 'sail_max' },
       sail_thresh_ms: { type: 'number', minimum: 0, description: 'Overrides the routing.sailThreshold setting (m/s)' },
+      max_wind_ms: {
+        type: 'number',
+        minimum: 0,
+        maximum: 100,
+        description: 'A leg is not allowed where the forecast wind speed exceeds this (m/s); overrides routing.maxWind',
+      },
+      max_swh_m: {
+        type: 'number',
+        minimum: 0,
+        maximum: 30,
+        description:
+          'A leg is not allowed where the significant wave height exceeds this (m); overrides routing.maxSwh. Needs wave data in the forecast',
+      },
       simplify_m: {
         type: 'number',
         minimum: 0,

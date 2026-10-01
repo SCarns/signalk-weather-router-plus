@@ -35,12 +35,28 @@ export interface SimOptions {
   modePolicy: ModePolicy;
   sailThreshMs: number;
   simStepM: number;
+  /** A leg is not allowed where the wind speed (m/s) or the significant wave height (m) exceeds these. */
+  maxWindMs?: number;
+  maxSwhM?: number;
 }
 
 function selectSpeed(sailSpeed: number, motorSpeed: number, policy: ModePolicy, sailThreshMs: number): [number, boolean] {
   if (policy === 'motor') return [motorSpeed, false];
   if (policy === 'fastest') return sailSpeed > motorSpeed ? [sailSpeed, true] : [motorSpeed, false];
+  // A candidate the polar cannot sail (0 speed, e.g. in the no-go angle) is
+  // stuck, never motored: that is what makes the propagator widen its heading
+  // sweep and tack. Motoring is only for speeds below a positive threshold.
   return sailSpeed >= sailThreshMs ? [sailSpeed, true] : [motorSpeed, false];
+}
+
+/** True when the wind or the waves at (lon, lat, t) exceed a limit set in `opts`. */
+function overLimit(ws: number, opts: SimOptions, wind: WindSource, lon: number, lat: number, t: Date): boolean {
+  if (opts.maxWindMs !== undefined && ws > opts.maxWindMs) return true;
+  if (opts.maxSwhM !== undefined && wind.hasWaves) {
+    const wv = wind.wavesAt(lon, lat, t);
+    if (wv && wv.swh > opts.maxSwhM) return true;
+  }
+  return false;
 }
 
 /** Simulate traversal of the straight line a→c starting at aTime. */
@@ -76,6 +92,9 @@ export function simulateLegTime(
   for (let k = 0; k < nSteps; k++) {
     const t = new Date(tMs);
     const [ws, wd] = wind.at(lon, lat, t);
+    if (overLimit(ws, opts, wind, lon, lat, t)) {
+      return { seconds: Infinity, dominantMode: 'stuck', sampleCount: k + 1, sailingSeconds: 0, motoringSeconds: 0 };
+    }
     const [cu, cv] = current.at(lon, lat, t);
     let sailSpeed = 0;
     if (polar && Number.isFinite(ws)) {
@@ -113,6 +132,10 @@ export interface CandidateScores {
   motoring: Float64Array;
   /** 1 = sailing dominant, 0 = motoring, -1 = stuck. */
   dominant: Int8Array;
+  /** 1 when the candidate was stopped by a wind or wave limit. */
+  limited: Uint8Array;
+  /** 1 when the candidate was stopped because its heading lies in the polar's no-go angle (dead upwind). */
+  noGo: Uint8Array;
 }
 
 /**
@@ -140,7 +163,9 @@ export function scoreCandidatesFromParent(
   const sailing = new Float64Array(n);
   const motoring = new Float64Array(n);
   const dominant = new Int8Array(n);
-  if (n === 0) return { seconds, sailing, motoring, dominant };
+  const limited = new Uint8Array(n);
+  const noGo = new Uint8Array(n);
+  if (n === 0) return { seconds, sailing, motoring, dominant, limited, noGo };
 
   const motor = vessel.motorSpeedMs;
   let maxDist = 0;
@@ -184,21 +209,29 @@ export function scoreCandidatesFromParent(
     const latsL = liveLat.subarray(0, nLive);
     const w = wind.atMany(lonsL, latsL, sampleTime);
     const c = current.atMany(lonsL, latsL, sampleTime);
+    const swh = opts.maxSwhM !== undefined && wind.hasWaves && wind.wavesAtMany ? wind.wavesAtMany(lonsL, latsL, sampleTime) : null;
 
     for (let q = 0; q < nLive; q++) {
       const i = liveIdx[q];
       let ws = w.speed[q];
       let wd = w.dir[q];
+      if ((opts.maxWindMs !== undefined && ws > opts.maxWindMs) || (swh !== null && opts.maxSwhM !== undefined && swh[q] > opts.maxSwhM)) {
+        stuck[i] = 1;
+        limited[i] = 1;
+        continue;
+      }
       if (!Number.isFinite(ws)) ws = 0;
       if (!Number.isFinite(wd)) wd = 0;
       const cu = Number.isFinite(c.u[q]) ? c.u[q] : 0;
       const cv = Number.isFinite(c.v[q]) ? c.v[q] : 0;
 
       let sailSpeed = 0;
+      let inNoGo = false;
       if (polar) {
         let twa = (((bearings[i] - wd) % 360) + 360) % 360;
         if (twa > 180) twa = 360 - twa;
         sailSpeed = polar.boatSpeed(twa, ws);
+        inNoGo = sailSpeed <= 0 && twa < polar.noGoFloor(ws);
       }
       const [waterSpeed, sailUsed] = selectSpeed(sailSpeed, motor, opts.modePolicy, opts.sailThreshMs);
       const sogU = waterSpeed * headingU[i] + cu;
@@ -206,6 +239,7 @@ export function scoreCandidatesFromParent(
       const progress = sogU * headingU[i] + sogV * headingV[i];
       if (progress <= 0) {
         stuck[i] = 1;
+        if (inNoGo) noGo[i] = 1;
         continue;
       }
       const stepS = stepPerCand[i] / progress;
@@ -226,5 +260,5 @@ export function scoreCandidatesFromParent(
       dominant[i] = sailing[i] >= motoring[i] ? 1 : 0;
     }
   }
-  return { seconds, sailing, motoring, dominant };
+  return { seconds, sailing, motoring, dominant, limited, noGo };
 }

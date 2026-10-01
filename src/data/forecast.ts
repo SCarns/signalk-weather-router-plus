@@ -629,6 +629,21 @@ export class ForecastStore implements WindSource {
     return { swh, mwp, mwd };
   }
 
+  wavesAtMany(lons: Float64Array, lats: Float64Array, time: Date): Float64Array {
+    const n = lons.length;
+    const out = new Float64Array(n);
+    if (!this.hasWaves) return out.fill(NaN);
+    const [i0, i1, a] = this.timeBlend(time);
+    const s0 = this.steps[i0].fields.get('swh')!;
+    const s1 = this.steps[i1].fields.get('swh')!;
+    for (let k = 0; k < n; k++) {
+      let swh = sampleField(s0, lons[k], lats[k]);
+      if (a !== 0 && i0 !== i1) swh = swh * (1 - a) + sampleField(s1, lons[k], lats[k]) * a;
+      out[k] = swh;
+    }
+    return out;
+  }
+
   /** Mean sea-level pressure in Pa, or NaN when not loaded. */
   mslAt(lon: number, lat: number, time: Date): number {
     return this.blended('msl', lon, lat, time);

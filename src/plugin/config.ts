@@ -121,6 +121,8 @@ export interface ResolvedConfig {
     headings: number;
     headingIncrementDeg: number;
     sailThreshMs: number;
+    maxWindMs: number | null;
+    maxSwhM: number | null;
     simStepM: number;
     landRasterMaxCells: number;
     /** Open the known canals' edges in the global water grid. */
@@ -339,6 +341,8 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       headings: r.headings,
       headingIncrementDeg: r.headingIncrement,
       sailThreshMs: r.sailThreshold,
+      maxWindMs: r.maxWind ?? null,
+      maxSwhM: r.maxSwh ?? null,
       simStepM: r.simStep,
       landRasterMaxCells: r.landRasterMaxCells,
       allowCanals: r.allowCanals,

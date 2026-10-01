@@ -211,6 +211,11 @@
   .rs-warnlist div { padding: 1px 0; }
   .rs-warnlist .land { color: var(--danger); font-weight: 600; }
   .rs-stale { margin-top: 2px; font-size: var(--f-xs); color: var(--warn); font-weight: 600; }
+  /* The forecast ends before the route does: badge + note, and the affected cards. */
+  .rs-beyond { margin-top: 2px; font-size: var(--f-xs); color: var(--warn); }
+  .rs-beyond a { color: inherit; text-decoration: underline; cursor: pointer; }
+  .leg-card.beyond-forecast { border-style: dashed; opacity: 0.9; }
+  .leg-beyond-chip { font-size: 10px; padding: 1px 5px; border-radius: var(--r-sm); background: #3a2a10; color: #f0c270; margin-left: 4px; border: 1px dashed #f0c270; }
   #routeInfo.stale .rs-main, #itinSummary.stale .rs-main { opacity: 0.55; }
   #itinSummary { margin: var(--s-2) var(--s-2) 0; color: var(--text); }
   /* Itinerary warnings block + per-card marks. */
@@ -676,6 +681,11 @@
   <div class="ctl-hint">Below this speed, skip sailing and motor instead. Lower = more sailing segments.</div>
   <input type="range" id="sailThresh" min="0" max="10" step="0.5" value="5.0" aria-label="Minimum sailing speed in knots">
 
+  <label>Max wind: <input type="number" id="maxWind" min="0" step="1" placeholder="none" style="width:5em;" aria-label="Maximum wind speed"> <span class="unitOf" data-q="speed"></span></label>
+  <div class="ctl-hint">Legs where the forecast wind is above this are not allowed. Empty = no limit.</div>
+  <label>Max wave height: <input type="number" id="maxSwh" min="0" step="0.5" placeholder="none" style="width:5em;" aria-label="Maximum wave height"> <span class="unitOf" data-q="wave_height"></span></label>
+  <div class="ctl-hint">Legs where the significant wave height is above this are not allowed. Empty = no limit.</div>
+
   </div>
   </details>
 
@@ -769,6 +779,7 @@
     </div>
     <div class="layer-group" data-group="weather">
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="windToggle" style="width:auto;margin-right:4px;" onchange="windLayer.setVisible(this.checked); if(this.checked) loadWindOverlay(); else windSource.clear();">Wind barbs</label>
+    <label style="display:block;font-size:11px;cursor:pointer;" title="The router's search: the front of each stage (the candidates it kept, each with its own arrival time; not isochrones) and the best path so far, live while a route runs."><input type="checkbox" id="frontToggle" checked style="width:auto;margin-right:4px;" onchange="frontLayer.setVisible(this.checked);">Stage fronts (the search)</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="windCombinedToggle" style="width:auto;margin-right:4px;" onchange="windHeatmapLayer.setVisible(this.checked); if(this.checked) loadWindHeatmap(); else windHeatmapLayer.setSource(null); windStreamlines.setEnabled(this.checked);">Wind speed (colour) + flow lines</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="precipToggle" style="width:auto;margin-right:4px;" onchange="precipHeatmapLayer.setVisible(this.checked); if(this.checked) loadPrecipHeatmap(); else precipHeatmapLayer.setSource(null);">Precipitation rate</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="temperatureToggle" style="width:auto;margin-right:4px;" onchange="temperatureLayer.setVisible(this.checked); if(this.checked) loadTemperature(); else temperatureLayer.setSource(null);">Air temperature (2 m)</label>

@@ -362,6 +362,11 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
 
   ![Polar diagram of the selected polar, and the sailing strategy modes](public/screenshots/06-polars.jpg)
 
+- **Stage fronts** (Layers, on by default): the router's search drawn as
+  it runs, one line per stage front (the candidates kept after pruning,
+  blue → amber by stage; every point has its own arrival time, so they are
+  not isochrones) and the best path so far, dashed. The finished route's
+  fronts stay, faintly, also for a past route opened from the log.
 - **Settings tab**: the web-app settings below, in the selected units.
 - The page references its scripts with `?v=<tag>`, a tag that changes
   whenever a file in `public/` changes, so browsers and proxies in front
@@ -398,7 +403,9 @@ and the panel runs in a sandboxed iframe served from
 - Both use the chosen polar (the same list as the web app), mode (Sail
   max, Fastest, Motor) and, under sail, the **min sail speed** (the boat
   speed under sail below which the router motors; the plugin's routing
-  setting by default, in Freeboard's speed unit). Progress is shown;
+  setting by default, in Freeboard's speed unit), and the **Limits**: a
+  maximum wind speed and wave height that no leg may exceed (empty = no
+  limit; the routing settings' values by default). Progress is shown;
   Cancel stops the job. The map
   is fitted to the result; the panel shows distance and time in
   Freeboard's unit preferences, the sailing/motoring split, the arrival
@@ -406,7 +413,17 @@ and the panel runs in a sandboxed iframe served from
   leg is sailed or motored, wind speed and direction, TWA, current,
   waves and the boat's speed and course. Each point's name and
   description also carry its ETA, mode and wind, which Freeboard shows
-  in its route points list; your own point names are kept.
+  in its route points list; your own point names are kept. When the
+  route is the one Freeboard is navigating (its active course), the card
+  of the leg the boat is on is outlined and tagged "boat", and moves on
+  as points are passed; Freeboard has no event for a tap on a route
+  point, so the cards cannot follow a tap. Every value in the panel is
+  in **Freeboard's own units** (its Settings → Units: speed, distance,
+  depth; wave height follows depth), so nothing changes unit from one
+  part of the Freeboard screen to another. Those can differ from your
+  Signal K unit preferences, which the web app uses, until Freeboard
+  adopts the Signal K preferences (PR-8 in
+  `docs/plans/freeboard-sk-integration.md`).
 - **Save route…** opens Freeboard's Route Details dialog and stores the
   route in Signal K's Resources (the plugin does not publish it itself in
   this case, so there is one copy); for a saved route, **Save changes**
@@ -565,7 +582,40 @@ to the corridor length, not the straight-line distance, so detours around
 land fit within the configured number of stages.
 
 If a route arrives after the last forecast step, conditions are held at
-the last step and the GeoJSON carries `forecast_horizon_exceeded_s`.
+the last step. The GeoJSON carries `forecast_valid_to`,
+`forecast_horizon_exceeded_s` and `legs_beyond_forecast`, every point
+after the last step has `beyond_forecast: true`, and the web app shows
+it: an amber badge in the result strip with the end time, the legs after
+it drawn dashed with a "forecast ends" marker on the map, a chip on the
+itinerary cards, and a note in the saved route's description. The
+Freeboard panel shows the same note. The **Forecast horizon** setting
+(Settings tab, Forecast group, 3 h to 360 h) decides how far the forecast
+reaches.
+
+When a parent's primary heading sweep yields nothing (its headings in
+the polar's no-go angle, on land or over a limit), that parent alone gets
+the wider sweeps (±120°, then half step, then the full circle at a quarter
+step) while its siblings keep their primary candidates; the reference
+implementation widened only when the whole stage's sweep was empty, which
+left a front beating to windward tacking in place.
+
+The candidate nearest each goal always survives a stage's subsector
+pruning (the bin cost prices the remaining distance at motor speed, which
+is optimistic to windward and could drop the leading branch), so the best
+remaining distance never increases from one stage to the next.
+
+A search that stops making progress once its planned stages are used
+(three stages in a row without any candidate coming closer to the
+destination; when the front is beating, a tenth or more of its water
+candidates dead upwind, the check waits for the hard ceiling of planned
+stages plus half the configured count; progress is measured towards the
+deepest branch's next via, or the destination once every via is crossed)
+fails with "the search is boxed in" (or, with a via still uncrossed, the
+vias-not-crossed error that makes the router retry without automatic
+vias), counting how many of
+the last stage's candidates were over the wind/wave limit, crossed land
+or had no boat speed, and naming the forecast end when the search had
+run past it. Each stage's progress line also carries those counts.
 
 ### Global water grid
 
@@ -770,7 +820,7 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 | `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
-| `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (on), shortcut may be slower by (0.05 = 5%), finished routes kept (50) | applies to the next route |
+| `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (on), shortcut may be slower by (0.05 = 5%), finished routes kept (50), max wind (none), max wave height (none) | applies to the next route |
 | `publish` | save to the Resources API (on), route name prefix (`WRP`), notifications (on) | applies to the next route |
 
 **Resource guard.** The decoded forecast is on disk, so the guard
@@ -1048,6 +1098,7 @@ the SSE endpoint replays.
 | GET | `/api/routes/{id}/events` | readonly | Server-Sent Events |
 | GET | `/api/routes/{id}/result` | readonly | route as GeoJSON |
 | GET | `/api/routes/{id}/skeleton` | readonly | coarse corridor skeleton as GeoJSON |
+| GET | `/api/routes/{id}/fronts` | readonly | every search stage's front and best path, compact (display only) |
 | GET | `/api/routes/{id}/signalk` | readonly | Signal K Resources API route record |
 | POST | `/api/routes/{id}/cancel` | readwrite | cancel a queued or running job |
 | POST | `/api/routes/{id}/publish` | readwrite | save the route to the Resources API |
@@ -1090,6 +1141,8 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `mode` | `"sail_max"`, `"fastest"` or `"motor"` | | `"sail_max"` | mode policy. `motor`: always motor, and no forecast is used; `fastest`: sail when the polar speed beats the motor speed; `sail_max`: sail when the polar speed is at or above `sail_thresh_ms`, otherwise motor (`src/engine/legsim.ts`). The parent routePlanning server also sails above 0.25 m/s VMG or 1.0 m/s whatever the threshold; this plugin does not |
 | `stages` | number | count | setting `routing.stages` (20) | 4..200; isochrone stages per leg |
 | `sail_thresh_ms` | number | m/s | setting `routing.sailThreshold` | ≥ 0 |
+| `max_wind_ms` | number | m/s | setting `routing.maxWind` (none) | 0..100; a leg is not allowed where the forecast wind speed is above this |
+| `max_swh_m` | number | m | setting `routing.maxSwh` (none) | 0..30; a leg is not allowed where the significant wave height is above this (needs wave data) |
 | `simplify_m` | number | m | setting `routing.simplify` | 0..5000; route simplification tolerance, 0 = off |
 | `smoother` | boolean | | setting `routing.smoother` | run the shortcut smoother |
 | `smoother_tolerance` | number | ratio | setting `routing.smootherTolerance` | 0..0.5; how much slower a shortcut may be (0.05 = 5%) |
@@ -1264,8 +1317,11 @@ LineString `properties`:
 | `smoother_drops` | number | count | points the shortcut smoother removed |
 | `forecast_cycle` | string | ISO 8601 | when a forecast was used |
 | `auto_vias` | `[{name, lat, lon, width_m, radius_m}]` | degrees, m | automatic vias; present when any |
+| `forecast_valid_to` | string | ISO 8601 | the forecast's last step; present when a forecast was used |
 | `forecast_horizon_exceeded_s` | number | s | present when the route arrives after the last forecast step |
+| `legs_beyond_forecast` | number | count | legs ending after the last forecast step; present with the above |
 | `forecast_horizon_note` | string | | explains the above: conditions beyond the last step are held at it |
+| `limits_beyond_forecast` | boolean | | `true` when a wind or wave limit was in force on legs beyond the last forecast step (checked against held conditions) |
 | `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired}`, `violation` `"leg_crosses_land"` or `"leg_too_shallow"`, `from`/`to` `[lon, lat]` |
 | `land_crossings` | number | count | present when a warning is `leg_crosses_land` |
 | `has_land_crossing` | boolean | | `true` when `land_crossings` is present |
@@ -1295,6 +1351,7 @@ Point `properties` (one feature per route point, in order):
 | `role` | string | | `"via"` on the junction point of each request waypoint |
 | `leg_distance_m` | number | m | distance to the next point; absent on the last point |
 | `leg_time_s` | number | s | time to the next point; absent on the last point |
+| `beyond_forecast` | boolean | | `true` on a point whose time is after the forecast's last step |
 
 The optional point properties are present only when the value was
 sampled and is finite. Property names match the routePlanning server's
@@ -2128,7 +2185,9 @@ per-route skeleton, `--allow-canals` opens the known canals.
 - SMOC areas are loaded whole-chunk: a box outside the resident area
   costs its chunks' download (see the measured sizes above), cached for
   the rest of the day's run.
-- Routes beyond the forecast horizon use the last step's conditions.
+- Routes beyond the forecast horizon use the last step's conditions
+  (shown: badge, dashed legs and marker, itinerary chips; raise the
+  Forecast horizon setting to cover more of the passage).
 - One route computes at a time (single worker thread); others queue.
 - Map layers show the forecast on the hour (tiles are per hour);
   latitudes beyond ±85.05° have no map tiles.

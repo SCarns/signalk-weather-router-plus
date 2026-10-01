@@ -64,7 +64,7 @@ let _suppressClickUntil = 0;
     // movement beyond CANCEL_PX cancels (that is a pan).
     let hit = null;
     map.forEachFeatureAtPixel(px, function(f, layer) {
-      if (layer === routeLayer && !hit) hit = f;
+      if (layer === routeLayer && !hit && f.get('kind') !== 'forecast_end') hit = f;
     }, { hitTolerance: 6 });
     const onMarker = map.hasFeatureAtPixel(px, { layerFilter: l => l === markerLayer, hitTolerance: 8 });
     if (!hit && onMarker) return;
@@ -293,6 +293,7 @@ document.getElementById('resetBtn').addEventListener('click', function() {
   _rebuildWaypointFeatures();
   routeSource.clear();
   skeletonSource.clear();
+  frontSource.clear();
   document.getElementById('startCoord').textContent = 'Click map or drag marker';
   document.getElementById('endCoord').textContent = 'Click map or drag marker';
   document.getElementById('status').textContent = '';
@@ -571,12 +572,25 @@ function renderResultStrip(p, navWarns) {
   else if (p.validated === false) badge = '<span class="rs-badge muted">not validated</span>';
   else badge = '<span class="rs-badge ok">validated</span>';
   const repaired = p.repairs_applied > 0 ? '<span style="color:var(--text-2);">' + p.repairs_applied + ' repaired</span>' : '';
+  // The forecast ended before the route did: the legs after it ran on
+  // conditions held at the last forecast step. Always visible, never behind
+  // the warnings toggle; the badge opens Settings (Forecast horizon).
+  const beyond = p.legs_beyond_forecast || 0;
+  const beyondBadge = beyond > 0
+    ? '<button type="button" class="rs-badge warn" id="rsBeyond" title="Open Settings">' + beyond + ' leg' + (beyond > 1 ? 's' : '') + ' beyond the forecast</button>'
+    : '';
   let html = '<div class="rs-main"><b>' + distStr + '</b><span>' + timeStr + '</span>'
     + (arrStr ? '<span>arrives ' + arrStr + '</span>' : '')
     + '<span>sail ' + sailStr + ' · motor ' + motorStr + '</span>'
     + (p.waypoint_count != null ? '<span>' + p.waypoint_count + ' wps</span>' : '')
     + (p.max_swh_m != null ? '<span>waves max ' + fmtSwh(p.max_swh_m) + '</span>' : '')
-    + badge + repaired + '</div>';
+    + badge + beyondBadge + repaired + '</div>';
+  if (beyond > 0) {
+    const ends = p.forecast_valid_to ? _whenText(p.forecast_valid_to) : 'before the route does';
+    html += '<div class="rs-beyond">Forecast ends ' + ends + '; the last ' + beyond + ' leg' + (beyond > 1 ? 's' : '') + ' ran on conditions held at that step'
+      + (p.limits_beyond_forecast ? ', and the wind/wave limit was checked against those held conditions' : '')
+      + '. A longer <a id="rsBeyondLink">Forecast horizon</a> in Settings covers more of the passage.</div>';
+  }
   if (navWarns && navWarns.length) html += '<div class="rs-notes">' + navWarns.join(' · ') + '</div>';
   if (_routeStale) html += '<div class="rs-stale">Markers changed since this route was computed.</div>';
   if (warns.length) {
@@ -594,6 +608,10 @@ function renderResultStrip(p, navWarns) {
   el.innerHTML = html;
   const b = el.querySelector('#rsBadge'), list = el.querySelector('#rsWarnList');
   if (b && list) b.onclick = () => { list.hidden = !list.hidden; };
+  const toSettings = () => { showTab('srvSettingsSection'); };
+  const bb = el.querySelector('#rsBeyond'), bl = el.querySelector('#rsBeyondLink');
+  if (bb) bb.onclick = toSettings;
+  if (bl) bl.onclick = toSettings;
 }
 
 // The same summary at the top of the Itinerary tab: a copy of #routeInfo,
@@ -604,10 +622,12 @@ function renderResultStrip(p, navWarns) {
   const dst = document.getElementById('itinSummary');
   if (!src || !dst) return;
   const copy = () => {
-    dst.innerHTML = src.innerHTML.replace(/id="rsBadge"/g, 'data-rs="badge"').replace(/id="rsWarnList"/g, 'data-rs="list"');
+    dst.innerHTML = src.innerHTML.replace(/id="rsBadge"/g, 'data-rs="badge"').replace(/id="rsWarnList"/g, 'data-rs="list"')
+      .replace(/id="rsBeyond"/g, 'data-rs="beyond"').replace(/id="rsBeyondLink"/g, 'data-rs="beyond"');
     dst.classList.toggle('stale', src.classList.contains('stale'));
     const b = dst.querySelector('[data-rs="badge"]'), list = dst.querySelector('[data-rs="list"]');
     if (b && list) b.onclick = () => { list.hidden = !list.hidden; };
+    dst.querySelectorAll('[data-rs="beyond"]').forEach(e => { e.onclick = () => { showTab('srvSettingsSection'); }; });
   };
   new MutationObserver(copy).observe(src, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
   copy();
@@ -696,6 +716,7 @@ function _legDescription(p, isArrival) {
   const cogDeg = p.next_cog != null ? p.next_cog : p.outgoing_cog;
   const tack = !isArrival && mode === 'sailing' ? tackSide(cogDeg, p.next_wind_dir_deg) : null;
   if (mode) parts.push(mode + (tack ? ' (' + tack + ')' : ''));
+  if (isArrival ? p.beyond_forecast : p.next_beyond_forecast) parts.push('beyond the forecast (conditions held at its last step)');
   const add = (label, v) => { if (v != null && v !== '') parts.push(label + ' ' + v); };
   if (!isArrival) {
     add('Distance', p.leg_distance_m != null ? fmtDist(p.leg_distance_m) : null);
@@ -732,7 +753,10 @@ function _routeDescription(p, n) {
   parts.push(n + ' waypoints');
   if (p.departure) parts.push('departs ' + _whenText(p.departure));
   if (p.arrival) parts.push('arrives ' + _whenText(p.arrival));
-  return 'Weather route: ' + parts.join(', ') + '.';
+  let s = 'Weather route: ' + parts.join(', ') + '.';
+  const beyond = p.legs_beyond_forecast || 0;
+  if (beyond > 0) s += ' Forecast ends ' + (p.forecast_valid_to ? _whenText(p.forecast_valid_to) : 'before the route does') + '; the last ' + beyond + ' leg' + (beyond > 1 ? 's' : '') + ' ran on conditions held at that step.';
+  return s;
 }
 function _annotateIfPending(jobId) {
   const pending = _pendingAnnotate;
@@ -888,9 +912,14 @@ function populateItinerary(features) {
     const cw = cardWarn.get(i);
     const warnCls = cw ? (cw.land ? ' has-land' : ' has-warn') : '';
     const warnChip = cw ? `<span class="leg-warn-chip${cw.land ? ' land' : ''}" title="${cw.n} warning(s) on this leg">⚠${cw.n > 1 ? ' ' + cw.n : ''}</span>` : '';
-    return `<div class="leg-card ${modeCls} ${tackCls}${warnCls}" data-idx="${i}">`
+    // The leg leaving this point ends after the forecast's last step (the
+    // arrival card: the point itself is after it).
+    const beyond = isArrival ? !!p.beyond_forecast : !!p.next_beyond_forecast;
+    const beyondCls = beyond ? ' beyond-forecast' : '';
+    const beyondChip = beyond ? '<span class="leg-beyond-chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '';
+    return `<div class="leg-card ${modeCls} ${tackCls}${warnCls}${beyondCls}" data-idx="${i}">`
       + `<div class="leg-head">`
-      + `  <span><span class="leg-num">${i + 1}.</span> <span class="leg-time">${t}</span>${warnChip}</span>`
+      + `  <span><span class="leg-num">${i + 1}.</span> <span class="leg-time">${t}</span>${warnChip}${beyondChip}</span>`
       + `  <span class="leg-mode ${modeCls} ${tackCls}">${mode || '—'}</span>`
       + `</div>`
       + `<div class="leg-grid">${fields || '<span style="color:#666;">—</span>'}</div>`
@@ -965,6 +994,9 @@ function buildRoutePayload(overrides) {
     mode: document.getElementById('mode').value,
     sail_thresh_ms: sailThreshKts * MS_PER_KT,        // m/s
   };
+  const maxWindMs = _limitSI('maxWind'), maxSwhM = _limitSI('maxSwh');
+  if (maxWindMs !== null) body.max_wind_ms = maxWindMs;
+  if (maxSwhM !== null) body.max_swh_m = maxSwhM;
   if (overrides.departure !== undefined) body.departure = overrides.departure;
   else if (depVal && !Number.isNaN(new Date(depVal).getTime())) body.departure = new Date(depVal).toISOString();
   const stages = parseInt(document.getElementById('stages').value, 10);
@@ -1002,6 +1034,46 @@ function buildRoutePayload(overrides) {
     if (Number.isFinite(radiusM)) body.arrival_radius_m = radiusM;
   }
   return body;
+}
+
+// ── Wind and wave limits ─────────────────────────────────────────────
+// Typed in the user's units, kept in SI in localStorage so a change of
+// unit preference keeps the meaning; no unit → the field is disabled.
+const _LIMITS = { maxWind: 'speed', maxSwh: 'wave_height' };
+function _limitSI(id) {
+  const c = UI_UNITS[_LIMITS[id]], el = document.getElementById(id);
+  if (!el || !c || !c.inv || el.value === '') return null;
+  const v = parseFloat(el.value);
+  return Number.isFinite(v) ? c.inv(v) : null;
+}
+function _initLimitInputs() {
+  for (const id of Object.keys(_LIMITS)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const c = UI_UNITS[_LIMITS[id]];
+    const u = document.querySelector('.unitOf[data-q="' + _LIMITS[id] + '"]');
+    if (u) u.textContent = c ? c.unit : UNIT_MISSING;
+    el.disabled = !c;
+    if (c && !el.dataset.touched) {
+      let si = null;
+      try { const s = localStorage.getItem('routeVar:' + id + ':si'); if (s !== null && s !== '') si = +s; } catch (_) {}
+      el.value = si !== null && Number.isFinite(si) ? String(+c.fn(si).toFixed(c.precision)) : '';
+    }
+    el.onchange = () => {
+      el.dataset.touched = '1';
+      const v = _limitSI(id);
+      try { localStorage.setItem('routeVar:' + id + ':si', v === null ? '' : String(v)); } catch (_) {}
+    };
+  }
+}
+window.addEventListener('rp:units', _initLimitInputs);
+
+// The finished job's stage fronts (faint) replace the live ones.
+function _loadFronts(id) {
+  authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/fronts', { cache: 'no-store' }, 'fronts-load')
+    .then(r => r.ok ? r.json() : null)
+    .then(fronts => { if (fronts) drawFronts(fronts); })
+    .catch(() => {});
 }
 
 // ── Job ladder: POST /api/routes → SSE /api/routes/{id}/events → result ──
@@ -1070,6 +1142,22 @@ function attachToJob(id, jobRow) {
     RouteProgress.feed(p);
     modalStatus.textContent = 'Line ' + lineCount + ' | ' + ((Date.now() - t0) / 1000).toFixed(0) + 's elapsed';
   });
+  // Stages count up within one search of a leg and restart at 1 when the
+  // leg is searched again (e.g. the retry without automatic vias), so a
+  // stage number that drops on the same leg means a re-run: clear that leg's
+  // fronts. A new leg keeps the earlier legs' fronts.
+  let lastFrontLeg = -1, lastFrontStage = 0;
+  es.addEventListener('frontier', ev => {
+    if (!isMine()) return;
+    let fr = null; try { fr = JSON.parse(ev.data); } catch (_) {}
+    if (!fr) return;
+    const leg = fr.leg || 0;
+    const first = lastFrontLeg < 0;
+    const rerun = !first && leg === lastFrontLeg && fr.stage <= lastFrontStage;
+    lastFrontLeg = leg;
+    lastFrontStage = fr.stage;
+    drawFront(fr, { reset: first, resetLeg: rerun ? leg : undefined });
+  });
   es.addEventListener('route', () => { /* the result is fetched separately below (large payload) */ });
   es.addEventListener('done', ev => {
     if (!isMine()) return;
@@ -1090,6 +1178,7 @@ function attachToJob(id, jobRow) {
         displayRoute(geojson);
         _displayedJobId = id;
         _annotateIfPending(id);
+        _loadFronts(id);
         loadRouteHistory();
         RouteProgress.hide();
         showTab('itinerarySection');

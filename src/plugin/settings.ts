@@ -58,6 +58,10 @@ export interface AppSettings {
     headings: number;
     headingIncrement: number;
     sailThreshold: number;
+    /** A leg is not allowed where the wind speed (m/s) exceeds this; null = no limit. */
+    maxWind: number | null;
+    /** A leg is not allowed where the significant wave height (m) exceeds this; null = no limit. */
+    maxSwh: number | null;
     simStep: number;
     landRasterMaxCells: number;
     /** Let routes use known ship canals (Corinth, Cape Cod, Kiel, Suez, …) where the coastline data shows them as water. */
@@ -438,6 +442,34 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     max: 50 * KTS_TO_MS,
     default: 4.9 * KTS_TO_MS,
     help: 'Below this polar speed the route motors (sail_max mode).',
+    reload: 'next_job',
+  },
+  {
+    key: 'routing.maxWind',
+    group: 'routing',
+    label: 'Maximum wind',
+    type: 'number',
+    unit: 'm/s',
+    quantity: 'speed',
+    min: 0,
+    max: 100,
+    default: null,
+    nullable: true,
+    help: 'A leg is not allowed where the forecast wind speed is above this. Empty = no limit. A route request can override it.',
+    reload: 'next_job',
+  },
+  {
+    key: 'routing.maxSwh',
+    group: 'routing',
+    label: 'Maximum wave height',
+    type: 'number',
+    unit: 'm',
+    quantity: 'wave_height',
+    min: 0,
+    max: 30,
+    default: null,
+    nullable: true,
+    help: 'A leg is not allowed where the significant wave height is above this. Empty = no limit. Needs wave data in the forecast. A route request can override it.',
     reload: 'next_job',
   },
   {

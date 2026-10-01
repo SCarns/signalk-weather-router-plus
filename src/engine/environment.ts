@@ -15,6 +15,8 @@ export interface WindSource {
   atMany(lons: Float64Array, lats: Float64Array, time: Date): { speed: Float64Array; dir: Float64Array };
   readonly hasWaves: boolean;
   wavesAt(lon: number, lat: number, time: Date): WaveConditions | null;
+  /** Significant wave height (m) per point, NaN where there is none; batched for the search. Optional. */
+  wavesAtMany?(lons: Float64Array, lats: Float64Array, time: Date): Float64Array;
 }
 
 export interface CurrentSource {

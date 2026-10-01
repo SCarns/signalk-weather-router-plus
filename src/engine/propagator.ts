@@ -61,8 +61,8 @@ import type { LandMask } from '../geo/landmask';
 import { astarRoute, AstarError } from './astar';
 import { MIN_STEP_M, STEP_PER_WIDTH } from './corridor';
 import { NoCurrent, NoWind, type CurrentSource, type WindSource } from './environment';
-import { scoreCandidatesFromParent, simulateLegTime, type ModePolicy } from './legsim';
-import { recomputePerWaypointMetadata, type Route, type RouteWarning, type Waypoint } from './route';
+import { scoreCandidatesFromParent, simulateLegTime, type ModePolicy, type LegSimResult, type SimOptions } from './legsim';
+import { recomputePerWaypointMetadata, type Route, type RouteWarning, type Waypoint, type StageFront } from './route';
 import type { PolarDiagram } from '../vessel/polar';
 import type { VesselParams } from '../vessel/vessel';
 
@@ -105,6 +105,10 @@ export interface CorridorInput {
 
 /** Bins across a narrow passage. */
 export const NARROW_BINS = 6;
+/** Stages in a row without the front coming closer to the destination (after the planned stages) before the search is called boxed in. */
+export const STALL_STAGES = 3;
+/** Share of a stage's water candidates dead upwind from which the front counts as beating (stall detection waits for the hard stage ceiling). */
+export const BEATING_SHARE = 0.1;
 
 export interface ComputeRouteArgs {
   start: [number, number];
@@ -135,6 +139,13 @@ export interface ComputeRouteArgs {
   vias?: Via[];
   /** Corridor from the global water grid; replaces the internal coarse A* skeleton. */
   corridor?: CorridorInput;
+  /** Wind speed (m/s) and significant wave height (m) a leg must not exceed; candidates over them are not allowed. */
+  maxWindMs?: number;
+  maxSwhM?: number;
+  /** The forecast's last valid step (ms); conditions after it are held at that step. Named in a boxed-in search's error. */
+  forecastEndMs?: number;
+  /** Called after every stage with its front and the best path so far (display only). */
+  onFrontier?: (front: StageFront) => void;
   /** Progress callback; messages are short human-readable lines. */
   onProgress?: (stage: number, totalStages: number, message: string) => void;
   /** Return true to abort; a RouteCancelled error is thrown. */
@@ -169,6 +180,43 @@ function snapToPassable(grid: NavigabilityGrid, p: [number, number], maxRadius: 
     if (best) return best;
   }
   return p;
+}
+
+function r4(x: number): number {
+  return Math.round(x * 1e4) / 1e4;
+}
+
+/** The path from the start to `cand` (in stage `stageIdx`), [lon, lat] per stage, start first. */
+function traceBack(stages: Candidate[][], stageIdx: number, cand: Candidate): [number, number][] {
+  const out: [number, number][] = [];
+  let cur: Candidate | undefined = cand;
+  let s = stageIdx;
+  while (cur && s >= 0) {
+    out.push([r4(cur.lon), r4(cur.lat)]);
+    if (s === 0 || cur.parentIdx < 0) break;
+    cur = stages[s - 1][cur.parentIdx];
+    s--;
+  }
+  return out.reverse();
+}
+
+/** The candidate at the end of a simulated straight hop from `from` to (lon, lat). */
+function hopCandidate(from: Candidate, lon: number, lat: number, sim: LegSimResult): Candidate {
+  const d = haversineDistanceM(from.lon, from.lat, lon, lat);
+  return {
+    lon,
+    lat,
+    timeMs: from.timeMs + sim.seconds * 1000,
+    elapsedS: from.elapsedS + sim.seconds,
+    parentIdx: -1,
+    sogMs: d / sim.seconds,
+    cogDeg: haversineBearing(from.lon, from.lat, lon, lat),
+    mode: sim.dominantMode === 'sailing' ? 'sailing' : 'motoring',
+    sailingS: sim.sailingSeconds,
+    motoringS: sim.motoringSeconds,
+    viaCount: from.viaCount,
+    viaIdxs: [],
+  };
 }
 
 export class RouteError extends Error {
@@ -230,6 +278,71 @@ export class OceanPropagator {
     this.landStepM = opts.landStepM ?? 200;
   }
 
+  /**
+   * The final hop to windward as a beat: when the straight bearing from `from`
+   * to the goal lies inside the polar's no-go angle for the wind there, two
+   * close-hauled legs (TWA = the polar's tightest sailable angle plus a small
+   * margin) on either tack, meeting at the tack point the laylines give, in
+   * whichever order is faster and clear of land. Null when the straight hop
+   * can be sailed (or motored, in motor mode), or no beat is possible.
+   */
+  private beatToWindward(
+    from: Candidate,
+    gLon: number,
+    gLat: number,
+    vessel: VesselParams,
+    polar: PolarDiagram | null,
+    wind: WindSource,
+    current: CurrentSource,
+    simOpts: SimOptions,
+    modePolicy: ModePolicy,
+    landStepM: number
+  ): { tack: Candidate; final: Candidate; d1: number; d2: number } | null {
+    if (!polar || modePolicy === 'motor') return null;
+    const [ws, wd] = wind.at(from.lon, from.lat, new Date(from.timeMs));
+    if (!Number.isFinite(ws) || ws <= 0 || !Number.isFinite(wd)) return null;
+    const D = haversineDistanceM(from.lon, from.lat, gLon, gLat);
+    if (D <= 0) return null;
+    const theta = haversineBearing(from.lon, from.lat, gLon, gLat);
+    let twa = (((theta - wd) % 360) + 360) % 360;
+    if (twa > 180) twa = 360 - twa;
+    const floor = polar.noGoFloor(ws);
+    if (!(twa < floor)) return null; // the straight hop can be sailed
+    const beta = Math.min(89, floor + 3);
+    const rad = Math.PI / 180;
+    const h1 = (((wd + beta) % 360) + 360) % 360;
+    const h2 = (((wd - beta) % 360) + 360) % 360;
+    const det = Math.sin((h1 - h2) * rad);
+    if (Math.abs(det) < 1e-9) return null;
+    const d1 = (D * Math.sin((theta - h2) * rad)) / det;
+    const d2 = (D * Math.sin((h1 - theta) * rad)) / det;
+    if (!(d1 > 0 && d2 > 0)) return null;
+    const orders: { hFirst: number; dFirst: number; hSecond: number; dSecond: number }[] = [
+      { hFirst: h1, dFirst: d1, hSecond: h2, dSecond: d2 },
+      { hFirst: h2, dFirst: d2, hSecond: h1, dSecond: d1 },
+    ];
+    let best: { tack: Candidate; final: Candidate; d1: number; d2: number; total: number } | null = null;
+    for (const o of orders) {
+      const [tLon, tLat] = projectAlongBearing(from.lon, from.lat, o.hFirst, o.dFirst);
+      const cross = this.landMask.legsCrossLandBulk(
+        Float64Array.of(from.lon, tLon),
+        Float64Array.of(from.lat, tLat),
+        Float64Array.of(tLon, gLon),
+        Float64Array.of(tLat, gLat),
+        landStepM
+      );
+      if (cross[0] || cross[1]) continue;
+      const s1 = simulateLegTime(from.lon, from.lat, new Date(from.timeMs), tLon, tLat, vessel, polar, wind, current, simOpts);
+      if (!Number.isFinite(s1.seconds) || s1.seconds <= 0) continue;
+      const tack = hopCandidate(from, tLon, tLat, s1);
+      const s2 = simulateLegTime(tLon, tLat, new Date(tack.timeMs), gLon, gLat, vessel, polar, wind, current, simOpts);
+      if (!Number.isFinite(s2.seconds) || s2.seconds <= 0) continue;
+      const total = s1.seconds + s2.seconds;
+      if (!best || total < best.total) best = { tack, final: hopCandidate(tack, gLon, gLat, s2), d1: o.dFirst, d2: o.dSecond, total };
+    }
+    return best;
+  }
+
   computeRoute(args: ComputeRouteArgs): Route {
     const wind = args.wind ?? new NoWind();
     const current = args.current ?? new NoCurrent();
@@ -243,7 +356,38 @@ export class OceanPropagator {
     const checkCancel = (): void => {
       if (shouldCancel()) throw new RouteCancelled();
     };
-    const simOpts = { modePolicy, sailThreshMs, simStepM };
+    const simOpts = { modePolicy, sailThreshMs, simStepM, maxWindMs: args.maxWindMs, maxSwhM: args.maxSwhM };
+    const fronts: StageFront[] = [];
+    const hasLimit = args.maxWindMs !== undefined || args.maxSwhM !== undefined;
+    const limitNote = hasLimit ? ' or over the wind/wave limit' : '';
+    // What happened to the candidates of the last proposal: how many were
+    // tried, crossed land, were over the wind/wave limit, or were stuck for
+    // another reason (no boat speed). For the progress line and the errors.
+    const lastTry = { tried: 0, land: 0, limited: 0, noGo: 0, stuck: 0, latestMs: 0 };
+    const resetTry = (parents: Candidate[]): void => {
+      lastTry.tried = 0;
+      lastTry.land = 0;
+      lastTry.limited = 0;
+      lastTry.noGo = 0;
+      lastTry.stuck = 0;
+      lastTry.latestMs = 0;
+      for (const p of parents) lastTry.latestMs = Math.max(lastTry.latestMs, p.timeMs);
+    };
+    const tryNote = (): string => {
+      const parts: string[] = [];
+      if (lastTry.limited) parts.push(`${lastTry.limited} over the wind/wave limit`);
+      if (lastTry.land) parts.push(`${lastTry.land} crossing land`);
+      if (lastTry.noGo) parts.push(`${lastTry.noGo} dead upwind (in the polar's no-go angle)`);
+      if (lastTry.stuck) parts.push(`${lastTry.stuck} stopped (no boat speed, or a foul current)`);
+      return parts.length
+        ? `of the last stage's ${lastTry.tried} candidates, ${parts.join(', ')}`
+        : `the last stage tried ${lastTry.tried} candidates`;
+    };
+    const fmtUtc = (ms: number): string => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+    const forecastNote = (): string => {
+      if (args.forecastEndMs === undefined || lastTry.latestMs <= args.forecastEndMs) return '';
+      return ` The forecast ends ${fmtUtc(args.forecastEndMs)} and the search is ${((lastTry.latestMs - args.forecastEndMs) / 3600_000).toFixed(0)} h past it, on conditions held at that last step: a longer forecast horizon (Settings) may open a way.`;
+    };
 
     const [sLon, sLat] = args.start;
     const [eLon, eLat] = args.end;
@@ -594,6 +738,8 @@ export class OceanPropagator {
       }
       const crosses = this.landMask.legsCrossLandBulk(pLon, pLat, cLon, cLat, landStepM);
       const out: Candidate[] = [];
+      lastTry.tried += total;
+      for (let i = 0; i < total; i++) if (crosses[i]) lastTry.land++;
       // Group survivors by parent for batched scoring.
       let start = 0;
       for (let p = 0; p < nP; p++) {
@@ -619,7 +765,12 @@ export class OceanPropagator {
         );
         for (let c = 0; c < keep.length; c++) {
           const secs = sc.seconds[c];
-          if (!Number.isFinite(secs) || secs <= 0) continue;
+          if (!Number.isFinite(secs) || secs <= 0) {
+            if (sc.limited[c]) lastTry.limited++;
+            else if (sc.noGo[c]) lastTry.noGo++;
+            else lastTry.stuck++;
+            continue;
+          }
           const i = keep[c];
           const legDist = haversineDistanceM(par.lon, par.lat, cLon[i], cLat[i]);
           const cand: Candidate = {
@@ -679,30 +830,63 @@ export class OceanPropagator {
       ],
     ];
 
+    let bestEver = Infinity;
+    let stagesWithoutGain = 0;
+    let bestEverDeepest = -1;
     for (let stage = 0; stage < maxStages; stage++) {
       checkCancel();
       const tStage = Date.now();
       const parents = stages[stages.length - 1];
       if (parents.length === 0) {
         throw new RouteError(
-          `stage ${stage} has no live waypoints: every candidate from the previous stage was blocked by land even after widening the heading sweep and halving the step`
+          `stage ${stage} has no live waypoints: every candidate from the previous stage was blocked by land${limitNote} even after widening the heading sweep and halving the step (${tryNote()}).${forecastNote()}`
         );
       }
+      resetTry(parents);
       let cands = propose(parents, this.m, this.deltaC, 1);
-      if (cands.length === 0) {
-        progress(stage + 1, Math.max(kEff, stage + 1), `primary sweep empty; widening to ±${this.m * 2 * this.deltaC * 2}°`);
-        cands = propose(parents, this.m * 2, this.deltaC * 2, 1);
-      }
-      if (cands.length === 0) {
-        progress(stage + 1, Math.max(kEff, stage + 1), `widened sweep empty; trying ±${this.m * 3 * this.deltaC * 2}° with half step`);
-        cands = propose(parents, this.m * 3, this.deltaC * 2, 0.5);
-      }
-      if (cands.length === 0) {
-        // Third fallback (beyond the reference implementation): a full
-        // 360° sweep at a quarter step, for parents boxed in by a coast
-        // whose exits are shorter than half a stage step.
-        progress(stage + 1, Math.max(kEff, stage + 1), 'half step empty; trying full 360° sweep with quarter step');
-        cands = propose(parents, 90, 2, 0.25);
+      // Fallback ladder, per parent (deviation from the reference, which
+      // widened only when the whole stage's sweep was empty): a parent whose
+      // primary sweep produced nothing (its headings in the polar's no-go
+      // angle, on land, or over a limit) gets the wider sweeps on its own,
+      // while its siblings keep their primary candidates. A parent facing
+      // dead upwind can then tack at every stage instead of only on the
+      // stages where every other parent was stuck too (the eastern
+      // Mediterranean job 3bde5200: the front shuffled between 1 and 4
+      // members, "tacking in place" 1,356–1,430 km from the goal).
+      {
+        const has = new Uint8Array(parents.length);
+        for (const c of cands) has[c.parentIdx] = 1;
+        let dead: number[] = [];
+        for (let p = 0; p < parents.length; p++) if (!has[p]) dead.push(p);
+        const ladder: [number, number, number, string][] = [
+          [this.m * 2, this.deltaC * 2, 1, `widening to ±${this.m * 2 * this.deltaC * 2}°`],
+          [this.m * 3, this.deltaC * 2, 0.5, `trying ±${this.m * 3 * this.deltaC * 2}° with half step`],
+          // Beyond the reference: a full 360° sweep at a quarter step, for
+          // parents boxed in by a coast whose exits are shorter than half a
+          // stage step.
+          [90, 2, 0.25, 'trying full 360° sweep with quarter step'],
+        ];
+        for (const [m, dc, sf, label] of ladder) {
+          if (dead.length === 0) break;
+          progress(
+            stage + 1,
+            Math.max(kEff, stage + 1),
+            `${dead.length === parents.length ? 'primary sweep empty' : `${dead.length} of ${parents.length} parents with an empty sweep`}; ${label}`
+          );
+          const extra = propose(
+            dead.map(p => parents[p]),
+            m,
+            dc,
+            sf
+          );
+          const got = new Set<number>();
+          for (const c of extra) {
+            c.parentIdx = dead[c.parentIdx];
+            got.add(c.parentIdx);
+            cands.push(c);
+          }
+          dead = dead.filter(p => !got.has(p));
+        }
       }
       if (cands.length === 0) {
         stages.push([]);
@@ -712,10 +896,12 @@ export class OceanPropagator {
       // Subsector pruning.
       const best = new Map<string, number>();
       const cost = new Float64Array(cands.length);
+      const remaining = new Float64Array(cands.length);
       for (let i = 0; i < cands.length; i++) {
         const c = cands[i];
         const g = goals[c.viaCount];
-        cost[i] = c.elapsedS + haversineDistanceM(c.lon, c.lat, g.lon, g.lat) / cruise;
+        remaining[i] = haversineDistanceM(c.lon, c.lat, g.lon, g.lat);
+        cost[i] = c.elapsedS + remaining[i] / cruise;
         let key = zoneKey(c);
         if (key === null) {
           const off = perpendicularOffsetM(sLon, sLat, eLon, eLat, c.lon, c.lat);
@@ -727,16 +913,112 @@ export class OceanPropagator {
         const cur = best.get(key);
         if (cur === undefined || cost[i] < cost[cur]) best.set(key, i);
       }
+      // The leader survives (deviation from the reference): for each goal
+      // the candidate nearest to it is kept whatever its bin. The bin cost
+      // prices the remaining distance at cruise speed, which is optimistic
+      // to windward, so a branch further back but earlier could take every
+      // bin of the leading branch and the front fell back (job c14934c9:
+      // best remaining 545 km → 762 km at stage 21). With the leader kept
+      // the best remaining distance never increases.
+      {
+        const lead = new Map<number, number>();
+        for (let i = 0; i < cands.length; i++) {
+          const vc = cands[i].viaCount;
+          const cur = lead.get(vc);
+          if (cur === undefined || remaining[i] < remaining[cur]) lead.set(vc, i);
+        }
+        const kept = new Set(best.values());
+        for (const [vc, i] of lead) if (!kept.has(i)) best.set(`lead:${vc}`, i);
+      }
       const retained = [...best.values()].map(i => cands[i]);
       stages.push(retained);
+      {
+        // The stage's front for display: sorted across the track within each
+        // goal, plus the best candidate's path back to the start.
+        let bi = -1;
+        for (const i of best.values()) if (bi < 0 || cost[i] < cost[bi]) bi = i;
+        const pts = retained
+          .map(c => ({ c, off: perpendicularOffsetM(sLon, sLat, eLon, eLat, c.lon, c.lat) }))
+          .sort((a, b) => a.c.viaCount - b.c.viaCount || a.off - b.off)
+          .map(({ c }) => ({ lon: r4(c.lon), lat: r4(c.lat), timeMs: c.timeMs, viaCount: c.viaCount }));
+        const front: StageFront = {
+          leg: 0,
+          stage: stage + 1,
+          totalStages: maxStages,
+          points: pts,
+          best: bi >= 0 ? traceBack(stages, stages.length - 1, cands[bi]) : [],
+        };
+        fronts.push(front);
+        args.onFrontier?.(front);
+      }
 
       let bestRemaining = Infinity;
-      for (const c of retained) bestRemaining = Math.min(bestRemaining, haversineDistanceM(c.lon, c.lat, eLon, eLat));
+      let bestAtMs = 0;
+      for (const c of retained) {
+        const d = haversineDistanceM(c.lon, c.lat, eLon, eLat);
+        if (d < bestRemaining) {
+          bestRemaining = d;
+          bestAtMs = c.timeMs;
+        }
+      }
+      const dropped: string[] = [];
+      if (lastTry.limited) dropped.push(`${lastTry.limited} over the limit`);
+      if (lastTry.land) dropped.push(`${lastTry.land} on land`);
+      if (lastTry.noGo) dropped.push(`${lastTry.noGo} dead upwind`);
       progress(
         stage + 1,
         Math.max(kEff, stage + 1),
-        `${parents.length} parents → ${cands.length} candidates → ${retained.length} retained; best remaining ${(bestRemaining / 1000).toFixed(1)} km; ${((Date.now() - tStage) / 1000).toFixed(1)} s`
+        `${parents.length} parents → ${cands.length} candidates → ${retained.length} retained${dropped.length ? ` (${dropped.join(', ')})` : ''}; best remaining ${(bestRemaining / 1000).toFixed(1)} km at ${fmtUtc(bestAtMs)}; ${((Date.now() - tStage) / 1000).toFixed(1)} s`
       );
+      // Stall detector: once the planned stages are used up, a front that
+      // has not come closer to the destination for a few stages in a row is
+      // boxed in (by land, the wind/wave limit, or a forecast that no longer
+      // changes); say so rather than running the budget out and failing on
+      // the terminal hop from far away.
+      // Progress is measured towards the deepest branch's own goal (the next
+      // via, or the destination once every via is crossed), not towards the
+      // destination: a branch can sit a few km from the destination with a
+      // via still uncrossed (job 58b50b0d: east of Crete, the Kythira via
+      // behind it) and must not count as progress. A gain under a twentieth
+      // of the stage step is no gain.
+      let deepest = 0;
+      for (const c of retained) deepest = Math.max(deepest, c.viaCount);
+      let goalRemaining = Infinity;
+      for (const c of retained) {
+        if (c.viaCount !== deepest) continue;
+        goalRemaining = Math.min(goalRemaining, haversineDistanceM(c.lon, c.lat, goals[deepest].lon, goals[deepest].lat));
+      }
+      if (deepest > bestEverDeepest) {
+        bestEverDeepest = deepest;
+        bestEver = Infinity;
+      }
+      if (goalRemaining < bestEver - 0.05 * candStepM) {
+        bestEver = goalRemaining;
+        stagesWithoutGain = 0;
+      } else {
+        stagesWithoutGain++;
+      }
+      // A front that is beating (a fair share of its water candidates dead
+      // upwind) sails well over the planned distance, so it gets the stages
+      // up to the hard ceiling before a stall counts; otherwise the planned
+      // stages are enough.
+      const water = Math.max(1, lastTry.tried - lastTry.land);
+      const beating = lastTry.noGo / water >= BEATING_SHARE;
+      const stallFrom = beating ? maxStages - STALL_STAGES : kEff;
+      if (stage + 1 >= stallFrom && stagesWithoutGain >= STALL_STAGES) {
+        if (deepest < nVias) {
+          // Boxed in before every via was crossed: the caller may retry
+          // without the automatic vias (the corridor's guidance, not the
+          // user's waypoints), as it does when the stages run out.
+          const g = goals[deepest];
+          throw new ViasNotCrossedError(
+            `the search is boxed in before crossing all ${nVias} via(s): deepest branch crossed ${deepest}, and for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(0)} km to the next via${g.name ? ` at ${g.name}` : ''}; ${tryNote()}.${forecastNote()}`
+          );
+        }
+        throw new RouteError(
+          `the search is boxed in: for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(0)} km to the destination; ${tryNote()}.${forecastNote()}`
+        );
+      }
       for (const c of retained) {
         for (const vi of c.viaIdxs) {
           const g = goals[vi];
@@ -834,6 +1116,7 @@ export class OceanPropagator {
         );
     }
     let finalCand: Candidate | null = null;
+    let tackCand: Candidate | null = null;
     if (hopEnd) {
       const [hLon, hLat] = hopEnd;
       const finalCross = this.landMask.legsCrossLandBulk(
@@ -848,28 +1131,35 @@ export class OceanPropagator {
           `terminal hop from (${bestC.lat.toFixed(4)}, ${bestC.lon.toFixed(4)}) to the destination crosses land; the propagation got close but the straight final leg is blocked. Try a via point or a closer endpoint.`
         );
       }
-      const simFinal = simulateLegTime(bestC.lon, bestC.lat, new Date(bestC.timeMs), hLon, hLat, vessel, polar, wind, current, simOpts);
-      if (!Number.isFinite(simFinal.seconds) || simFinal.seconds <= 0) {
-        throw new RouteError(
-          `terminal hop to the destination could not be simulated (stuck under ${modePolicy} given wind/current at the destination)`
+      // To windward: the straight hop lies inside the polar's no-go angle, so
+      // beat to it on two close-hauled legs meeting at a tack point (the
+      // laylines), in whichever order is faster and clear of land. Only a hop
+      // that cannot be sailed at all is beaten; everything else stays straight.
+      const beat = this.beatToWindward(bestC, hLon, hLat, vessel, polar, wind, current, simOpts, modePolicy, landStepM);
+      if (beat) {
+        tackCand = beat.tack;
+        finalCand = beat.final;
+        progress(
+          Math.max(kEff, stages.length - 1),
+          Math.max(kEff, stages.length - 1),
+          `final approach is to windward: beating to the waypoint on two tacks, ${(beat.d1 / 1852).toFixed(1)} nm then ${(beat.d2 / 1852).toFixed(1)} nm`
         );
-      }
-      const legDistFinal = haversineDistanceM(bestC.lon, bestC.lat, hLon, hLat);
-      if (legDistFinal > 0) {
-        finalCand = {
-          lon: hLon,
-          lat: hLat,
-          timeMs: bestC.timeMs + simFinal.seconds * 1000,
-          elapsedS: bestC.elapsedS + simFinal.seconds,
-          parentIdx: -1,
-          sogMs: legDistFinal / simFinal.seconds,
-          cogDeg: haversineBearing(bestC.lon, bestC.lat, hLon, hLat),
-          mode: simFinal.dominantMode === 'sailing' ? 'sailing' : 'motoring',
-          sailingS: simFinal.sailingSeconds,
-          motoringS: simFinal.motoringSeconds,
-          viaCount: bestC.viaCount,
-          viaIdxs: [],
-        };
+      } else {
+        const simFinal = simulateLegTime(bestC.lon, bestC.lat, new Date(bestC.timeMs), hLon, hLat, vessel, polar, wind, current, simOpts);
+        if (!Number.isFinite(simFinal.seconds) || simFinal.seconds <= 0) {
+          // From far away (more than two stage steps) the straight hop was
+          // never going to work: the search ran its budget out boxed in.
+          if (bestDist > 2 * stepFor(bestC.lon, bestC.lat).step) {
+            throw new RouteError(
+              `the search ran out of stages ${(bestDist / 1000).toFixed(0)} km from the destination, boxed in; ${tryNote()}; the straight final leg from there is stuck under ${modePolicy}${limitNote}.${forecastNote()}`
+            );
+          }
+          throw new RouteError(
+            `terminal hop to the destination could not be simulated (stuck under ${modePolicy} given wind/current at the destination${limitNote})`
+          );
+        }
+        const legDistFinal = haversineDistanceM(bestC.lon, bestC.lat, hLon, hLat);
+        if (legDistFinal > 0) finalCand = hopCandidate(bestC, hLon, hLat, simFinal);
       }
     }
     if (!snapToExact) {
@@ -892,6 +1182,7 @@ export class OceanPropagator {
       curStage--;
     }
     chain.reverse();
+    if (tackCand) chain.push(tackCand);
     if (finalCand) chain.push(finalCand);
 
     // Build waypoints.
@@ -985,6 +1276,7 @@ export class OceanPropagator {
     const autos = goals.slice(0, nVias).filter(g => g.auto);
     if (autos.length)
       route.autoVias = autos.map(g => ({ lon: g.lon, lat: g.lat, radiusM: g.radiusM, widthM: g.widthM ?? 0, name: g.name ?? '' }));
+    route.fronts = fronts;
     recomputePerWaypointMetadata(route);
 
     // Final validation against the exact polygons.
@@ -995,6 +1287,16 @@ export class OceanPropagator {
       if (this.landMask.legCrossesLandExact(a.lon, a.lat, b.lon, b.lat, 100)) {
         warns.push({ leg_index: i, violation: 'leg_crosses_land', from: [a.lon, a.lat], to: [b.lon, b.lat], repaired: false });
       }
+    }
+    // Legs over a wind or wave limit at their waypoints (the search tested
+    // sub-steps; a difference at the waypoints is possible and should show).
+    for (let i = 1; i < wps.length; i++) {
+      const a = wps[i - 1];
+      const b = wps[i];
+      if (args.maxWindMs !== undefined && b.windMs !== undefined && b.windMs > args.maxWindMs)
+        warns.push({ leg_index: i - 1, violation: 'wind_over_limit', from: [a.lon, a.lat], to: [b.lon, b.lat], repaired: false });
+      if (args.maxSwhM !== undefined && b.swhM !== undefined && b.swhM > args.maxSwhM)
+        warns.push({ leg_index: i - 1, violation: 'waves_over_limit', from: [a.lon, a.lat], to: [b.lon, b.lat], repaired: false });
     }
     route.validated = true;
     if (warns.length) {

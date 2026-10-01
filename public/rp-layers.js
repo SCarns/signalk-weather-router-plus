@@ -49,6 +49,28 @@ const routeLayer = new ol.layer.Vector({
       return feature.getStyle();
     }
     if (geomType === 'Point') {
+      // Where the forecast runs out along the route (displayRoute): an amber
+      // diamond with a label; the legs after it are drawn dashed.
+      if (feature.get('kind') === 'forecast_end') {
+        const when = feature.get('valid_to') && typeof _whenText === 'function' ? _whenText(feature.get('valid_to')) : '';
+        return [
+          new ol.style.Style({
+            image: new ol.style.RegularShape({
+              points: 4, radius: 11, angle: 0,
+              fill: new ol.style.Fill({ color: '#f9a825' }),
+              stroke: new ol.style.Stroke({ color: '#fff', width: 2.5 }),
+            }),
+            text: new ol.style.Text({
+              text: 'forecast ends' + (when ? ' ' + when : ''),
+              font: 'bold 12px sans-serif',
+              offsetY: -20,
+              fill: new ol.style.Fill({ color: '#7a4b00' }),
+              stroke: new ol.style.Stroke({ color: '#fff', width: 4 }),
+            }),
+            zIndex: 30,
+          }),
+        ];
+      }
       const mode = feature.get('mode');
       const cog = feature.get('cog_deg');
       const outCog = feature.get('outgoing_cog');
@@ -151,6 +173,61 @@ const routeLayer = new ol.layer.Vector({
   },
   zIndex: 15
 });
+
+// --- Stage fronts (the router's search as it runs): one line per stage
+// front (the candidates kept after pruning, sorted across the track,
+// coloured cool → warm by stage) and the best path so far (dashed). Live
+// from the job's `frontier` events, then the finished job's /fronts.
+const frontSource = new ol.source.Vector();
+function _frontColor(frac, alpha) {
+  // blue (early) → amber (late)
+  const r = Math.round(40 + 215 * frac), g = Math.round(90 + 70 * frac), b = Math.round(220 - 200 * frac);
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+}
+const frontLayer = new ol.layer.Vector({
+  source: frontSource,
+  style: f => {
+    if (f.get('kind') === 'best') return new ol.style.Style({ stroke: new ol.style.Stroke({ color: 'rgba(120,40,160,0.9)', width: 2.5, lineDash: [6, 6] }) });
+    const frac = f.get('frac') || 0, final = f.get('final');
+    return new ol.style.Style({ stroke: new ol.style.Stroke({ color: _frontColor(frac, final ? 0.45 : 0.85), width: final ? 1.2 : 2 }) });
+  },
+  zIndex: 14,
+  visible: true,
+});
+// Draw one stage: points [[lon, lat, timeMs, viaCount], …] sorted across the
+// track within each viaCount; best [[lon, lat], …]. `reset` clears earlier
+// stages (a new job); `resetLeg` clears only that leg's stages (a re-run of
+// one leg's search), keeping the other legs' fronts.
+function drawFront(front, opts) {
+  const o = opts || {};
+  if (o.reset) frontSource.clear();
+  else if (o.resetLeg != null) {
+    frontSource.getFeatures()
+      .filter(f => f.get('kind') === 'front' && f.get('leg') === o.resetLeg)
+      .forEach(f => frontSource.removeFeature(f));
+  }
+  const total = Math.max(1, front.total || front.totalStages || 1);
+  const frac = Math.min(1, (front.stage || 0) / total);
+  const groups = new Map();
+  for (const p of front.points || []) {
+    const k = p[3] || 0;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(ol.proj.fromLonLat([p[0], p[1]]));
+  }
+  for (const [k, coords] of groups) {
+    const geom = coords.length > 1 ? new ol.geom.LineString(coords) : new ol.geom.Point(coords[0]);
+    const f = new ol.Feature({ geometry: geom, kind: 'front', stage: front.stage, leg: front.leg || 0, via: k, frac, final: !!o.final });
+    frontSource.addFeature(f);
+  }
+  if (!o.final && Array.isArray(front.best) && front.best.length > 1) {
+    frontSource.getFeatures().filter(f => f.get('kind') === 'best').forEach(f => frontSource.removeFeature(f));
+    frontSource.addFeature(new ol.Feature({ geometry: new ol.geom.LineString(front.best.map(p => ol.proj.fromLonLat([p[0], p[1]]))), kind: 'best' }));
+  }
+}
+function drawFronts(fronts) {
+  frontSource.clear();
+  for (const fr of fronts || []) drawFront(fr, { final: true });
+}
 
 // --- Skeleton layer (A* presumptive route, blue) ---
 const skeletonLayer = new ol.layer.Vector({
@@ -1440,7 +1517,7 @@ try {
 
 const map = new ol.Map({
   target: 'map',
-  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, markerLayer, condMarkerLayer],
+  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, frontLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, markerLayer, condMarkerLayer],
   view: new ol.View({
     // Last view this browser had (saved on every move), else Block
     // Island Sound at zoom 11. On a first visit the geolocation block

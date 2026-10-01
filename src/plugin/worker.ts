@@ -58,7 +58,14 @@ import { DEFAULT_PRECISION, legLabel, routeMultiLeg, validateLegOptions, type Le
 import { WaterGrid } from '../geo/watergrid';
 import { chooseWaterGrid } from '../geo/watergrid_store';
 import type { GridBuilderData, GridBuilderMessage } from './gridbuilder';
-import { recomputePerWaypointMetadata, routeToGeoJSON, routeToSignalKRoute, skeletonToGeoJSON, type Route } from '../engine/route';
+import {
+  recomputePerWaypointMetadata,
+  routeToGeoJSON,
+  routeToSignalKRoute,
+  skeletonToGeoJSON,
+  type Route,
+  type StageFront,
+} from '../engine/route';
 import { PolarDiagram } from '../vessel/polar';
 import { loadPolarCached, resolvePolarPath } from './polars';
 import { HarmonicCurrentSource } from '../currents/harmonic';
@@ -940,6 +947,11 @@ function validateRequest(r: RouteRequest): void {
   if (legErr) throw new Error(legErr);
 }
 
+/** A stage front as sent: points [lon, lat, timeMs, viaCount], best [lon, lat]. */
+function compactFront(f: StageFront): { stage: number; total: number; points: number[][]; best: number[][] } {
+  return { stage: f.stage, total: f.totalStages, points: f.points.map(p => [p.lon, p.lat, p.timeMs, p.viaCount]), best: f.best };
+}
+
 async function route(id: string, request: RouteRequest): Promise<void> {
   const { config: cfg, client: cl } = requireInit();
   Atomics.store(cancelFlag, 0, 0);
@@ -1069,7 +1081,9 @@ async function route(id: string, request: RouteRequest): Promise<void> {
         throw err;
       }
     };
+    let legCounter = 0;
     const legRoute = async (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> => {
+      const legIndex = legCounter++;
       const legEnd = plan.end;
       // A collapsed approximate run passes through its waypoint circles (plan.vias).
       const chain: [number, number][] = [legStart, ...plan.vias.map(v => [v.lon, v.lat] as [number, number]), legEnd];
@@ -1146,12 +1160,17 @@ async function route(id: string, request: RouteRequest): Promise<void> {
         current,
         modePolicy: request.mode ?? 'sail_max',
         sailThreshMs: request.sail_thresh_ms ?? cfg.routing.sailThreshMs,
+        maxWindMs: request.max_wind_ms ?? cfg.routing.maxWindMs ?? undefined,
+        maxSwhM: request.max_swh_m ?? cfg.routing.maxSwhM ?? undefined,
+        forecastEndMs: legWind ? legWind.validRange[1].getTime() : undefined,
         simStepM: cfg.routing.simStepM,
         vias: vias.length ? vias : undefined,
         corridor: corridor ? { skeleton: corridor.skeleton, widthM: corridor.widthM } : undefined,
         arrivalRadiusM: plan.arrivalRadiusM,
         snapToExact: plan.snapToExact,
         onProgress: multi ? (st: number, tot: number, m: string) => progress(st, tot, `${tag}${m}`) : progress,
+        // Each stage's front, streamed for the web app's display (never stored with the job).
+        onFrontier: (front: StageFront) => send({ type: 'frontier', id, leg: legIndex, ...compactFront(front) }),
         shouldCancel,
       };
       let r: Route;
@@ -1185,7 +1204,13 @@ async function route(id: string, request: RouteRequest): Promise<void> {
               polar: routePolar,
               wind: legWind ?? new NoWind(),
               current,
-              sim: { modePolicy: legArgs.modePolicy, sailThreshMs: legArgs.sailThreshMs, simStepM: legArgs.simStepM },
+              sim: {
+                modePolicy: legArgs.modePolicy,
+                sailThreshMs: legArgs.sailThreshMs,
+                simStepM: legArgs.simStepM,
+                maxWindMs: legArgs.maxWindMs,
+                maxSwhM: legArgs.maxSwhM,
+              },
               tolerancePct: (request.smoother_tolerance ?? cfg.routing.smootherTolerance) * 100,
             })
           : 0;
@@ -1202,13 +1227,17 @@ async function route(id: string, request: RouteRequest): Promise<void> {
       }
       if (legWind) {
         const lastValid = legWind.validRange[1].getTime();
+        r.forecastValidToMs = lastValid;
         const arrival = r.waypoints[r.waypoints.length - 1].time.getTime();
         if (arrival > lastValid) {
           r.forecastHorizonExceededS = (arrival - lastValid) / 1000;
+          const beyond = r.waypoints.filter(w => w.time.getTime() > lastValid).length;
+          const limited = legArgs.maxWindMs !== undefined || legArgs.maxSwhM !== undefined;
+          if (limited) r.limitsBeyondForecast = true;
           progress(
             0,
             0,
-            `WARNING: ${multi ? `${legLabel(plan)} ` : ''}arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`
+            `WARNING: ${multi ? `${legLabel(plan)} ` : ''}arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step (${legWind.validRange[1].toISOString().slice(0, 16).replace('T', ' ')} UTC); the last ${beyond} leg${beyond === 1 ? '' : 's'} ran on conditions held at that step${limited ? ', and the wind/wave limit was checked against those held conditions' : ''}. A longer forecast horizon (Settings) covers more of the passage`
           );
         }
       }
@@ -1267,6 +1296,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
       geojson: routeToGeoJSON(result),
       skRoute: routeToSignalKRoute(result, name),
       skeleton: skeletonToGeoJSON(result),
+      fronts: result.fronts ? result.fronts.map(f => ({ leg: f.leg, ...compactFront(f) })) : null,
       summary,
     });
   } catch (err) {
