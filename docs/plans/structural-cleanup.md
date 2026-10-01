@@ -59,7 +59,62 @@ app: units from the Signal K preferences (kn, ft, °F), legends and
 `fade_below` loaded, the removed globals are gone, slider in m/s with
 its label in kn, cruise speed 8 kn → 4.115552 m/s via the preference's
 own formula, `buildRoutePayload` carries SI, the wind heatmap paints
-from the legend ramp. No console errors on load. Every step is a
+from the legend ramp. No console errors on load.
+Phase 2.1 built 2026-10-01: `computeRoute` is 12 lines calling
+`search/context.ts` (inputs, goals, budget), `search/skeleton.ts`,
+`search/zones.ts` (narrow passages + the skeleton guide),
+`search/propose.ts`, `search/stages.ts`, `search/terminal.ts`,
+`search/assemble.ts`, `search/enrich.ts`, with `search/types.ts` holding
+the types, constants and errors (re-exported from propagator.ts, so no
+importer changed). The bodies were sliced from the old method text, not
+retyped; the shared locals became a `SearchContext`; the skeleton's
+cumulative-distance table and the budget re-size are built once each.
+Golden routes identical; 231 tests pass.
+Phase 2.2 built 2026-10-01: `plugin/worker.ts` is the entry (state
+creation, `refresh`, `handle`, the message chain; 320 lines) and the
+functions live in `plugin/worker/{state,forecast,landgrid,currents,
+tides,route,query}.ts`, each taking the `WorkerState` explicitly; the 30
+module-level variables are its fields. Generated from the old text (not
+retyped); typecheck, lint, build and the 231 tests pass; the worker has
+no unit tests, so the role behaviour is checked on brain at the Phase 2
+deploy. `route()` itself is still 420 lines: phase 3.5 moves its leg
+pipeline into the engine.
+Phase 2.3 built 2026-10-01: index.ts 1,434 → 829 lines. Extracted:
+`plugin/coastline.ts` (Coastline: download with retries, state, manual
+download, abort), `plugin/workerpool.ts` (WorkerPool: start, post,
+query round trip, cancel flag, shutdown; crashes and restarts reported
+through callbacks), `plugin/webfiles.ts` (hashes, re-dating),
+`plugin/plotterext.ts` (manifest + registration), `plugin/charts.ts`
+(ChartsProvider: chart resources, groups, overrides, and the one
+`layerAvailable` the prebuilder now shares; LAYER_NEEDS lives there),
+`registerWeatherProvider` in `plugin/weather.ts`. The three identical
+"replay to a (re)started worker" blocks are one `sharedDataMessages()`.
+Typecheck, lint, build, 231 tests pass.
+Phase 2.4 built 2026-10-01 (page, no behaviour change): `displayRoute`
+→ `_placeRoutePins`, `_drawRouteLegs`, `_markForecastEnd`,
+`_drawSnapConnectors`; `populateItinerary` → `_itineraryWarnings`,
+`_legCardHtml`, `_itineraryWarnBlockHtml`, `_bindItineraryClicks`;
+`attachToJob` → `_jobOnStatus/Progress/Frontier/Done/Error` sharing a
+small `job` context; `_renderConditionsPopup` → `_condVisibleTabs`,
+`_condHeaderHtml`, `_condResolveSubTab`, `_condOverlaysHtml`,
+`_condBodyHtml`, `_bindConditionsPopup`; `_drawConditionsChart` →
+`_chartFrame`, `_chartScales`, `_chartAxes`, `_chartSeries`,
+`_chartMarkers` with a shared `g`. The Live-mode IIFE is left as is: it
+is already twenty named functions inside one closure, and the module
+conversion (decision C, last phase) is the right place to open it; its
+private haversine / perpendicular / escape helpers go in phase 3.6.
+Syntax-checked.
+**Phase 2 verified on brain 2026-10-01** (server restarted 18:32 EDT;
+note: a plugin stop/start from the admin UI does NOT reload the code,
+the Signal K process must restart). Golden tiles pre/post at
+2026-10-03T06:00Z: 161 of 161 identical, every PNG freshly rendered.
+Same short route (Rockaway → off Jones Beach, sail_max) on the old and
+the new build: identical result (19.0 nmi, 2.5 h, 6 waypoints, 64 log
+lines, corridor + decoded-run window + SMOC check all logged). Page: no
+console errors, all 24 split functions present; the job stream, route
+drawing, itinerary cards, and the conditions popup with all eight tabs
+and chart hover work; the route worker released its forecast window
+after the route. Every step is a
 behaviour-preserving refactor: same routes, same tiles, same API, same
 page. Lint hygiene is already clean (0 TODO/HACK markers, 0
 eslint-disable, 2 `any`); this plan is about shape.
