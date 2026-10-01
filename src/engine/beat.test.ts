@@ -97,3 +97,40 @@ test('a long beat with a narrow primary sweep keeps every parent tacking: the fr
   for (let i = 1; i < remaining.length; i++)
     assert.ok(remaining[i] < remaining[i - 1], `stage ${i + 1}: best remaining ${remaining[i]} km after ${remaining[i - 1]} km`);
 });
+
+test('the final choice is the branch arriving earliest, not the nearest one (a polar with speed close to the wind)', () => {
+  // Library-style polar with small speeds at 10°–25°: a straight leg 19° off
+  // the wind is legal but slow (job e6e338f6, leg 5: 3.6 kn straight for
+  // 10.5 h while tacking branches were hours ahead but further out).
+  const bbox = { west: -1, south: -1, east: 2, north: 2 };
+  const lm = LandMask.fromPolygons([], bbox, 0.01);
+  const polar = new PolarDiagram(
+    [10, 20, 32, 40, 52, 60, 90, 120, 150],
+    [4, 8, 12],
+    [0.5, 0.9, 1.0, 1.0, 1.7, 2.0, 2.0, 3.2, 3.6, 2.6, 4.1, 4.5, 3.0, 4.6, 5.0, 3.3, 4.9, 5.3, 3.6, 5.2, 5.6, 3.4, 5.0, 5.4, 3.0, 4.6, 5.0]
+  );
+  const prop = new OceanPropagator(lm, { stages: 20, subsectors: 30, headings: 30, headingIncrementDeg: 1 });
+  // Course east (90°), wind from 071°: the straight leg is 19° off the wind.
+  const lines: string[] = [];
+  const route = prop.computeRoute({
+    start: [0, 0.5],
+    end: [0.62, 0.5],
+    departureTime: new Date('2026-01-01T00:00:00Z'),
+    vessel: makeVessel({ motorSpeedMs: 3 }),
+    polar,
+    wind: steady(8, 71),
+    modePolicy: 'sail_max',
+    sailThreshMs: 0,
+    onProgress: (_s, _t, m) => lines.push(m),
+  });
+  const straightS = route.totalDistanceM > 0 ? (0.62 * 111_195 * Math.cos((0.5 * Math.PI) / 180)) / polar.boatSpeed(19, 8) : 0;
+  assert.ok(
+    route.totalTimeS < 0.8 * straightS,
+    `route ${(route.totalTimeS / 3600).toFixed(1)} h vs ${(straightS / 3600).toFixed(1)} h straight`
+  );
+  assert.ok(route.waypoints.length > 3, 'the route tacks');
+  assert.ok(
+    lines.some(m => /final choice: the branch arriving earliest/.test(m)),
+    'the earliest branch was chosen over the nearest'
+  );
+});

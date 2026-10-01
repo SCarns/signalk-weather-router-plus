@@ -717,6 +717,7 @@ function _legDescription(p, isArrival) {
   const tack = !isArrival && mode === 'sailing' ? tackSide(cogDeg, p.next_wind_dir_deg) : null;
   if (mode) parts.push(mode + (tack ? ' (' + tack + ')' : ''));
   if (isArrival ? p.beyond_forecast : p.next_beyond_forecast) parts.push('beyond the forecast (conditions held at its last step)');
+  if (p.snap_distance_m > 0) parts.push('the drawn point was on land; moved ' + Math.round(p.snap_distance_m) + ' m into the water');
   const add = (label, v) => { if (v != null && v !== '') parts.push(label + ' ' + v); };
   if (!isArrival) {
     add('Distance', p.leg_distance_m != null ? fmtDist(p.leg_distance_m) : null);
@@ -917,9 +918,10 @@ function populateItinerary(features) {
     const beyond = isArrival ? !!p.beyond_forecast : !!p.next_beyond_forecast;
     const beyondCls = beyond ? ' beyond-forecast' : '';
     const beyondChip = beyond ? '<span class="leg-beyond-chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '';
+    const snapChip = p.snap_distance_m > 0 ? '<span class="leg-warn-chip" title="The drawn point was on land according to the coastline data; the route uses the nearest water">moved ' + Math.round(p.snap_distance_m) + ' m</span>' : '';
     return `<div class="leg-card ${modeCls} ${tackCls}${warnCls}${beyondCls}" data-idx="${i}">`
       + `<div class="leg-head">`
-      + `  <span><span class="leg-num">${i + 1}.</span> <span class="leg-time">${t}</span>${warnChip}${beyondChip}</span>`
+      + `  <span><span class="leg-num">${i + 1}.</span> <span class="leg-time">${t}</span>${warnChip}${beyondChip}${snapChip}</span>`
       + `  <span class="leg-mode ${modeCls} ${tackCls}">${mode || '—'}</span>`
       + `</div>`
       + `<div class="leg-grid">${fields || '<span style="color:#666;">—</span>'}</div>`

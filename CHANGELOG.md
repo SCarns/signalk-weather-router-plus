@@ -67,6 +67,33 @@ uses [Semantic Versioning](https://semver.org/).
   limit"), and legs whose waypoints exceed a limit carry a
   `wind_over_limit` / `waves_over_limit` warning. Fields in the web app's
   Plan tab (in your units) and in the Freeboard panel.
+- **A drawn point on land is moved to the nearest water, and the route
+  says so.** Before routing, every stop (start, waypoints, destination)
+  is tested against the exact coastline polygons; one on land, or within
+  150 m of the shore, is moved to the nearest point with 150 m of water
+  around it, within 1,000 m (the search tests legs against a land raster
+  whose finest cell is about 55 m, so a point 50 m off the shore sits in a
+  land cell and no final leg to it is ever clear: an East River run ended
+  "boxed in … 0 km from the destination"). The log says which point and
+  how far
+  ("your point 5 of 21 (waypoint 4) is on land according to the coastline
+  data; moved 120 m into the water"), and the route carries it: `snaps`
+  (index, original, anchor, distance) and `stop_count` on the route, the
+  web app's `start_`/`end_original`, `_anchor`, `_snap_distance_m` fields,
+  and `snap_distance_m` plus `original` on the moved point (GeoJSON and the
+  Signal K route's `coordinatesMeta`). The web app draws the dashed
+  original-to-anchor tie and lists the moves in the result strip; the
+  itinerary cards and point descriptions carry "moved N m"; the Freeboard
+  panel shows a line per moved point and tags its leg cards. With no
+  water within 1,000 m the error names the point ("your point 5 of 21
+  … move it into the water") instead of "leg 4/20: end point … is on
+  land". Found on a hand-drawn East River route whose 5th point lay a few
+  metres inside the Brooklyn shore.
+- **The Freeboard panel no longer shows the previous route's result after
+  a failed run.** The result card and itinerary are hidden while a job
+  runs and a failure is shown in their place; before, a failed attempt
+  left the last route's numbers on screen under the newly selected route
+  (a 308 km route around Montauk under a 25 nm East River route).
 - **The Freeboard panel follows the boat.** When the weather route is the
   route Freeboard is navigating (Signal K `navigation.course.activeRoute`),
   the card of the leg the boat is on is outlined, tagged "boat" and
@@ -130,6 +157,24 @@ uses [Semantic Versioning](https://semver.org/).
   parents whose own sweep came up empty. On a 600 km synthetic beat the
   route went from 1,175 km / 82 h to 997 km / 72 h and the best remaining
   distance falls at every stage.
+- **The final choice is the earliest arrival, not the nearest branch.**
+  Candidates advance a fixed distance per stage, so when the search stops
+  a slow branch crawling straight at the waypoint is the nearest while
+  faster branches that tacked are further out but hours ahead. The
+  terminal choice used to be the nearest branch (elapsed time only as a
+  tie-break). Now the final leg of every branch with a clear straight hop
+  (nearest 64) is simulated, straight or as a beat, and the branch with
+  the earliest predicted arrival is taken; the log says when that differs
+  from the nearest. Found on a Long Island Sound test with the library's
+  Amel 55 polar: leg 5 sailed 69 km straight at 3.6 kn, 19° off the wind,
+  for 10.5 h while four tacking branches were 12–14 km out at about 5 h.
+- **Tightest sailable angle** (Settings → Routing, default 30°): polar
+  rows closer to the wind than this are ignored for routing. Many library
+  polars carry small boat speeds at 5°–25° off the wind (the Amel 55 file:
+  1.8 kn at 10°, 3.1 kn at 19° in 15.6 kn of wind), which let a route go
+  dead upwind at a crawl instead of tacking at a 5.8 kn VMG. 0 = the
+  polar as written. The polar library files are not changed; the log
+  says when rows were ignored.
 - **The leading branch can no longer be pruned away.** The subsector
   pruning keeps one candidate per cross-track bin by elapsed time plus
   remaining distance at cruise (motor) speed, which is optimistic to

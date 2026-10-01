@@ -68,6 +68,15 @@ export interface StageFront {
   best: [number, number][];
 }
 
+/** A route point that was on land and was moved to the nearest water before routing. */
+export interface StopSnap {
+  /** Index among the route's stops: 0 = start, last = destination, others = the user's waypoints in order. */
+  index: number;
+  original: [number, number];
+  anchor: [number, number];
+  distanceM: number;
+}
+
 export interface Route {
   waypoints: Waypoint[];
   totalTimeS: number;
@@ -82,6 +91,8 @@ export interface Route {
   forecastValidToMs?: number;
   /** Set by the caller when a wind or wave limit was in force on legs past the forecast's last step. */
   limitsBeyondForecast?: boolean;
+  /** Stops that were on land and were moved to the nearest water (set by the caller). */
+  snaps?: StopSnap[];
   /** Forecast cycle used, ISO string, when any. */
   forecastCycle?: string;
   /** Names of the current sources that were stacked, when any. */
@@ -133,6 +144,55 @@ export function recomputePerWaypointMetadata(route: Route): void {
 function round(v: number, digits: number): number {
   const f = 10 ** digits;
   return Math.round(v * f) / f;
+}
+
+/**
+ * Waypoint index of each stop: 0 = the first waypoint, the k-th via = the
+ * k-th waypoint with role 'via', the last stop = the last waypoint.
+ */
+function stopWaypointIndex(route: Route, stopIndex: number, stopCount: number): number {
+  const wps = route.waypoints;
+  if (stopIndex === 0) return 0;
+  if (stopIndex === stopCount - 1) return wps.length - 1;
+  let k = 0;
+  for (let i = 1; i < wps.length - 1; i++) {
+    if (wps[i].role !== 'via') continue;
+    k++;
+    if (k === stopIndex) return i;
+  }
+  return -1;
+}
+
+/** Per-waypoint snap data keyed by waypoint index, plus the route-level fields the web app draws. */
+function snapProperties(route: Route): { byWaypoint: Map<number, StopSnap>; props: Record<string, unknown> } {
+  const byWaypoint = new Map<number, StopSnap>();
+  const props: Record<string, unknown> = {};
+  const snaps = route.snaps ?? [];
+  if (!snaps.length) return { byWaypoint, props };
+  const stopCount = routeStopCount(route);
+  props.stop_count = stopCount;
+  props.snaps = snaps.map(s => ({
+    index: s.index,
+    original: [round(s.original[0], 6), round(s.original[1], 6)],
+    anchor: [round(s.anchor[0], 6), round(s.anchor[1], 6)],
+    distance_m: round(s.distanceM, 0),
+  }));
+  for (const s of snaps) {
+    const wi = stopWaypointIndex(route, s.index, stopCount);
+    if (wi >= 0) byWaypoint.set(wi, s);
+    const which = s.index === 0 ? 'start' : s.index === stopCount - 1 ? 'end' : null;
+    if (which) {
+      props[`${which}_original`] = [round(s.original[0], 6), round(s.original[1], 6)];
+      props[`${which}_anchor`] = [round(s.anchor[0], 6), round(s.anchor[1], 6)];
+      props[`${which}_snap_distance_m`] = round(s.distanceM, 0);
+    }
+  }
+  return { byWaypoint, props };
+}
+
+/** Number of stops the route was requested with: start, the via waypoints, the destination. */
+function routeStopCount(route: Route): number {
+  return 2 + route.waypoints.slice(1, -1).filter(w => w.role === 'via').length;
 }
 
 /**
@@ -226,6 +286,8 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
     props.max_swh_m = round(Math.max(...swh), 2);
     props.avg_swh_m = round(swh.reduce((a, b) => a + b, 0) / swh.length, 2);
   }
+  const snapped = snapProperties(route);
+  Object.assign(props, snapped.props);
   const features: Record<string, unknown>[] = [
     {
       type: 'Feature',
@@ -236,6 +298,11 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
   for (let i = 0; i < wps.length; i++) {
     const p = waypointProperties(wps[i]);
     if (fe && wps[i].time.getTime() > fe.validTo.getTime()) p.beyond_forecast = true;
+    const sn = snapped.byWaypoint.get(i);
+    if (sn) {
+      p.snap_distance_m = round(sn.distanceM, 0);
+      p.original = [round(sn.original[0], 6), round(sn.original[1], 6)];
+    }
     if (i + 1 < wps.length) {
       const nxt = wps[i + 1];
       p.leg_distance_m = round(haversineDistanceM(wps[i].lon, wps[i].lat, nxt.lon, nxt.lat), 1);
@@ -258,6 +325,7 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
 export function routeToSignalKRoute(route: Route, name: string, description?: string): Record<string, unknown> {
   const wps = route.waypoints;
   const fe = forecastEnd(route);
+  const snapped = snapProperties(route);
   const beyondNote =
     fe && fe.legsBeyond > 0
       ? ` Forecast ends ${fe.validTo.toISOString().slice(0, 16).replace('T', ' ')} UTC; the last ${fe.legsBeyond} leg${fe.legsBeyond === 1 ? '' : 's'} ran on conditions held at that step.`
@@ -288,6 +356,12 @@ export function routeToSignalKRoute(route: Route, name: string, description?: st
           name: i === 0 ? 'Start' : i === wps.length - 1 ? 'End' : `WP${i}`,
           ...waypointProperties(w),
           ...(fe && w.time.getTime() > fe.validTo.getTime() ? { beyond_forecast: true } : {}),
+          ...(snapped.byWaypoint.has(i)
+            ? {
+                snap_distance_m: round(snapped.byWaypoint.get(i)!.distanceM, 0),
+                original: snapped.byWaypoint.get(i)!.original.map(v => round(v, 6)),
+              }
+            : {}),
         })),
       },
     },

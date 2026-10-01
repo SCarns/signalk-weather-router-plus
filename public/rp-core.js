@@ -708,6 +708,16 @@ function displayRoute(geojson) {
       f.setStyle(_dashedStyle);
       routeSource.addFeature(f);
     }
+    // Drawn waypoints that were on land and were moved to the nearest water
+    // (`snaps`, every stop; the start and end are drawn above).
+    const _snaps = Array.isArray(p.snaps) ? p.snaps : [];
+    const _lastStop = p.stop_count > 0 ? p.stop_count - 1 : -1;
+    for (const s of _snaps) {
+      if (s.index === 0 || s.index === _lastStop || !s.original || !s.anchor) continue;
+      const f = new ol.Feature({ geometry: new ol.geom.LineString([ol.proj.fromLonLat(s.original), ol.proj.fromLonLat(s.anchor)]) });
+      f.setStyle(_dashedStyle);
+      routeSource.addFeature(f);
+    }
 
     // Warning text for the info card — surfaces snaps and the
     // forecast-horizon note to the user.
@@ -719,6 +729,10 @@ function displayRoute(geojson) {
     if (p.end_snap_distance_m > 0) {
       _navWarns.push('End not navigable — anchored '
         + Math.round(p.end_snap_distance_m) + ' m away');
+    }
+    for (const s of _snaps) {
+      if (s.index === 0 || s.index === _lastStop) continue;
+      _navWarns.push('Waypoint ' + s.index + ' was on land — anchored ' + Math.round(s.distance_m) + ' m away');
     }
     _routeWarnings = Array.isArray(p.warnings) ? p.warnings : [];
     renderResultStrip(p, _navWarns);

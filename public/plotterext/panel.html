@@ -405,8 +405,26 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   $('routeSelect').addEventListener('change', function () { autoSelected = false; renderRoutes(); });
 
   // ---- a route job --------------------------------------------------------
+  // While a job runs the previous result is off screen; a failure is shown
+  // where the result was, so an old route's numbers never sit under a new
+  // attempt (the East River attempt that showed the previous 308 km route).
+  function hideResultForRun() {
+    $('result').hidden = true;
+    $('sumBody').innerHTML = '';
+    $('itinerary').innerHTML = '';
+    $('saved').textContent = '';
+  }
+  function showFailure(message) {
+    $('result').hidden = false;
+    $('sumBody').innerHTML = '<div class="status error">' + esc(message) + '</div>';
+    $('itinerary').innerHTML = '';
+    $('save').hidden = true;
+    $('discard').hidden = true;
+    $('restore').hidden = !(result && result.original);
+  }
   function startJob(body, onDone) {
     $('progress').textContent = 'Submitting…';
+    hideResultForRun();
     refreshRouteIt(); refreshFind();
     return post(API + '/routes', body).then(function (r) {
       job = { id: r.id, links: r.links, es: null, onDone: onDone };
@@ -433,7 +451,8 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     es.addEventListener('error', function (ev) {
       if (!ev.data) return;   // a dropped connection, not a job error; EventSource reconnects
       var d = JSON.parse(ev.data);
-      finishJob('Failed: ' + (d.message || d.status));
+      finishJob('Failed');
+      showFailure('Failed: ' + (d.message || d.status));
     });
     es.addEventListener('done', function () {
       var onDone = job.onDone;
@@ -575,7 +594,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var last = i === feats.length - 1;
     var n = last ? null : feats[i + 1].properties;
     var a = f.geometry.coordinates;
-    var out = { time: p.time, last: last, lat: fin(p.lat) ? p.lat : a[1], lon: fin(p.lon) ? p.lon : a[0], via: p.role === 'via', mode: last ? 'arrival' : (n.mode || null), beyond: !!(last ? p.beyond_forecast : n.beyond_forecast) };
+    var out = { time: p.time, last: last, lat: fin(p.lat) ? p.lat : a[1], lon: fin(p.lon) ? p.lon : a[0], via: p.role === 'via', mode: last ? 'arrival' : (n.mode || null), beyond: !!(last ? p.beyond_forecast : n.beyond_forecast), movedM: p.snap_distance_m > 0 ? p.snap_distance_m : 0 };
     if (last) {
       out.windMs = p.wind_ms; out.windDir = p.wind_dir_deg; out.curMs = p.current_ms; out.curDir = p.current_dir_deg;
       out.swh = p.swh_m; out.mwp = p.mwp_s; out.mwd = p.mwd_deg;
@@ -621,7 +640,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   // One line per point, for the chartplotter's point descriptions (Info and Points views).
   function legText(feats, i) {
     var l = leg(feats, i);
-    var head = fmtTime(l.time) + ' · ' + (l.mode || '—') + (l.tack ? ' (' + l.tack + ')' : '') + (l.beyond ? ' · beyond the forecast (conditions held at its last step)' : '');
+    var head = fmtTime(l.time) + ' · ' + (l.mode || '—') + (l.tack ? ' (' + l.tack + ')' : '') + (l.beyond ? ' · beyond the forecast (conditions held at its last step)' : '') + (l.movedM ? ' · the drawn point was on land; moved ' + Math.round(l.movedM) + ' m into the water' : '');
     return [head].concat(legFields(l).map(function (r) { return r[0] + ' ' + r[1]; })).join(' · ');
   }
   // One line for the route's own description.
@@ -650,7 +669,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         return '<span class="k">' + esc(r[0]) + '</span><span class="v' + (r[2] ? ' ' + r[2] : '') + '">' + esc(r[1]) + '</span>';
       }).join('');
       card.innerHTML =
-        '<div class="leg-head"><span><b>' + (i + 1) + '.</b> ' + esc(fmtTime(l.time)) + ' <span class="muted">' + esc(points[i] ? points[i].name : '') + '</span>' + (l.beyond ? '<span class="chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '') + '</span>'
+        '<div class="leg-head"><span><b>' + (i + 1) + '.</b> ' + esc(fmtTime(l.time)) + ' <span class="muted">' + esc(points[i] ? points[i].name : '') + '</span>' + (l.beyond ? '<span class="chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '') + (l.movedM ? '<span class="chip" title="The drawn point was on land according to the coastline data; the route uses the nearest water">moved ' + Math.round(l.movedM) + ' m</span>' : '') + '</span>'
         + '<span class="leg-mode">' + esc(l.mode || '—') + (l.tack ? ' · ' + esc(l.tack) : '') + '</span></div>'
         + '<div class="leg-grid">' + (grid || '<span class="muted">—</span>') + '</div>'
         + '<div class="leg-foot">' + l.lat.toFixed(4) + ', ' + l.lon.toFixed(4) + (l.via ? ' · via' : '') + '</div>';
@@ -826,8 +845,15 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         + (p.limits_beyond_forecast ? ', and the wind/wave limit was checked against those held conditions' : '')
         + '. A longer forecast horizon (the web app\'s Settings tab) covers more of the passage.</div>';
     } else if (p.forecast_horizon_note) html += '<div class="muted small">' + esc(p.forecast_horizon_note) + '</div>';
+    var snaps = Array.isArray(p.snaps) ? p.snaps : [];
+    snaps.forEach(function (s) {
+      var who = s.index === 0 ? 'The start point' : s.index === (p.stop_count || 0) - 1 ? 'The destination' : 'Your point ' + (s.index + 1) + ' of ' + p.stop_count;
+      html += '<div class="status warn">' + esc(who) + ' was on land according to the coastline data; the route uses the nearest water, ' + Math.round(s.distance_m) + ' m away.</div>';
+    });
     $('sumBody').innerHTML = html;
     $('result').hidden = false;
+    $('save').hidden = false;
+    $('discard').hidden = false;
     $('saved').textContent = '';
     $('save').textContent = result && result.saved ? 'Save changes' : 'Save route…';
   }

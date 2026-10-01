@@ -1188,13 +1188,37 @@ export function findAutoVias(
   return kept;
 }
 
-function nearestExactWater(land: LandMask, lon: number, lat: number, maxM: number): [number, number] | null {
+/**
+ * Is `clearM` of water around the point by the exact polygons (the point
+ * itself, and 8 bearings at clearM and at clearM / 2)? With clearM 0, just
+ * the point.
+ */
+export function waterAround(land: LandMask, lon: number, lat: number, clearM: number): boolean {
+  if (land.isLandExact(lon, lat)) return false;
+  if (!(clearM > 0)) return true;
+  const cosL = Math.max(0.05, Math.cos(lat * DEG));
+  for (const d of [clearM, clearM / 2]) {
+    for (let a = 0; a < 360; a += 45) {
+      const y = lat + (d * Math.cos(a * DEG)) / M_PER_DEG;
+      const x = wrapLon(lon + (d * Math.sin(a * DEG)) / (M_PER_DEG * cosL));
+      if (land.isLandExact(x, y)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Nearest point not on land by the exact polygons, with `clearM` of water
+ * around it (see waterAround), searched on rings of 50 m out to `maxM`;
+ * null when none.
+ */
+export function nearestExactWater(land: LandMask, lon: number, lat: number, maxM: number, clearM = 0): [number, number] | null {
   const cosL = Math.max(0.05, Math.cos(lat * DEG));
   for (let d = 50; d <= maxM; d += 50) {
     for (let a = 0; a < 360; a += 15) {
       const y = lat + (d * Math.cos(a * DEG)) / M_PER_DEG;
       const x = wrapLon(lon + (d * Math.sin(a * DEG)) / (M_PER_DEG * cosL));
-      if (!land.isLandExact(x, y)) return [x, y];
+      if (waterAround(land, x, y, clearM)) return [x, y];
     }
   }
   return null;

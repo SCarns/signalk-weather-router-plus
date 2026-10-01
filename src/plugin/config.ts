@@ -121,6 +121,8 @@ export interface ResolvedConfig {
     headings: number;
     headingIncrementDeg: number;
     sailThreshMs: number;
+    /** Polar rows closer to the wind than this many degrees are ignored (0 = as written). */
+    noGoMinAngleDeg: number;
     maxWindMs: number | null;
     maxSwhM: number | null;
     simStepM: number;
@@ -341,6 +343,7 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       headings: r.headings,
       headingIncrementDeg: r.headingIncrement,
       sailThreshMs: r.sailThreshold,
+      noGoMinAngleDeg: r.noGoMinAngle ?? 0,
       maxWindMs: r.maxWind ?? null,
       maxSwhM: r.maxSwh ?? null,
       simStepM: r.simStep,

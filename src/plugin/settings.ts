@@ -58,6 +58,8 @@ export interface AppSettings {
     headings: number;
     headingIncrement: number;
     sailThreshold: number;
+    /** Polar rows closer to the wind than this (degrees) are ignored; 0 = the polar as written. */
+    noGoMinAngle: number;
     /** A leg is not allowed where the wind speed (m/s) exceeds this; null = no limit. */
     maxWind: number | null;
     /** A leg is not allowed where the significant wave height (m) exceeds this; null = no limit. */
@@ -442,6 +444,19 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     max: 50 * KTS_TO_MS,
     default: 4.9 * KTS_TO_MS,
     help: 'Below this polar speed the route motors (sail_max mode).',
+    reload: 'next_job',
+  },
+  {
+    key: 'routing.noGoMinAngle',
+    group: 'routing',
+    label: 'Tightest sailable angle',
+    type: 'number',
+    unit: 'deg',
+    quantity: 'angle',
+    min: 0,
+    max: 60,
+    default: 30,
+    help: 'Polar rows closer to the wind than this are ignored. Many library polars carry small boat speeds at 5°–25° off the wind, where no boat sails; left in, a route goes dead upwind at a crawl instead of tacking (an Amel 55 from the library: 3 kn at 19° against a 5.8 kn VMG tacking at 40°). 0 = use the polar as written.',
     reload: 'next_job',
   },
   {

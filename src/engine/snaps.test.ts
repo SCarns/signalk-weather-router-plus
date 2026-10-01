@@ -1,0 +1,93 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { routeToGeoJSON, routeToSignalKRoute, type Route, type Waypoint } from './route';
+
+function wp(lon: number, lat: number, h: number, role?: 'via'): Waypoint {
+  const w: Waypoint = { lon, lat, time: new Date(Date.UTC(2026, 9, 1, h)), sogMs: 3, cogDeg: 90, mode: 'sailing' };
+  if (role) w.role = role;
+  return w;
+}
+
+test('snapped stops are reported on the route, on the matching points and as the start/end fields the web app draws', () => {
+  // Stops: start, waypoint 1, waypoint 2, destination; waypoint 2 and the
+  // destination were on land and moved.
+  const route: Route = {
+    waypoints: [wp(0, 0, 0), wp(0.1, 0, 1), wp(0.2, 0, 2, 'via'), wp(0.3, 0, 3), wp(0.4, 0, 4, 'via'), wp(0.5, 0, 5), wp(0.6, 0, 6)],
+    totalTimeS: 6 * 3600,
+    totalDistanceM: 66_000,
+    motoringTimeS: 0,
+    sailingTimeS: 6 * 3600,
+    validated: true,
+    snaps: [
+      { index: 2, original: [0.4005, 0.0004], anchor: [0.4, 0], distanceM: 70 },
+      { index: 3, original: [0.601, 0.001], anchor: [0.6, 0], distanceM: 150 },
+    ],
+  };
+  const g = routeToGeoJSON(route) as { features: { geometry: { type: string }; properties: Record<string, unknown> }[] };
+  const line = g.features.find(f => f.geometry.type === 'LineString')!.properties;
+  assert.equal(line.stop_count, 4);
+  assert.deepEqual(line.snaps, [
+    { index: 2, original: [0.4005, 0.0004], anchor: [0.4, 0], distance_m: 70 },
+    { index: 3, original: [0.601, 0.001], anchor: [0.6, 0], distance_m: 150 },
+  ]);
+  assert.deepEqual(line.end_original, [0.601, 0.001]);
+  assert.deepEqual(line.end_anchor, [0.6, 0]);
+  assert.equal(line.end_snap_distance_m, 150);
+  assert.equal(line.start_original, undefined);
+  const pts = g.features.filter(f => f.geometry.type === 'Point').map(f => f.properties);
+  assert.equal(pts[4].snap_distance_m, 70, 'the second via carries its snap');
+  assert.deepEqual(pts[4].original, [0.4005, 0.0004]);
+  assert.equal(pts[6].snap_distance_m, 150, 'the destination carries its snap');
+  assert.equal(pts[2].snap_distance_m, undefined, 'the first via was not moved');
+  assert.equal(pts[0].snap_distance_m, undefined);
+  const sk = routeToSignalKRoute(route, 'r') as { feature: { properties: { coordinatesMeta: Record<string, unknown>[] } } };
+  assert.equal(sk.feature.properties.coordinatesMeta[4].snap_distance_m, 70);
+  assert.equal(sk.feature.properties.coordinatesMeta[6].snap_distance_m, 150);
+  assert.equal(sk.feature.properties.coordinatesMeta[2].snap_distance_m, undefined);
+});
+
+test('a route without snaps carries none of the snap fields', () => {
+  const route: Route = {
+    waypoints: [wp(0, 0, 0), wp(0.1, 0, 1)],
+    totalTimeS: 3600,
+    totalDistanceM: 11_000,
+    motoringTimeS: 0,
+    sailingTimeS: 3600,
+    validated: true,
+  };
+  const g = routeToGeoJSON(route) as { features: { geometry: { type: string }; properties: Record<string, unknown> }[] };
+  const line = g.features.find(f => f.geometry.type === 'LineString')!.properties;
+  assert.equal(line.snaps, undefined);
+  assert.equal(line.stop_count, undefined);
+  assert.equal(line.start_snap_distance_m, undefined);
+});
+
+test('nearestExactWater with a clearance lands the point that far from the shore', async () => {
+  const { LandMask } = await import('../geo/landmask');
+  const { nearestExactWater, waterAround } = await import('./corridor');
+  // A square island 0.02° across (about 2.2 km) in open water.
+  const c = [0, 0, 0.02, 0, 0.02, 0.02, 0, 0.02, 0, 0];
+  const island: import('../geo/shapefile').ShapePolygon = {
+    recordNumber: 1,
+    minLon: 0,
+    minLat: 0,
+    maxLon: 0.02,
+    maxLat: 0.02,
+    rings: [{ coords: Float64Array.from(c), minLon: 0, minLat: 0, maxLon: 0.02, maxLat: 0.02 }],
+  };
+  const lm = LandMask.fromPolygons([island], { west: -0.1, south: -0.1, east: 0.12, north: 0.12 }, 0.0005);
+  // A point 30 m inside the island's southern edge.
+  const lon = 0.01,
+    lat = 0.00027;
+  assert.ok(lm.isLandExact(lon, lat));
+  const plain = nearestExactWater(lm, lon, lat, 1000);
+  assert.ok(plain, 'water found without clearance');
+  assert.ok(!waterAround(lm, plain![0], plain![1], 150), 'the plain anchor is within 150 m of the shore');
+  const clear = nearestExactWater(lm, lon, lat, 1000, 150);
+  assert.ok(clear, 'water found with clearance');
+  assert.ok(waterAround(lm, clear![0], clear![1], 150));
+  // South of the edge (lat < 0) by at least 150 m: 150 m is 0.00135°.
+  assert.ok(clear![1] <= -0.00135 + 1e-9, `anchor latitude ${clear![1]}`);
+  // A point already in open water is left alone.
+  assert.ok(waterAround(lm, 0.01, -0.01, 150));
+});

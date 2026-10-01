@@ -109,6 +109,8 @@ export const NARROW_BINS = 6;
 export const STALL_STAGES = 3;
 /** Share of a stage's water candidates dead upwind from which the front counts as beating (stall detection waits for the hard stage ceiling). */
 export const BEATING_SHARE = 0.1;
+/** Terminal candidates (nearest first) whose final leg is simulated to pick the earliest predicted arrival. */
+export const TERMINAL_EVAL = 64;
 
 export interface ComputeRouteArgs {
   start: [number, number];
@@ -1015,8 +1017,14 @@ export class OceanPropagator {
             `the search is boxed in before crossing all ${nVias} via(s): deepest branch crossed ${deepest}, and for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(0)} km to the next via${g.name ? ` at ${g.name}` : ''}; ${tryNote()}.${forecastNote()}`
           );
         }
+        // The front at the destination with no clear final leg: the point
+        // sits in a land cell of the raster (too close to the shore).
+        const atGoal =
+          bestEver <= candStepM
+            ? ' The front reached the destination but no final leg to it was clear of land: the point is too close to the shore for the land raster.'
+            : '';
         throw new RouteError(
-          `the search is boxed in: for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(0)} km to the destination; ${tryNote()}.${forecastNote()}`
+          `the search is boxed in: for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(1)} km to the destination; ${tryNote()}.${atGoal}${forecastNote()}`
         );
       }
       for (const c of retained) {
@@ -1091,30 +1099,88 @@ export class OceanPropagator {
     );
     const clearPool = pool.filter((_c, i) => !poolHop[i]);
     const choose = clearPool.length ? clearPool : pool;
+    // The nearest candidate (elapsed time as tie-break): the reference
+    // implementation's choice, kept as the fallback.
     let bestC = choose[0];
     for (const c of choose) {
       const [d, t] = score(c);
       const [bd, bt] = score(bestC);
       if (d < bd || (d === bd && t < bt)) bestC = c;
     }
+    const nearest = bestC;
+    // Where a candidate's final leg ends: the exact destination, or
+    // (approximate intermediate waypoint) only as far as the arrival circle;
+    // null when the candidate is already inside the circle.
+    const hopEndFor = (c: Candidate): [number, number] | null => {
+      const d = haversineDistanceM(c.lon, c.lat, eLon, eLat);
+      if (snapToExact) return [eLon, eLat];
+      const r = args.arrivalRadiusM!;
+      if (d <= r) return null;
+      return projectAlongBearing(c.lon, c.lat, haversineBearing(c.lon, c.lat, eLon, eLat), d - r + Math.min(1, 0.001 * r));
+    };
+    // The choice that matters: the candidate whose predicted arrival is
+    // earliest once its final leg (straight, or a beat when the straight hop
+    // is in the no-go angle) is simulated, not the nearest one. Candidates
+    // advance a fixed distance per stage, so a slow branch crawling straight
+    // at the goal is nearest when the search stops while faster branches
+    // that tacked are further out but hours ahead (job e6e338f6, leg 5: the
+    // nearest branch 3.5 km out at 9.85 h, four tacking branches 12–14 km
+    // out at about 5 h). Nearest first, at most TERMINAL_EVAL simulated.
+    const planFor = (c: Candidate) => {
+      const hopEnd = hopEndFor(c);
+      if (!hopEnd) return { hopEnd: null, beat: null, sim: null, arrivalS: c.elapsedS };
+      if (!snapToExact) {
+        const cross = this.landMask.legsCrossLandBulk(
+          Float64Array.of(c.lon),
+          Float64Array.of(c.lat),
+          Float64Array.of(hopEnd[0]),
+          Float64Array.of(hopEnd[1]),
+          landStepM
+        );
+        if (cross[0]) return null;
+      }
+      const beat = this.beatToWindward(c, hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts, modePolicy, landStepM);
+      if (beat) return { hopEnd, beat, sim: null, arrivalS: beat.final.elapsedS };
+      const sim = simulateLegTime(c.lon, c.lat, new Date(c.timeMs), hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts);
+      if (!Number.isFinite(sim.seconds) || sim.seconds <= 0) return null;
+      return { hopEnd, beat: null, sim, arrivalS: c.elapsedS + sim.seconds };
+    };
+    type FinalPlan = NonNullable<ReturnType<typeof planFor>>;
+    const plans = new Map<Candidate, FinalPlan>();
+    if (clearPool.length) {
+      const byDist = [...clearPool].sort((a, b) => score(a)[0] - score(b)[0]).slice(0, TERMINAL_EVAL);
+      for (const c of byDist) {
+        checkCancel();
+        const plan = planFor(c);
+        if (plan) plans.set(c, plan);
+      }
+      let earliest: Candidate | null = null;
+      for (const [c, plan] of plans) {
+        if (earliest === null) {
+          earliest = c;
+          continue;
+        }
+        const e = plans.get(earliest)!;
+        if (plan.arrivalS < e.arrivalS || (plan.arrivalS === e.arrivalS && score(c)[0] < score(earliest)[0])) earliest = c;
+      }
+      if (earliest !== null) bestC = earliest;
+      if (bestC !== nearest) {
+        const np = plans.get(nearest);
+        progress(
+          Math.max(kEff, stages.length - 1),
+          Math.max(kEff, stages.length - 1),
+          `final choice: the branch arriving earliest (${(plans.get(bestC)!.arrivalS / 3600).toFixed(1)} h, from ${(score(bestC)[0] / 1000).toFixed(1)} km out) over the nearest (${(score(nearest)[0] / 1000).toFixed(1)} km out${np ? `, arriving ${(np.arrivalS / 3600).toFixed(1)} h` : ', no sailable final leg'})`
+        );
+      }
+    }
     const stageOfBest = stages.findIndex(st => st.includes(bestC));
+    const bestPlan = plans.get(bestC);
 
     // Final straight leg: to the exact destination, or (approximate
     // intermediate waypoint) only as far as the arrival circle.
     checkCancel();
     const bestDist = haversineDistanceM(bestC.lon, bestC.lat, eLon, eLat);
-    let hopEnd: [number, number] | null = [eLon, eLat];
-    if (!snapToExact) {
-      const r = args.arrivalRadiusM!;
-      if (bestDist <= r) hopEnd = null;
-      else
-        hopEnd = projectAlongBearing(
-          bestC.lon,
-          bestC.lat,
-          haversineBearing(bestC.lon, bestC.lat, eLon, eLat),
-          bestDist - r + Math.min(1, 0.001 * r)
-        );
-    }
+    const hopEnd: [number, number] | null = hopEndFor(bestC);
     let finalCand: Candidate | null = null;
     let tackCand: Candidate | null = null;
     if (hopEnd) {
@@ -1135,7 +1201,9 @@ export class OceanPropagator {
       // beat to it on two close-hauled legs meeting at a tack point (the
       // laylines), in whichever order is faster and clear of land. Only a hop
       // that cannot be sailed at all is beaten; everything else stays straight.
-      const beat = this.beatToWindward(bestC, hLon, hLat, vessel, polar, wind, current, simOpts, modePolicy, landStepM);
+      const beat = bestPlan
+        ? bestPlan.beat
+        : this.beatToWindward(bestC, hLon, hLat, vessel, polar, wind, current, simOpts, modePolicy, landStepM);
       if (beat) {
         tackCand = beat.tack;
         finalCand = beat.final;
@@ -1145,7 +1213,10 @@ export class OceanPropagator {
           `final approach is to windward: beating to the waypoint on two tacks, ${(beat.d1 / 1852).toFixed(1)} nm then ${(beat.d2 / 1852).toFixed(1)} nm`
         );
       } else {
-        const simFinal = simulateLegTime(bestC.lon, bestC.lat, new Date(bestC.timeMs), hLon, hLat, vessel, polar, wind, current, simOpts);
+        const simFinal =
+          bestPlan && bestPlan.sim
+            ? bestPlan.sim
+            : simulateLegTime(bestC.lon, bestC.lat, new Date(bestC.timeMs), hLon, hLat, vessel, polar, wind, current, simOpts);
         if (!Number.isFinite(simFinal.seconds) || simFinal.seconds <= 0) {
           // From far away (more than two stage steps) the straight hop was
           // never going to work: the search ran its budget out boxed in.

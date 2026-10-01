@@ -139,6 +139,30 @@ export class PolarDiagram {
     );
   }
 
+  /**
+   * This polar with every boat speed closer to the wind than `minTwaDeg`
+   * set to zero, so the no-go floor is at least that angle. Many library
+   * polars carry small speeds at 5°–25° off the wind, where no boat sails;
+   * left in, a route goes dead upwind at a crawl instead of tacking.
+   * Returns `this` when nothing changes.
+   */
+  withNoGoFloor(minTwaDeg: number): PolarDiagram {
+    if (!(minTwaDeg > 0)) return this;
+    const nW = this.tws.length;
+    const speeds = Float64Array.from(this.speeds);
+    let changed = false;
+    for (let i = 0; i < this.twa.length; i++) {
+      if (this.twa[i] >= minTwaDeg) continue;
+      for (let k = 0; k < nW; k++) {
+        if (speeds[i * nW + k] > 0) {
+          speeds[i * nW + k] = 0;
+          changed = true;
+        }
+      }
+    }
+    return changed ? new PolarDiagram(this.twa, this.tws, speeds) : this;
+  }
+
   static load(filePath: string): PolarDiagram {
     const ext = path.extname(filePath).toLowerCase();
     if (ext === '.pol') return PolarDiagram.fromDelimited(filePath, '\t');

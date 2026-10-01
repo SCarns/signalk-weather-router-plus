@@ -46,14 +46,14 @@ import {
   type WindowOptions,
 } from '../data/decoded';
 import { checkDecodeResources, checkRouteForecastMemory, checkWaterGridBuildMemory } from './memguard';
-import { bboxFromLonLat, bboxWidth, bboxHeight, type BBox } from '../geo/geodesy';
+import { bboxFromLonLat, bboxWidth, bboxHeight, haversineDistanceM, type BBox } from '../geo/geodesy';
 import { LandMask } from '../geo/landmask';
 import { OnDemandLand } from '../geo/landcache';
 import { releaseMemory } from '../util/gc';
 import { NoCurrent, NoWind, type CurrentSource } from '../engine/environment';
 import { enrichWaypoints, OceanPropagator, RouteCancelled, ViasNotCrossedError } from '../engine/propagator';
 import { rdpSimplify, recomputeTotals, revalidateLand, shortcutSmoother } from '../engine/smoother';
-import { CorridorError, mergeVias, planCorridor, type ChainVia, type Corridor } from '../engine/corridor';
+import { CorridorError, mergeVias, nearestExactWater, planCorridor, waterAround, type ChainVia, type Corridor } from '../engine/corridor';
 import { DEFAULT_PRECISION, legLabel, routeMultiLeg, validateLegOptions, type LegPlan, type Stop } from '../engine/multileg';
 import { WaterGrid } from '../geo/watergrid';
 import { chooseWaterGrid } from '../geo/watergrid_store';
@@ -65,6 +65,7 @@ import {
   skeletonToGeoJSON,
   type Route,
   type StageFront,
+  type StopSnap,
 } from '../engine/route';
 import { PolarDiagram } from '../vessel/polar';
 import { loadPolarCached, resolvePolarPath } from './polars';
@@ -969,6 +970,55 @@ async function route(id: string, request: RouteRequest): Promise<void> {
     ];
     const multi = stops.length > 2;
     const stages = request.stages ?? cfg.routing.stages;
+    // A point on land according to the exact coastline polygons (a drawn
+    // point a few metres inside the shore, a pier), or closer than
+    // SNAP_CLEAR_M to the shore, is moved to the nearest point with that
+    // much water around it, within SNAP_MAX_M, and reported in the log and
+    // in the route (the original stays beside the anchor). The clearance
+    // matters: the search tests legs against a land raster whose finest
+    // cell is 0.0005° (about 55 m), so a point 50 m off the shore sits in
+    // a land cell and no final leg to it is ever clear (job 6ea0c875, the
+    // East River: "boxed in … 0 km from the destination"). Further than
+    // SNAP_MAX_M is an error that names the point.
+    const snaps: StopSnap[] = [];
+    {
+      const SNAP_MAX_M = 1000;
+      const SNAP_CLEAR_M = 150;
+      const label = (i: number): string =>
+        i === 0 ? 'the start point' : i === stops.length - 1 ? 'the destination' : `your point ${i + 1} of ${stops.length} (waypoint ${i})`;
+      const bbox = bboxFromLonLat(
+        stops.map(s => s.lon),
+        stops.map(s => s.lat),
+        0.05
+      );
+      // Polygons only matter here; a coarse raster keeps the build cheap.
+      const land = LandMask.fromShapefiles(cfg.landShapefiles, bbox, { resolutionDeg: 0.05 });
+      for (let i = 0; i < stops.length; i++) {
+        const s = stops[i];
+        if (!land.hasPolygons || waterAround(land, s.lon, s.lat, SNAP_CLEAR_M)) continue;
+        const why = land.isLandExact(s.lon, s.lat) ? 'is on land' : `is within ${SNAP_CLEAR_M} m of the shore`;
+        const near = nearestExactWater(land, s.lon, s.lat, SNAP_MAX_M, SNAP_CLEAR_M);
+        if (!near) {
+          throw new Error(
+            `${label(i)}, at ${s.lat.toFixed(4)}, ${s.lon.toFixed(4)}, ${why} according to the coastline data, with no open water (${SNAP_CLEAR_M} m clear of the shore) within ${SNAP_MAX_M} m; move it into open water`
+          );
+        }
+        const d = haversineDistanceM(s.lon, s.lat, near[0], near[1]);
+        snaps.push({ index: i, original: [s.lon, s.lat], anchor: [near[0], near[1]], distanceM: d });
+        stops[i] = { ...s, lon: near[0], lat: near[1] };
+        progress(
+          0,
+          0,
+          `${label(i)} ${why} according to the coastline data; moved ${d.toFixed(0)} m to open water at ${near[1].toFixed(4)}, ${near[0].toFixed(4)} (route points keep ${SNAP_CLEAR_M} m of water around them)`
+        );
+      }
+      if (snaps.length) {
+        start[0] = stops[0].lon;
+        start[1] = stops[0].lat;
+        end[0] = stops[stops.length - 1].lon;
+        end[1] = stops[stops.length - 1].lat;
+      }
+    }
 
     const vessel = routeVessel(cfg, request.vessel);
     // Per-route polar: a library token from GET /api/polars, else the configured default.
@@ -988,6 +1038,13 @@ async function route(id: string, request: RouteRequest): Promise<void> {
     if (routePolar && vessel.polarPerformance !== 1) {
       routePolar = routePolar.scaled(vessel.polarPerformance);
       log('info', `job ${id}: polar performance ${(vessel.polarPerformance * 100).toFixed(0)}%`);
+    }
+    if (routePolar && cfg.routing.noGoMinAngleDeg > 0) {
+      const floored = routePolar.withNoGoFloor(cfg.routing.noGoMinAngleDeg);
+      if (floored !== routePolar) {
+        routePolar = floored;
+        progress(0, 0, `polar: rows closer than ${cfg.routing.noGoMinAngleDeg}° to the wind ignored (tightest sailable angle, Settings)`);
+      }
     }
     const departureMs = request.departure ? Date.parse(request.departure) : Date.now();
     const useForecast = !request.no_forecast && request.mode !== 'motor';
@@ -1261,6 +1318,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
       onProgress: m => progress(0, 0, m),
     });
     if (cycleLabel) result.forecastCycle = cycleLabel;
+    if (snaps.length) result.snaps = snaps;
     if (!request.no_currents && !stack.isEmpty) result.currentSources = stack.sources.map(s => s.name);
     const name =
       request.name && request.name.trim()

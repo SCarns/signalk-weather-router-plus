@@ -592,6 +592,29 @@ Freeboard panel shows the same note. The **Forecast horizon** setting
 (Settings tab, Forecast group, 3 h to 360 h) decides how far the forecast
 reaches.
 
+When the search stops, the final leg of every branch with a clear
+straight hop to the waypoint (the nearest 64) is simulated, straight or
+as a beat, and the branch with the earliest predicted arrival is taken,
+not the nearest one: branches advance a fixed distance per stage, so a
+slow branch crawling straight at the waypoint is nearest while faster
+branches that tacked are further out but ahead in time.
+
+Every stop (start, waypoints, destination) is tested against the exact
+coastline polygons before routing. One on land, or within 150 m of the
+shore, is moved to the nearest point with 150 m of water around it, within
+1,000 m, and reported: in the log (which point, how far), on
+the route (`snaps`, `stop_count`, the `start_`/`end_` original, anchor and
+snap-distance fields) and on the moved point (`snap_distance_m`,
+`original`); the web app draws the tie from the drawn point to the water
+and the itinerary says "moved N m". With no water within 1,000 m the
+route fails naming the point.
+
+Polar rows closer to the wind than the **Tightest sailable angle**
+setting (Settings tab, Routing group, default 30°, 0 = off) are ignored
+for routing: many library polars carry small boat speeds at 5°–25° off
+the wind, which would send a route dead upwind at a crawl instead of
+tacking. The polar files themselves are not changed.
+
 When a parent's primary heading sweep yields nothing (its headings in
 the polar's no-go angle, on land or over a limit), that parent alone gets
 the wider sweeps (±120°, then half step, then the full circle at a quarter
@@ -1322,6 +1345,10 @@ LineString `properties`:
 | `legs_beyond_forecast` | number | count | legs ending after the last forecast step; present with the above |
 | `forecast_horizon_note` | string | | explains the above: conditions beyond the last step are held at it |
 | `limits_beyond_forecast` | boolean | | `true` when a wind or wave limit was in force on legs beyond the last forecast step (checked against held conditions) |
+| `snaps` | `[{index, original, anchor, distance_m}]` | degrees, m | stops that were on land and were moved to the nearest water; `index` 0 = start, `stop_count - 1` = destination, others = the request's waypoints in order; present when any |
+| `stop_count` | number | count | start + waypoints + destination; present with `snaps` |
+| `start_original`, `start_anchor`, `start_snap_distance_m` | `[lon, lat]`, `[lon, lat]`, number | degrees, m | present when the start was moved: the drawn point, where the route starts, and the distance between them |
+| `end_original`, `end_anchor`, `end_snap_distance_m` | as above | | present when the destination was moved |
 | `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired}`, `violation` `"leg_crosses_land"` or `"leg_too_shallow"`, `from`/`to` `[lon, lat]` |
 | `land_crossings` | number | count | present when a warning is `leg_crosses_land` |
 | `has_land_crossing` | boolean | | `true` when `land_crossings` is present |
@@ -1352,6 +1379,7 @@ Point `properties` (one feature per route point, in order):
 | `leg_distance_m` | number | m | distance to the next point; absent on the last point |
 | `leg_time_s` | number | s | time to the next point; absent on the last point |
 | `beyond_forecast` | boolean | | `true` on a point whose time is after the forecast's last step |
+| `snap_distance_m`, `original` | number, `[lon, lat]` | m, degrees | present on a start, via or end point that was on land and was moved: how far, and the drawn point |
 
 The optional point properties are present only when the value was
 sampled and is finite. Property names match the routePlanning server's
