@@ -6,6 +6,18 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Automatically use a valid active Polar Management resource as the sailing
+  polar, including its shared performance factor, with the internal default
+  as fallback. Internal library polars remain selectable as route overrides.
+  The picker and preview identify the active source and refresh every 30 seconds;
+  completed route summaries include `polar_source`.
+- A `polarSource` configuration preference (`auto` or `files`) and `auto` /
+  `signalk-active` API polar tokens. Managed tables are adapted from canonical
+  SI resources into the existing `PolarDiagram`; interpolation and routing math
+  are unchanged. Each sailing route uses a fixed provider snapshot.
+
 ## [0.1.0-beta.7] - 2026-10-03
 
 ### Added
