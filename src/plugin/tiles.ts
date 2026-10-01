@@ -26,10 +26,10 @@ import * as zlib from 'node:zlib';
 import type { BBox } from '../geo/geodesy';
 import type { QueryArgs, QueryKind } from './protocol';
 
-/** Colour layers (GET /api/field layers). */
-export const TILE_FIELD_LAYERS = ['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current', 'tide'] as const;
+export { FIELD_LAYERS as TILE_FIELD_LAYERS } from './layers';
+import { FIELD_LAYERS } from './layers';
 /** Every tile layer: colour layers, wind barbs, current arrows, coastline mask. */
-export const TILE_LAYERS = [...TILE_FIELD_LAYERS, 'barbs', 'arrows', 'land'] as const;
+export const TILE_LAYERS = [...FIELD_LAYERS, 'barbs', 'arrows', 'land'] as const;
 export type TileLayer = (typeof TILE_LAYERS)[number];
 
 /** Which data a layer's answer depends on. */

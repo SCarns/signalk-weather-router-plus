@@ -3,6 +3,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SETTINGS_GROUPS, SETTINGS_SPEC, type SettingSpec } from './settings';
+import { routeRequestSchema } from './request_schema';
 
 /** JSON schema of one setting's value (SI). */
 function settingValueSchema(s: SettingSpec): Record<string, unknown> {
@@ -48,89 +49,7 @@ function packageVersion(): string {
 }
 
 export function openApiDocument(basePath: string): Record<string, unknown> {
-  const point = {
-    type: 'object',
-    required: ['lat', 'lon'],
-    properties: { lat: { type: 'number' }, lon: { type: 'number' } },
-  };
-  const routeRequest = {
-    type: 'object',
-    required: ['start', 'end'],
-    properties: {
-      start: point,
-      end: point,
-      waypoints: {
-        type: 'array',
-        maxItems: 20,
-        description:
-          'Ordered waypoints; each ends one leg and starts the next. radius_m overrides arrival_radius_m for that waypoint (approximate precision).',
-        items: { ...point, properties: { ...point.properties, radius_m: { type: 'number', minimum: 0, maximum: 5000 } } },
-      },
-      precision: {
-        type: 'string',
-        enum: ['precise', 'approximate'],
-        default: 'precise',
-        description:
-          'precise: each leg ends exactly on its waypoint; approximate: consecutive approximate waypoints are routed as one search that must pass through each waypoint circle in order (leg by leg if no branch passes them all). The destination is always exact.',
-      },
-      arrival_radius_m: {
-        type: 'number',
-        minimum: 0,
-        maximum: 5000,
-        default: 200,
-        description: 'Waypoint circle radius in metres for approximate precision (must be > 0 then); ignored when precise.',
-      },
-      departure: { type: 'string', format: 'date-time', description: 'Empty or absent = now' },
-      mode: { type: 'string', enum: ['sail_max', 'fastest', 'motor'], default: 'sail_max' },
-      sail_thresh_ms: { type: 'number', minimum: 0, description: 'Overrides the routing.sailThreshold setting (m/s)' },
-      max_wind_ms: {
-        type: 'number',
-        minimum: 0,
-        maximum: 100,
-        description: 'A leg is not allowed where the forecast wind speed exceeds this (m/s); overrides routing.maxWind',
-      },
-      max_swh_m: {
-        type: 'number',
-        minimum: 0,
-        maximum: 30,
-        description:
-          'A leg is not allowed where the significant wave height exceeds this (m); overrides routing.maxSwh. Needs wave data in the forecast',
-      },
-      simplify_m: {
-        type: 'number',
-        minimum: 0,
-        maximum: 5000,
-        description: 'RDP simplification tolerance in metres (0 = off); overrides routing.simplify',
-      },
-      smoother: { type: 'boolean', description: 'Run the shortcut smoother; overrides routing.smoother' },
-      smoother_tolerance: {
-        type: 'number',
-        minimum: 0,
-        maximum: 0.5,
-        description: 'Shortcut time tolerance as a ratio; overrides routing.smootherTolerance',
-      },
-      name: { type: 'string', description: 'Name for the Signal K route resource' },
-      stages: { type: 'number', minimum: 4, maximum: 200, description: 'Overrides the routing.stages setting' },
-      no_forecast: { type: 'boolean', description: 'Route with calm wind' },
-      no_currents: { type: 'boolean', description: 'Route without currents' },
-      publish: { type: 'boolean', description: 'Override the publish.toResources setting for this route' },
-      vessel: {
-        type: 'object',
-        description: 'Per-route overrides of the vessel settings (SI); absent keys use the settings.',
-        properties: {
-          name: { type: 'string' },
-          motor_speed_ms: { type: 'number' },
-          polar_performance: {
-            type: 'number',
-            minimum: 0.3,
-            maximum: 1.2,
-            description: 'Share of the polar boat speeds achieved under sail (ratio, 1 = as written)',
-          },
-          polar: { type: 'string', maxLength: 200, description: 'Polar token from /api/polars; absent = the configured default' },
-        },
-      },
-    },
-  };
+  const routeRequest = routeRequestSchema();
   const job = {
     type: 'object',
     properties: {

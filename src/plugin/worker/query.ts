@@ -7,6 +7,7 @@
  */
 
 import { ForecastStore } from '../../data/forecast';
+import { LAYER_PARAMS } from '../layers';
 import { type BBox } from '../../geo/geodesy';
 import {
   conditionsSeries,
@@ -29,19 +30,6 @@ export function overlaySources(st: WorkerState, forecast: ForecastStore | null):
   return { forecast, currents: st.stack.isEmpty ? null : st.stack, land: st.overlayLand, tides: st.tides };
 }
 
-/** Parameters each forecast map layer reads (none: the layer does not use the forecast). */
-const LAYER_PARAMS: Record<string, string[]> = {
-  wind: ['10u', '10v'],
-  waves: ['swh', 'mwp', 'mwd'],
-  msl: ['msl'],
-  temperature: ['2t'],
-  sst: ['skt'],
-  precip: ['tprate', 'ptype'],
-  sea_state: ['10u', '10v', 'swh', 'mwp', 'mwd'],
-  current: [],
-  tide: [],
-};
-
 /** Every parameter conditionsSeries samples. */
 const CONDITIONS_PARAMS = ['10u', '10v', 'swh', 'mwp', 'mwd', 'msl', '2t', 'skt', 'tprate', '2d', 'ptype'];
 
@@ -62,7 +50,7 @@ export async function queryWindow(st: WorkerState, kind: string, args: QueryArgs
   switch (kind) {
     case 'field': {
       const a = args as QueryArgs['field'];
-      const params = LAYER_PARAMS[a.layer] ?? [];
+      const params = [...(LAYER_PARAMS[a.layer] ?? [])];
       if (!params.length) return null;
       return readWindow(st, `${a.layer} map`, { bbox: a.bbox, params, steps: st.run.bracket(a.timeMs), marginCells: 2 });
     }

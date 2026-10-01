@@ -30,7 +30,8 @@ import {
 import { buildIsobarFeatures, type IsobarFeature } from '../engine/isobars';
 import { tideRowAt, tideSummary, SL_NAME, type TidePointSeries, type TideRowFields, type TideSummary } from '../tides/sealevel';
 
-export type FieldLayer = 'wind' | 'waves' | 'msl' | 'temperature' | 'sst' | 'precip' | 'sea_state' | 'current' | 'tide';
+export type { FieldLayer } from './layers';
+import type { FieldLayer } from './layers';
 
 export interface FieldGridResponse {
   layer: FieldLayer;

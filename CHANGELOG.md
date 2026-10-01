@@ -99,6 +99,14 @@ uses [Semantic Versioning](https://semver.org/).
   browser's locale rather than en-US), one overlay reload, one colour
   tile layer factory for the eight heatmaps, one particle layer for the
   wave and wind flow lines.
+- **One request schema, one layer table, one cache buster** (phase 4):
+  the route request's fields and ranges are described once and drive the
+  API validation, the OpenAPI document (unchanged) and the worker; the
+  API now also rejects non-finite or out-of-range coordinates and
+  non-boolean flags with a 400 instead of a failed job. The map layers
+  and the forecast parameters each reads are one table. index.html is no
+  longer rewritten on disk at start: the served page carries the version
+  tag, as it already did.
 
 ## [0.1.0-beta.5] - 2026-09-30
 

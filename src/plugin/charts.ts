@@ -7,6 +7,7 @@
  */
 
 import * as fs from 'node:fs';
+import { LAYER_PARAMS } from './layers';
 import * as path from 'node:path';
 import { MERC_MAX_LAT } from '../geo/mercator';
 import { HOUR_MS } from '../geo/units';
@@ -16,18 +17,6 @@ import { PNG_LAYERS, PNG_LAYER_SPECS, type PngLayer } from './pngtiles';
 import type { TileLayer } from './tiles';
 import type { DataStatus, ForecastRunInfo } from './protocol';
 import type { ResourceProvider } from './plotterext';
-
-/** Forecast parameters each prebuilt layer needs. */
-const LAYER_NEEDS: Partial<Record<TileLayer, string[]>> = {
-  wind: ['10u', '10v'],
-  barbs: ['10u', '10v'],
-  waves: ['swh', 'mwp', 'mwd'],
-  sea_state: ['10u', '10v', 'swh', 'mwp', 'mwd'],
-  precip: ['tprate', 'ptype'],
-  temperature: ['2t'],
-  sst: ['skt'],
-  msl: ['msl'],
-};
 
 export interface ChartsDeps {
   app: {
@@ -146,10 +135,9 @@ export class ChartsProvider {
     if (!forecastRun) return false;
     if (layer === 'tide') return this.deps.tidesEnabled() && !!tidesRun;
     if (layer === 'current' || layer === 'arrows') return (dataStatus?.currents.length ?? 0) > 0;
-    if (layer === 'isobars') return forecastRun.index.request.params.includes('msl');
     if ((layer === 'waves' || layer === 'sea_state') && dataStatus?.forecast && !dataStatus.forecast.hasWaves) return false;
     const params = forecastRun.index.request.params;
-    return (LAYER_NEEDS[layer] ?? []).every(p => params.includes(p));
+    return (LAYER_PARAMS[layer] ?? []).every(p => params.includes(p));
   }
   resource(layer: PngLayer | GlyphLayer): Record<string, unknown> | null {
     const forecastRun = this.deps.forecastRun();

@@ -208,8 +208,34 @@ advances each candidate's own clock and samples through `windAtTimes /
 currentAtTimes / wavesAtTimes` (batched where the source can, `at`
 point by point otherwise). The shared motor-speed clock is gone; this is
 a documented deviation from the reference. Golden routes identical (their
-winds do not vary in time). Brain measurement of the two routes and the
-search time: at this deploy. Every step is a
+winds do not vary in time). Brain measurement 2026-10-01 (server restarted 19:11 EDT, same cycle,
+tiles 161/161 identical): same two routes, fixed departure
+2026-10-02T12:00Z, per-candidate clock vs the original build (scalar
+final leg, shared motor clock for candidates) vs the motor-clock build:
+- short: geometry identical; arrival 14:11:16.013 (original
+  14:11:15.997, motor clock 14:11:31.783); page time 3.0 s (2.4 / 2.8 s).
+- long: geometry identical; arrival 22:02:04.235 (original 22:02:04.112,
+  motor clock 22:18:13.978); page time 3.6 s (3.3 / 3.4 s).
+So the final legs are back on the accurate clock to within 0.2 s, the
+candidates now carry their own times too (the intermediate waypoint
+moved by 16 and 142 ms), and the search cost is within the noise of a
+few runs (no systematic slowdown measured on these two routes).
+Phase 4 built 2026-10-01: `plugin/request_schema.ts` (the route request
+once: fields, ranges taken from SETTINGS_SPEC for the settings they
+override, documentation; `validateRouteRequest`, `routeRequestSchema`)
+drives `api.ts`, `openapi.ts` and the worker's check; the OpenAPI
+document is identical before and after (compared as JSON); the validator
+now also rejects non-finite / out-of-range points and non-boolean
+`no_forecast` / `no_currents` / `publish` at the API (the worker did the
+first before, the second nobody). `plugin/layers.ts` (FIELD_LAYERS,
+FieldLayer, LAYER_PARAMS incl. barbs / isobars / arrows / land) replaces
+the table in worker/query.ts, LAYER_NEEDS in charts.ts, the type in
+overlays.ts, the list in tiles.ts and the string array in api.ts; the
+isobars special case in charts.ts became a table row. Cache busting:
+only the serve-time `?v=` rewrite remains (its tag computed once per
+process); webfiles.ts no longer rewrites index.html on disk (the
+re-dating stays). `withJob` replaces the nine copies of the 503 / 404
+job lookup in api.ts. `request_schema.test.ts` added; 238 tests pass. Every step is a
 behaviour-preserving refactor: same routes, same tiles, same API, same
 page. Lint hygiene is already clean (0 TODO/HACK markers, 0
 eslint-disable, 2 `any`); this plan is about shape.

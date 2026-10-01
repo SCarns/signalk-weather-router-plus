@@ -7,6 +7,7 @@
  */
 
 import { HOUR_S, NM_M } from '../../geo/units';
+import { validateRouteRequest } from '../request_schema';
 import { runLegPipeline, type LegPipelineInputs } from '../../engine/pipeline';
 import * as path from 'node:path';
 import { ForecastStore } from '../../data/forecast';
@@ -19,7 +20,7 @@ import { releaseMemory } from '../../util/gc';
 import { NoCurrent } from '../../engine/environment';
 import { RouteCancelled } from '../../engine/propagator';
 import { nearestExactWater, waterAround } from '../../engine/corridor';
-import { DEFAULT_PRECISION, legLabel, type LegPlan, routeMultiLeg, type Stop, validateLegOptions } from '../../engine/multileg';
+import { DEFAULT_PRECISION, legLabel, type LegPlan, routeMultiLeg, type Stop } from '../../engine/multileg';
 import { type Route, routeToGeoJSON, routeToSignalKRoute, skeletonToGeoJSON, type StageFront, type StopSnap } from '../../engine/route';
 import { PolarDiagram } from '../../vessel/polar';
 import { loadPolarCached, resolvePolarPath } from '../polars';
@@ -32,21 +33,10 @@ import { landMaskFor } from './landgrid';
 import { rebuildStack } from './currents';
 import type { WorkerState } from './state';
 
+/** The request as the API validated it; a job that slipped past (another caller) is refused the same way. */
 export function validateRequest(r: RouteRequest): void {
-  const pt = (p: { lat: number; lon: number } | undefined, name: string): void => {
-    if (!p || typeof p.lat !== 'number' || typeof p.lon !== 'number' || !Number.isFinite(p.lat) || !Number.isFinite(p.lon)) {
-      throw new Error(`${name} must be {lat, lon} numbers`);
-    }
-    if (p.lat < -90 || p.lat > 90 || p.lon < -180 || p.lon > 360) throw new Error(`${name} out of range`);
-  };
-  pt(r.start, 'start');
-  pt(r.end, 'end');
-  (r.waypoints ?? []).forEach((w, i) => pt(w, `waypoints[${i}]`));
-  if (r.mode && !['sail_max', 'fastest', 'motor'].includes(r.mode))
-    throw new Error(`mode must be sail_max, fastest or motor (got ${r.mode})`);
-  if (r.departure && Number.isNaN(Date.parse(r.departure))) throw new Error(`departure "${r.departure}" is not an ISO 8601 date`);
-  const legErr = validateLegOptions(r.precision, r.arrival_radius_m, r.waypoints);
-  if (legErr) throw new Error(legErr);
+  const err = validateRouteRequest(r);
+  if (err) throw new Error(err);
 }
 
 /** A stage front as sent: points [lon, lat, timeMs, viaCount], best [lon, lat]. */

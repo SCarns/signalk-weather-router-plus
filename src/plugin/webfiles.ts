@@ -43,27 +43,15 @@ export function panelFilesHash(publicDir: string): string {
  * first start after the files changed (by their content), set their dates
  * to now, and the next conditional request gets the new file.
  *
- * That is not enough for the web app's own scripts and stylesheet: a
- * browser keeps a subresource without asking for a while after a
- * Last-Modified date (heuristic freshness), so a plain reload of the page
- * could still run the old scripts. index.html therefore references them
- * with `?v=<hash of the web files>`, rewritten here when they change (the
- * hash leaves index.html itself out, so the rewrite does not move it).
+ * The web app's own scripts and stylesheet are versioned (`?v=<tag>`) when
+ * index.html is served (plugin/api.ts servePublic): the tag changes with
+ * the files, so a plain reload never runs the old scripts. Nothing on disk
+ * is rewritten.
  */
-export function versionIndexHtml(pub: string, hash: string): void {
-  const file = path.join(pub, 'index.html');
-  const html = fs.readFileSync(file, 'utf8');
-  const out = html.replace(
-    /\b(src|href)="([A-Za-z0-9_.-]+\.(?:js|css))(?:\?v=[^"]*)?"/g,
-    (_m, attr: string, name: string) => `${attr}="${name}?v=${hash}"`
-  );
-  if (out !== html) fs.writeFileSync(file, out);
-}
-
 export function refreshPublicFileDates(publicDir: string, dataDir: string, log: (m: string) => void, error: (m: string) => void): void {
   const pub = publicDir;
   const stamp = path.join(dataDir, 'public-files.hash');
-  const hash = filesHash(pub, ['index.html']);
+  const hash = filesHash(pub);
   let previous: string;
   try {
     previous = fs.readFileSync(stamp, 'utf8').trim();
@@ -84,13 +72,10 @@ export function refreshPublicFileDates(publicDir: string, dataDir: string, log: 
     }
   };
   try {
-    versionIndexHtml(pub, hash);
     walk(pub);
     fs.mkdirSync(dataDir, { recursive: true });
     fs.writeFileSync(stamp, hash);
-    log(
-      `web files changed since the last start: dated ${n} files now and versioned the page's scripts (?v=${hash}), so browsers refetch them`
-    );
+    log(`web files changed since the last start (${hash}): dated ${n} files now, so browsers refetch them`);
   } catch (err) {
     error(`could not re-date the web files: ${(err as Error).message}`);
   }
