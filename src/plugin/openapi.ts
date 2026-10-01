@@ -113,7 +113,12 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             maximum: 1.2,
             description: 'Share of the polar boat speeds achieved under sail (ratio, 1 = as written)',
           },
-          polar: { type: 'string', maxLength: 200, description: 'Polar token from /api/polars; absent = the configured default' },
+          polar: {
+            type: 'string',
+            maxLength: 200,
+            description:
+              'Polar token from /api/polars; absent = polarSource preference; auto = managed with local fallback; signalk-active = require managed; default or file token = local override',
+          },
         },
       },
     },
@@ -219,8 +224,11 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       },
       '/api/polars': {
         get: {
-          summary: 'Polar library: the configured default plus every .pol/.csv in the polars directory',
-          responses: { 200: { description: '[{path,label,source}]' }, 400: { description: 'Plugin not started' } },
+          summary: 'Automatic source, active managed polar when detected, and the internal polar library',
+          responses: {
+            200: { description: '[{path,label,source,activeSource?}]; sources: auto, signalk, default, library' },
+            400: { description: 'Plugin not started' },
+          },
         },
       },
       '/api/polar-angles': {
@@ -232,7 +240,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               in: 'query',
               required: false,
               schema: { type: 'string' },
-              description: 'Token from /api/polars; absent or empty = the configured default',
+              description: 'Token from /api/polars; absent or empty = auto; default or file token = internal override',
             },
           ],
           responses: {
@@ -251,11 +259,14 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               in: 'query',
               required: false,
               schema: { type: 'string' },
-              description: 'Token from /api/polars; absent or empty = the configured default',
+              description: 'Token from /api/polars; absent or empty = auto; default or file token = internal override',
             },
           ],
           responses: {
-            200: { description: '{path, twa_deg[], tws_ms[], speeds_ms[][]}' },
+            200: {
+              description:
+                '{path, source, label, performance_factor?, twa_deg[], tws_ms[], speeds_ms[][]}; managed preview includes the shared factor',
+            },
             400: { description: 'No polar configured, or plugin not started' },
             404: { description: 'Not in the library' },
           },

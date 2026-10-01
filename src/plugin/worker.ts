@@ -28,6 +28,7 @@
  * Cancellation of the running route is a shared Int32 flag.
  */
 
+import { managedDiagram, type ManagedPolar } from './managedpolar';
 import { parentPort, workerData, Worker } from 'node:worker_threads';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -940,7 +941,7 @@ function validateRequest(r: RouteRequest): void {
   if (legErr) throw new Error(legErr);
 }
 
-async function route(id: string, request: RouteRequest): Promise<void> {
+async function route(id: string, request: RouteRequest, managedPolar?: ManagedPolar): Promise<void> {
   const { config: cfg, client: cl } = requireInit();
   Atomics.store(cancelFlag, 0, 0);
   const shouldCancel = (): boolean => Atomics.load(cancelFlag, 0) === 1;
@@ -962,7 +963,11 @@ async function route(id: string, request: RouteRequest): Promise<void> {
     // Per-route polar: a library token from GET /api/polars, else the configured default.
     let routePolar: PolarDiagram | null = polar;
     let polarLabel: string | null = cfg.polarFile ? path.basename(cfg.polarFile) : null;
-    if (request.vessel?.polar) {
+    if (managedPolar && request.mode !== 'motor') {
+      routePolar = managedDiagram(managedPolar);
+      polarLabel = managedPolar.label;
+      vessel.polarPerformance = request.vessel?.polar_performance ?? managedPolar.performanceFactor;
+    } else if (request.vessel?.polar && request.vessel.polar !== 'auto') {
       const file = resolvePolarPath(
         { polarFile: cfg.polarFile, polarsDir: cfg.polarsDir, userDir: cfg.polarUserDir },
         request.vessel.polar
@@ -1250,6 +1255,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
       forecast_cycle: cycleLabel,
       current_sources: result.currentSources,
       polar: polarLabel,
+      polar_source: request.mode === 'motor' ? undefined : managedPolar ? 'signalk' : 'internal',
       polar_performance: routePolar ? vessel.polarPerformance : undefined,
       auto_vias: result.autoVias?.map(v => ({ name: v.name, width_m: Math.round(v.widthM) })),
     };
@@ -1544,7 +1550,12 @@ async function handle(msg: MainToWorker): Promise<void> {
         if (role === 'route')
           log('info', `polar loaded: ${config.polarFile} (${polar.twa.length} TWA rows × ${polar.tws.length} TWS columns)`);
       } else if (role === 'route') {
-        log('info', 'no polar configured: routes will be motor-only');
+        log(
+          'info',
+          config.polarSource === 'signalk'
+            ? 'polar source: Signal K active polar (loaded per route)'
+            : 'no polar configured: routes will be motor-only'
+        );
       }
       if (config.landShapefiles.length === 0) throw new Error('no land shapefile configured');
       overlayLand =
@@ -1658,7 +1669,7 @@ async function handle(msg: MainToWorker): Promise<void> {
         send({ type: 'error', id: msg.id, message: 'route sent to the data worker' });
         return;
       }
-      await route(msg.id, msg.request);
+      await route(msg.id, msg.request, msg.managedPolar);
       sendCurrents();
       return;
     case 'query':
