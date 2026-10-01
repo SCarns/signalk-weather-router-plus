@@ -22,6 +22,7 @@
  * tree would never report.
  */
 
+import { shorelinePaths } from './shapefile';
 import type { BBox } from './geodesy';
 import { R_EARTH_M, DEG, wrapLon } from './geodesy';
 import { LandMask } from './landmask';
@@ -610,6 +611,7 @@ export function buildWaterGrid(shapefiles: string[], opts: BuildOptions = {}): W
   if (MARGIN_C > HALO_C) throw new Error('halo must be at least the chokepoint window margin (1°)');
   const params = opts.chokepoints ?? DEFAULT_CHOKEPOINT_PARAMS;
   const capM = Math.max(params.maxClearanceM * 3, 60_000);
+  shapefiles = shorelinePaths(shapefiles);
   const indexes = shapefiles.map(p => ShapefileIndex.open(p));
   const grid = WaterGrid.empty();
   const { water, east, north } = grid;

@@ -18,6 +18,7 @@
  * routing resolution (worker.ts landMaskFor).
  */
 
+import { shorelinePaths, shorelineLevel } from './shapefile';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -135,6 +136,7 @@ export class OnDemandLand implements OverlayLand {
   diskWrites = 0;
 
   constructor(paths: string[], opts: OnDemandLandOptions = {}) {
+    paths = shorelinePaths(paths);
     this.paths = paths;
     this.maxEntries = opts.maxEntries ?? 8;
     this.maxCells = opts.maxCells ?? 4_000_000;
@@ -296,10 +298,12 @@ export class OnDemandLand implements OverlayLand {
 
   isLandAt(lon: number, lat: number): boolean {
     const l = ((((lon + 180) % 360) + 360) % 360) - 180;
+    let level = 0;
     for (const ix of this.index()) {
-      for (const x of [l, l + 360, l - 360]) if (ix.containsPoint(x, lat)) return true;
+      const n = shorelineLevel(ix.path);
+      if (n > level && [l, l + 360, l - 360].some(x => ix.containsPoint(x, lat))) level = n;
     }
-    return false;
+    return level % 2 === 1;
   }
 
   /** Cache state for api/status. */
@@ -337,6 +341,7 @@ export class OnDemandLand implements OverlayLand {
  */
 function coastlineFingerprint(paths: string[]): string {
   const h = crypto.createHash('sha256');
+  h.update('hierarchy-v1');
   for (const p of paths) {
     h.update(p);
     try {
