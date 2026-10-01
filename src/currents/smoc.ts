@@ -20,7 +20,7 @@
  * synchronous, so data must be resident before it is sampled):
  *  - the resident area: vessel position ± `halfWidthDeg`, full
  *    resolution, every step of the currents window (now → horizon at
- *    `stepHours`), in SharedArrayBuffers (the data worker loads it; the
+ *    `stepS`), in SharedArrayBuffers (the data worker loads it; the
  *    route worker adopts the same memory);
  *  - on-demand areas (LRU, `budgetBytes` per worker): loaded before a
  *    route (route worker) or an overlay / conditions query (data worker)
@@ -46,6 +46,7 @@
  */
 
 import type { BBox } from '../geo/geodesy';
+import { HOUR_S } from '../geo/units';
 import {
   alignedSteps,
   ArcoAreaSet,
@@ -102,7 +103,6 @@ export const SMOC_PRIORITY = 3;
 export const AREA_MARGIN_CELLS = FILL_RADIUS_CELLS + 1;
 /** Default on-demand memory budget per worker. */
 export const SMOC_DEFAULT_BUDGET_BYTES = 256 * 1024 * 1024;
-const HOUR_MS = 3600_000;
 
 export type SmocLayout = ArcoLayout;
 export type SmocResolution = ArcoResolution;
@@ -159,8 +159,10 @@ export async function loadArea(
 // ─────────────── the current source ───────────────
 
 export interface SmocSettings {
-  stepHours: number;
-  horizonHours: number;
+  /** Seconds between the steps held (the data is hourly; a whole number of hours). */
+  stepS: number;
+  /** Seconds ahead of now the resident window covers. */
+  horizonS: number;
   halfWidthDeg: number;
   budgetBytes: number;
 }
@@ -336,17 +338,17 @@ export class SmocCurrentSource implements CurrentSourceLike {
 
   /** Window steps (now → horizon at the configured step). */
   windowSteps(nowMs: number): number[] {
-    return alignedSteps(this.run, nowMs, nowMs + this.settings.horizonHours * HOUR_MS, this.settings.stepHours);
+    return alignedSteps(this.run, nowMs, nowMs + this.settings.horizonS * 1000, this.settings.stepS / HOUR_S);
   }
 
   /** Steps bracketing one instant (overlay queries). */
   bracketSteps(tMs: number): number[] {
-    return alignedSteps(this.run, tMs, tMs, this.settings.stepHours);
+    return alignedSteps(this.run, tMs, tMs, this.settings.stepS / HOUR_S);
   }
 
   /** Steps covering [fromMs, toMs]. */
   stepsBetween(fromMs: number, toMs: number): number[] {
-    return alignedSteps(this.run, fromMs, toMs, this.settings.stepHours);
+    return alignedSteps(this.run, fromMs, toMs, this.settings.stepS / HOUR_S);
   }
 
   memoryBytes(): number {
@@ -392,8 +394,8 @@ export class SmocCurrentSource implements CurrentSourceLike {
       run_last_time: new Date(runLastMs(this.run)).toISOString(),
       stac_updated: this.run.stacUpdated,
       settled: this.run.settled,
-      step_hours: this.settings.stepHours,
-      horizon_hours: this.settings.horizonHours,
+      step_hours: this.settings.stepS / HOUR_S,
+      horizon_hours: this.settings.horizonS / HOUR_S,
       half_width_deg: this.settings.halfWidthDeg,
       ...this.set.statusParts(),
       shared_resident: !!r && r.u.buffer instanceof SharedArrayBuffer,

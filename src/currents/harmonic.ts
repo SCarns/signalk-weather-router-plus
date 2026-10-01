@@ -26,6 +26,7 @@
  */
 
 import { readNpz, type NpyArray } from '../data/npz';
+import { DEG } from '../geo/units';
 import { isSupportedConstituent, tidalArguments } from './tidal_arguments';
 import { bboxContains, dateToMjd, type CurrentSourceLike, type SourceBBox } from './types';
 
@@ -202,7 +203,6 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
     // Accumulate in double, store float32 (the constituents are float32).
     const ud = new Float64Array(per);
     const vd = new Float64Array(per);
-    const DEG = Math.PI / 180;
     for (let c = 0; c < this.constituents.length; c++) {
       const theta = G[c] * DEG + pu[c];
       const f = pf[c];
@@ -227,7 +227,6 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
   private predictCell(args: ReturnType<typeof tidalArguments>, cell: number): [number, number] {
     const { pu, pf, G } = args;
     const per = this.lats.length * this.lons.length;
-    const DEG = Math.PI / 180;
     let ud = 0;
     let vd = 0;
     for (let c = 0; c < this.constituents.length; c++) {

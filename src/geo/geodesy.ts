@@ -6,17 +6,11 @@
  * (6 371 008.8 m, the IUGG mean radius).
  */
 
-export const R_EARTH_M = 6371008.8;
-export const KTS_TO_MS = 1852 / 3600;
-export const DEG = Math.PI / 180;
-export const RAD = 180 / Math.PI;
+import { DEG, R_EARTH_M, RAD } from './units';
+import { norm360, wrapLon, lonOffset } from './angles';
 
-/** Wrap a longitude into [-180, 180). */
-export function wrapLon(lon: number): number {
-  let x = ((((lon + 180) % 360) + 360) % 360) - 180;
-  if (x === 180) x = -180;
-  return x;
-}
+export { DEG, KTS_TO_MS, R_EARTH_M, RAD } from './units';
+export { wrapLon } from './angles';
 
 /** Great-circle distance in metres. */
 export function haversineDistanceM(lon1: number, lat1: number, lon2: number, lat2: number): number {
@@ -35,7 +29,7 @@ export function haversineBearing(lon1: number, lat1: number, lon2: number, lat2:
   const dlon = (lon2 - lon1) * DEG;
   const x = Math.sin(dlon) * Math.cos(la2);
   const y = Math.cos(la1) * Math.sin(la2) - Math.sin(la1) * Math.cos(la2) * Math.cos(dlon);
-  return (((Math.atan2(x, y) * RAD) % 360) + 360) % 360;
+  return norm360(Math.atan2(x, y) * RAD);
 }
 
 /**
@@ -194,7 +188,7 @@ export function bboxHeight(b: BBox): number {
 
 /** Offset of `lon` east of the box's west edge, in [0, 360). */
 export function lonOffsetFromWest(b: BBox, lon: number): number {
-  return (((lon - b.west) % 360) + 360) % 360;
+  return lonOffset(lon, b.west);
 }
 
 export function bboxContains(b: BBox, lon: number, lat: number): boolean {
@@ -214,7 +208,7 @@ export function bboxFromLonLat(lons: number[], lats: number[], padLon = 0, padLa
   let wmin = Infinity;
   let wmax = -Infinity;
   for (const L of lons) {
-    const shifted = ((((L - ref + 180) % 360) + 360) % 360) - 180 + ref;
+    const shifted = wrapLon(L - ref) + ref;
     if (shifted < wmin) wmin = shifted;
     if (shifted > wmax) wmax = shifted;
   }

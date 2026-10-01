@@ -17,6 +17,7 @@
  */
 
 import * as fs from 'node:fs';
+import { MINUTE_MS, HOUR_MS, HOUR_S } from '../geo/units';
 import * as path from 'node:path';
 
 export const ECMWF_MIRRORS: Record<string, string> = {
@@ -80,14 +81,15 @@ export const PUBLICATION_LAG_MINUTES = 400;
  * horizon exceeds what the 06z/18z cycles publish (144 h), only 00z/12z
  * cycles qualify.
  */
-export function latestExpectedCycle(now: Date, horizonHours: number): Cycle {
-  const t = new Date(now.getTime() - PUBLICATION_LAG_MINUTES * 60_000);
+export function latestExpectedCycle(now: Date, horizonS: number): Cycle {
+  const horizonHours = horizonS / HOUR_S;
+  const t = new Date(now.getTime() - PUBLICATION_LAG_MINUTES * MINUTE_MS);
   let start = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), Math.floor(t.getUTCHours() / 6) * 6));
   for (;;) {
     const c = cycleFor(start);
     const steps = availableSteps(c, horizonHours);
     if (steps[steps.length - 1] >= horizonHours || c.maxStep === MAIN_MAX_STEP) return c;
-    start = new Date(start.getTime() - 6 * 3600_000);
+    start = new Date(start.getTime() - 6 * HOUR_MS);
   }
 }
 
@@ -150,7 +152,7 @@ export class EcmwfClient {
     const fallbacks = (opts.fallbackUrls ?? Object.values(ECMWF_MIRRORS)).map(u => u.replace(/\/$/, '')).filter(u => u !== primary);
     this.mirrors = [primary, ...fallbacks];
     this.cacheDir = opts.cacheDir;
-    this.timeoutMs = opts.timeoutMs ?? 60_000;
+    this.timeoutMs = opts.timeoutMs ?? MINUTE_MS;
     this.retries = opts.retries ?? 6;
     this.log = opts.log ?? (() => undefined);
     this.fetchImpl = opts.fetchImpl ?? fetch;
@@ -200,8 +202,8 @@ export class EcmwfClient {
           clearTimeout(timer);
         }
         if (attempt === this.retries) break;
-        let backoff = Math.min(60_000, 2000 * 2 ** (attempt - 1));
-        if (retryAfterMs !== null) backoff = Math.min(60_000, Math.max(backoff, retryAfterMs));
+        let backoff = Math.min(MINUTE_MS, 2000 * 2 ** (attempt - 1));
+        if (retryAfterMs !== null) backoff = Math.min(MINUTE_MS, Math.max(backoff, retryAfterMs));
         backoff += Math.random() * 500;
         this.log(`retry ${attempt}/${this.retries - 1} for ${url} after ${(backoff / 1000).toFixed(1)} s: ${(lastErr as Error).message}`);
         await this.sleepImpl(backoff);
@@ -228,12 +230,13 @@ export class EcmwfClient {
    * cycle (now minus the publication lag) and walks back in 6 h cycles,
    * up to `maxAgeHours`, so the usual case costs two HEAD requests.
    */
-  async findLatestCycle(horizonHours: number, opts: { mainCyclesOnly?: boolean; maxAgeHours?: number; now?: Date } = {}): Promise<Cycle> {
+  async findLatestCycle(horizonS: number, opts: { mainCyclesOnly?: boolean; maxAgeHours?: number; now?: Date } = {}): Promise<Cycle> {
+    const horizonHours = horizonS / HOUR_S;
     const now = opts.now ?? new Date();
     const maxAge = opts.maxAgeHours ?? 48;
-    const start = latestExpectedCycle(now, horizonHours).time;
+    const start = latestExpectedCycle(now, horizonS).time;
     for (let ageH = 0; ageH <= maxAge; ageH += 6) {
-      const c = cycleFor(new Date(start.getTime() - ageH * 3600_000));
+      const c = cycleFor(new Date(start.getTime() - ageH * HOUR_MS));
       if (opts.mainCyclesOnly && c.maxStep !== MAIN_MAX_STEP) continue;
       const atmSteps = availableSteps(c, horizonHours);
       const waveSteps = availableSteps(c, horizonHours);
@@ -291,7 +294,8 @@ export class EcmwfClient {
    * True when every (stream, step, param) the loader will ask for is
    * already cached, so a load needs no network at all.
    */
-  cycleFullyCached(cycle: Cycle, horizonHours: number, atmParams: readonly string[], waveParams: readonly string[]): boolean {
+  cycleFullyCached(cycle: Cycle, horizonS: number, atmParams: readonly string[], waveParams: readonly string[]): boolean {
+    const horizonHours = horizonS / HOUR_S;
     for (const step of availableSteps(cycle, horizonHours)) {
       for (const p of atmParams) if (!this.hasCached(cycle, cycle.atmStream, step, p)) return false;
     }

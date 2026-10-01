@@ -396,7 +396,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       '/api/legends': {
         get: {
           summary:
-            'Colour ramps for the heatmap layers: {key: {title, quantity, category, si_unit, kind, stops: [[SI value, css colour]], bands?}}; `category` is the Signal K unit category for display; `tide`: tide height above mean sea level, −3..+3 m diverging',
+            'Colour ramps for the heatmap layers: {key: {title, quantity, category, si_unit, kind, stops: [[SI value, css colour]], bands?, fade_below?}}; `category` is the Signal K unit category for display; `fade_below`: values under it fade to transparent (precipitation); `tide`: tide height above mean sea level, −3..+3 m diverging',
           responses: { 200: { description: 'OK' } },
         },
       },

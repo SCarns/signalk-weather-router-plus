@@ -14,6 +14,8 @@
  */
 
 import { createHash } from 'node:crypto';
+import { MERC_MAX_LAT } from './geo/mercator';
+import { NM_M, HOUR_S, MINUTE_MS, HOUR_MS } from './geo/units';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
@@ -185,7 +187,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
   /** Cancels a download started from the config panel, on stop. */
   let coastlineManualCtrl: AbortController | null = null;
   /** A failed coastline download is tried again after this long. */
-  const COASTLINE_RETRY_MS = 10 * 60_000;
+  const COASTLINE_RETRY_MS = 10 * MINUTE_MS;
 
   /**
    * No coastline configured: download GSHHG (geo/gshhg.ts), trying again
@@ -530,7 +532,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           failedRefreshTimer = setTimeout(() => {
             failedRefreshTimer = null;
             if (!stopped) requestRefresh(false);
-          }, 10 * 60_000);
+          }, 10 * MINUTE_MS);
         }
         updateStatus();
         return;
@@ -594,7 +596,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           notify(
             job,
             'normal',
-            `route ready: ${(msg.summary.total_distance_m / 1852).toFixed(1)} nm, ${(msg.summary.total_time_s / 3600).toFixed(1)} h`
+            `route ready: ${(msg.summary.total_distance_m / NM_M).toFixed(1)} nm, ${(msg.summary.total_time_s / HOUR_S).toFixed(1)} h`
           );
           const wantPublish = job.request.publish ?? config?.publish.toResources ?? false;
           if (wantPublish) publish(job.id).catch(err => app.error((err as Error).message));
@@ -695,7 +697,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           lat: position.latitude,
           lon: position.longitude,
           // No start given: from the start of this hour (not this millisecond), so the answer can be kept for the hour.
-          startMs: startMsOf(options) ?? Math.floor(Date.now() / 3600_000) * 3600_000,
+          startMs: startMsOf(options) ?? Math.floor(Date.now() / HOUR_MS) * HOUR_MS,
           maxCount: options?.maxCount ?? null,
         })) as WeatherData[];
       };
@@ -745,7 +747,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     prebuilder?.broadcast({ type: 'config', config, reload: { forecast: false, currents: out.currents, tides: out.tides } });
     if (out.refresh_timer) {
       if (refreshTimer) clearInterval(refreshTimer);
-      refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshMinutes * 60_000);
+      refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshIntervalS * 1000);
     }
     if (out.jobs) jobs?.setKeepJobs(config.routing.keepJobs);
     log(
@@ -1006,7 +1008,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     const steps = forecastRun.index.steps;
     const lastMs = layer === 'tide' ? (tidesRun ? runLastMs(tidesRun) : null) : steps[steps.length - 1].validMs;
     if (lastMs === null) return null;
-    const fromMs = Math.max(steps[0].validMs, Math.floor(Date.now() / 3600_000) * 3600_000);
+    const fromMs = Math.max(steps[0].validMs, Math.floor(Date.now() / HOUR_MS) * HOUR_MS);
     const base = `${BASE_PATH}/api/tile/${layer}/{z}/{x}/{y}.png`;
     return {
       identifier: spec.chartId,
@@ -1020,10 +1022,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
         current: true,
         from: new Date(fromMs).toISOString(),
         to: new Date(Math.max(fromMs, lastMs)).toISOString(),
-        step: 3600_000,
+        step: HOUR_MS,
       },
       refreshInterval: 600_000,
-      bounds: [-180, -85.0511, 180, 85.0511],
+      bounds: [-180, -MERC_MAX_LAT, 180, MERC_MAX_LAT],
       minzoom: 2,
       maxzoom: 18,
       tileSize: 256,
@@ -1247,7 +1249,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       post(role, { type: 'init', role, config, cacheDir: dataDir });
     }
     requestRefresh(false);
-    refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshMinutes * 60_000);
+    refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshIntervalS * 1000);
     updateStatus();
     log(`${PLUGIN_ID} started; data dir ${dataDir}`);
   }
@@ -1406,7 +1408,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         const prospective = mergeSettings(settings.values, partial);
         if (prospective.changed.some(k => k === 'forecast.horizon' || k === 'forecast.extraFields' || k === 'forecast.memoryHeadroom')) {
           const f = prospective.values.forecast;
-          const mem = checkDecodeResources(f.horizon / 3600, f.extraFields, f.memoryHeadroom, app.getDataDirPath());
+          const mem = checkDecodeResources(f.horizon, f.extraFields, f.memoryHeadroom, app.getDataDirPath());
           if (!mem.ok) {
             const key = prospective.changed.find(k => k.startsWith('forecast.')) ?? 'forecast.horizon';
             throw new SettingsValidationError({ [key]: mem.message });

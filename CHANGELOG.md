@@ -6,6 +6,52 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **One place for units and geodetic constants** (`src/geo/units.ts`):
+  the knot, nautical mile, hour and minute factors, the Earth radius,
+  degrees/radians, metres per degree and the precipitation-rate factor
+  were defined in nine to fifteen places with three different knot
+  values; every copy now imports the one definition (structural cleanup,
+  `docs/plans/structural-cleanup.md`, phase 1.1). Consequences:
+  - Legend colour stops authored in knots (wind, current) and the wind
+    barb speed classes use the exact knot (1852/3600 m/s) instead of
+    0.514444: the stop values move in the sixth significant digit.
+  - Polar tables computed from boat specs (empirical and physics VPP)
+    use the exact knot for the table's wind speeds; the parity tests
+    against the Python reference evaluate at the Python's wind speeds
+    (which used the rounded knot) so the comparison is of the VPP alone.
+  - The metre-per-degree heuristics for land-sampling step, smoother
+    tolerance and tile radius used 111 195, 111 000 and 111 320 m; all
+    use 111 194.93 m (R_EARTH_M · π/180) now. The golden routes
+    (`src/engine/golden.test.ts`) are unchanged by this.
+- **One place for angle arithmetic** (`src/geo/angles.ts`, phase 1.2):
+  longitude wrap, eastward offset, unwrap across the seam, and the
+  true-wind-angle fold were written inline about sixty times; each form
+  is now one function with the same operations, so results are
+  bit-identical (held by the golden sampler and route tests).
+- **One Web Mercator** (`src/geo/mercator.ts`, phase 1.3): tile
+  numbering, tile boxes and the projected row latitude were written out
+  in five tile modules; one definition each now.
+- **Resolved configuration in SI** (phase 1.4): the settings were
+  already SI (seconds) but the resolved configuration carried hours and
+  minutes, and the code converted back and forth. It carries seconds now,
+  the forecast, current and tide clients take seconds at their entry
+  points, and the smoother tolerance is a ratio throughout. Hours remain
+  only inside the ECMWF/RTOFS step ladders and the decoded run's on-disk
+  index, which are those formats' own units. Status JSON fields
+  (`horizon_hours`, `step_hours`) are unchanged.
+- **Web app: SI under the hood, the user's units on screen** (phase 1.5).
+  The minimum-sail-speed slider holds m/s (a saved knot value is converted
+  once on first load) and its default is 2.6 m/s (about 5 kt, as before).
+  The power boat's cruise speed is typed in the user's speed unit like the
+  wind and wave limits and kept in SI (a saved knot value is converted
+  once). The page no longer carries a copy of the heatmap colour ramps:
+  they come from `GET /api/legends` and the layers wait for that answer;
+  the precipitation layer's fade threshold is part of that legend
+  (`fade_below`). The streamline colours now use the legend ramp through
+  the same 256-step lookup as the heatmaps.
+
 ## [0.1.0-beta.5] - 2026-09-30
 
 ### Added

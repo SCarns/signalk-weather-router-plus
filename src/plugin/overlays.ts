@@ -6,6 +6,10 @@
  */
 
 import type { ForecastStore } from '../data/forecast';
+import { norm360 } from '../geo/angles';
+import { latOfMercY, mercY } from '../geo/mercator';
+import { wrapLon } from '../geo/angles';
+import { HOUR_MS } from '../geo/units';
 import type { CurrentStack } from '../currents/stack';
 import type { OverlayLand } from '../geo/landcache';
 import { bboxWidth, type BBox } from '../geo/geodesy';
@@ -51,8 +55,7 @@ function lattice(bbox: BBox, res: number, maxCells: number): { lons: number[]; l
   const lons: number[] = [];
   const lats: number[] = [];
   const lonStart = Math.ceil(bbox.west / r) * r;
-  for (let x = lonStart; x <= bbox.west + width + 1e-9; x += r)
-    lons.push(Math.round((((((x + 180) % 360) + 360) % 360) - 180) * 1e6) / 1e6);
+  for (let x = lonStart; x <= bbox.west + width + 1e-9; x += r) lons.push(Math.round(wrapLon(x) * 1e6) / 1e6);
   const latStart = Math.ceil(bbox.south / r) * r;
   for (let y = latStart; y <= bbox.north + 1e-9; y += r) lats.push(Math.round(y * 1e6) / 1e6);
   return { lons, lats, res: r };
@@ -190,7 +193,7 @@ export function fieldGrid(src: OverlaySources, layer: FieldLayer, bbox: BBox, ti
           if (src.currents) {
             const [u, v] = src.currents.at(lon, lat, time);
             C = Math.hypot(u, v);
-            cTo = ((Math.atan2(u, v) * 180) / Math.PI + 360) % 360;
+            cTo = norm360((Math.atan2(u, v) * 180) / Math.PI);
           }
           const { idx: v, signal } = roughnessIndex(ws, C, wd, cTo, w ? w.swh : 0, w ? w.mwp : 5, w ? w.mwd : 0);
           a.push(nz(v));
@@ -221,7 +224,7 @@ export function fieldGrid(src: OverlaySources, layer: FieldLayer, bbox: BBox, ti
             b.push(null);
           } else {
             a.push(nz(Math.hypot(u, v)));
-            b.push(nz(((Math.atan2(u, v) * 180) / Math.PI + 360) % 360));
+            b.push(nz(norm360((Math.atan2(u, v) * 180) / Math.PI)));
           }
         }
         speed.push(a);
@@ -289,7 +292,7 @@ export function currentPoints(src: OverlaySources, bbox: BBox, time: Date, res: 
         u_ms: Math.round(u * 1e4) / 1e4,
         v_ms: Math.round(v * 1e4) / 1e4,
         speed_ms: Math.round(sp * 1e4) / 1e4,
-        dir_deg: Math.round((((Math.atan2(u, v) * 180) / Math.PI + 360) % 360) * 10) / 10,
+        dir_deg: Math.round(norm360((Math.atan2(u, v) * 180) / Math.PI) * 10) / 10,
       });
     }
   }
@@ -402,7 +405,7 @@ export function sampleConditions(src: OverlaySources, lon: number, lat: number, 
     if (!(u === 0 && v === 0)) {
       const sp = Math.hypot(u, v);
       current = sp;
-      currentDir = sp > 1e-6 ? ((Math.atan2(u, v) * 180) / Math.PI + 360) % 360 : null;
+      currentDir = sp > 1e-6 ? norm360((Math.atan2(u, v) * 180) / Math.PI) : null;
     }
   }
   const rh = relativeHumidity(t2m, d2m);
@@ -481,7 +484,7 @@ export function conditionsSeries(
   if (!Number.isFinite(stepH) || stepH <= 0) throw new Error('step_h must be > 0');
   const f = src.forecast;
   let start = from.getTime();
-  let end = start + hours * 3600_000;
+  let end = start + hours * HOUR_MS;
   let truncated = false;
   let range: [string, string] | null = null;
   if (f) {
@@ -499,7 +502,7 @@ export function conditionsSeries(
   const series: ConditionsSeriesRow[] = [];
   const ts = tide?.series ?? null;
   let t = start;
-  for (; t <= end + 1 && series.length < CONDITIONS_MAX_ROWS; t += stepH * 3600_000)
+  for (; t <= end + 1 && series.length < CONDITIONS_MAX_ROWS; t += stepH * HOUR_MS)
     series.push({ ...sampleConditions(src, lon, lat, new Date(t)), ...tideRowAt(ts, t) });
   if (t <= end + 1) truncated = true; // stopped by the row limit
   let tides: TideSummary | null = null;
@@ -548,17 +551,14 @@ export function landMaskImage(src: OverlaySources, bbox: BBox, w: number, h: num
   // forBBox picks a raster resolution of spacing/4; ask for 4× the pixel so the raster matches the pixel.
   const lm = src.land.forBBox(bbox, Math.min(dx, dy) * 4);
   const out = new Uint8Array(w * h);
-  // Web Mercator y of the edges (radians of the projection), for tile rows.
-  const my = (lat: number): number => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
-  const yN = my(bbox.north);
-  const yS = my(bbox.south);
+  // Web Mercator y of the edges, for tile rows.
+  const yN = mercY(bbox.north);
+  const yS = mercY(bbox.south);
   for (let y = 0; y < h; y++) {
-    const lat = mercator
-      ? (2 * Math.atan(Math.exp(yN - ((y + 0.5) / h) * (yN - yS))) - Math.PI / 2) * (180 / Math.PI)
-      : bbox.north - (y + 0.5) * dy;
+    const lat = mercator ? latOfMercY(yN - ((y + 0.5) / h) * (yN - yS)) : bbox.north - (y + 0.5) * dy;
     const row = y * w;
     for (let x = 0; x < w; x++) {
-      const lon = ((((bbox.west + (x + 0.5) * dx + 180) % 360) + 360) % 360) - 180;
+      const lon = wrapLon(bbox.west + (x + 0.5) * dx);
       if (lm.isLand(lon, lat)) out[row + x] = 1;
     }
   }
@@ -592,7 +592,7 @@ export function pressureFeatures(
   const field = new Float64Array(nx * ny);
   for (let j = 0; j < ny; j++) {
     for (let i = 0; i < nx; i++) {
-      field[j * nx + i] = f.mslAt(((((lons[i] + 180) % 360) + 360) % 360) - 180, lats[j], time) * 0.01;
+      field[j * nx + i] = f.mslAt(wrapLon(lons[i]), lats[j], time) * 0.01;
     }
   }
   return { type: 'FeatureCollection', features: buildIsobarFeatures(field, lons, lats, intervalHpa) };

@@ -20,6 +20,7 @@
  */
 
 import * as fs from 'node:fs';
+import { NM_M, KTS_TO_MS, HOUR_S, HOUR_MS } from './geo/units';
 import { loadForecastForBBox, resolveCycle } from './data/loader';
 import { EcmwfClient, ECMWF_MIRRORS } from './data/ecmwf';
 import { bboxFromLonLat } from './geo/geodesy';
@@ -121,7 +122,7 @@ async function main(): Promise<void> {
   };
 
   const polar = polarPath ? PolarDiagram.load(polarPath) : null;
-  const vessel = makeVessel({ motorSpeedMs: (motorKts * 1852) / 3600 });
+  const vessel = makeVessel({ motorSpeedMs: motorKts * KTS_TO_MS });
   const client = flag('no-forecast')
     ? null
     : new EcmwfClient({
@@ -129,7 +130,7 @@ async function main(): Promise<void> {
         baseUrl: arg('mirror') ? (ECMWF_MIRRORS[arg('mirror')!] ?? arg('mirror')) : undefined,
         log: m => log(`  ecmwf: ${m}`),
       });
-  const cycle = client ? (await resolveCycle(client, hours, { log: m => log(`  forecast: ${m}`) })).cycle : null;
+  const cycle = client ? (await resolveCycle(client, hours * HOUR_S, { log: m => log(`  forecast: ${m}`) })).cycle : null;
   let cycleLabel: string | undefined;
 
   // Waypoints are leg ends (engine/multileg.ts); each leg is its own route.
@@ -174,7 +175,7 @@ async function main(): Promise<void> {
     let wind;
     if (client && cycle) {
       t = Date.now();
-      wind = await loadForecastForBBox(client, bbox, { horizonHours: hours, cycle, log: m => log(`  forecast: ${m}`) });
+      wind = await loadForecastForBBox(client, bbox, { horizonS: hours * HOUR_S, cycle, log: m => log(`  forecast: ${m}`) });
       log(`${tag}forecast: ${wind.steps.length} steps, ${(wind.bytes() / 1024).toFixed(0)} kB resident, ${Date.now() - t} ms`);
       cycleLabel = wind.meta.cycleTime.toISOString();
     }
@@ -201,7 +202,7 @@ async function main(): Promise<void> {
       if (arrival > lastValid) {
         r.forecastHorizonExceededS = (arrival - lastValid) / 1000;
         log(
-          `WARNING: ${tag}arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`
+          `WARNING: ${tag}arrival is ${((arrival - lastValid) / HOUR_MS).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`
         );
       }
     }
@@ -211,7 +212,7 @@ async function main(): Promise<void> {
   const route = await routeMultiLeg({ stops, departureTime: departure, precision, arrivalRadiusM, runLeg, onProgress: log });
   if (cycleLabel) route.forecastCycle = cycleLabel;
   log(
-    `route: ${route.waypoints.length} waypoints, ${(route.totalDistanceM / 1852).toFixed(1)} nm, ${(route.totalTimeS / 3600).toFixed(1)} h (sail ${(route.sailingTimeS / 3600).toFixed(1)} h, motor ${(route.motoringTimeS / 3600).toFixed(1)} h), warnings ${route.warnings?.length ?? 0}, ${Date.now() - routeT0} ms`
+    `route: ${route.waypoints.length} waypoints, ${(route.totalDistanceM / NM_M).toFixed(1)} nm, ${(route.totalTimeS / HOUR_S).toFixed(1)} h (sail ${(route.sailingTimeS / HOUR_S).toFixed(1)} h, motor ${(route.motoringTimeS / HOUR_S).toFixed(1)} h), warnings ${route.warnings?.length ?? 0}, ${Date.now() - routeT0} ms`
   );
   fs.writeFileSync(out, JSON.stringify(routeToGeoJSON(route), null, 1));
   log(`wrote ${out}; total ${((Date.now() - tAll) / 1000).toFixed(1)} s`);

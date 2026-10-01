@@ -236,11 +236,11 @@ function unitDesc(key) {
   return c ? { fn: c.fn, u: c.unit, p: c.precision } : { fn: () => NaN, u: '', p: 0, missing: true };
 }
 
-// Sliders keep their native value (knots for sail speed, metres for
-// the distances, seconds otherwise); the readout converts to the
-// display preset. `toSI` maps slider value → SI for the quantity.
+// Sliders hold SI (m/s for sail speed, metres for the distances,
+// seconds otherwise); the readout converts to the display preset.
+// `toSI` maps slider value → SI for the quantity (identity today).
 const SLIDER_DISPLAY = {
-  sailThresh:         { q: 'speed',          toSI: v => v * 0.5144444444 },
+  sailThresh:         { q: 'speed',          toSI: v => v },
   arrivalRadiusM:     { q: 'short_distance', toSI: v => v },
   proximityRadiusM:   { q: 'short_distance', toSI: v => v },
   xteThresholdM:      { q: 'short_distance', toSI: v => v },
@@ -347,9 +347,12 @@ const BASE = (function () {
 const API = BASE + '/api';
 const ROUTER = API;   // name kept from the sister app: every app fetch is ROUTER + '/…'
 
-// Server emits SI throughout. Display conversions live in this file only.
-const M_PER_NM = 1852.0;
-const MS_PER_KT = 0.5144444444;
+// Server and page are SI throughout; a number is converted only when it
+// is formatted through UI_UNITS (the Signal K user's preferences). Knots
+// appear in exactly one place: the wind-barb and current-arrow class
+// tables (rp-layers.js), because barbs are a glyph drawn in 5-kt steps
+// by meteorological convention. This is that one factor.
+const KT_MS = 1852 / 3600;
 
 // ─────────── Auth gate / request circuit breaker ───────────
 // Every same-origin app fetch funnels through authFetch(): a global
@@ -960,7 +963,16 @@ document.getElementById('polarSelect').addEventListener('change', function() {
     'publishSel', 'proximityRadiusM', 'xteThresholdM', 'xteSustainSec',
   ];
   const CHECK_IDS = ['noCurrents', 'noForecast'];
-  const KEY = (id) => 'routeVar:' + id;
+  // The sail-speed slider held knots until 2026-10; it holds m/s now under a new key.
+  try {
+    const old = localStorage.getItem('routeVar:sailThresh');
+    if (old !== null) {
+      if (old !== '' && localStorage.getItem('routeVar:sailThreshMs') === null)
+        localStorage.setItem('routeVar:sailThreshMs', String(Math.round(parseFloat(old) * KT_MS * 10) / 10));
+      localStorage.removeItem('routeVar:sailThresh');
+    }
+  } catch (_) {}
+  const KEY = (id) => 'routeVar:' + (id === 'sailThresh' ? 'sailThreshMs' : id);
   for (const id of PERSIST_IDS) {
     const el = document.getElementById(id);
     if (!el) continue;
@@ -1394,26 +1406,24 @@ function getVesselType() {
   try { return localStorage.getItem('vesselType') === 'power' ? 'power' : 'sail'; }
   catch (_) { return 'sail'; }
 }
+// The cruise speed is a display-unit input like the wind and wave limits
+// (rp-plan.js `_LIMITS`): typed in the user's unit, kept in SI.
 function readPowerBoat() {
-  const num = id => {
-    const v = document.getElementById(id).value;
-    return v === '' ? null : Number(v);
-  };
   return {
     name: (document.getElementById('pb_name').value || '').trim(),
-    cruise_kts: num('pb_cruise_kts'),
+    cruise_ms: typeof _limitSI === 'function' ? _limitSI('pb_cruise') : null,
   };
 }
 function validatePowerBoat() {
   const pb = readPowerBoat();
   const missing = [];
   if (!pb.name) missing.push('name');
-  if (pb.cruise_kts == null || pb.cruise_kts <= 0) missing.push('cruise speed');
+  if (pb.cruise_ms == null || pb.cruise_ms <= 0) missing.push('cruise speed');
   return missing;
 }
 function savePowerBoat() {
   try {
-    localStorage.setItem('powerBoat', JSON.stringify(readPowerBoat()));
+    localStorage.setItem('powerBoat', JSON.stringify({ name: readPowerBoat().name }));
   } catch (_) {}
 }
 function loadPowerBoat() {
@@ -1422,7 +1432,9 @@ function loadPowerBoat() {
     if (!j) return;
     const pb = JSON.parse(j);
     if (pb.name != null) document.getElementById('pb_name').value = pb.name;
-    if (pb.cruise_kts != null) document.getElementById('pb_cruise_kts').value = pb.cruise_kts;
+    // Until 2026-10 the cruise speed was stored here in knots; it lives in SI with the other limits now.
+    if (pb.cruise_kts != null && localStorage.getItem('routeVar:pb_cruise:si') === null)
+      localStorage.setItem('routeVar:pb_cruise:si', String(pb.cruise_kts * KT_MS));
   } catch (_) {}
 }
 function refreshFindRouteEnabled() {
@@ -1462,7 +1474,7 @@ function applyVesselType(vt) {
 document.querySelectorAll('#vesselTypeToggle .vt-btn').forEach(b => {
   b.addEventListener('click', () => applyVesselType(b.dataset.val));
 });
-['pb_name', 'pb_cruise_kts'].forEach(id => {
+['pb_name', 'pb_cruise'].forEach(id => {
   const el = document.getElementById(id);
   if (!el) return;
   el.addEventListener('input', () => { savePowerBoat(); refreshFindRouteEnabled(); });

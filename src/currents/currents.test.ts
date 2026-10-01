@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { HOUR_S } from '../geo/units';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -88,7 +89,7 @@ test('RTOFS GRIB2 daily file decodes into a current source', { skip: !rtofsFile 
   fs.mkdirSync(path.dirname(client.cachePath(run, 'f024')), { recursive: true });
   fs.copyFileSync(rtofsFile!, client.cachePath(run, 'f024'));
   const bbox = { west: -75, south: 36, east: -65, north: 44 };
-  const steps = await loadRtofsSteps(client, run, bbox, 24, 3);
+  const steps = await loadRtofsSteps(client, run, bbox, 24 * HOUR_S, 3 * HOUR_S);
   assert.equal(steps.length, 8);
   const g = steps[0].u;
   const src = new RtofsCurrentSource(

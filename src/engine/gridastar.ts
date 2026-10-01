@@ -19,7 +19,8 @@
  * flag, coast memo), plus maps for split-cell components and the heap.
  */
 
-import { DEG, R_EARTH_M, haversineDistanceM } from '../geo/geodesy';
+import { DEG, haversineDistanceM } from '../geo/geodesy';
+import { M_PER_DEG } from '../geo/units';
 import type { WaterGrid } from '../geo/watergrid';
 
 export interface GridNode {
@@ -64,7 +65,6 @@ export class GridAstarError extends Error {
 
 const COAST_RADIUS = 4;
 const COAST_MAX_PENALTY = 0.4;
-const M_PER_DEG = R_EARTH_M * DEG;
 
 /** Coast penalty factor for a Chebyshev distance to land in cells (1 = adjacent). */
 export function coastFactor(d: number): number {

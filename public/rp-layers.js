@@ -458,7 +458,7 @@ function _currentColor(speed) {
 const SLACK_KT = 0.05;  // below this, render as a pause symbol
 function _currentStyle(feature) {
   const speedMs = feature.get('speed_ms') || 0;
-  const speed = speedMs / MS_PER_KT;  // display thresholds are in kts
+  const speed = speedMs / KT_MS;  // the arrow classes are in knots (rp-core.js KT_MS)
   const dirDeg = feature.get('dir_deg') || 0;
   const color = _currentColor(speed);
 
@@ -612,7 +612,7 @@ function _windBarbSvg(speedKts, color) {
 
 function _windStyle(feature) {
   const speedMs = feature.get('speed_ms') || 0;
-  const kts = speedMs / MS_PER_KT;
+  const kts = speedMs / KT_MS;
   // From-direction: meteorological convention. Staff points at the
   // source, so rotation = dirDeg (with north = 0 matching our SVG's
   // up-pointing staff).
@@ -676,23 +676,18 @@ document.getElementById('departure').addEventListener('change', function() {
 // viewport-sized canvas, bilinear interpolation between grid points,
 // the legend's SI colour stops, alpha 0.55, land masked, and hand it to
 // OpenLayers as an EPSG:4326 ImageStatic exactly where the PNG used to go.
-const KT_MS = 0.514444;
-const MMH_MS = 1 / 3600000;
-// Fallback ramps (identical to the plugin's legends.ts) used until
-// `GET /api/legends` has answered.
-const _FALLBACK_STOPS = {
-  wind: [[0, '#90caf9'], [5 * KT_MS, '#4fc3f7'], [10 * KT_MS, '#00897b'], [15 * KT_MS, '#43a047'], [20 * KT_MS, '#f9a825'], [25 * KT_MS, '#e64a19'], [30 * KT_MS, '#c62828'], [50 * KT_MS, '#8a0000']],
-  current: [[0, '#cce6fa'], [0.5 * KT_MS, '#66ccf2'], [1.0 * KT_MS, '#4ccc73'], [1.5 * KT_MS, '#f2d933'], [2.0 * KT_MS, '#f28c26'], [3.0 * KT_MS, '#d93326'], [5.0 * KT_MS, '#800d0d']],
-  waves: [[0, '#b3e5fc'], [1, '#4fc3f7'], [2, '#43a047'], [3, '#fdd835'], [4, '#fb8c00'], [5, '#e64a19'], [6, '#c62828']],
-  precip: [[0, '#b3e5fc'], [0.5 * MMH_MS, '#b3e5fc'], [2 * MMH_MS, '#4fc3f7'], [5 * MMH_MS, '#43a047'], [10 * MMH_MS, '#fdd835'], [25 * MMH_MS, '#c2185b']],
-  temperature: [[253.15, '#0d2673'], [263.15, '#3359b2'], [268.15, '#73a6e6'], [273.15, '#b2d9f2'], [278.15, '#66d9e6'], [288.15, '#66cc66'], [293.15, '#f2eb4c'], [298.15, '#faa626'], [303.15, '#f2591a'], [308.15, '#cc261a'], [313.15, '#800d0d']],
-  sst: [[271.15, '#4c1a80'], [275.15, '#1a4cbf'], [281.15, '#4ca6d9'], [287.15, '#4cbfa6'], [291.15, '#8cd966'], [295.15, '#f2eb4c'], [299.15, '#faa626'], [303.15, '#f24c1a'], [305.15, '#a61a1a']],
-  tide: [[-3, '#543005'], [-2, '#8c510a'], [-1, '#d8b365'], [-0.25, '#f6e8c3'], [0, '#f5f5f5'], [0.25, '#c7eae5'], [1, '#5ab4ac'], [2, '#01665e'], [3, '#003c30']],
-  sea_state: [[0, '#313695'], [9.375, '#3d5da8'], [18.75, '#5083bb'], [28.125, '#6ea6cd'], [37.5, '#90c3dd'], [46.875, '#b2dceb'], [56.25, '#d3ecf4'], [65.625, '#ecf7e1'], [75, '#fefebe'], [84.375, '#feeca2'], [93.75, '#fdd484'], [103.125, '#fdb467'], [112.5, '#f88e52'], [121.875, '#f0653f'], [131.25, '#de3f2e'], [140.625, '#c41e26'], [150, '#a50026']],
-};
+// The colour stops of a legend (`GET /api/legends`, SI), or null until
+// they are loaded: the page keeps no copy of the ramps.
 function _legendStops(key) {
   const L = (typeof _LEGENDS !== 'undefined' && _LEGENDS && _LEGENDS[key]) ? _LEGENDS[key] : null;
-  return (L && Array.isArray(L.stops) && L.stops.length >= 2) ? L.stops : _FALLBACK_STOPS[key];
+  return (L && Array.isArray(L.stops) && L.stops.length >= 2) ? L.stops : null;
+}
+// CSS colour of a value on a legend ramp (the heatmap LUT); transparent until the legends are loaded.
+function _stopsColor(stops, v) {
+  if (!stops) return 'rgba(0,0,0,0)';
+  const { v0, v1, lut } = _rampLut(stops);
+  const i = Math.max(0, Math.min(255, Math.round((v - v0) / ((v1 - v0) || 1) * 255)));
+  return 'rgb(' + lut[i * 3] + ',' + lut[i * 3 + 1] + ',' + lut[i * 3 + 2] + ')';
 }
 function _cssToRgb(c) {
   c = String(c).trim();
@@ -757,8 +752,8 @@ function _gridSampler(grid, rows) {
   };
 }
 // Draw a grid into a data URL. spec: { field, legend, alpha, maskLand,
-// alphaField (multiplies alpha, e.g. sea-state `signal`), fadeBelow
-// (alpha ramps 0→1 across [0, fadeBelow], precip) }.
+// alphaField (multiplies alpha, e.g. sea-state `signal`) }; the legend's
+// `fade_below` (precip) ramps alpha 0→1 across [0, fade_below].
 // Canvas size for a heatmap of the current view (also the land-mask size).
 function _heatmapCanvasSize() {
   const size = map.getSize() || [800, 600];
@@ -878,7 +873,11 @@ function _landTile(z, x, y) {
 function _paintTile(grid, spec, mask, ext, gx0, gy0) {
   const N = OVERLAY_TILE_PX;
   const data = new Uint8ClampedArray(N * N * 4);
-  const { v0, v1, lut } = _rampLut(spec.stops || _legendStops(spec.legend));
+  const stops = spec.stops || _legendStops(spec.legend);
+  if (!stops) return data; // legends not loaded: nothing to paint with (the loader waits for them)
+  const { v0, v1, lut } = _rampLut(stops);
+  const legend = (typeof _LEGENDS !== 'undefined' && _LEGENDS) ? _LEGENDS[spec.legend] : null;
+  const fadeBelow = legend && legend.fade_below ? legend.fade_below : 0;
   const sample = _gridSampler(grid, grid.fields[spec.field]);
   const sampleLand = spec.maskLand && !mask ? _gridSampler(grid, grid.land) : null;
   const sampleAlpha = spec.alphaField ? _gridSampler(grid, grid.fields[spec.alphaField]) : null;
@@ -906,7 +905,7 @@ function _paintTile(grid, spec, mask, ext, gx0, gy0) {
       if (sampleLand) { const l = sampleLand(lon, lat); if (l != null && l > 0.5) continue; }
       let a = baseA;
       if (sampleAlpha) { const sg = sampleAlpha(lon, lat); a *= sg == null ? 0 : Math.max(0, Math.min(1, sg)); }
-      if (spec.fadeBelow) a *= Math.max(0, Math.min(1, v / spec.fadeBelow));
+      if (fadeBelow) a *= Math.max(0, Math.min(1, v / fadeBelow));
       if (a <= 0.002) continue;
       const idx = Math.max(0, Math.min(255, Math.round((v - v0) / span * 255)));
       const o = (y * N + x) * 4;
@@ -988,7 +987,9 @@ function _colourTileSource(layer, spec, hourIso) {
 function _heatmapLoader(layer, toggleId, fieldLayer, spec) {
   spec.toggleId = toggleId;
   spec.tileLayer = fieldLayer;
-  return function () {
+  return function load() {
+    // The ramps come from GET /api/legends; paint only once they are here.
+    if (typeof _LEGENDS === 'undefined' || !_LEGENDS) { _loadLegends().then(() => { if (_LEGENDS) load(); }); return; }
     const hour = _overlayHourIso();
     const cur = layer.getSource();
     if (cur && cur._hour === hour) return;
@@ -1050,7 +1051,7 @@ function loadWaveHeatmap() {
 // land masked like the routing server's PNG.
 const precipHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
 let _precipHeatmapDebounce = null;
-const _doLoadPrecipHeatmap = _heatmapLoader(precipHeatmapLayer, 'precipToggle', 'precip', { field: 'rate', legend: 'precip', maskLand: true, fadeBelow: 0.5 * MMH_MS });
+const _doLoadPrecipHeatmap = _heatmapLoader(precipHeatmapLayer, 'precipToggle', 'precip', { field: 'rate', legend: 'precip', maskLand: true });
 function loadPrecipHeatmap() {
   if (!precipHeatmapLayer.getVisible()) return;
   if (_precipHeatmapDebounce) clearTimeout(_precipHeatmapDebounce);
@@ -1321,29 +1322,9 @@ const waveStreamlines = {
     this.rafId = requestAnimationFrame(() => this._loop());
   },
 
-  // Same stops as the waves legend (0..6 m).
+  // The waves legend ramp (GET /api/legends).
   _color(swh) {
-    const stops = [
-      [0.0, [179, 229, 252]],
-      [1.0, [79, 195, 247]],
-      [2.0, [67, 160, 71]],
-      [3.0, [253, 216, 53]],
-      [4.0, [251, 140, 0]],
-      [5.0, [230, 74, 25]],
-      [6.0, [198, 40, 40]],
-    ];
-    const t = Math.max(0, Math.min(6, swh));
-    for (let i = 0; i < stops.length - 1; i++) {
-      const a = stops[i], b = stops[i + 1];
-      if (t <= b[0]) {
-        const f = (t - a[0]) / (b[0] - a[0]);
-        const r = Math.round(a[1][0] + f * (b[1][0] - a[1][0]));
-        const g = Math.round(a[1][1] + f * (b[1][1] - a[1][1]));
-        const bl = Math.round(a[1][2] + f * (b[1][2] - a[1][2]));
-        return `rgb(${r},${g},${bl})`;
-      }
-    }
-    return 'rgb(198,40,40)';
+    return _stopsColor(_legendStops('waves'), swh);
   },
 };
 
@@ -1478,31 +1459,9 @@ const windStreamlines = {
     this.rafId = requestAnimationFrame(() => this._loop());
   },
 
-  // Match the wind legend ramp (units = knots).
+  // The wind legend ramp (GET /api/legends).
   _color(speed_ms) {
-    const kts = speed_ms * 1.94384;
-    const stops = [
-      [0.0,  [144, 202, 249]],  // #90CAF9
-      [5.0,  [ 79, 195, 247]],  // #4FC3F7
-      [10.0, [  0, 137, 123]],  // #00897B
-      [15.0, [ 67, 160,  71]],  // #43A047
-      [20.0, [249, 168,  37]],  // #F9A825
-      [25.0, [230,  74,  25]],  // #E64A19
-      [30.0, [198,  40,  40]],  // #C62828
-      [50.0, [138,   0,   0]],
-    ];
-    const t = Math.max(0, Math.min(50, kts));
-    for (let i = 0; i < stops.length - 1; i++) {
-      const a = stops[i], b = stops[i + 1];
-      if (t <= b[0]) {
-        const f = (t - a[0]) / (b[0] - a[0]);
-        const r = Math.round(a[1][0] + f * (b[1][0] - a[1][0]));
-        const g = Math.round(a[1][1] + f * (b[1][1] - a[1][1]));
-        const bl = Math.round(a[1][2] + f * (b[1][2] - a[1][2]));
-        return `rgb(${r},${g},${bl})`;
-      }
-    }
-    return 'rgb(138,0,0)';
+    return _stopsColor(_legendStops('wind'), speed_ms);
   },
 };
 

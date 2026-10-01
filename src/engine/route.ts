@@ -6,6 +6,7 @@
  */
 
 import { haversineBearing, haversineDistanceM } from '../geo/geodesy';
+import { twaFromHeading } from '../geo/angles';
 
 export type Mode = 'sailing' | 'motoring';
 
@@ -133,8 +134,7 @@ export function recomputePerWaypointMetadata(route: Route): void {
     const cur = wps[k];
     cur.cogDeg = haversineBearing(prev.lon, prev.lat, cur.lon, cur.lat);
     if (cur.windDirDeg !== undefined) {
-      const raw = (((cur.cogDeg - cur.windDirDeg) % 360) + 360) % 360;
-      cur.twaDeg = raw <= 180 ? raw : 360 - raw;
+      cur.twaDeg = twaFromHeading(cur.cogDeg, cur.windDirDeg);
     }
     const dt = (cur.time.getTime() - prev.time.getTime()) / 1000;
     if (dt > 0) cur.sogMs = haversineDistanceM(prev.lon, prev.lat, cur.lon, cur.lat) / dt;

@@ -30,6 +30,7 @@
  */
 
 import * as fs from 'node:fs';
+import { lonOffset } from '../geo/angles';
 import * as path from 'node:path';
 import type { BBox } from '../geo/geodesy';
 import { bboxWidth } from '../geo/geodesy';
@@ -389,7 +390,7 @@ export class DecodedRun {
       const c1 = Math.min(g.nLon - 1, Math.ceil(xw + width / g.dLon) + margin);
       return { r0, nr: r1 - r0 + 1, c0, nc: c1 - c0 + 1 };
     }
-    const xw = ((((bbox.west - g.lon0) % 360) + 360) % 360) / g.dLon;
+    const xw = lonOffset(bbox.west, g.lon0) / g.dLon;
     const cStart = Math.floor(xw) - margin;
     const cEnd = Math.ceil(xw + width / g.dLon) + margin;
     const nc = cEnd - cStart + 1;

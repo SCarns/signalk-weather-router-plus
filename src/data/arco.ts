@@ -24,6 +24,8 @@
  */
 
 import * as fs from 'node:fs';
+import { norm360, lonOffset } from '../geo/angles';
+import { HOUR_MS } from '../geo/units';
 import * as path from 'node:path';
 import { bboxWidth, type BBox } from '../geo/geodesy';
 import { sharedFloat32 } from './forecast';
@@ -38,9 +40,8 @@ import {
   type ZarrHttpOptions,
 } from './zarr';
 
-const HOUR_MS = 3600_000;
 /** Linear-in-time sampling answers up to this long beyond the first / last step. */
-export const GRACE_MS = 3600_000;
+export const GRACE_MS = HOUR_MS;
 
 export type ArcoLayout = 'time' | 'geo' | 'ds4';
 export type ArcoResolution = 'full' | 'ds4';
@@ -142,7 +143,7 @@ export function regionForBBox(grid: ArcoGrid, bbox: BBox, margin: number): Regio
   r1 = Math.min(grid.nLat - 1, r1);
   if (r0 > r1) return null;
   const width = bboxWidth(bbox);
-  const x0 = mod(bbox.west - grid.lon0, 360) / grid.dLon;
+  const x0 = lonOffset(bbox.west, grid.lon0) / grid.dLon;
   let c0 = Math.floor(x0) - margin;
   let c1 = Math.ceil(x0 + width / grid.dLon) + margin;
   let nCols = c1 - c0 + 1;
@@ -1068,7 +1069,7 @@ export class ArcoAreaSet<A extends ArcoArea> {
     const g = this.grid(a.res);
     const y = (lat - g.lat0) / g.dLat - a.row0;
     if (!(y >= 0 && y <= a.nRows - 1)) return null;
-    const xg = mod(lon - g.lon0, 360) / g.dLon;
+    const xg = lonOffset(lon, g.lon0) / g.dLon;
     if (a.nCols >= g.nLon) return [xg, y];
     const x = mod(xg - a.col0, g.nLon);
     if (x > a.nCols - 1) return null;
@@ -1320,6 +1321,6 @@ export function residentAreaStale(
   if (!area) return true;
   if (area.stepMs.length !== steps.length || area.stepMs.some((t, i) => t !== steps[i])) return true;
   if (!centre) return true;
-  const dLon = Math.abs(mod(pos.lon - centre.lon + 180, 360) - 180);
+  const dLon = Math.abs(norm360(pos.lon - centre.lon + 180) - 180);
   return Math.abs(pos.lat - centre.lat) > halfWidthDeg / 3 || dLon > halfWidthDeg / 3;
 }

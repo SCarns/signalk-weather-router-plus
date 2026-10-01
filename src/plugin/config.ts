@@ -15,6 +15,7 @@
  */
 
 import { makeVessel, type VesselParams } from '../vessel/vessel';
+import { HOUR_S } from '../geo/units';
 import type { AppSettings } from './settings';
 import type { RouteRequest } from './protocol';
 
@@ -89,8 +90,10 @@ export interface ResolvedConfig {
   polarUserDir: string | null;
   vessel: VesselParams;
   forecast: {
-    horizonHours: number;
-    refreshMinutes: number;
+    /** Forecast horizon, seconds. */
+    horizonS: number;
+    /** Forecast refresh interval, seconds. */
+    refreshIntervalS: number;
     mirror: 'ecmwf' | 'aws' | 'google';
     keepCycles: number;
     /** Also fetch 2t, tprate, skt, 2d, ptype (temperature, precipitation, SST, humidity, precip type). */
@@ -101,19 +104,19 @@ export interface ResolvedConfig {
   currents: {
     harmonicDir: string | null;
     smocEnabled: boolean;
-    smocHorizonHours: number;
-    smocStepHours: number;
+    smocHorizonS: number;
+    smocStepS: number;
     smocHalfWidthDeg: number;
     rtofsEnabled: boolean;
     rtofsRegion: string;
-    rtofsHorizonHours: number;
-    rtofsStepHours: number;
+    rtofsHorizonS: number;
+    rtofsStepS: number;
   };
   tides: {
     /** Copernicus Marine hourly sea level (tide height, water level, surge; tide map layer). */
     enabled: boolean;
     halfWidthDeg: number;
-    horizonHours: number;
+    horizonS: number;
   };
   routing: {
     stages: number;
@@ -241,7 +244,7 @@ export const CONFIG_SCHEMA = {
           description: 'How far ahead tiles are built, from now. 0 = the whole forecast.',
           default: OVERLAY_CACHE_DEFAULTS.window,
           minimum: 0,
-          maximum: 360 * 3600,
+          maximum: 360 * HOUR_S,
         },
         maxZoom: {
           type: 'integer',
@@ -314,8 +317,8 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       polarPerformance: v.polarPerformance,
     }),
     forecast: {
-      horizonHours: f.horizon / 3600,
-      refreshMinutes: f.refreshInterval / 60,
+      horizonS: f.horizon,
+      refreshIntervalS: f.refreshInterval,
       mirror,
       keepCycles: f.keepCycles,
       extraFields: f.extraFields,
@@ -324,18 +327,18 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
     currents: {
       harmonicDir: harmonicDir && harmonicDir.trim() ? harmonicDir.trim() : null,
       smocEnabled: cu.smocEnabled,
-      smocHorizonHours: cu.smocHorizon / 3600,
-      smocStepHours: cu.smocStep / 3600,
+      smocHorizonS: cu.smocHorizon,
+      smocStepS: cu.smocStep,
       smocHalfWidthDeg: cu.smocHalfWidth,
       rtofsEnabled: cu.rtofsEnabled,
       rtofsRegion: cu.rtofsRegion,
-      rtofsHorizonHours: cu.rtofsHorizon / 3600,
-      rtofsStepHours: cu.rtofsStep / 3600,
+      rtofsHorizonS: cu.rtofsHorizon,
+      rtofsStepS: cu.rtofsStep,
     },
     tides: {
       enabled: settings.tides.enabled,
       halfWidthDeg: settings.tides.halfWidth,
-      horizonHours: settings.tides.horizon / 3600,
+      horizonS: settings.tides.horizon,
     },
     routing: {
       stages: r.stages,
@@ -365,7 +368,7 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
     overlayCache: (() => {
       const o = c.overlayCache ?? {};
       const d = OVERLAY_CACHE_DEFAULTS;
-      const windowS = cacheNumber(o.window, d.window, 0, 360 * 3600, 'window');
+      const windowS = cacheNumber(o.window, d.window, 0, 360 * HOUR_S, 'window');
       return {
         enabled: o.enabled ?? d.enabled,
         radiusM: cacheNumber(o.radius, d.radius, 1000, 2_000_000, 'radius'),

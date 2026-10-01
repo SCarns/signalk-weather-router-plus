@@ -37,13 +37,12 @@
  */
 
 import { DOODSON, type DoodsonRow } from './doodson';
+import { DEG } from '../geo/units';
 
 /** Modified Julian Day of 2000-01-01T12:00:00 (pyTMD `_mjd_j2000`). */
 const MJD_J2000 = 51544.5;
 /** Days per Julian century (pyTMD `_century`). */
 const CENTURY = 36525.0;
-/** numpy `np.radians` multiplies by this constant. */
-const DEG2RAD = Math.PI / 180.0;
 
 export type M1Coefficients = 'Doodson' | 'Ray' | 'Schureman' | 'perth5';
 
@@ -228,8 +227,8 @@ function schuremanArguments(
 }
 
 function makeNodalContext(nDeg: number, pDeg: number, M1: M1Coefficients): NodalContext {
-  const N = nDeg * DEG2RAD;
-  const P = pDeg * DEG2RAD;
+  const N = nDeg * DEG;
+  const P = pDeg * DEG;
   const sch = schuremanArguments(P, N);
   return {
     N,
@@ -407,7 +406,7 @@ function nodalUF(c: string, ctx: NodalContext): UF {
     return linear(term1, term2);
   } else if (c === 'mfdw') {
     // special test of Doodson-Warburg formula
-    return [(-23.7 * sinn + 2.7 * sin2n - 0.4 * sin3n) * DEG2RAD, 1.043 + 0.414 * cosn];
+    return [(-23.7 * sinn + 2.7 * sin2n - 0.4 * sin3n) * DEG, 1.043 + 0.414 * cosn];
   }
 
   // ---- compound tides calculated using recursion ----

@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { KTS_TO_MS } from '../geo/units';
 import assert from 'node:assert/strict';
 import { decodePng } from './png';
 import { renderArrowsPng, renderBarbsPng, renderIsobarsPng } from './glyphtiles';
@@ -29,7 +30,7 @@ test('glyph tiles: a barb is drawn at its point, pointing into the wind, in the 
   const lon = (b.west + b.east) / 2;
   const lat = (b.north + b.south) / 2; // the tile centre in degrees is above the pixel centre (Mercator), that is fine
   // 20 kt from the north: staff goes up from the plot point, feathers to the left.
-  const png = renderBarbsPng(Z, X, Y, [{ lon, lat, speed_ms: 20 * 0.514444, dir_deg: 0 }]);
+  const png = renderBarbsPng(Z, X, Y, [{ lon, lat, speed_ms: 20 * KTS_TO_MS, dir_deg: 0 }]);
   const { rgba } = decodePng(png);
   const p = painted(rgba);
   assert.ok(p.count > 40 && p.count < 400, `${p.count} painted pixels`);
@@ -43,7 +44,7 @@ test('glyph tiles: a barb is drawn at its point, pointing into the wind, in the 
   assert.ok(found, 'strong-wind colour present');
 
   // From the east: the staff extends to the right of the plot point.
-  const east = painted(decodePng(renderBarbsPng(Z, X, Y, [{ lon, lat, speed_ms: 20 * 0.514444, dir_deg: 90 }])).rgba);
+  const east = painted(decodePng(renderBarbsPng(Z, X, Y, [{ lon, lat, speed_ms: 20 * KTS_TO_MS, dir_deg: 90 }])).rgba);
   assert.ok(east.cx > 128, `east centroid x ${east.cx.toFixed(0)}`);
   // Calm: a small ring.
   const calm = painted(decodePng(renderBarbsPng(Z, X, Y, [{ lon, lat, speed_ms: 0.5, dir_deg: 200 }])).rgba);

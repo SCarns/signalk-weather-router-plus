@@ -1,0 +1,30 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { foldTwa, lonOffset, norm360, twaFromHeading, unwrapLonNear, wrapLon } from './angles';
+
+test('angles: ranges and seams', () => {
+  assert.equal(norm360(-30), 330);
+  assert.equal(norm360(720), 0);
+  assert.equal(norm360(359.5), 359.5);
+  assert.equal(wrapLon(180), -180);
+  assert.equal(wrapLon(-180), -180);
+  assert.equal(wrapLon(190), -170);
+  assert.equal(wrapLon(-190), 170);
+  assert.equal(wrapLon(359.75), -0.25);
+  assert.equal(lonOffset(-179, 179), 2);
+  assert.equal(lonOffset(10, 350), 20);
+  assert.equal(lonOffset(350, 10), 340);
+  assert.equal(lonOffset(5, 5), 0);
+  assert.equal(unwrapLonNear(-179, 179), 181);
+  assert.equal(unwrapLonNear(179, -179), -181);
+  assert.equal(unwrapLonNear(10, 20), 10);
+  assert.equal(unwrapLonNear(190, 0), -170);
+  assert.equal(twaFromHeading(0, 350), 10);
+  assert.equal(twaFromHeading(350, 0), 10);
+  assert.equal(twaFromHeading(90, 0), 90);
+  assert.equal(twaFromHeading(270, 0), 90);
+  assert.equal(twaFromHeading(180, 0), 180);
+  assert.equal(foldTwa(-30), 30);
+  assert.equal(foldTwa(270), 90);
+  assert.equal(foldTwa(370), 10);
+});

@@ -15,8 +15,20 @@
  */
 
 import { encodePng } from './png';
+import { latOfMercY, mercY } from '../geo/mercator';
+import { wrapLon } from '../geo/angles';
 import type { FieldGridResponse } from './overlays';
-import { CURRENT_STOPS, PRECIP_STOPS, SEA_STATE_STOPS, SST_STOPS, TEMP_STOPS, TIDE_STOPS, WAVE_STOPS, WIND_STOPS } from './legends';
+import {
+  CURRENT_STOPS,
+  PRECIP_STOPS,
+  SEA_STATE_STOPS,
+  SST_STOPS,
+  TEMP_STOPS,
+  TIDE_STOPS,
+  WAVE_STOPS,
+  WIND_STOPS,
+  PRECIP_FADE_BELOW,
+} from './legends';
 import { tileBBox, tileGroup, type TileService } from './tiles';
 
 export const PNG_LAYERS = ['wind', 'waves', 'current', 'sea_state', 'precip', 'temperature', 'sst', 'tide'] as const;
@@ -39,8 +51,6 @@ export interface PngLayerSpec {
   name: string;
   description: string;
 }
-
-const MMH = 1 / 3_600_000; // mm/h → m/s
 
 export const PNG_LAYER_SPECS: Record<PngLayer, PngLayerSpec> = {
   wind: {
@@ -81,7 +91,7 @@ export const PNG_LAYER_SPECS: Record<PngLayer, PngLayerSpec> = {
     field: 'rate',
     stops: PRECIP_STOPS,
     maskLand: true,
-    fadeBelow: 0.5 * MMH,
+    fadeBelow: PRECIP_FADE_BELOW,
     chartId: 'wrp-precipitation',
     name: 'Precipitation',
     description: 'Precipitation rate, ECMWF forecast, by the hour.',
@@ -172,7 +182,7 @@ export function sampleGrid(
   const ny = grid.lats.length;
   if (!nx || !ny) return null;
   let d = lon - grid.lons[0];
-  d = (((d % 360) + 540) % 360) - 180;
+  d = wrapLon(d);
   const fx = d / grid.res;
   const fy = (lat - grid.lats[0]) / grid.res;
   if (fx < -0.5 || fx > nx - 0.5 || fy < -0.5 || fy > ny - 0.5) return null;
@@ -209,8 +219,8 @@ export function renderFieldPng(layer: PngLayer, z: number, x: number, y: number,
   const values = grid.fields[spec.field];
   const alphaValues = spec.alphaField ? grid.fields[spec.alphaField] : undefined;
   const box = tileBBox(z, x, y);
-  const yN = Math.log(Math.tan(Math.PI / 4 + (box.north * Math.PI) / 360));
-  const yS = Math.log(Math.tan(Math.PI / 4 + (box.south * Math.PI) / 360));
+  const yN = mercY(box.north);
+  const yS = mercY(box.south);
   const dLon = (box.east - box.west) / TILE_PX;
   const gx0 = x * TILE_PX;
   const gy0 = y * TILE_PX;
@@ -219,7 +229,7 @@ export function renderFieldPng(layer: PngLayer, z: number, x: number, y: number,
   const useMask = spec.maskLand && land !== null && land.length === TILE_PX * TILE_PX;
   for (let py = 0; py < TILE_PX; py++) {
     const my = yN - ((py + 0.5) / TILE_PX) * (yN - yS);
-    const lat = ((2 * Math.atan(Math.exp(my)) - Math.PI / 2) * 180) / Math.PI;
+    const lat = latOfMercY(my);
     for (let px = 0; px < TILE_PX; px++) {
       const o = (py * TILE_PX + px) * 4;
       if (useMask) {

@@ -16,6 +16,7 @@
  */
 
 import { haversineBearing, haversineDistanceM, projectAlongBearing, DEG } from '../geo/geodesy';
+import { twaFromHeading } from '../geo/angles';
 import type { CurrentSource, WindSource } from './environment';
 import type { PolarDiagram } from '../vessel/polar';
 import type { VesselParams } from '../vessel/vessel';
@@ -98,8 +99,7 @@ export function simulateLegTime(
     const [cu, cv] = current.at(lon, lat, t);
     let sailSpeed = 0;
     if (polar && Number.isFinite(ws)) {
-      let twa = (((bearingDeg - wd) % 360) + 360) % 360;
-      if (twa > 180) twa = 360 - twa;
+      const twa = twaFromHeading(bearingDeg, wd);
       sailSpeed = polar.boatSpeed(twa, ws);
     }
     const [waterSpeed, sailUsed] = selectSpeed(sailSpeed, motor, opts.modePolicy, opts.sailThreshMs);
@@ -228,8 +228,7 @@ export function scoreCandidatesFromParent(
       let sailSpeed = 0;
       let inNoGo = false;
       if (polar) {
-        let twa = (((bearings[i] - wd) % 360) + 360) % 360;
-        if (twa > 180) twa = 360 - twa;
+        const twa = twaFromHeading(bearings[i], wd);
         sailSpeed = polar.boatSpeed(twa, ws);
         inNoGo = sailSpeed <= 0 && twa < polar.noGoFloor(ws);
       }

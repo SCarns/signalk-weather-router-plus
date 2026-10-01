@@ -25,14 +25,15 @@
  */
 
 import type { BBox } from '../geo/geodesy';
-import { DEG, R_EARTH_M, haversineBearing, haversineDistanceM, wrapLon } from '../geo/geodesy';
+import { lonOffset, unwrapLonNear } from '../geo/angles';
+import { M_PER_DEG } from '../geo/units';
+import { DEG, haversineBearing, haversineDistanceM, wrapLon } from '../geo/geodesy';
 import type { LandMask } from '../geo/landmask';
 import { describePassage } from '../geo/straits';
 import type { WaterGrid } from '../geo/watergrid';
 import { GridAstarError, gridAstar, smoothGridPath, type GridNode, type GridSource } from './gridastar';
 import { distanceTransformCells } from './astar';
 
-const M_PER_DEG = R_EARTH_M * DEG;
 /** Finest local refinement of the route raster, degrees (≈ 55 m): passages narrower than about 3 cells stay closed. */
 export const MIN_PATCH_RES = 0.0005;
 /**
@@ -376,7 +377,7 @@ export function verifyCorridor(
     for (const p of land.patches) {
       if (p.resolutionDeg >= res) continue;
       const pw = p.bbox.west;
-      let off = (((lonW - pw) % 360) + 360) % 360;
+      let off = lonOffset(lonW, pw);
       if (off > 180) off -= 360;
       const pWidth = p.nx * p.resolutionDeg;
       if (off + gridRes <= 0 || off >= pWidth) continue;
@@ -606,8 +607,7 @@ function gridBBox(grid: WaterGrid, path: GridNode[], extra: [number, number][], 
   const mid = (west + east) / 2;
   for (const [lon, lat] of extra) {
     let x = lon;
-    while (x - mid > 180) x -= 360;
-    while (x - mid < -180) x += 360;
+    x = unwrapLonNear(x, mid);
     west = Math.min(west, x);
     east = Math.max(east, x);
     south = Math.min(south, lat);
@@ -623,9 +623,9 @@ function gridBBox(grid: WaterGrid, path: GridNode[], extra: [number, number][], 
 
 function bboxInside(inner: BBox, outer: BBox): boolean {
   if (inner.south < outer.south || inner.north > outer.north) return false;
-  const ow = (((outer.east - outer.west) % 360) + 360) % 360 || 360;
-  const iw = (((inner.east - inner.west) % 360) + 360) % 360 || 360;
-  const off = (((inner.west - outer.west) % 360) + 360) % 360;
+  const ow = lonOffset(outer.east, outer.west) || 360;
+  const iw = lonOffset(inner.east, inner.west) || 360;
+  const off = lonOffset(inner.west, outer.west);
   return off + iw <= ow + 1e-9;
 }
 
@@ -688,7 +688,7 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
     stats.astarMs += Date.now() - t0;
     // 2. Route raster over the corridor.
     const box = gridBBox(grid, path, chain, CORRIDOR_MARGIN_DEG);
-    const w = (((box.east - box.west) % 360) + 360) % 360 || 360;
+    const w = lonOffset(box.east, box.west) || 360;
     if (w > 120 || box.north - box.south > 90) {
       throw new CorridorError(
         `the corridor's bounding box (${w.toFixed(0)}° × ${(box.north - box.south).toFixed(0)}°) is too large (max 120° × 90°); add intermediate waypoints`
@@ -1075,8 +1075,7 @@ function refineNarrowStretches(
       const r = needs(j + 1);
       if (!r) break;
       let x = pts[j + 1].lon;
-      while (x - west > 180) x -= 360;
-      while (x - west < -180) x += 360;
+      x = unwrapLonNear(x, west);
       const nw = Math.min(west, x);
       const ne = Math.max(east, x);
       const ns = Math.min(south, pts[j + 1].lat);

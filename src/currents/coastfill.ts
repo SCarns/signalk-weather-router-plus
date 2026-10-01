@@ -16,6 +16,7 @@
  */
 
 import type { FieldGrid } from '../data/forecast';
+import { lonOffset } from '../geo/angles';
 
 export const FILL_RADIUS_CELLS = 2;
 
@@ -158,9 +159,9 @@ export function sampleFieldPairFilled(fu: FieldGrid, fv: FieldGrid, lon: number,
   const g: PairGrid = { nRows: nLat, nCols: nLon, wrap: !!fu.wrapLon, u: fu.values, v: fv.values, offset: 0 };
   let x: number;
   if (fu.wrapLon) {
-    x = ((((lon - fu.lon0) % 360) + 360) % 360) / fu.dLon;
+    x = lonOffset(lon, fu.lon0) / fu.dLon;
   } else {
-    const offLon = (((lon - fu.lon0) % 360) + 360) % 360;
+    const offLon = lonOffset(lon, fu.lon0);
     x = offLon > 180 ? (offLon - 360) / fu.dLon : offLon / fu.dLon;
     if (x < 0) x = 0;
     if (x > nLon - 1) x = nLon - 1;

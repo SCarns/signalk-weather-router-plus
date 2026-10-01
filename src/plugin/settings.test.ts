@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { HOUR_S } from '../geo/units';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -59,14 +60,14 @@ const LEGACY: LegacyPluginConfig & Record<string, unknown> = {
 test('defaults resolve to the same engine config the plugin config gave before', () => {
   const c = resolveConfig({ landShapefiles: '/a.shp, /b.shp' }, defaultSettings());
   assert.deepEqual(c.landShapefiles, ['/a.shp', '/b.shp']);
-  assert.equal(c.forecast.horizonHours, 72);
-  assert.equal(c.forecast.refreshMinutes, 60);
+  assert.equal(c.forecast.horizonS, 72 * HOUR_S);
+  assert.equal(c.forecast.refreshIntervalS, 3600);
   assert.equal(c.forecast.keepCycles, 2);
   assert.equal(c.forecast.extraFields, true);
   assert.equal(c.forecast.mirror, 'ecmwf');
   assert.equal(c.currents.rtofsRegion, 'west_atl');
-  assert.equal(c.currents.rtofsHorizonHours, 72);
-  assert.equal(c.currents.rtofsStepHours, 3);
+  assert.equal(c.currents.rtofsHorizonS, 72 * HOUR_S);
+  assert.equal(c.currents.rtofsStepS, 3 * HOUR_S);
   assert.ok(Math.abs(c.routing.sailThreshMs - 4.9 * KTS_TO_MS) < 1e-12);
   assert.ok(Math.abs(c.vessel.motorSpeedMs - 6 * KTS_TO_MS) < 1e-12);
   assert.equal(c.weatherProvider.enabled, true);
@@ -339,8 +340,8 @@ test('CMEMS SMOC settings: defaults in SI, 1 h or 3 h step only, changes reload 
   assert.equal(d.currents.smocHalfWidth, 15);
   const c = resolveConfig({ landShapefiles: '/a.shp' }, d);
   assert.deepEqual(
-    [c.currents.smocEnabled, c.currents.smocStepHours, c.currents.smocHorizonHours, c.currents.smocHalfWidthDeg],
-    [true, 3, 72, 15]
+    [c.currents.smocEnabled, c.currents.smocStepS, c.currents.smocHorizonS, c.currents.smocHalfWidthDeg],
+    [true, 3 * HOUR_S, 72 * HOUR_S, 15]
   );
   const ok = mergeSettings(d, { currents: { smocStep: 3600, smocHalfWidth: 20, smocHorizon: 120 * 3600 } });
   assert.deepEqual(ok.changed.sort(), ['currents.smocHalfWidth', 'currents.smocHorizon', 'currents.smocStep']);

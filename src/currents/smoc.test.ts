@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { HOUR_S } from '../geo/units';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -177,7 +178,7 @@ const URLS = {
   ds4: 'https://mock/ds4.zarr',
   stac: 'https://mock/dataset.stac.json',
 };
-const SETTINGS: SmocSettings = { stepHours: 3, horizonHours: 24, halfWidthDeg: 10, budgetBytes: 64 * 1024 * 1024 };
+const SETTINGS: SmocSettings = { stepS: 3 * HOUR_S, horizonS: 24 * HOUR_S, halfWidthDeg: 10, budgetBytes: 64 * 1024 * 1024 };
 
 function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-smoc-'));

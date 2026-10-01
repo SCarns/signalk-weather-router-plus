@@ -8,13 +8,13 @@
  */
 
 import { test } from 'node:test';
+import { KTS_TO_MS } from '../geo/units';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { boatSpeed, buildModel, computePhysicsTable } from './vpp_physics';
 import { UnsupportedHull, type BoatSpecs } from './vpp';
 
-const KT = 0.5144444444;
 interface Pt {
   twa: number;
   tws_kt: number;
@@ -44,7 +44,7 @@ test('held-out ORC boats: median error per sector and boats over 30%', () => {
     for (const p of b.points) {
       const s = sector(p.twa);
       if (!s || p.tws_kt < 6 || p.tws_kt > 20) continue;
-      e[s].push(((boatSpeed(m, p.twa, p.tws_kt * KT) / KT - p.bs_kt) / p.bs_kt) * 100);
+      e[s].push(((boatSpeed(m, p.twa, p.tws_kt * KTS_TO_MS) / KTS_TO_MS - p.bs_kt) / p.bs_kt) * 100);
     }
     for (const s of Object.keys(e)) {
       if (!e[s].length) continue;
@@ -80,7 +80,7 @@ test('table: standard grid, zero below 30° TWA, no real speed drop as wind rise
   assert.ok(t.speeds_ms[0].every(v => v === 0));
   for (let i = 1; i < t.twa_deg.length; i++) {
     for (let k = 1; k < t.tws_ms.length; k++) {
-      if (t.tws_ms[k] > 24 * KT + 1e-6) continue;
+      if (t.tws_ms[k] > 24 * KTS_TO_MS + 1e-6) continue;
       assert.ok(
         t.speeds_ms[i][k] >= t.speeds_ms[i][k - 1] - 0.1,
         `TWA ${t.twa_deg[i]} drops from ${t.speeds_ms[i][k - 1]} to ${t.speeds_ms[i][k]}`

@@ -15,6 +15,7 @@
  */
 
 import { haversineDistanceM } from '../geo/geodesy';
+import { M_PER_DEG } from '../geo/units';
 import type { LandMask } from '../geo/landmask';
 import type { CurrentSource, WindSource } from './environment';
 import { simulateLegTime, type SimOptions } from './legsim';
@@ -31,7 +32,7 @@ const SAIL_PRESERVE_CANDIDATE_FRAC = 0.5;
 export function landStepFor(land: LandMask, base = 200): number {
   if (!land.patches.length) return base;
   const finest = Math.min(...land.patches.map(p => p.resolutionDeg));
-  return Math.min(base, Math.max(20, 1.5 * finest * 111_195));
+  return Math.min(base, Math.max(20, 1.5 * finest * M_PER_DEG));
 }
 
 function legClear(land: LandMask, a: Waypoint, b: Waypoint, stepM: number): boolean {
@@ -47,7 +48,7 @@ function legClear(land: LandMask, a: Waypoint, b: Waypoint, stepM: number): bool
 export function rdpSimplify(route: Route, land: LandMask, toleranceM: number): number {
   const wps = route.waypoints;
   if (wps.length <= 2 || !(toleranceM > 0)) return 0;
-  const tolDeg = toleranceM / 111000.0;
+  const tolDeg = toleranceM / M_PER_DEG;
   const stepM = landStepFor(land);
   const perp = (p: Waypoint, a: Waypoint, b: Waypoint): number => {
     const dx = b.lon - a.lon;
@@ -104,22 +105,22 @@ export interface SmootherArgs {
   wind: WindSource;
   current: CurrentSource;
   sim: SimOptions;
-  /** A shortcut may take at most this much longer than the legs it replaces, percent. */
-  tolerancePct: number;
+  /** A shortcut may take at most this much longer than the legs it replaces, as a ratio (0.05 = 5 %). */
+  tolerance: number;
 }
 
 /**
  * Greedy backward pass (smoother.py): anchored at the last waypoint, try
  * to replace the waypoints between an earlier one and the anchor with one
  * straight leg; accept when the leg is clear of land, its simulated time
- * is within `tolerancePct` of the legs it replaces, and (sail_max) a
+ * is within `tolerance` of the legs it replaces, and (sail_max) a
  * sailing-dominant stretch stays sailing-dominant. User waypoints are
  * never removed. Returns the number of waypoints dropped.
  */
 export function shortcutSmoother(route: Route, a: SmootherArgs): number {
   const wps = route.waypoints;
   if (wps.length < 3) return 0;
-  const tol = 1 + a.tolerancePct / 100;
+  const tol = 1 + a.tolerance;
   const stepM = landStepFor(a.land);
   let drops = 0;
   let anchor = wps.length - 1;

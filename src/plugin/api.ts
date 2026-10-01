@@ -35,6 +35,7 @@
  */
 
 import * as fs from 'node:fs';
+import { HOUR_MS } from '../geo/units';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import type { IRouter, Request, Response } from 'express';
@@ -305,7 +306,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     };
 
   const cacheHeaders = (res: Response, t: Date): void => {
-    res.setHeader('Cache-Control', t.getTime() < Date.now() - 3600_000 ? 'public, max-age=86400' : 'public, max-age=1800');
+    res.setHeader('Cache-Control', t.getTime() < Date.now() - HOUR_MS ? 'public, max-age=86400' : 'public, max-age=1800');
   };
 
   ro.get('/api/field', async (req: Request, res: Response) => {
@@ -479,7 +480,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const from =
         req.query.from !== undefined && req.query.from !== ''
           ? parseTime(req.query.from)
-          : new Date(Math.floor(Date.now() / 3600_000) * 3600_000);
+          : new Date(Math.floor(Date.now() / HOUR_MS) * HOUR_MS);
       const hours = num(req.query.hours, 72, 1, 240, 'hours');
       const stepH = num(req.query.step_h, 1, 1, 24, 'step_h');
       const service = tilesOr503(res);

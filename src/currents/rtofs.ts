@@ -22,6 +22,7 @@
  */
 
 import * as fs from 'node:fs';
+import { MINUTE_MS, HOUR_MS, HOUR_S } from '../geo/units';
 import * as path from 'node:path';
 import type { BBox } from '../geo/geodesy';
 import { iterateGrib2 } from '../grib/grib2';
@@ -136,7 +137,7 @@ export class RtofsClient {
         clearTimeout(timer);
       }
       if (attempt === this.retries) break;
-      const backoff = Math.min(60_000, 2000 * 2 ** (attempt - 1)) + Math.random() * 500;
+      const backoff = Math.min(MINUTE_MS, 2000 * 2 ** (attempt - 1)) + Math.random() * 500;
       this.log(
         `rtofs: retry ${attempt}/${this.retries - 1} for ${url} after ${(backoff / 1000).toFixed(1)} s: ${(lastErr as Error).message}`
       );
@@ -177,8 +178,8 @@ export class RtofsClient {
     }
   }
 
-  runFullyCached(run: RtofsRun, horizonHours: number): boolean {
-    return RtofsClient.filesFor(horizonHours).every(f => this.hasCached(run, f.name));
+  runFullyCached(run: RtofsRun, horizonS: number): boolean {
+    return RtofsClient.filesFor(horizonS / HOUR_S).every(f => this.hasCached(run, f.name));
   }
 
   /** Runs present in the cache, newest first. */
@@ -200,9 +201,9 @@ export class RtofsClient {
    * Newest run (today, walking back up to `maxDaysBack` days) whose files
    * for the horizon are all published.
    */
-  async findLatestRun(horizonHours: number, opts: { now?: Date; maxDaysBack?: number } = {}): Promise<RtofsRun> {
+  async findLatestRun(horizonS: number, opts: { now?: Date; maxDaysBack?: number } = {}): Promise<RtofsRun> {
     const now = opts.now ?? new Date();
-    const files = RtofsClient.filesFor(horizonHours);
+    const files = RtofsClient.filesFor(horizonS / HOUR_S);
     const last = files[files.length - 1].name;
     for (let d = 0; d <= (opts.maxDaysBack ?? 7); d++) {
       const run = rtofsRunFor(new Date(now.getTime() - d * 86_400_000));
@@ -263,10 +264,12 @@ export async function loadRtofsSteps(
   client: RtofsClient,
   run: RtofsRun,
   bbox: BBox | null,
-  horizonHours: number,
-  stepHours: number,
+  horizonS: number,
+  stepS: number,
   opts: { log?: (m: string) => void; shouldCancel?: () => boolean } = {}
 ): Promise<RtofsStep[]> {
+  const horizonHours = horizonS / HOUR_S;
+  const stepHours = stepS / HOUR_S;
   const wanted = new Set<number>();
   for (let h = stepHours; h <= horizonHours; h += stepHours) wanted.add(h);
   const steps: RtofsStep[] = [];
@@ -291,7 +294,7 @@ export async function loadRtofsSteps(
             { west: g.lo1, east: g.lo1 + (g.ni - 1) * g.di, south: Math.min(g.la1, g.la2), north: Math.max(g.la1, g.la2) },
             0
           );
-      const entry = byHour.get(h) ?? { validMs: msg.referenceTime.getTime() + h * 3600_000 };
+      const entry = byHour.get(h) ?? { validMs: msg.referenceTime.getTime() + h * HOUR_MS };
       if (isU) entry.u = grid;
       else entry.v = grid;
       byHour.set(h, entry);
@@ -316,7 +319,7 @@ export class RtofsCurrentSource implements CurrentSourceLike {
   readonly bbox: SourceBBox;
   readonly runMs: number;
   readonly steps: RtofsStep[];
-  private static readonly GRACE_MS = 3600_000;
+  private static readonly GRACE_MS = HOUR_MS;
 
   constructor(name: string, runMs: number, bbox: SourceBBox, steps: RtofsStep[]) {
     if (steps.length === 0) throw new Error('RtofsCurrentSource needs at least one step');

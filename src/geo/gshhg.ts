@@ -17,6 +17,7 @@
  */
 
 import * as crypto from 'node:crypto';
+import { HOUR_MS } from '../geo/units';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Readable, Transform } from 'node:stream';
@@ -192,7 +193,7 @@ async function downloadOnce(
 }
 
 /** Partial downloads older than this are from a process that died; removed before a new download. */
-const STALE_PART_MS = 3600_000;
+const STALE_PART_MS = HOUR_MS;
 
 /**
  * The coastline .shp, downloading and extracting GSHHG first when it is

@@ -25,6 +25,7 @@
  */
 
 import type { BBox } from './geodesy';
+import { wrapLon, unwrapLonNear } from './angles';
 import { bboxHeight, bboxWidth, lonOffsetFromWest, slerpSamples, haversineDistanceM } from './geodesy';
 import { pointInShape, readShapefilePolygons, type ShapePolygon } from './shapefile';
 
@@ -124,8 +125,8 @@ export class LandMask {
     if (!(resolutionDeg > 0)) throw new Error(`LandMask resolutionDeg must be > 0 (got ${resolutionDeg})`);
     const width = bboxWidth(bbox);
     const padded: BBox = {
-      west: width + 2 * buffer >= 360 ? -180 : ((bbox.west - buffer + 540) % 360) - 180,
-      east: width + 2 * buffer >= 360 ? 180 : ((bbox.east + buffer + 540) % 360) - 180,
+      west: width + 2 * buffer >= 360 ? -180 : wrapLon(bbox.west - buffer),
+      east: width + 2 * buffer >= 360 ? 180 : wrapLon(bbox.east + buffer),
       south: Math.max(-90, bbox.south - buffer),
       north: Math.min(90, bbox.north + buffer),
     };
@@ -200,9 +201,9 @@ export class LandMask {
     const ny = (y1 - y0) * k;
     if (nx * ny > maxCells) throw new Error(`LandMask.refine: patch ${nx}x${ny} exceeds ${maxCells} cells`);
     const pb: BBox = {
-      west: ((west + 540) % 360) - 180,
+      west: wrapLon(west),
       south,
-      east: ((west + (x1 - x0) * res0 + 540) % 360) - 180,
+      east: wrapLon(west + (x1 - x0) * res0),
       north: south + (y1 - y0) * res0,
     };
     for (const p of this.patches) {
@@ -276,8 +277,7 @@ export class LandMask {
         for (let i = 1; i < n; i++) {
           let x = lonOffsetFromWest(this.bbox, c[2 * i]);
           // Unwrap relative to the previous vertex.
-          while (x - prev > 180) x -= 360;
-          while (x - prev < -180) x += 360;
+          x = unwrapLonNear(x, prev);
           xs[2 * i] = x;
           xs[2 * i + 1] = c[2 * i + 1];
           prev = x;

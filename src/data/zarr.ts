@@ -15,6 +15,7 @@
  */
 
 import { bloscDecompress } from './blosc';
+import { MINUTE_MS } from '../geo/units';
 import { parseRetryAfterMs } from './ecmwf';
 
 export interface ZarrArrayMeta {
@@ -159,10 +160,10 @@ export function parseCfTimeUnits(units: string, calendar?: string): { unitMs: nu
     h: 3_600_000,
     hr: 3_600_000,
     hrs: 3_600_000,
-    minutes: 60_000,
-    minute: 60_000,
-    min: 60_000,
-    mins: 60_000,
+    minutes: MINUTE_MS,
+    minute: MINUTE_MS,
+    min: MINUTE_MS,
+    mins: MINUTE_MS,
     seconds: 1000,
     second: 1000,
     s: 1000,
@@ -178,7 +179,7 @@ export function parseCfTimeUnits(units: string, calendar?: string): { unitMs: nu
   const tz = m[8];
   if (tz && tz !== 'Z' && tz.toUpperCase() !== 'UTC') {
     const t = /^([+-])(\d{2}):?(\d{2})$/.exec(tz)!;
-    epochMs -= (t[1] === '-' ? -1 : 1) * (+t[2] * 60 + +t[3]) * 60_000;
+    epochMs -= (t[1] === '-' ? -1 : 1) * (+t[2] * 60 + +t[3]) * MINUTE_MS;
   }
   return { unitMs, epochMs };
 }
@@ -203,7 +204,7 @@ const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms))
 
 /** GET with timeout, retries, backoff and Retry-After (see the file comment). */
 export async function httpGet(url: string, opts: ZarrHttpOptions = {}): Promise<HttpResult> {
-  const timeoutMs = opts.timeoutMs ?? 60_000;
+  const timeoutMs = opts.timeoutMs ?? MINUTE_MS;
   const retries = opts.retries ?? 6;
   const fetchImpl = opts.fetchImpl ?? fetch;
   const sleepImpl = opts.sleepImpl ?? sleep;
@@ -229,8 +230,8 @@ export async function httpGet(url: string, opts: ZarrHttpOptions = {}): Promise<
       clearTimeout(timer);
     }
     if (attempt === retries) break;
-    let backoff = Math.min(60_000, 2000 * 2 ** (attempt - 1));
-    if (retryAfterMs !== null) backoff = Math.min(60_000, Math.max(backoff, retryAfterMs));
+    let backoff = Math.min(MINUTE_MS, 2000 * 2 ** (attempt - 1));
+    if (retryAfterMs !== null) backoff = Math.min(MINUTE_MS, Math.max(backoff, retryAfterMs));
     backoff += Math.random() * 500;
     log(
       `${opts.tag ?? 'zarr'}: retry ${attempt}/${retries - 1} for ${url} after ${(backoff / 1000).toFixed(1)} s: ${(lastErr as Error).message}`

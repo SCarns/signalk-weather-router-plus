@@ -17,6 +17,8 @@
  */
 
 import * as crypto from 'node:crypto';
+import { clampMercLat, tileAt, tileBBox } from '../geo/mercator';
+import { DEG, M_PER_DEG, HOUR_MS } from '../geo/units';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
@@ -43,7 +45,7 @@ export interface StoreKey {
 
 function storeKey(k: TileId | StoreKey): StoreKey {
   if ('rel' in k) return k;
-  const name = k.layer === 'land' ? `${k.x}_${k.y}.gz` : `${k.x}_${k.y}_${Math.round(k.hourMs / 3600_000)}.gz`;
+  const name = k.layer === 'land' ? `${k.x}_${k.y}.gz` : `${k.x}_${k.y}_${Math.round(k.hourMs / HOUR_MS)}.gz`;
   return { group: tileGroup(k.layer), rel: path.join(k.layer, String(k.z), name) };
 }
 
@@ -84,34 +86,10 @@ export interface TileId {
 
 /** Nearest whole hour. */
 export function roundHour(ms: number): number {
-  return Math.round(ms / 3600_000) * 3600_000;
+  return Math.round(ms / HOUR_MS) * HOUR_MS;
 }
 
-function mercLat(yFrac: number): number {
-  return (Math.atan(Math.sinh(Math.PI * (1 - 2 * yFrac))) * 180) / Math.PI;
-}
-
-/** A web-map tile's box in degrees. */
-export function tileBBox(z: number, x: number, y: number): BBox {
-  const n = 2 ** z;
-  return {
-    west: (x / n) * 360 - 180,
-    east: ((x + 1) / n) * 360 - 180,
-    north: mercLat(y / n),
-    south: mercLat((y + 1) / n),
-  };
-}
-
-/** Tile x/y containing a point at zoom z. */
-export function tileAt(lon: number, lat: number, z: number): { x: number; y: number } {
-  const n = 2 ** z;
-  const l = ((((lon + 180) % 360) + 360) % 360) - 180;
-  const la = Math.max(-85.0511, Math.min(85.0511, lat));
-  const x = Math.min(n - 1, Math.floor(((l + 180) / 360) * n));
-  const r = (la * Math.PI) / 180;
-  const y = Math.min(n - 1, Math.max(0, Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n)));
-  return { x, y };
-}
+export { tileAt, tileBBox } from '../geo/mercator';
 
 /** Shallowest zoom built ahead of time. */
 export const PYRAMID_MIN_ZOOM = 6;
@@ -126,11 +104,11 @@ export function pyramidRadius(radiusM: number, z: number): number {
 /** Tiles at zoom z covering the box `r` metres around a point (x wraps at the date line). */
 export function pyramidTiles(lat: number, lon: number, radiusM: number, z: number): { x: number; y: number }[] {
   const r = pyramidRadius(radiusM, z);
-  const dLat = r / 111_320;
-  const dLon = r / (111_320 * Math.max(0.01, Math.cos((lat * Math.PI) / 180)));
+  const dLat = r / M_PER_DEG;
+  const dLon = r / (M_PER_DEG * Math.max(0.01, Math.cos(lat * DEG)));
   const n = 2 ** z;
-  const nw = tileAt(lon - dLon, Math.min(85.0511, lat + dLat), z);
-  const se = tileAt(lon + dLon, Math.max(-85.0511, lat - dLat), z);
+  const nw = tileAt(lon - dLon, clampMercLat(lat + dLat), z);
+  const se = tileAt(lon + dLon, clampMercLat(lat - dLat), z);
   let span = se.x - nw.x;
   if (span < 0) span += n; // across the date line
   if (2 * dLon >= 360) span = n - 1;

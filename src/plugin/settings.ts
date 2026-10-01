@@ -16,6 +16,7 @@
  */
 
 import * as fs from 'node:fs';
+import { HOUR_S } from '../geo/units';
 import * as path from 'node:path';
 import { KTS_TO_MS } from '../geo/geodesy';
 import { RTOFS_REGIONS } from '../currents/rtofs';
@@ -148,8 +149,6 @@ export const SETTINGS_GROUPS: { id: SettingsGroup; label: string; help: string }
   { id: 'publish', label: 'Publishing', help: 'What happens with a finished route.' },
 ];
 
-const H = 3600;
-
 export const SETTINGS_SPEC: readonly SettingSpec[] = [
   {
     key: 'vessel.name',
@@ -195,10 +194,10 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'number',
     unit: 's',
     quantity: 'hours',
-    min: 3 * H,
-    max: 360 * H,
-    multipleOf: H,
-    default: 72 * H,
+    min: 3 * HOUR_S,
+    max: 360 * HOUR_S,
+    multipleOf: HOUR_S,
+    default: 72 * HOUR_S,
     help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to 360 h, 06z/18z runs to 144 h, so above 144 h only 00z/12z runs are used). Changing it decodes the forecast again; the decoded run on disk grows with it (about 1.1 GB for 72 h and 3.9 GB for 360 h with the extra fields), memory does not.',
     reload: 'forecast',
   },
@@ -210,9 +209,9 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     unit: 's',
     quantity: 'minutes',
     min: 600,
-    max: 24 * H,
+    max: 24 * HOUR_S,
     multipleOf: 60,
-    default: H,
+    default: HOUR_S,
     help: 'How often ECMWF is checked for a newer cycle.',
     reload: 'refresh_timer',
   },
@@ -267,10 +266,10 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'number',
     unit: 's',
     quantity: 'hours',
-    min: 6 * H,
-    max: 240 * H,
-    multipleOf: H,
-    default: 72 * H,
+    min: 6 * HOUR_S,
+    max: 240 * HOUR_S,
+    multipleOf: HOUR_S,
+    default: 72 * HOUR_S,
     help: 'How far ahead SMOC is held (the product reaches about 10 days).',
     reload: 'currents',
   },
@@ -281,11 +280,11 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'number',
     unit: 's',
     quantity: 'hours',
-    min: 1 * H,
-    max: 3 * H,
-    multipleOf: H,
-    oneOf: [1 * H, 3 * H],
-    default: 3 * H,
+    min: 1 * HOUR_S,
+    max: 3 * HOUR_S,
+    multipleOf: HOUR_S,
+    oneOf: [1 * HOUR_S, 3 * HOUR_S],
+    default: 3 * HOUR_S,
     help: '1 h or 3 h. 1 h triples the download and memory.',
     reload: 'currents',
   },
@@ -328,10 +327,10 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'number',
     unit: 's',
     quantity: 'hours',
-    min: 24 * H,
-    max: 144 * H,
-    multipleOf: H,
-    default: 72 * H,
+    min: 24 * HOUR_S,
+    max: 144 * HOUR_S,
+    multipleOf: HOUR_S,
+    default: 72 * HOUR_S,
     help: 'How far ahead RTOFS is loaded.',
     reload: 'currents',
   },
@@ -342,10 +341,10 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'number',
     unit: 's',
     quantity: 'hours',
-    min: 1 * H,
-    max: 6 * H,
-    multipleOf: H,
-    default: 3 * H,
+    min: 1 * HOUR_S,
+    max: 6 * HOUR_S,
+    multipleOf: HOUR_S,
+    default: 3 * HOUR_S,
     help: 'Spacing of the RTOFS steps held in memory.',
     reload: 'currents',
   },
@@ -379,10 +378,10 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'number',
     unit: 's',
     quantity: 'hours',
-    min: 6 * H,
-    max: 240 * H,
-    multipleOf: H,
-    default: 24 * H,
+    min: 6 * HOUR_S,
+    max: 240 * HOUR_S,
+    multipleOf: HOUR_S,
+    default: 24 * HOUR_S,
     help: 'How far ahead the resident tide-height map area reaches (hourly steps; each hour of a 30° area downloads about 1–3 MB per new daily run). Map times beyond it load on demand. The conditions popup and Weather API are not limited by this.',
     reload: 'tides',
   },
@@ -749,15 +748,15 @@ export function migrateLegacy(legacy: LegacyPluginConfig | undefined): { values:
   set(src.vessel, 'name', v.name);
   set(src.vessel, 'motorSpeed', num(v.motorSpeedKts, KTS_TO_MS));
   const f = l.forecast ?? {};
-  set(src.forecast, 'horizon', num(f.horizonHours, H));
+  set(src.forecast, 'horizon', num(f.horizonHours, HOUR_S));
   set(src.forecast, 'refreshInterval', num(f.refreshMinutes, 60));
   set(src.forecast, 'keepCycles', num(f.keepCycles));
   set(src.forecast, 'extraFields', f.extraFields);
   const c = l.currents ?? {};
   set(src.currents, 'rtofsEnabled', c.rtofsEnabled);
   set(src.currents, 'rtofsRegion', typeof c.rtofsRegion === 'string' ? c.rtofsRegion.trim() : c.rtofsRegion);
-  set(src.currents, 'rtofsHorizon', num(c.rtofsHorizonHours, H));
-  set(src.currents, 'rtofsStep', num(c.rtofsStepHours, H));
+  set(src.currents, 'rtofsHorizon', num(c.rtofsHorizonHours, HOUR_S));
+  set(src.currents, 'rtofsStep', num(c.rtofsStepHours, HOUR_S));
   const r = l.routing ?? {};
   set(src.routing, 'stages', num(r.stages));
   set(src.routing, 'subsectors', num(r.subsectors));

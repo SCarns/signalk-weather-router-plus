@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { HOUR_S } from '../geo/units';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -237,7 +238,7 @@ test('sea level: real point series at 3 coastal points equal an independent xarr
     }
   }
   const client = new SeaLevelClient({ cacheDir: dir, network: false });
-  const src = new TideSource(run, { halfWidthDeg: 5, horizonHours: 24, budgetBytes: 64 << 20 }, client);
+  const src = new TideSource(run, { halfWidthDeg: 5, horizonS: 24 * HOUR_S, budgetBytes: 64 << 20 }, client);
   const from = run.timeFirstMs + REF.t0_index * H;
   assert.equal(new Date(from).toISOString(), '2026-09-28T12:00:00.000Z');
   // The mean window of this run is geo time chunk 9: the chunk holding the last 60 days.
@@ -408,7 +409,7 @@ async function mockSource(): Promise<{ src: TideSource; client: SeaLevelClient; 
   const counts = new Map<string, number>();
   const client = new SeaLevelClient({ cacheDir: tmpDir(), urls: URLS, fetchImpl: mockFetch(counts), sleepImpl: async () => undefined });
   const run = await client.probe();
-  const src = new TideSource(run, { halfWidthDeg: 5, horizonHours: 24, budgetBytes: 32 << 20 }, client);
+  const src = new TideSource(run, { halfWidthDeg: 5, horizonS: 24 * HOUR_S, budgetBytes: 32 << 20 }, client);
   return { src, client, run, counts };
 }
 
@@ -600,7 +601,7 @@ test('legends: tide ramp diverges around 0 from −3 to +3 m; settings: Tides gr
   const d = defaultSettings();
   assert.deepEqual(d.tides, { enabled: true, halfWidth: 15, horizon: 24 * 3600 });
   const c = resolveConfig({}, d);
-  assert.deepEqual(c.tides, { enabled: true, halfWidthDeg: 15, horizonHours: 24 });
+  assert.deepEqual(c.tides, { enabled: true, halfWidthDeg: 15, horizonS: 24 * HOUR_S });
   const r = mergeSettings(d, { tides: { enabled: false, halfWidth: 8, horizon: 48 * 3600 } });
   assert.deepEqual(r.changed.sort(), ['tides.enabled', 'tides.halfWidth', 'tides.horizon']);
   assert.deepEqual([...reloadsFor(r.changed)], ['tides']);

@@ -17,6 +17,8 @@
  */
 
 import { bboxWidth, type BBox } from '../geo/geodesy';
+import { clampMercLat, tileXFrac, tileYFrac } from '../geo/mercator';
+import { wrapLon, lonOffset } from '../geo/angles';
 import { buildIsobarFeatures, type IsobarFeature } from '../engine/isobars';
 import type { FieldGridResponse, FieldLayer } from './overlays';
 import { ARROWS_PER_TILE, BARBS_PER_TILE, FIELD_SAMPLES_PER_TILE, LAND_TILE_PX, TILE_MAX_ZOOM, tileAt, type TileId } from './tiles';
@@ -60,15 +62,11 @@ export function zoomFor(layer: 'field' | 'barbs' | 'arrows', bbox: BBox, res: nu
   return best;
 }
 
-function normLon(lon: number): number {
-  return ((((lon + 180) % 360) + 360) % 360) - 180;
-}
-
 /** Tiles at zoom z covering the box (x wraps at the date line). */
 export function tilesCovering(bbox: BBox, z: number): { x: number; y: number }[] {
   const n = 2 ** z;
-  const nw = tileAt(bbox.west, Math.min(85.0511, bbox.north), z);
-  const se = tileAt(bbox.east, Math.max(-85.0511, bbox.south), z);
+  const nw = tileAt(bbox.west, clampMercLat(bbox.north), z);
+  const se = tileAt(bbox.east, clampMercLat(bbox.south), z);
   let span = se.x - nw.x;
   if (span < 0 || (span === 0 && bboxWidth(bbox) > 180)) span += n;
   span = Math.min(span, n - 1);
@@ -83,7 +81,7 @@ function lattice(bbox: BBox, r: number): { lons: number[]; lats: number[] } {
   const lons: number[] = [];
   const lats: number[] = [];
   const lonStart = Math.ceil(bbox.west / r) * r;
-  for (let x = lonStart; x <= bbox.west + width + 1e-9; x += r) lons.push(Math.round(normLon(x) * 1e6) / 1e6);
+  for (let x = lonStart; x <= bbox.west + width + 1e-9; x += r) lons.push(Math.round(wrapLon(x) * 1e6) / 1e6);
   const latStart = Math.ceil(bbox.south / r) * r;
   for (let y = latStart; y <= bbox.north + 1e-9; y += r) lats.push(Math.round(y * 1e6) / 1e6);
   return { lons, lats };
@@ -121,7 +119,7 @@ export async function joinField(
   for (const [k, g] of grids) {
     const col = new Map<number, number>();
     const row = new Map<number, number>();
-    g.lons.forEach((lon, i) => col.set(Math.round(normLon(lon) / g.res), i));
+    g.lons.forEach((lon, i) => col.set(Math.round(wrapLon(lon) / g.res), i));
     g.lats.forEach((lat, j) => row.set(Math.round(lat / g.res), j));
     idx.set(k, { col, row });
   }
@@ -132,7 +130,7 @@ export async function joinField(
   const fields: Record<string, (number | null)[][]> = {};
   for (const n of names) fields[n] = [];
   const land: number[][] = [];
-  const lonKeys = lons.map(lon => Math.round(normLon(lon) / r));
+  const lonKeys = lons.map(lon => Math.round(wrapLon(lon) / r));
   lats.forEach((lat, j) => {
     const latKey = Math.round(lat / r);
     const rows: Record<string, (number | null)[]> = {};
@@ -166,7 +164,7 @@ export async function joinField(
 
 function inBox(bbox: BBox, lon: number, lat: number): boolean {
   if (lat < bbox.south - 1e-9 || lat > bbox.north + 1e-9) return false;
-  const dx = (((lon - bbox.west) % 360) + 360) % 360;
+  const dx = lonOffset(lon, bbox.west);
   return dx <= bboxWidth(bbox) + 1e-9 || dx >= 360 - 1e-9;
 }
 
@@ -204,13 +202,12 @@ export async function joinLandMask(get: TileGetter, bbox: BBox, w: number, h: nu
   const out = new Uint8Array(w * h);
   const gxOf = new Int32Array(w);
   for (let x = 0; x < w; x++) {
-    const lon = normLon(bbox.west + (x + 0.5) * dx);
-    gxOf[x] = Math.min(px - 1, Math.floor(((lon + 180) / 360) * px));
+    const lon = wrapLon(bbox.west + (x + 0.5) * dx);
+    gxOf[x] = Math.min(px - 1, Math.floor(tileXFrac(lon) * px));
   }
   for (let y = 0; y < h; y++) {
-    const lat = clamp(bbox.north - (y + 0.5) * dy, -85.0511, 85.0511);
-    const rad = (lat * Math.PI) / 180;
-    const gy = Math.min(px - 1, Math.max(0, Math.floor(((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * px)));
+    const lat = bbox.north - (y + 0.5) * dy;
+    const gy = Math.min(px - 1, Math.max(0, Math.floor(tileYFrac(lat) * px)));
     const ty = Math.floor(gy / LAND_TILE_PX);
     const py = gy % LAND_TILE_PX;
     for (let x = 0; x < w; x++) {
@@ -255,7 +252,7 @@ export async function joinPressure(
   const g = await joinField(get, 'msl', area, hourMs, PRESSURE_TILE_RES, 400_000);
   const rows = g.fields.msl ?? [];
   const at = (lon: number, lat: number): number => {
-    let dxl = (((lon - g.lons[0]) % 360) + 360) % 360;
+    let dxl = lonOffset(lon, g.lons[0]);
     if (dxl > 360 - g.res / 2) dxl -= 360;
     const fx = dxl / g.res;
     const fy = (lat - g.lats[0]) / g.res;

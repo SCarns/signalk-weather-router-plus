@@ -19,6 +19,7 @@
  */
 
 import * as crypto from 'node:crypto';
+import { wrapLon, lonOffset } from './angles';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -94,8 +95,8 @@ export function snapBBox(b: BBox, res: number): BBox {
     west = -180;
     east = 180;
   } else {
-    west = ((west + 540) % 360) - 180;
-    east = ((east + 540) % 360) - 180;
+    west = wrapLon(west);
+    east = wrapLon(east);
     if (east === -180) east = 180;
   }
   return { west: round9(west), south: round9(south), east: round9(east), north: round9(north) };
@@ -110,7 +111,7 @@ function bboxWithin(inner: BBox, outer: BBox): boolean {
   if (inner.south < outer.south - 1e-9 || inner.north > outer.north + 1e-9) return false;
   const ow = bboxWidth(outer);
   if (ow >= 360) return true;
-  const off = (((inner.west - outer.west) % 360) + 360) % 360;
+  const off = lonOffset(inner.west, outer.west);
   return off + bboxWidth(inner) <= ow + 1e-9;
 }
 
@@ -295,7 +296,7 @@ export class OnDemandLand implements OverlayLand {
   }
 
   isLandAt(lon: number, lat: number): boolean {
-    const l = ((((lon + 180) % 360) + 360) % 360) - 180;
+    const l = wrapLon(lon);
     for (const ix of this.index()) {
       for (const x of [l, l + 360, l - 360]) if (ix.containsPoint(x, lat)) return true;
     }

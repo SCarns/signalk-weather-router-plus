@@ -26,6 +26,7 @@
  */
 
 import type { ForecastStore } from '../data/forecast';
+import { HOUR_MS } from '../geo/units';
 import { relativeHumidity } from '../engine/conditions';
 import { sampleSeries, signalKTendency, slopeAt, type RegularSeries } from '../tides/tidecalc';
 
@@ -121,8 +122,8 @@ export function makeWeatherProvider(
     if (!tideSeries || items.length === 0) return items;
     const times = items.map(i => Date.parse(i.date));
     // One step either side for the tendency's central difference.
-    const fromMs = Math.min(...times) - 3600_000;
-    const hours = Math.ceil((Math.max(...times) - fromMs) / 3600_000) + 1;
+    const fromMs = Math.min(...times) - HOUR_MS;
+    const hours = Math.ceil((Math.max(...times) - fromMs) / HOUR_MS) + 1;
     try {
       const s = await tideSeries(position.latitude, position.longitude, fromMs, Math.min(hours, 400));
       if (!s) return items;
@@ -177,7 +178,7 @@ export function pointForecasts(
   const out: WeatherData[] = [];
   for (let i = 0; i < store.steps.length; i++) {
     const step = store.steps[i];
-    if (step.validMs + 3 * 3600_000 <= fromMs) continue; // step already fully in the past
+    if (step.validMs + 3 * HOUR_MS <= fromMs) continue; // step already fully in the past
     const t = new Date(step.validMs);
     const [ws, wd] = store.at(lon, lat, t);
     const wave = store.wavesAt(lon, lat, t);

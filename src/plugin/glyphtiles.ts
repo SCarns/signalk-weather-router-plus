@@ -10,6 +10,9 @@
  */
 
 import { encodePng } from './png';
+import { clampMercLat, mercY } from '../geo/mercator';
+import { wrapLon } from '../geo/angles';
+import { KTS_TO_MS } from '../geo/units';
 import { Canvas, hexRgba, type Rgba } from './raster';
 import { PngCache, TILE_PX } from './pngtiles';
 import { tileBBox, tileGroup, type TileId, type TileService } from './tiles';
@@ -48,19 +51,18 @@ export function isGlyphLayer(s: string): s is GlyphLayer {
   return (GLYPH_LAYERS as readonly string[]).includes(s);
 }
 
-const KT = 0.514444;
 const GLYPH_MARGIN = 48; // px beyond the tile within which a neighbour's glyph can still touch it
 
 /** lon/lat → pixel in this tile (Web Mercator rows), may be outside 0..255. */
 function projector(z: number, x: number, y: number): (lon: number, lat: number) => [number, number] {
   const box = tileBBox(z, x, y);
-  const yN = Math.log(Math.tan(Math.PI / 4 + (box.north * Math.PI) / 360));
-  const yS = Math.log(Math.tan(Math.PI / 4 + (box.south * Math.PI) / 360));
+  const yN = mercY(box.north);
+  const yS = mercY(box.south);
   const width = box.east - box.west;
   return (lon, lat) => {
     let d = lon - box.west;
-    d = (((d % 360) + 540) % 360) - 180;
-    const my = Math.log(Math.tan(Math.PI / 4 + (Math.max(-85.0511, Math.min(85.0511, lat)) * Math.PI) / 360));
+    d = wrapLon(d);
+    const my = mercY(clampMercLat(lat));
     return [(d / width) * TILE_PX, ((yN - my) / (yN - yS)) * TILE_PX];
   };
 }
@@ -72,7 +74,11 @@ function place(ax: number, ay: number, rad: number, scale: number, lx: number, l
   return [ax + (lx * c - ly * s) * scale, ay + (lx * s + ly * c) * scale];
 }
 
-// Wind barbs: colour classes by knots (public/rp-layers.js WIND_BARB_CLASSES).
+/**
+ * Class bounds in knots: wind barbs are a glyph drawn in 5-kt steps by
+ * meteorological convention, and the current-arrow classes follow the
+ * same table as the web app. The only knots in the plugin's rendering.
+ */
 const WIND_BARB_CLASSES: [number, string][] = [
   [0, '#90CAF9'],
   [5, '#4FC3F7'],
@@ -90,7 +96,7 @@ function windColour(kts: number): Rgba {
 
 /** One barb at pixel (ax, ay): the web app's 28 × 44 SVG, plot point (14, 38), staff up to (14, 4), feathers to the left. */
 export function drawBarb(cv: Canvas, ax: number, ay: number, speedMs: number, dirFromDeg: number): void {
-  const kts = speedMs / KT;
+  const kts = speedMs / KTS_TO_MS;
   const colour = windColour(kts);
   const rad = (Math.round(dirFromDeg / 5) * 5 * Math.PI) / 180;
   const P = (lx: number, ly: number): [number, number] => place(ax, ay, rad, 1, lx - 14, ly - 38);
@@ -138,7 +144,7 @@ const SLACK_KT = 0.05;
 
 /** One arrow at pixel (ax, ay): the web app's 16 × 32 SVG centred at (8, 16), pointing up, rotated to the direction the current flows to. */
 export function drawArrow(cv: Canvas, ax: number, ay: number, speedMs: number, dirToDeg: number): void {
-  const kts = speedMs / KT;
+  const kts = speedMs / KTS_TO_MS;
   let colour = CURRENT_ARROW_CLASSES[0][1];
   for (const [lo, c] of CURRENT_ARROW_CLASSES) if (kts >= lo) colour = c;
   if (kts < SLACK_KT) {

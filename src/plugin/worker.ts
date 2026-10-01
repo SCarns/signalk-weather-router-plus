@@ -29,6 +29,7 @@
  */
 
 import { parentPort, workerData, Worker } from 'node:worker_threads';
+import { NM_M, HOUR_S, MINUTE_MS, HOUR_MS } from '../geo/units';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { EcmwfClient, ECMWF_MIRRORS, availableSteps, latestExpectedCycle, cycleFor, type Cycle } from '../data/ecmwf';
@@ -146,7 +147,7 @@ let smoc: SmocCurrentSource | null = null;
 /** Last vessel position from the main thread (SMOC resident area centre). */
 let vesselPos: VesselPosition | null = null;
 /** Overlay / conditions queries wait at most this long for an on-demand SMOC load. */
-const SMOC_QUERY_DEADLINE_MS = 60_000;
+const SMOC_QUERY_DEADLINE_MS = MINUTE_MS;
 let stack: CurrentStack = new CurrentStack([]);
 /** overlayLand.builds when data-status was last sent. */
 let reportedLandBuilds = 0;
@@ -162,7 +163,7 @@ let tidesError: string | null = null;
 /** Tide revision when data-status was last sent. */
 let reportedTidesRev = -1;
 /** Map / conditions queries wait at most this long for a tide download. */
-const TIDE_QUERY_DEADLINE_MS = 60_000;
+const TIDE_QUERY_DEADLINE_MS = MINUTE_MS;
 /** Global water grid (route worker). */
 let waterGrid: WaterGrid | null = null;
 /** Builder thread while a rebuild runs. */
@@ -303,8 +304,8 @@ function sendCurrents(): void {
 
 function smocSettings(cfg: ResolvedConfig): SmocSettings {
   return {
-    stepHours: cfg.currents.smocStepHours,
-    horizonHours: cfg.currents.smocHorizonHours,
+    stepS: cfg.currents.smocStepS,
+    horizonS: cfg.currents.smocHorizonS,
     halfWidthDeg: cfg.currents.smocHalfWidthDeg,
     budgetBytes: SMOC_DEFAULT_BUDGET_BYTES,
   };
@@ -366,7 +367,7 @@ async function refreshSmoc(): Promise<void> {
   const provisionalReplaced = !!smoc && smoc.run.key === run.key && !smoc.run.settled && run.settled;
   const newRun = !smoc || smoc.run.key !== run.key || provisionalReplaced;
   const now = Date.now();
-  const steps = alignedSteps(run, now, now + settings.horizonHours * 3600_000, settings.stepHours);
+  const steps = alignedSteps(run, now, now + settings.horizonS * 1000, settings.stepS / HOUR_S);
   const src = newRun ? new SmocCurrentSource(run, settings, smocClient, m => log('info', m)) : smoc!;
   if (!newRun) src.expire(now);
   if (provisionalReplaced) smocClient.dropRun(run.key);
@@ -405,7 +406,7 @@ async function refreshSmoc(): Promise<void> {
 }
 
 function tideSettings(cfg: ResolvedConfig): TideSettings {
-  return { halfWidthDeg: cfg.tides.halfWidthDeg, horizonHours: cfg.tides.horizonHours, budgetBytes: TIDE_DEFAULT_BUDGET_BYTES };
+  return { halfWidthDeg: cfg.tides.halfWidthDeg, horizonS: cfg.tides.horizonS, budgetBytes: TIDE_DEFAULT_BUDGET_BYTES };
 }
 
 function makeSeaLevelClient(cfg: ResolvedConfig): SeaLevelClient | null {
@@ -530,7 +531,7 @@ async function conditionsTide(a: QueryArgs['conditions']): Promise<ConditionsTid
   if (!config?.tides.enabled) return null;
   if (!tides) return { series: null, error: tidesError ?? 'tide data not loaded yet' };
   try {
-    const p = tides.pointSeries(a.lat, a.lon, a.fromMs, a.fromMs + a.hours * 3600_000, { reason: 'conditions query' });
+    const p = tides.pointSeries(a.lat, a.lon, a.fromMs, a.fromMs + a.hours * HOUR_MS, { reason: 'conditions query' });
     p.catch(() => undefined);
     const series = await withDeadline(p, TIDE_QUERY_DEADLINE_MS, 'tide series still downloading; try again shortly');
     return { series, error: series ? null : 'outside the sea-level grid or its time range' };
@@ -545,7 +546,7 @@ async function tideSeriesQuery(a: QueryArgs['tide_series']): Promise<TideSeriesR
   const empty = (error: string): TideSeriesResult => ({
     run: null,
     t0Ms: 0,
-    stepMs: 3600_000,
+    stepMs: HOUR_MS,
     waterLevel: new Float64Array(0),
     tide: new Float64Array(0),
     surge: new Float64Array(0),
@@ -553,7 +554,7 @@ async function tideSeriesQuery(a: QueryArgs['tide_series']): Promise<TideSeriesR
   });
   if (!config?.tides.enabled) return empty('tides are turned off');
   if (!tides) return empty(tidesError ?? 'tide data not loaded yet');
-  const p = tides.pointSeries(a.lat, a.lon, a.fromMs, a.fromMs + a.hours * 3600_000, { reason: 'Weather API' });
+  const p = tides.pointSeries(a.lat, a.lon, a.fromMs, a.fromMs + a.hours * HOUR_MS, { reason: 'Weather API' });
   p.catch(() => undefined);
   const s = await withDeadline(p, TIDE_QUERY_DEADLINE_MS, 'tide series still downloading; try again shortly');
   if (!s) return empty('outside the sea-level grid or its time range');
@@ -590,7 +591,7 @@ async function prepareSmocForQuery(kind: string, args: QueryArgs[keyof QueryArgs
     case 'conditions': {
       const a = args as QueryArgs['conditions'];
       bbox = { west: a.lon - 0.05, east: a.lon + 0.05, south: a.lat - 0.05, north: a.lat + 0.05 };
-      const end = Math.min(a.fromMs + a.hours * 3600_000, Date.now() + src.settings.horizonHours * 3600_000);
+      const end = Math.min(a.fromMs + a.hours * HOUR_MS, Date.now() + src.settings.horizonS * 1000);
       steps = src.stepsBetween(a.fromMs, Math.max(a.fromMs, end));
       break;
     }
@@ -645,7 +646,7 @@ function loadHarmonic(dir: string | null): void {
 async function refreshRtofs(networkAllowed: boolean): Promise<void> {
   const { config: cfg } = requireInit();
   if (!cfg.currents.rtofsEnabled || !rtofsClient) return;
-  const horizon = cfg.currents.rtofsHorizonHours;
+  const horizon = cfg.currents.rtofsHorizonS;
   let run: RtofsRun | null;
   const cachedRuns = rtofsClient.cachedRuns().filter(r => rtofsClient!.runFullyCached(r, horizon));
   if (networkAllowed) {
@@ -672,7 +673,7 @@ async function refreshRtofs(networkAllowed: boolean): Promise<void> {
   try {
     const t = Date.now();
     // The whole configured RTOFS product (cfg.currents.rtofsRegion), uncropped.
-    const steps = await loadRtofsSteps(rtofsClient, run, null, horizon, cfg.currents.rtofsStepHours, { log: m => log('debug', m) });
+    const steps = await loadRtofsSteps(rtofsClient, run, null, horizon, cfg.currents.rtofsStepS, { log: m => log('debug', m) });
     if (steps.length === 0) throw new Error(`run ${run.yyyymmdd} has no steps in product ${rtofsClient.region}`);
     const g = steps[0].u;
     const extent = { south: g.lat0, west: g.lon0, north: g.lat0 + (g.nLat - 1) * g.dLat, east: g.lon0 + (g.nLon - 1) * g.dLon };
@@ -697,7 +698,7 @@ function wantedParams(cfg: ResolvedConfig): string[] {
 function runFitsConfig(r: DecodedRun, cfg: ResolvedConfig): boolean {
   const want = wantedParams(cfg);
   const have = r.index.request.params;
-  const steps = availableSteps(cycleFor(r.cycleTime), cfg.forecast.horizonHours);
+  const steps = availableSteps(cycleFor(r.cycleTime), cfg.forecast.horizonS / HOUR_S);
   return (
     want.length === have.length &&
     want.every((p, i) => p === have[i]) &&
@@ -809,7 +810,7 @@ async function refresh(force: boolean): Promise<void> {
  */
 async function refreshForecast(force: boolean): Promise<void> {
   const { config: cfg, client: cl } = requireInit();
-  const horizon = cfg.forecast.horizonHours;
+  const horizon = cfg.forecast.horizonS;
   const t = Date.now();
   const expected = latestExpectedCycle(new Date(), horizon);
   if (!force && runMatches(cfg, expected)) {
@@ -865,7 +866,7 @@ async function refreshForecast(force: boolean): Promise<void> {
     writer = new DecodedRunWriter(decodedRoot(), cycleName(cycle.time));
     decodingBlockBytes = res.needBytes;
     const out = await decodeForecastToDisk(cl, writer, {
-      horizonHours: horizon,
+      horizonS: horizon,
       cycle,
       extraAtmParams: extraParams(cfg),
       log: m => log('debug', `forecast: ${m}`),
@@ -898,7 +899,7 @@ async function refreshForecast(force: boolean): Promise<void> {
 
 function keepCycles(current: Cycle, n: number): Cycle[] {
   const out: Cycle[] = [];
-  for (let i = 0; i < n; i++) out.push(cycleFor(new Date(current.time.getTime() - i * 6 * 3600_000)));
+  for (let i = 0; i < n; i++) out.push(cycleFor(new Date(current.time.getTime() - i * 6 * HOUR_MS)));
   return out;
 }
 
@@ -1077,13 +1078,13 @@ async function route(id: string, request: RouteRequest): Promise<void> {
           // No decoded run yet (first boot, the data worker is still decoding).
           progress(0, 0, 'no decoded forecast run yet; decoding a route-specific forecast crop from the GRIB disk cache');
           const cycle = (
-            await resolveCycle(cl, cfg.forecast.horizonHours, {
+            await resolveCycle(cl, cfg.forecast.horizonS, {
               extraAtmParams: extraParams(cfg),
               log: m => log('info', `job ${id} forecast: ${m}`),
             })
           ).cycle;
           const store = await loadForecastForBBox(cl, area, {
-            horizonHours: cfg.forecast.horizonHours,
+            horizonS: cfg.forecast.horizonS,
             cycle,
             extraAtmParams: extraParams(cfg),
             shouldCancel,
@@ -1099,7 +1100,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
       if (smoc && !request.no_currents) {
         // SMOC for the box over the currents window from departure, if the resident area does not cover it.
         const src = smoc;
-        const steps = src.stepsBetween(departureMs, Math.max(departureMs, Date.now() + src.settings.horizonHours * 3600_000));
+        const steps = src.stepsBetween(departureMs, Math.max(departureMs, Date.now() + src.settings.horizonS * 1000));
         if (steps.length) {
           progress(0, 0, `currents: checking CMEMS SMOC coverage of the ${what}`);
           try {
@@ -1162,7 +1163,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
           progress(
             0,
             0,
-            `${tag}corridor: ${(corridor.lengthM / 1852).toFixed(1)} nm, A* ${st.astarMs} ms (${st.expanded} cells), ${st.refines} local refinement(s), ${st.reroutes} re-route(s)`
+            `${tag}corridor: ${(corridor.lengthM / NM_M).toFixed(1)} nm, A* ${st.astarMs} ms (${st.expanded} cells), ${st.refines} local refinement(s), ${st.reroutes} re-route(s)`
           );
           for (const v of corridor.autoVias)
             progress(0, 0, `${tag}corridor: auto via at ${v.name}, width ${(v.widthM / 1000).toFixed(1)} km`);
@@ -1268,7 +1269,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
                 maxWindMs: legArgs.maxWindMs,
                 maxSwhM: legArgs.maxSwhM,
               },
-              tolerancePct: (request.smoother_tolerance ?? cfg.routing.smootherTolerance) * 100,
+              tolerance: request.smoother_tolerance ?? cfg.routing.smootherTolerance,
             })
           : 0;
       if (nSm) r.smootherDrops = nSm;
@@ -1294,7 +1295,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
           progress(
             0,
             0,
-            `WARNING: ${multi ? `${legLabel(plan)} ` : ''}arrival is ${((arrival - lastValid) / 3600_000).toFixed(1)} h after the last forecast step (${legWind.validRange[1].toISOString().slice(0, 16).replace('T', ' ')} UTC); the last ${beyond} leg${beyond === 1 ? '' : 's'} ran on conditions held at that step${limited ? ', and the wind/wave limit was checked against those held conditions' : ''}. A longer forecast horizon (Settings) covers more of the passage`
+            `WARNING: ${multi ? `${legLabel(plan)} ` : ''}arrival is ${((arrival - lastValid) / HOUR_MS).toFixed(1)} h after the last forecast step (${legWind.validRange[1].toISOString().slice(0, 16).replace('T', ' ')} UTC); the last ${beyond} leg${beyond === 1 ? '' : 's'} ran on conditions held at that step${limited ? ', and the wind/wave limit was checked against those held conditions' : ''}. A longer forecast horizon (Settings) covers more of the passage`
           );
         }
       }
@@ -1302,7 +1303,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
       if (multi)
         log(
           'info',
-          `job ${id}: ${tag}${r.waypoints.length} waypoints, ${(r.totalDistanceM / 1852).toFixed(1)} nm, ${(r.totalTimeS / 3600).toFixed(1)} h, ${Date.now() - t} ms`
+          `job ${id}: ${tag}${r.waypoints.length} waypoints, ${(r.totalDistanceM / NM_M).toFixed(1)} nm, ${(r.totalTimeS / HOUR_S).toFixed(1)} h, ${Date.now() - t} ms`
         );
       if (multi) releaseAreas();
       return r;
@@ -1346,7 +1347,7 @@ async function route(id: string, request: RouteRequest): Promise<void> {
     }
     log(
       'info',
-      `job ${id}: ${wps.length} waypoints, ${(result.totalDistanceM / 1852).toFixed(1)} nm, ${(result.totalTimeS / 3600).toFixed(1)} h, ${Date.now() - t} ms`
+      `job ${id}: ${wps.length} waypoints, ${(result.totalDistanceM / NM_M).toFixed(1)} nm, ${(result.totalTimeS / HOUR_S).toFixed(1)} h, ${Date.now() - t} ms`
     );
     send({
       type: 'done',
@@ -1708,7 +1709,7 @@ async function handle(msg: MainToWorker): Promise<void> {
         sendCurrents();
         log(
           'info',
-          `currents reloaded for the new settings (SMOC ${config.currents.smocEnabled ? `${config.currents.smocStepHours} h steps, ${config.currents.smocHorizonHours} h, ±${config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${config.currents.rtofsEnabled ? config.currents.rtofsRegion : 'off'})`
+          `currents reloaded for the new settings (SMOC ${config.currents.smocEnabled ? `${config.currents.smocStepS / HOUR_S} h steps, ${config.currents.smocHorizonS / HOUR_S} h, ±${config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${config.currents.rtofsEnabled ? config.currents.rtofsRegion : 'off'})`
         );
       }
       if (msg.reload.tides && role === 'tiles') {
@@ -1728,13 +1729,13 @@ async function handle(msg: MainToWorker): Promise<void> {
         send({ type: 'tides-run', run: (tides as TideSource | null)?.run ?? null });
         log(
           'info',
-          `tides reloaded for the new settings (${config.tides.enabled ? `map area ±${config.tides.halfWidthDeg}°, ${config.tides.horizonHours} h` : 'off'})`
+          `tides reloaded for the new settings (${config.tides.enabled ? `map area ±${config.tides.halfWidthDeg}°, ${config.tides.horizonS / HOUR_S} h` : 'off'})`
         );
       }
       if (msg.reload.forecast && role === 'data') {
         log(
           'info',
-          `forecast settings changed (horizon ${prev.forecast.horizonHours} → ${config.forecast.horizonHours} h, extra fields ${prev.forecast.extraFields} → ${config.forecast.extraFields}); reloading`
+          `forecast settings changed (horizon ${prev.forecast.horizonS / HOUR_S} → ${config.forecast.horizonS / HOUR_S} h, extra fields ${prev.forecast.extraFields} → ${config.forecast.extraFields}); reloading`
         );
         await refreshForecast(false);
       }

@@ -15,13 +15,15 @@
  */
 
 import type { BBox } from '../geo/geodesy';
+import { HOUR_S } from '../geo/units';
 import { parseGrib2Message, type DecodeScratch } from '../grib/grib2';
 import { ATM_PARAMS, WAVE_PARAMS, availableSteps, latestExpectedCycle, type Cycle, type EcmwfClient, type IndexRecord } from './ecmwf';
 import { buildStep, ForecastStore, GLOBAL_BBOX, type ForecastStep, FloatSlab, type NanFillScratch } from './forecast';
 import { cycleName, type DecodedIndex, type DecodedRunWriter } from './decoded';
 
 export interface LoadOptions {
-  horizonHours: number;
+  /** Forecast horizon, seconds (the ECMWF step ladder is in hours; converted once here). */
+  horizonS: number;
   cycle?: Cycle;
   includeWaves?: boolean;
   /** Extra parameters from the atmosphere stream (e.g. '2t', 'tprate'). */
@@ -50,22 +52,22 @@ export interface ResolvedCycle {
  */
 export async function resolveCycle(
   client: EcmwfClient,
-  horizonHours: number,
+  horizonS: number,
   opts: { now?: Date; includeWaves?: boolean; extraAtmParams?: string[]; log?: (m: string) => void } = {}
 ): Promise<ResolvedCycle> {
   const log = opts.log ?? (() => undefined);
   const atm = [...ATM_PARAMS, ...(opts.extraAtmParams ?? [])];
   const wave = opts.includeWaves === false ? [] : [...WAVE_PARAMS];
-  const expected = latestExpectedCycle(opts.now ?? new Date(), horizonHours);
-  if (client.cycleFullyCached(expected, horizonHours, atm, wave)) {
+  const expected = latestExpectedCycle(opts.now ?? new Date(), horizonS);
+  if (client.cycleFullyCached(expected, horizonS, atm, wave)) {
     log(`expected cycle ${expected.yyyymmdd} ${expected.hh}z is fully cached; no download needed`);
     return { cycle: expected, fromCache: true };
   }
   try {
-    const cycle = await client.findLatestCycle(horizonHours, { now: opts.now });
-    return { cycle, fromCache: client.cycleFullyCached(cycle, horizonHours, atm, wave) };
+    const cycle = await client.findLatestCycle(horizonS, { now: opts.now });
+    return { cycle, fromCache: client.cycleFullyCached(cycle, horizonS, atm, wave) };
   } catch (err) {
-    const cached = client.cachedCycles().find(c => client.cycleFullyCached(c, horizonHours, atm, wave));
+    const cached = client.cachedCycles().find(c => client.cycleFullyCached(c, horizonS, atm, wave));
     if (cached) {
       const msg = `ECMWF unreachable (${(err as Error).message}); using cached cycle ${cached.yyyymmdd} ${cached.hh}z`;
       log(msg);
@@ -131,10 +133,10 @@ async function decodeSteps(
   const log = opts.log ?? (() => undefined);
   const includeWaves = opts.includeWaves ?? true;
   const atmParams = [...ATM_PARAMS, ...(opts.extraAtmParams ?? [])];
-  const cycle =
-    opts.cycle ?? (await resolveCycle(client, opts.horizonHours, { includeWaves, extraAtmParams: opts.extraAtmParams, log })).cycle;
-  const steps = availableSteps(cycle, opts.horizonHours);
-  const waveSteps = new Set(availableSteps(cycle, opts.horizonHours));
+  const cycle = opts.cycle ?? (await resolveCycle(client, opts.horizonS, { includeWaves, extraAtmParams: opts.extraAtmParams, log })).cycle;
+  const horizonHours = opts.horizonS / HOUR_S;
+  const steps = availableSteps(cycle, horizonHours);
+  const waveSteps = new Set(availableSteps(cycle, horizonHours));
   // One set of decode buffers for every field (~12 MB for 0.25° global)
   // instead of fresh ones per field: a 72 h load decodes ~275 fields.
   const scratch: DecodeScratch = {};
@@ -241,7 +243,7 @@ export async function decodeForecastToDisk(
     throw new Error(`decoded cycle ${cycleName(r.cycle.time)} into a writer for ${writer.cycle}`);
   const index = writer.finish({
     cycleTimeMs: r.cycle.time.getTime(),
-    request: { horizonHours: opts.horizonHours, params: r.params },
+    request: { horizonHours: opts.horizonS / HOUR_S, params: r.params },
     stepHours: r.steps,
     decodeMs: Date.now() - t,
   });

@@ -365,13 +365,17 @@ document.querySelectorAll('#tabBar button').forEach(b => {
 // colour stops the heatmaps use (`GET /api/legends`, SI values) plus the
 // barb/arrow class tables. Values shown in display units.
 let _LEGENDS = null, _legendsReq = null;
+// Resolves when the legends are loaded (or the request failed); the
+// heatmaps wait for it, there is no fallback copy of the ramps.
 function _loadLegends() {
-  if (_LEGENDS || _legendsReq) return;
+  if (_LEGENDS) return Promise.resolve();
+  if (_legendsReq) return _legendsReq;
   _legendsReq = authFetch(ROUTER + '/legends', {}, null)
     .then(r => r.ok ? r.json() : null)
     .then(d => { if (d) { _LEGENDS = d; updateLegends(); } })
     .catch(() => {})
     .finally(() => { _legendsReq = null; });
+  return _legendsReq;
 }
 _loadLegends();
 
@@ -417,7 +421,7 @@ function _bandsRow(L) {
 // preset's speed unit.
 function _classesRow(title, classes, glyph) {
   const u = unitDesc('speed'); u.p = 1;
-  const cv = kt => { if (u.missing) return UNIT_MISSING; const t = u.fn(kt * 0.5144444444).toFixed(u.p); return t.replace(/\.0$/, ''); };
+  const cv = kt => { if (u.missing) return UNIT_MISSING; const t = u.fn(kt * KT_MS).toFixed(u.p); return t.replace(/\.0$/, ''); };
   const cells = classes.map(([lo, color], i) => {
     const hi = i + 1 < classes.length ? classes[i + 1][0] : null;
     const label = hi == null ? '≥' + cv(lo) : (i === 0 ? '&lt;' + cv(hi) : cv(lo) + '–' + cv(hi));
@@ -983,7 +987,7 @@ function _focusOnWaypoint(f) {
 // touching the other configurables, which still come from the DOM.
 function buildRoutePayload(overrides) {
   overrides = overrides || {};
-  const sailThreshKts = parseFloat(document.getElementById('sailThresh').value);
+  const sailThreshMs = parseFloat(document.getElementById('sailThresh').value);
   const radiusM = parseFloat(document.getElementById('arrivalRadiusM').value);
   const depVal = document.getElementById('departure').value;
   const body = {
@@ -994,7 +998,7 @@ function buildRoutePayload(overrides) {
         ? { lat: overrides.end[1], lon: overrides.end[0] }
         : { lat: endCoord[1], lon: endCoord[0] },
     mode: document.getElementById('mode').value,
-    sail_thresh_ms: sailThreshKts * MS_PER_KT,        // m/s
+    sail_thresh_ms: sailThreshMs,
   };
   const maxWindMs = _limitSI('maxWind'), maxSwhM = _limitSI('maxSwh');
   if (maxWindMs !== null) body.max_wind_ms = maxWindMs;
@@ -1016,7 +1020,7 @@ function buildRoutePayload(overrides) {
     body.mode = 'motor';
     const pb = readPowerBoat();
     vessel.name = pb.name;
-    vessel.motor_speed_ms = pb.cruise_kts * MS_PER_KT;
+    vessel.motor_speed_ms = pb.cruise_ms;
   } else {
     const polarPath = document.getElementById('polarSelect').value;
     if (polarPath) vessel.polar = polarPath;
@@ -1041,7 +1045,7 @@ function buildRoutePayload(overrides) {
 // ── Wind and wave limits ─────────────────────────────────────────────
 // Typed in the user's units, kept in SI in localStorage so a change of
 // unit preference keeps the meaning; no unit → the field is disabled.
-const _LIMITS = { maxWind: 'speed', maxSwh: 'wave_height' };
+const _LIMITS = { maxWind: 'speed', maxSwh: 'wave_height', pb_cruise: 'speed' };
 function _limitSI(id) {
   const c = UI_UNITS[_LIMITS[id]], el = document.getElementById(id);
   if (!el || !c || !c.inv || el.value === '') return null;
@@ -1053,8 +1057,7 @@ function _initLimitInputs() {
     const el = document.getElementById(id);
     if (!el) continue;
     const c = UI_UNITS[_LIMITS[id]];
-    const u = document.querySelector('.unitOf[data-q="' + _LIMITS[id] + '"]');
-    if (u) u.textContent = c ? c.unit : UNIT_MISSING;
+    for (const u of document.querySelectorAll('.unitOf[data-q="' + _LIMITS[id] + '"]')) u.textContent = c ? c.unit : UNIT_MISSING;
     el.disabled = !c;
     if (c && !el.dataset.touched) {
       let si = null;
@@ -1467,7 +1470,6 @@ function _fmtTideH(m) {
 const _COND_HEAD = '<tr><th>time</th><th>wind</th><th>waves (h / T)</th><th>current (set)</th><th>press.</th><th>air / water</th><th>rain</th><th>type</th><th>feels like</th><th>RH</th><th>Bft</th><th>Douglas</th><th>sea state</th><th>tide / level / surge</th></tr>';
 
 // Display-unit scale for a SI value.
-function _unitOf(key) { return unitDesc(key); }
 
 // Tab definitions. `lines`: series drawn; `dir`: arrow field + sense
 // ('from' → arrow shows where it goes, 'to' → as given); `hover`:
@@ -1482,11 +1484,11 @@ const _PRECIP_COLORS = {
 };
 const _COND_TABS = [
   { id: 'wind',  label: 'Wind', overlays: [['windToggle', 'Barbs'], ['windCombinedToggle', 'Wind speed']],
-    lines: [{ key: 'wind_ms', unit: () => _unitOf('speed'), color: '#1565c0', name: 'wind' }],
+    lines: [{ key: 'wind_ms', unit: () => unitDesc('speed'), color: '#1565c0', name: 'wind' }],
     dir: { key: 'wind_dir_deg', sense: 'from' },
     hover: r => r.beaufort == null ? '' : ' · Beaufort ' + r.beaufort },
   { id: 'waves', label: 'Waves', marine: true, overlays: [['wavesCombinedToggle', 'Wave height']],
-    lines: [{ key: 'swh_m', unit: () => _unitOf('wave_height'), color: '#00838f', name: 'height' }],
+    lines: [{ key: 'swh_m', unit: () => unitDesc('wave_height'), color: '#00838f', name: 'height' }],
     dir: { key: 'mwd_deg', sense: 'from' },
     hover: r => (r.mwp_s == null ? '' : ' · period ' + fmtWavePeriod(r.mwp_s))
               + (r.douglas == null ? '' : ' · Douglas ' + r.douglas + ' ' + (r.douglas_label || '')) },
@@ -1518,7 +1520,7 @@ const _COND_TABS = [
     lines: [{ key: 'tide_m', unit: () => _tideUnit(), color: '#2a78d6', name: 'tide height', width: 2 },
             { key: 'water_level_m', unit: () => _tideUnit(), color: '#eb6834', name: 'total water level', width: 2 },
             { key: 'surge_m', unit: () => _tideUnit(), color: '#4a3aa7', name: 'surge (non-tidal)', width: 1.6, dash: [5, 3] },
-            { key: 'current_ms', unit: () => _unitOf('speed'), color: '#1baf7a', name: 'current speed', axis: 'right', width: 1.5, fill: 'rgba(27,175,122,0.16)', marine: true }],
+            { key: 'current_ms', unit: () => unitDesc('speed'), color: '#1baf7a', name: 'current speed', axis: 'right', width: 1.5, fill: 'rgba(27,175,122,0.16)', marine: true }],
     dir: { key: 'current_dir_deg', sense: 'to', color: '#11805a' },
     zeroLine: 'mean sea level', tideMarks: true,
     hover: r => (r.tide_tendency ? ' · tide ' + r.tide_tendency : '') + (r.tide_extrapolated ? ' · tide extrapolated near the coast' : '')

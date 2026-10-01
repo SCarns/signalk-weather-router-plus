@@ -25,8 +25,10 @@
  */
 
 import type { DecodeScratch, Grib2Grid, Grib2Message } from '../grib/grib2';
+import { norm360, wrapLon, lonOffset } from '../geo/angles';
+import { HOUR_MS } from '../geo/units';
 import type { BBox } from '../geo/geodesy';
-import { bboxWidth, lonOffsetFromWest } from '../geo/geodesy';
+import { bboxWidth } from '../geo/geodesy';
 import type { WaveConditions, WindSource } from '../engine/environment';
 
 export interface FieldGrid {
@@ -142,7 +144,7 @@ export function globalField(grid: Grib2Grid, values: Float64Array, scale = 1, sl
   }
   const lat0 = southUp ? grid.la1 : grid.la1 - (nj - 1) * dj;
   let lon0 = grid.lo1;
-  lon0 = ((((lon0 + 180) % 360) + 360) % 360) - 180;
+  lon0 = wrapLon(lon0);
   return { lat0, lon0, dLat: dj, dLon: di, nLat: nj, nLon: ni, values: out, wrapLon: spansCircle(ni, di) };
 }
 
@@ -191,7 +193,7 @@ export function cropField(grid: Grib2Grid, values: Float64Array, bbox: BBox, mar
   // the whole circle. Work in offsets east of lo1.
   const lo1 = grid.lo1;
   const globalWrap = Math.abs(ni * di - 360) < 1e-6;
-  const offWest = (((bbox.west - lo1) % 360) + 360) % 360;
+  const offWest = lonOffset(bbox.west, lo1);
   const width = bboxWidth(bbox);
   let cA = Math.floor(offWest / di) - marginCells;
   let cB = Math.ceil((offWest + width) / di) + marginCells;
@@ -215,7 +217,7 @@ export function cropField(grid: Grib2Grid, values: Float64Array, bbox: BBox, mar
   }
   const lat0 = rowsSouthUp ? latAt(rA) : latAt(rB);
   let lon0 = lo1 + cA * di;
-  lon0 = ((((lon0 + 180) % 360) + 360) % 360) - 180;
+  lon0 = wrapLon(lon0);
   return { lat0, lon0, dLat: dj, dLon: di, nLat, nLon, values: out };
 }
 
@@ -343,7 +345,7 @@ export function sampleField(f: FieldGrid, lon: number, lat: number): number {
   if (f.win) return sampleWindow(f, f.win, lon, lat);
   const { nLat, nLon } = f;
   if (f.wrapLon) return sampleWrapped(f, lon, lat);
-  const offLon = (((lon - f.lon0) % 360) + 360) % 360;
+  const offLon = lonOffset(lon, f.lon0);
   // If the offset is closer going west (box near the seam), allow negative.
   let x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
   let y = (lat - f.lat0) / f.dLat;
@@ -371,7 +373,7 @@ export function sampleField(f: FieldGrid, lon: number, lat: number): number {
 /** Bilinear sample on a full-circle grid (longitude wraps). */
 function sampleWrapped(f: FieldGrid, lon: number, lat: number): number {
   const { nLat, nLon } = f;
-  const x = ((((lon - f.lon0) % 360) + 360) % 360) / f.dLon;
+  const x = lonOffset(lon, f.lon0) / f.dLon;
   let c = Math.floor(x);
   if (c >= nLon) c -= nLon;
   const tx = x - Math.floor(x);
@@ -421,13 +423,13 @@ function sampleWindow(f: FieldGrid, w: FieldWindow, lon: number, lat: number): n
   let c1: number;
   let tx: number;
   if (f.wrapLon) {
-    const x = ((((lon - f.lon0) % 360) + 360) % 360) / f.dLon;
+    const x = lonOffset(lon, f.lon0) / f.dLon;
     c = Math.floor(x);
     if (c >= nLon) c -= nLon;
     tx = x - Math.floor(x);
     c1 = c + 1 === nLon ? 0 : c + 1;
   } else {
-    const offLon = (((lon - f.lon0) % 360) + 360) % 360;
+    const offLon = lonOffset(lon, f.lon0);
     let x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
     if (x < 0) x = 0;
     if (x > nLon - 1) x = nLon - 1;
@@ -469,7 +471,7 @@ export function windowCovers(f: FieldGrid, w: FieldWindow, lon: number, lat: num
   const y = (lat - f.lat0) / f.dLat;
   if (!(y >= w.r0 && y <= w.r0 + w.nr - 1)) return false;
   if (w.nc >= f.nLon) return true;
-  let x = ((((lon - f.lon0) % 360) + 360) % 360) / f.dLon - w.c0;
+  let x = lonOffset(lon, f.lon0) / f.dLon - w.c0;
   if (x < 0) x += f.nLon;
   return x <= w.nc - 1;
 }
@@ -481,11 +483,11 @@ export function sampleFieldNearest(f: FieldGrid, lon: number, lat: number): numb
     let x: number;
     let y: number;
     if (f.wrapLon) {
-      x = Math.round(((((lon - f.lon0) % 360) + 360) % 360) / f.dLon);
+      x = Math.round(lonOffset(lon, f.lon0) / f.dLon);
       if (x >= f.nLon) x -= f.nLon;
       y = Math.max(0, Math.min(f.nLat - 1, Math.round((lat - f.lat0) / f.dLat)));
     } else {
-      const offLon = (((lon - f.lon0) % 360) + 360) % 360;
+      const offLon = lonOffset(lon, f.lon0);
       x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
       y = (lat - f.lat0) / f.dLat;
       x = Math.max(0, Math.min(f.nLon - 1, Math.round(x)));
@@ -494,12 +496,12 @@ export function sampleFieldNearest(f: FieldGrid, lon: number, lat: number): numb
     return f.values[winRow(w, y) * w.nc + winCol(w, f.nLon, !!f.wrapLon, x)];
   }
   if (f.wrapLon) {
-    let x = Math.round(((((lon - f.lon0) % 360) + 360) % 360) / f.dLon);
+    let x = Math.round(lonOffset(lon, f.lon0) / f.dLon);
     if (x >= f.nLon) x -= f.nLon;
     const y = Math.max(0, Math.min(f.nLat - 1, Math.round((lat - f.lat0) / f.dLat)));
     return f.values[y * f.nLon + x];
   }
-  const offLon = (((lon - f.lon0) % 360) + 360) % 360;
+  const offLon = lonOffset(lon, f.lon0);
   let x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
   let y = (lat - f.lat0) / f.dLat;
   x = Math.max(0, Math.min(f.nLon - 1, Math.round(x)));
@@ -582,7 +584,7 @@ export class ForecastStore implements WindSource {
   at(lon: number, lat: number, time: Date): [number, number] {
     const u = this.blended('10u', lon, lat, time);
     const v = this.blended('10v', lon, lat, time);
-    return [Math.hypot(u, v), (((270 - (Math.atan2(v, u) * 180) / Math.PI) % 360) + 360) % 360];
+    return [Math.hypot(u, v), norm360(270 - (Math.atan2(v, u) * 180) / Math.PI)];
   }
 
   atMany(lons: Float64Array, lats: Float64Array, time: Date): { speed: Float64Array; dir: Float64Array } {
@@ -602,7 +604,7 @@ export class ForecastStore implements WindSource {
         v = v * (1 - a) + sampleField(v1, lons[k], lats[k]) * a;
       }
       speed[k] = Math.hypot(u, v);
-      dir[k] = (((270 - (Math.atan2(v, u) * 180) / Math.PI) % 360) + 360) % 360;
+      dir[k] = norm360(270 - (Math.atan2(v, u) * 180) / Math.PI);
     }
     return { speed, dir };
   }
@@ -616,14 +618,14 @@ export class ForecastStore implements WindSource {
     let mwd: number;
     const d0 = (g('mwd', i0) * Math.PI) / 180;
     if (a === 0 || i0 === i1) {
-      mwd = ((((d0 * 180) / Math.PI) % 360) + 360) % 360;
+      mwd = norm360((d0 * 180) / Math.PI);
     } else {
       swh = swh * (1 - a) + g('swh', i1) * a;
       mwp = mwp * (1 - a) + g('mwp', i1) * a;
       const d1 = (g('mwd', i1) * Math.PI) / 180;
       const sx = Math.sin(d0) * (1 - a) + Math.sin(d1) * a;
       const cx = Math.cos(d0) * (1 - a) + Math.cos(d1) * a;
-      mwd = ((((Math.atan2(sx, cx) * 180) / Math.PI) % 360) + 360) % 360;
+      mwd = norm360((Math.atan2(sx, cx) * 180) / Math.PI);
     }
     if (!Number.isFinite(swh)) return null;
     return { swh, mwp, mwd };
@@ -664,7 +666,7 @@ export class ForecastStore implements WindSource {
     const f = this.refField();
     if (!f) return false;
     if (f.win) return windowCovers(f, f.win, lon, lat);
-    const off = lonOffsetFromWest({ west: f.lon0, east: f.lon0, south: 0, north: 0 }, lon);
+    const off = lonOffset(lon, f.lon0);
     const x = off > 180 ? off - 360 : off;
     const y = lat - f.lat0;
     return x >= 0 && x <= (f.nLon - 1) * f.dLon && y >= 0 && y <= (f.nLat - 1) * f.dLat;
@@ -729,7 +731,7 @@ export class ForecastStore implements WindSource {
     }
     const spanLon = (f.nLon - 1) * f.dLon;
     const spanLat = (f.nLat - 1) * f.dLat;
-    const west = lonOffsetFromWest({ west: f.lon0, east: f.lon0, south: 0, north: 0 }, b.west);
+    const west = lonOffset(b.west, f.lon0);
     const wStart = west > 180 ? west - 360 : west;
     return wStart >= 0 && wStart + bboxWidth(b) <= spanLon && b.south >= f.lat0 && b.north <= f.lat0 + spanLat;
   }
@@ -772,10 +774,10 @@ export function buildStep(
 ): ForecastStep {
   if (named.length === 0) throw new Error('buildStep: no messages');
   const first = named[0].message;
-  const validMs = first.referenceTime.getTime() + first.product.forecastHours * 3600_000;
+  const validMs = first.referenceTime.getTime() + first.product.forecastHours * HOUR_MS;
   const fields = new Map<string, FieldGrid>();
   for (const { param, message } of named) {
-    const v = message.referenceTime.getTime() + message.product.forecastHours * 3600_000;
+    const v = message.referenceTime.getTime() + message.product.forecastHours * HOUR_MS;
     if (v !== validMs) throw new Error(`buildStep: ${param} valid time differs from the first message`);
     const isWave = param === 'swh' || param === 'mwp' || param === 'mwd';
     let f: FieldGrid;

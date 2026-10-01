@@ -57,6 +57,8 @@ import {
   segmentWithinDisc,
 } from '../geo/geodesy';
 import { buildCoarseGrid, type NavigabilityGrid } from '../geo/grid';
+import { norm360, unwrapLonNear, twaFromHeading } from '../geo/angles';
+import { DEG, HOUR_MS, M_PER_DEG } from '../geo/units';
 import type { LandMask } from '../geo/landmask';
 import { astarRoute, AstarError } from './astar';
 import { MIN_STEP_M, STEP_PER_WIDTH } from './corridor';
@@ -306,18 +308,16 @@ export class OceanPropagator {
     const D = haversineDistanceM(from.lon, from.lat, gLon, gLat);
     if (D <= 0) return null;
     const theta = haversineBearing(from.lon, from.lat, gLon, gLat);
-    let twa = (((theta - wd) % 360) + 360) % 360;
-    if (twa > 180) twa = 360 - twa;
+    const twa = twaFromHeading(theta, wd);
     const floor = polar.noGoFloor(ws);
     if (!(twa < floor)) return null; // the straight hop can be sailed
     const beta = Math.min(89, floor + 3);
-    const rad = Math.PI / 180;
-    const h1 = (((wd + beta) % 360) + 360) % 360;
-    const h2 = (((wd - beta) % 360) + 360) % 360;
-    const det = Math.sin((h1 - h2) * rad);
+    const h1 = norm360(wd + beta);
+    const h2 = norm360(wd - beta);
+    const det = Math.sin((h1 - h2) * DEG);
     if (Math.abs(det) < 1e-9) return null;
-    const d1 = (D * Math.sin((theta - h2) * rad)) / det;
-    const d2 = (D * Math.sin((h1 - theta) * rad)) / det;
+    const d1 = (D * Math.sin((theta - h2) * DEG)) / det;
+    const d2 = (D * Math.sin((h1 - theta) * DEG)) / det;
     if (!(d1 > 0 && d2 > 0)) return null;
     const orders: { hFirst: number; dFirst: number; hSecond: number; dSecond: number }[] = [
       { hFirst: h1, dFirst: d1, hSecond: h2, dSecond: d2 },
@@ -388,7 +388,7 @@ export class OceanPropagator {
     const fmtUtc = (ms: number): string => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
     const forecastNote = (): string => {
       if (args.forecastEndMs === undefined || lastTry.latestMs <= args.forecastEndMs) return '';
-      return ` The forecast ends ${fmtUtc(args.forecastEndMs)} and the search is ${((lastTry.latestMs - args.forecastEndMs) / 3600_000).toFixed(0)} h past it, on conditions held at that last step: a longer forecast horizon (Settings) may open a way.`;
+      return ` The forecast ends ${fmtUtc(args.forecastEndMs)} and the search is ${((lastTry.latestMs - args.forecastEndMs) / HOUR_MS).toFixed(0)} h past it, on conditions held at that last step: a longer forecast horizon (Settings) may open a way.`;
     };
 
     const [sLon, sLat] = args.start;
@@ -582,15 +582,14 @@ export class OceanPropagator {
         for (let q = i; q <= j; q++) {
           maxW = Math.max(maxW, widths[q]);
           let x = skeleton[q].lon;
-          while (x - ref > 180) x -= 360;
-          while (x - ref < -180) x += 360;
+          x = unwrapLonNear(x, ref);
           west = Math.min(west, x);
           east = Math.max(east, x);
           south = Math.min(south, skeleton[q].lat);
           north = Math.max(north, skeleton[q].lat);
         }
         const padM = maxW + 2000;
-        const padLat = padM / 111_195;
+        const padLat = padM / M_PER_DEG;
         const padLon = padLat / Math.max(0.05, Math.cos((((south + north) / 2) * Math.PI) / 180));
         zones.push({ a: i, b: j, west: west - padLon, east: east + padLon, south: south - padLat, north: north + padLat });
         i = j + 1;
@@ -611,7 +610,7 @@ export class OceanPropagator {
     let landStepM = this.landStepM;
     if (this.landMask.patches.length) {
       const finest = Math.min(...this.landMask.patches.map(p => p.resolutionDeg));
-      landStepM = Math.min(landStepM, Math.max(20, 1.5 * finest * 111_195));
+      landStepM = Math.min(landStepM, Math.max(20, 1.5 * finest * M_PER_DEG));
     }
 
     progress(
@@ -655,8 +654,7 @@ export class OceanPropagator {
         if (c.lat < z.south || c.lat > z.north) continue;
         let x = c.lon;
         const mid = (z.west + z.east) / 2;
-        while (x - mid > 180) x -= 360;
-        while (x - mid < -180) x += 360;
+        x = unwrapLonNear(x, mid);
         if (x < z.west || x > z.east) continue;
         const i = nearestSkeleton(c.lon, c.lat, z.a, z.b);
         const i2 = i < nSk - 1 ? i + 1 : i - 1;
@@ -734,7 +732,7 @@ export class OceanPropagator {
         const par = parents[p];
         const tgt = pTgt[p];
         const b0 = haversineBearing(par.lon, par.lat, tgt[0], tgt[1]);
-        for (let h = -sweepM; h <= sweepM; h++) push(p, (((b0 + h * sweepDc) % 360) + 360) % 360, pStep[p]);
+        for (let h = -sweepM; h <= sweepM; h++) push(p, norm360(b0 + h * sweepDc), pStep[p]);
         if (hopDist[p] > 0) push(p, hopBrg[p], hopDist[p]);
         pCount[p] = nH + (hopDist[p] > 0 ? 1 : 0);
       }
@@ -1409,7 +1407,7 @@ export function enrichWaypoints(wps: Waypoint[], wind: WindSource, current: Curr
       wp.currentVMs = cv;
       const sp = Math.hypot(cu, cv);
       wp.currentMs = sp;
-      if (sp > 1e-9) wp.currentDirDeg = (((90 - (Math.atan2(cv, cu) * 180) / Math.PI) % 360) + 360) % 360;
+      if (sp > 1e-9) wp.currentDirDeg = norm360(90 - (Math.atan2(cv, cu) * 180) / Math.PI);
     }
   }
 }
