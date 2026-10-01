@@ -13,16 +13,22 @@ export interface WindSource {
   /** Returns [speed m/s, direction FROM degrees]. NaN speed = no data. */
   at(lon: number, lat: number, time: Date): [number, number];
   atMany(lons: Float64Array, lats: Float64Array, time: Date): { speed: Float64Array; dir: Float64Array };
+  /** As atMany with one time per point (ms since epoch); the search times every candidate on its own clock. Optional: without it the search calls `at` per point. */
+  atManyAt?(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): { speed: Float64Array; dir: Float64Array };
   readonly hasWaves: boolean;
   wavesAt(lon: number, lat: number, time: Date): WaveConditions | null;
   /** Significant wave height (m) per point, NaN where there is none; batched for the search. Optional. */
   wavesAtMany?(lons: Float64Array, lats: Float64Array, time: Date): Float64Array;
+  /** As wavesAtMany with one time per point. Optional. */
+  wavesAtManyAt?(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): Float64Array;
 }
 
 export interface CurrentSource {
   /** Returns [u east m/s, v north m/s]. */
   at(lon: number, lat: number, time: Date): [number, number];
   atMany(lons: Float64Array, lats: Float64Array, time: Date): { u: Float64Array; v: Float64Array };
+  /** As atMany with one time per point (ms since epoch). Optional: without it the search calls `at` per point. */
+  atManyAt?(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): { u: Float64Array; v: Float64Array };
 }
 
 export class NoWind implements WindSource {
@@ -32,6 +38,9 @@ export class NoWind implements WindSource {
   }
   atMany(lons: Float64Array): { speed: Float64Array; dir: Float64Array } {
     return { speed: new Float64Array(lons.length), dir: new Float64Array(lons.length) };
+  }
+  atManyAt(lons: Float64Array): { speed: Float64Array; dir: Float64Array } {
+    return this.atMany(lons);
   }
   wavesAt(): null {
     return null;
@@ -44,6 +53,9 @@ export class NoCurrent implements CurrentSource {
   }
   atMany(lons: Float64Array): { u: Float64Array; v: Float64Array } {
     return { u: new Float64Array(lons.length), v: new Float64Array(lons.length) };
+  }
+  atManyAt(lons: Float64Array): { u: Float64Array; v: Float64Array } {
+    return this.atMany(lons);
   }
 }
 
@@ -59,6 +71,9 @@ export class ConstantWind implements WindSource {
   }
   atMany(lons: Float64Array): { speed: Float64Array; dir: Float64Array } {
     return { speed: new Float64Array(lons.length).fill(this.speedMs), dir: new Float64Array(lons.length).fill(this.dirFromDeg) };
+  }
+  atManyAt(lons: Float64Array): { speed: Float64Array; dir: Float64Array } {
+    return this.atMany(lons);
   }
   wavesAt(): null {
     return null;

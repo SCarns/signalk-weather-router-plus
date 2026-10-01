@@ -395,6 +395,30 @@ export class RtofsCurrentSource implements CurrentSourceLike {
     return { u, v };
   }
 
+  /** As atMany, each point at its own time. */
+  atManyAt(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): { u: Float64Array; v: Float64Array } {
+    const n = lons.length;
+    const u = new Float64Array(n);
+    const v = new Float64Array(n);
+    for (let k = 0; k < n; k++) {
+      if (!this.contains(lons[k], lats[k])) continue;
+      const tw = this.timeWeights(timesMs[k]);
+      if (!tw) continue;
+      const [i0, i1, w] = tw;
+      let uu = sampleField(this.steps[i0].u, lons[k], lats[k]);
+      let vv = sampleField(this.steps[i0].v, lons[k], lats[k]);
+      if (w !== 0 && i0 !== i1) {
+        uu = uu * (1 - w) + sampleField(this.steps[i1].u, lons[k], lats[k]) * w;
+        vv = vv * (1 - w) + sampleField(this.steps[i1].v, lons[k], lats[k]) * w;
+      }
+      if (Number.isFinite(uu) && Number.isFinite(vv)) {
+        u[k] = uu;
+        v[k] = vv;
+      }
+    }
+    return { u, v };
+  }
+
   bytes(): number {
     let b = 0;
     for (const s of this.steps) b += s.u.values.byteLength + s.v.values.byteLength;

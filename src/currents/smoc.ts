@@ -336,6 +336,18 @@ export class SmocCurrentSource implements CurrentSourceLike {
     return { u, v };
   }
 
+  atManyAt(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): { u: Float64Array; v: Float64Array } {
+    const n = lons.length;
+    const u = new Float64Array(n);
+    const v = new Float64Array(n);
+    for (let k = 0; k < n; k++) {
+      const [a, b] = this.at(lons[k], lats[k], new Date(timesMs[k]));
+      u[k] = a;
+      v[k] = b;
+    }
+    return { u, v };
+  }
+
   /** Window steps (now → horizon at the configured step). */
   windowSteps(nowMs: number): number[] {
     return alignedSteps(this.run, nowMs, nowMs + this.settings.horizonS * 1000, this.settings.stepS / HOUR_S);

@@ -445,8 +445,11 @@ export class ForecastStore implements WindSource {
 
   /** Bracketing step indices and blend factor for a time. */
   timeBlend(time: Date): [number, number, number] {
+    return this.timeBlendMs(time.getTime());
+  }
+
+  timeBlendMs(t: number): [number, number, number] {
     const n = this.steps.length;
-    const t = time.getTime();
     if (n === 1 || t <= this.steps[0].validMs) return [0, 0, 0];
     if (t >= this.steps[n - 1].validMs) return [n - 1, n - 1, 0];
     let i = 1;
@@ -510,6 +513,25 @@ export class ForecastStore implements WindSource {
     return { speed, dir };
   }
 
+  /** As atMany, each point at its own time. */
+  atManyAt(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): { speed: Float64Array; dir: Float64Array } {
+    const n = lons.length;
+    const speed = new Float64Array(n);
+    const dir = new Float64Array(n);
+    for (let k = 0; k < n; k++) {
+      const [i0, i1, a] = this.timeBlendMs(timesMs[k]);
+      let u = sampleField(this.steps[i0].fields.get('10u')!, lons[k], lats[k]);
+      let v = sampleField(this.steps[i0].fields.get('10v')!, lons[k], lats[k]);
+      if (a !== 0 && i0 !== i1) {
+        u = u * (1 - a) + sampleField(this.steps[i1].fields.get('10u')!, lons[k], lats[k]) * a;
+        v = v * (1 - a) + sampleField(this.steps[i1].fields.get('10v')!, lons[k], lats[k]) * a;
+      }
+      speed[k] = Math.hypot(u, v);
+      dir[k] = norm360(270 - (Math.atan2(v, u) * 180) / Math.PI);
+    }
+    return { speed, dir };
+  }
+
   wavesAt(lon: number, lat: number, time: Date): WaveConditions | null {
     if (!this.hasWaves) return null;
     const [i0, i1, a] = this.timeBlend(time);
@@ -542,6 +564,20 @@ export class ForecastStore implements WindSource {
     for (let k = 0; k < n; k++) {
       let swh = sampleField(s0, lons[k], lats[k]);
       if (a !== 0 && i0 !== i1) swh = swh * (1 - a) + sampleField(s1, lons[k], lats[k]) * a;
+      out[k] = swh;
+    }
+    return out;
+  }
+
+  /** As wavesAtMany, each point at its own time. */
+  wavesAtManyAt(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): Float64Array {
+    const n = lons.length;
+    const out = new Float64Array(n);
+    if (!this.hasWaves) return out.fill(NaN);
+    for (let k = 0; k < n; k++) {
+      const [i0, i1, a] = this.timeBlendMs(timesMs[k]);
+      let swh = sampleField(this.steps[i0].fields.get('swh')!, lons[k], lats[k]);
+      if (a !== 0 && i0 !== i1) swh = swh * (1 - a) + sampleField(this.steps[i1].fields.get('swh')!, lons[k], lats[k]) * a;
       out[k] = swh;
     }
     return out;

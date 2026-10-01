@@ -176,7 +176,40 @@ wave limit through wavesAtMany). All five golden routes are identical,
 which shows the golden winds vary in space only: they cannot tell the
 two time models apart. The route on brain with the real forecast (same
 request as the Phase 2 check, 19.0 nmi, 2.5 h, 6 waypoints) is the
-comparison that can; recorded at the Phase 3 deploy. Every step is a
+comparison that can; recorded at the Phase 3 deploy.
+**Phase 3 verified on brain 2026-10-01** (server restarted 18:59 EDT,
+same cycle 2026-10-01T12Z): golden tiles 161/161 identical; page: no
+console errors, the new helpers present, routes draw and the itinerary
+fills. Unified-loop measurement, two sail_max routes from 40.55 N
+73.95 W departing 2026-10-02T12:00Z, old build vs new:
+- short (to 40.45 N 73.60 W, 31.7 km): identical waypoints and
+  intermediate time; final-leg arrival 14:11:16 → 14:11:32 (+16 s on a
+  2 h 04 min leg, +0.2 %).
+- long (to 40.30 N 72.00 W, 168.8 km): identical waypoints and
+  intermediate time; final-leg arrival 22:02:04 → 22:18:14 (+970 s,
+  16 min, on a 9 h 27 min leg, +2.9 %).
+Reading: the search already used the batched model, so the route
+geometry is unchanged; only the final leg's timing moved, because the
+batched model samples the forecast at departure + k × (distance /
+motor speed), a time ladder built for candidate scoring (one atMany per
+sub-step), not at the boat's actual progressive time as the old scalar
+simulator did. For a 9 h sailing leg that samples the wind hours off.
+Recommendation: keep the shared physics step (3.4) and the two loops
+with their two time models, documented; the alternative, per-candidate
+actual times in the batched scorer, costs one wind lookup per candidate
+per sub-step and needs a brain timing before it is considered.
+Decision (user, 2026-10-01): the third option. Built the same day:
+`WindSource.atManyAt / wavesAtManyAt` and `CurrentSource.atManyAt`
+(optional, one time per point) implemented on ForecastStore (per-point
+`timeBlendMs`), CurrentStack (sources without it are asked point by
+point), SMOC, RTOFS and the harmonic source (points grouped by
+prediction bin, one grid per bin as before); `scoreCandidatesFromParent`
+advances each candidate's own clock and samples through `windAtTimes /
+currentAtTimes / wavesAtTimes` (batched where the source can, `at`
+point by point otherwise). The shared motor-speed clock is gone; this is
+a documented deviation from the reference. Golden routes identical (their
+winds do not vary in time). Brain measurement of the two routes and the
+search time: at this deploy. Every step is a
 behaviour-preserving refactor: same routes, same tiles, same API, same
 page. Lint hygiene is already clean (0 TODO/HACK markers, 0
 eslint-disable, 2 `any`); this plan is about shape.

@@ -17,6 +17,8 @@ export interface CurrentSourceLike {
   /** (u, v) in m/s; exactly (0, 0) means "no data here". */
   at(lon: number, lat: number, time: Date): [number, number];
   atMany(lons: Float64Array, lats: Float64Array, time: Date): { u: Float64Array; v: Float64Array };
+  /** As atMany with one time per point (ms since epoch). Optional: the stack then calls `at` per point. */
+  atManyAt?(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): { u: Float64Array; v: Float64Array };
   /**
    * Display value for the overlay layers only: like `at`, but gridded
    * model sources extend their field up to FILL_RADIUS_CELLS cells

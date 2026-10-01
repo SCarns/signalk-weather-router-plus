@@ -88,8 +88,12 @@ uses [Semantic Versioning](https://semver.org/).
   batched candidate scorer, and then one loop: the straight-leg
   simulator (final legs, beats, smoother shortcuts) is the batched scorer
   with one candidate, so every leg is timed under the same rules as the
-  search's candidates. Routes with a time-varying forecast can change
-  slightly in their final legs' times; the synthetic golden routes did not.
+  search's candidates. And those rules changed: every candidate now
+  samples the forecast and the currents at its own clock (departure plus
+  the time its own steps took) instead of one shared motor-speed clock
+  per step. Routes and arrival times with a time-varying forecast or
+  tide can change, for the better: a 9.5 h sailing leg was being read
+  against wind hours away from when the boat was there.
 - **Web app duplicates removed** (phase 3.6): one HTML escape, one
   skeleton loader, one time formatter (clock times now follow the
   browser's locale rather than en-US), one overlay reload, one colour

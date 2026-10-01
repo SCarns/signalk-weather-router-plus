@@ -345,6 +345,38 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
     return { u, v };
   }
 
+  /**
+   * As atMany, each point at its own time: the points are grouped by
+   * prediction bin, one predicted grid per bin (the cache keeps them),
+   * so a batch whose times fall in one bin costs what atMany did.
+   */
+  atManyAt(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): { u: Float64Array; v: Float64Array } {
+    const n = lons.length;
+    const u = new Float64Array(n);
+    const v = new Float64Array(n);
+    if (n === 0) return { u, v };
+    const byBin = new Map<number, number[]>();
+    for (let k = 0; k < n; k++) {
+      if (!this.contains(lons[k], lats[k])) continue;
+      const mjd = dateToMjd(new Date(timesMs[k]));
+      const key = this.binKey(mjd);
+      const l = byBin.get(key);
+      if (l) l.push(k);
+      else byBin.set(key, [k]);
+    }
+    for (const [key, idx] of byBin) {
+      const g = this.cachedGrid(key); // the key is the bin's own MJD
+      for (const k of idx) {
+        const uu = this.interp(g.u, lons[k], lats[k]);
+        const vv = this.interp(g.v, lons[k], lats[k]);
+        if (Number.isNaN(uu) || Number.isNaN(vv)) continue;
+        u[k] = uu * CM_S_TO_MS;
+        v[k] = vv * CM_S_TO_MS;
+      }
+    }
+    return { u, v };
+  }
+
   cacheBytes(): number {
     const per = this.lats.length * this.lons.length * 4 * 2;
     return per * this.cache.size;

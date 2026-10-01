@@ -133,6 +133,56 @@ export function simulateLegTime(
   };
 }
 
+/** Wind per point at its own time: the source's batched lookup, else `at` point by point. */
+export function windAtTimes(
+  wind: WindSource,
+  lons: Float64Array,
+  lats: Float64Array,
+  timesMs: Float64Array
+): { speed: Float64Array; dir: Float64Array } {
+  if (wind.atManyAt) return wind.atManyAt(lons, lats, timesMs);
+  const n = lons.length;
+  const speed = new Float64Array(n);
+  const dir = new Float64Array(n);
+  for (let k = 0; k < n; k++) {
+    const [ws, wd] = wind.at(lons[k], lats[k], new Date(timesMs[k]));
+    speed[k] = ws;
+    dir[k] = wd;
+  }
+  return { speed, dir };
+}
+
+/** Current per point at its own time: the source's batched lookup, else `at` point by point. */
+export function currentAtTimes(
+  current: CurrentSource,
+  lons: Float64Array,
+  lats: Float64Array,
+  timesMs: Float64Array
+): { u: Float64Array; v: Float64Array } {
+  if (current.atManyAt) return current.atManyAt(lons, lats, timesMs);
+  const n = lons.length;
+  const u = new Float64Array(n);
+  const v = new Float64Array(n);
+  for (let k = 0; k < n; k++) {
+    const [a, b] = current.at(lons[k], lats[k], new Date(timesMs[k]));
+    u[k] = a;
+    v[k] = b;
+  }
+  return { u, v };
+}
+
+/** Significant wave height per point at its own time (NaN where there is none). */
+export function wavesAtTimes(wind: WindSource, lons: Float64Array, lats: Float64Array, timesMs: Float64Array): Float64Array {
+  if (wind.wavesAtManyAt) return wind.wavesAtManyAt(lons, lats, timesMs);
+  const n = lons.length;
+  const out = new Float64Array(n);
+  for (let k = 0; k < n; k++) {
+    const wv = wind.wavesAt(lons[k], lats[k], new Date(timesMs[k]));
+    out[k] = wv ? wv.swh : NaN;
+  }
+  return out;
+}
+
 export interface CandidateScores {
   /** Elapsed seconds per candidate; Infinity when stuck. */
   seconds: Float64Array;
@@ -150,9 +200,15 @@ export interface CandidateScores {
  * Score N candidate legs from one parent in lockstep. Each candidate
  * holds a constant heading `bearings[i]` for `legDistM[i]` metres; all
  * share the parent's position and departure time. The walk is split
- * into nSteps = ceil(max(legDistM)/simStepM) sub-steps, and environment
- * sampling uses one shared time per sub-step (parent time + k × mean
- * motor step time), as in the reference implementation.
+ * into nSteps = ceil(max(legDistM)/simStepM) sub-steps; each candidate
+ * samples the environment at its own clock (the parent's time plus the
+ * time its own sub-steps took so far), through the sources' per-point-time
+ * lookups where they have them. Deviation from the reference, which used
+ * one shared time per sub-step (parent time + k × a motor-speed step
+ * estimate) for every candidate: on a long sailing leg that read the
+ * forecast hours away from when the boat is there (structural cleanup,
+ * decision D, 2026-10-01: measured on brain as a 16 min arrival
+ * difference on a 9.5 h final leg).
  */
 export function scoreCandidatesFromParent(
   parentLon: number,
@@ -177,15 +233,11 @@ export function scoreCandidatesFromParent(
 
   const motor = vessel.motorSpeedMs;
   let maxDist = 0;
-  let sumDist = 0;
-  for (let i = 0; i < n; i++) {
-    if (legDistM[i] > maxDist) maxDist = legDistM[i];
-    sumDist += legDistM[i];
-  }
+  for (let i = 0; i < n; i++) if (legDistM[i] > maxDist) maxDist = legDistM[i];
   const nSteps = Math.max(1, Math.ceil(maxDist / opts.simStepM));
   const stepPerCand = new Float64Array(n);
   for (let i = 0; i < n; i++) stepPerCand[i] = legDistM[i] / nSteps;
-  const meanDtPerStep = sumDist / n / nSteps / Math.max(motor, 0.1);
+  const parentMs = parentTime.getTime();
 
   const curLon = new Float64Array(n).fill(parentLon);
   const curLat = new Float64Array(n).fill(parentLat);
@@ -199,6 +251,7 @@ export function scoreCandidatesFromParent(
 
   const liveLon = new Float64Array(n);
   const liveLat = new Float64Array(n);
+  const liveT = new Float64Array(n);
   const liveIdx = new Int32Array(n);
 
   for (let k = 0; k < nSteps; k++) {
@@ -208,16 +261,17 @@ export function scoreCandidatesFromParent(
         liveIdx[nLive] = i;
         liveLon[nLive] = curLon[i];
         liveLat[nLive] = curLat[i];
+        liveT[nLive] = parentMs + seconds[i] * 1000;
         nLive++;
       }
     }
     if (nLive === 0) break;
-    const sampleTime = new Date(parentTime.getTime() + k * meanDtPerStep * 1000);
     const lonsL = liveLon.subarray(0, nLive);
     const latsL = liveLat.subarray(0, nLive);
-    const w = wind.atMany(lonsL, latsL, sampleTime);
-    const c = current.atMany(lonsL, latsL, sampleTime);
-    const swh = opts.maxSwhM !== undefined && wind.hasWaves && wind.wavesAtMany ? wind.wavesAtMany(lonsL, latsL, sampleTime) : null;
+    const timesL = liveT.subarray(0, nLive);
+    const w = windAtTimes(wind, lonsL, latsL, timesL);
+    const c = currentAtTimes(current, lonsL, latsL, timesL);
+    const swh = opts.maxSwhM !== undefined && wind.hasWaves ? wavesAtTimes(wind, lonsL, latsL, timesL) : null;
 
     for (let q = 0; q < nLive; q++) {
       const i = liveIdx[q];
