@@ -51,6 +51,24 @@ uses [Semantic Versioning](https://semver.org/).
   the precipitation layer's fade threshold is part of that legend
   (`fade_below`). The streamline colours now use the legend ramp through
   the same 256-step lookup as the heatmaps.
+- **The isochrone search in sections** (phase 2.1): the 1,040-line
+  `computeRoute` is now a 12-line sequence over modules under
+  `src/engine/search/` (context, skeleton, narrow-passage guide,
+  proposal, stage loop, terminal choice, assembly). Same arithmetic, same
+  progress messages; the golden routes are identical.
+- **The worker thread in modules** (phase 2.2): `plugin/worker.ts` keeps
+  the message handling; forecast, land/water grid, currents, tides, the
+  route and the queries are modules under `plugin/worker/` sharing one
+  explicit state object instead of thirty module-level variables.
+- **The plugin entry in modules** (phase 2.3): the coastline download,
+  the worker pool, the chart resources provider, the plotter extension,
+  the web-file dating and the Weather API registration are their own
+  modules under `plugin/`; `index.ts` keeps start, stop, settings and the
+  API wiring.
+- **Web app functions in parts** (phase 2.4): route drawing, the
+  itinerary, the job stream handlers, the conditions popup and its chart
+  are each a handful of named functions instead of one long one. No
+  behaviour change.
 
 ## [0.1.0-beta.5] - 2026-09-30
 

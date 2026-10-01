@@ -789,6 +789,8 @@ function _kv(label, value) {
   return `<span class="kv"><span class="k">${label}</span><span class="v">${value}</span></span>`;
 }
 
+// The itinerary tab: one card per waypoint (the leg leaving it), with
+// the route's warnings as a block above and chips on the cards.
 function populateItinerary(features) {
   // Drop LineString features; keep only waypoints with timing data.
   _itineraryFeatures = features.filter(f => {
@@ -800,9 +802,16 @@ function populateItinerary(features) {
     modalItinerary.innerHTML = '<div style="padding:12px;color:#888;">No waypoints yet.</div>';
     return;
   }
-
-  // Warnings → cards.
   const lonlats = _itineraryFeatures.map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()));
+  const { warnRows, cardWarn } = _itineraryWarnings(lonlats);
+  const cards = _itineraryFeatures.map((f, i) => _legCardHtml(f, i, cardWarn.get(i))).join('');
+  modalItinerary.innerHTML = _itineraryWarnBlockHtml(warnRows) + cards;
+  _bindItineraryClicks();
+}
+
+// Warnings → cards: each warning's row text, and per card whether it has
+// a land crossing and how many warnings.
+function _itineraryWarnings(lonlats) {
   const cardWarn = new Map();   // card idx → {land: bool, n: int}
   const warnRows = (_routeWarnings || []).map((w, wi) => {
     const ci = _warningCardIndex(w, lonlats);
@@ -810,128 +819,135 @@ function populateItinerary(features) {
     if (ci >= 0) { const cur = cardWarn.get(ci) || { land: false, n: 0 }; cur.n += 1; cur.land = cur.land || land; cardWarn.set(ci, cur); }
     return { wi, ci, land, text: _warningText(w) + (ci >= 0 ? ' (leg ' + (ci + 1) + ')' : '') };
   });
+  return { warnRows, cardWarn };
+}
 
-  const cards = _itineraryFeatures.map((f, i) => {
-    const p = f.getProperties();
-    const isArrival = p.next_mode == null && p.next_sog_ms == null;
-    const mode = isArrival ? 'arrival'
-                : (p.next_mode || p.mode || '');
-    const modeCls = mode.includes('sail') ? 'mode-sailing'
-                 : mode.includes('motor') ? 'mode-motoring'
-                 : isArrival ? 'mode-arrival' : '';
+// One itinerary card: the waypoint's time, the leg leaving it (next-*
+// fields; the arrival card falls back to its own), formatted in the
+// user's units, with warning / beyond-forecast / moved chips.
+function _legCardHtml(f, i, cw) {
+  const p = f.getProperties();
+  const isArrival = p.next_mode == null && p.next_sog_ms == null;
+  const mode = isArrival ? 'arrival'
+              : (p.next_mode || p.mode || '');
+  const modeCls = mode.includes('sail') ? 'mode-sailing'
+               : mode.includes('motor') ? 'mode-motoring'
+               : isArrival ? 'mode-arrival' : '';
 
-    // Sailing-tack color: starboard = green, port = red — matches the
-    // map route-line coloring. Same `tackSide` rule as displayRoute
-    // (wind minus course), forward-looking on the next leg.
-    // No tack when course or wind is missing (no colour, no label).
-    let tackCls = '';
-    let tack = null;
-    if (modeCls === 'mode-sailing') {
-      const nCog = p.next_cog != null ? p.next_cog : p.outgoing_cog;
-      tack = tackSide(nCog, p.next_wind_dir_deg);
-      if (tack) tackCls = 'tack-' + tack;
-    }
+  // Sailing-tack color: starboard = green, port = red — matches the
+  // map route-line coloring. Same `tackSide` rule as displayRoute
+  // (wind minus course), forward-looking on the next leg.
+  // No tack when course or wind is missing (no colour, no label).
+  let tackCls = '';
+  let tack = null;
+  if (modeCls === 'mode-sailing') {
+    const nCog = p.next_cog != null ? p.next_cog : p.outgoing_cog;
+    tack = tackSide(nCog, p.next_wind_dir_deg);
+    if (tack) tackCls = 'tack-' + tack;
+  }
 
-    const t = p.time ? formatTime(p.time) : '—';
+  const t = p.time ? formatTime(p.time) : '—';
 
-    // Gather values (next-* for non-arrival, fallbacks for arrival).
-    const sogMs = p.next_sog_ms != null ? p.next_sog_ms : p.sog_ms;
-    const cogDeg = p.next_cog != null ? p.next_cog : p.outgoing_cog;
-    const windMs = p.next_wind_ms;
-    const windDir = p.next_wind_dir_deg;
-    const twa = p.next_twa_deg;
-    const curMs = p.next_current_ms;
-    const curDir = p.next_current_dir_deg;
-    const depthM = p.next_depth_m != null ? p.next_depth_m : p.depth_m;
-    const swhM = p.next_swh_m != null ? p.next_swh_m : p.swh_m;
-    const mwpS = p.next_mwp_s != null ? p.next_mwp_s : p.mwp_s;
-    const mwdDeg = p.next_mwd_deg != null ? p.next_mwd_deg : p.mwd_deg;
+  // Gather values (next-* for non-arrival, fallbacks for arrival).
+  const sogMs = p.next_sog_ms != null ? p.next_sog_ms : p.sog_ms;
+  const cogDeg = p.next_cog != null ? p.next_cog : p.outgoing_cog;
+  const windMs = p.next_wind_ms;
+  const windDir = p.next_wind_dir_deg;
+  const twa = p.next_twa_deg;
+  const curMs = p.next_current_ms;
+  const curDir = p.next_current_dir_deg;
+  const depthM = p.next_depth_m != null ? p.next_depth_m : p.depth_m;
+  const swhM = p.next_swh_m != null ? p.next_swh_m : p.swh_m;
+  const mwpS = p.next_mwp_s != null ? p.next_mwp_s : p.mwp_s;
+  const mwdDeg = p.next_mwd_deg != null ? p.next_mwd_deg : p.mwd_deg;
 
-    // Format
-    const sog = fmtSpeed(sogMs);
-    const cog = cogDeg != null
-              ? `${degToCardinal(cogDeg)} ${Math.round(cogDeg)}°` : null;
-    const pos = pointOfSail(twa, windMs);
-    const wind = windMs != null
-               ? `${fmtSpeed(windMs)} from ${degToCardinal(windDir)} (${Math.round(windDir || 0)}°)`
-                 + (pos ? ` · ${pos}` : '')
-               : null;
-    const twaStr = twa != null ? Math.round(twa) + '°' : null;
+  // Format
+  const sog = fmtSpeed(sogMs);
+  const cog = cogDeg != null
+            ? `${degToCardinal(cogDeg)} ${Math.round(cogDeg)}°` : null;
+  const pos = pointOfSail(twa, windMs);
+  const wind = windMs != null
+             ? `${fmtSpeed(windMs)} from ${degToCardinal(windDir)} (${Math.round(windDir || 0)}°)`
+               + (pos ? ` · ${pos}` : '')
+             : null;
+  const twaStr = twa != null ? Math.round(twa) + '°' : null;
 
-    // Current: `current_dir_deg` is the set (flows TO); shown as "from"
-    // with fair/foul computed vs COG.
-    let curStr = null;
-    if (curMs != null && curMs > 0.05) {
-      const fromDeg = curDir != null ? (curDir + 180) % 360 : null;
-      const ff = fairFoul(cogDeg, curDir);
-      curStr = fmtSpeed(curMs)
-             + (fromDeg != null ? ` from ${degToCardinal(fromDeg)} (${Math.round(fromDeg)}°)` : '')
-             + (ff ? ' · ' + ff : '');
-    }
+  // Current: `current_dir_deg` is the set (flows TO); shown as "from"
+  // with fair/foul computed vs COG.
+  let curStr = null;
+  if (curMs != null && curMs > 0.05) {
+    const fromDeg = curDir != null ? (curDir + 180) % 360 : null;
+    const ff = fairFoul(cogDeg, curDir);
+    curStr = fmtSpeed(curMs)
+           + (fromDeg != null ? ` from ${degToCardinal(fromDeg)} (${Math.round(fromDeg)}°)` : '')
+           + (ff ? ' · ' + ff : '');
+  }
 
-    // Waves
-    let wavesStr = null;
-    if (swhM != null) {
-      const parts = [fmtSwh(swhM)];
-      if (mwpS != null) parts.push(fmtWavePeriod(mwpS));
-      if (mwdDeg != null) parts.push(`from ${degToCardinal(mwdDeg)} ${Math.round(mwdDeg)}°`);
-      wavesStr = parts.join(' · ');
-    }
+  // Waves
+  let wavesStr = null;
+  if (swhM != null) {
+    const parts = [fmtSwh(swhM)];
+    if (mwpS != null) parts.push(fmtWavePeriod(mwpS));
+    if (mwdDeg != null) parts.push(`from ${degToCardinal(mwdDeg)} ${Math.round(mwdDeg)}°`);
+    wavesStr = parts.join(' · ');
+  }
 
-    // Depth: the plugin has no bathymetry, so `depth_m` is null and the
-    // card shows "—".
-    const depth = depthM != null ? fmtDepth(depthM) : '—';
+  // Depth: the plugin has no bathymetry, so `depth_m` is null and the
+  // card shows "—".
+  const depth = depthM != null ? fmtDepth(depthM) : '—';
 
-    // Distance + time of the leg DEPARTING this waypoint
-    // (`leg_distance_m`, `leg_time_s` on each Point). Arrival waypoint
-    // has no next leg so both fields are absent (filtered out by _kv).
-    const distStr = p.leg_distance_m != null
-                  ? fmtDist(p.leg_distance_m) : null;
-    // Leg time in H:MM (zero-padded minutes; hours unbounded).
-    const legTimeStr = (() => {
-      const s = p.leg_time_s;
-      if (s == null) return null;
-      const totalMin = Math.round(s / 60);
-      const h = Math.floor(totalMin / 60);
-      const m = totalMin % 60;
-      return `${h}:${String(m).padStart(2, '0')}`;
-    })();
+  // Distance + time of the leg DEPARTING this waypoint
+  // (`leg_distance_m`, `leg_time_s` on each Point). Arrival waypoint
+  // has no next leg so both fields are absent (filtered out by _kv).
+  const distStr = p.leg_distance_m != null
+                ? fmtDist(p.leg_distance_m) : null;
+  // Leg time in H:MM (zero-padded minutes; hours unbounded).
+  const legTimeStr = (() => {
+    const s = p.leg_time_s;
+    if (s == null) return null;
+    const totalMin = Math.round(s / 60);
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return `${h}:${String(m).padStart(2, '0')}`;
+  })();
 
-    const fields = [
-      _kv('Distance', distStr),
-      _kv('Time', legTimeStr),
-      _kv('SOG', sog),
-      _kv('COG', cog),
-      _kv('Wind', wind),
-      _kv('TWA', twaStr),
-      _kv('Tack', tack ? (tack === 'port' ? 'Port' : 'Starboard') : null),
-      _kv('Current', curStr),
-      _kv('Waves', wavesStr),
-      `<span class="kv"><span class="k">Depth</span><span class="v">${depth}</span></span>`,
-    ].filter(Boolean).join('');
+  const fields = [
+    _kv('Distance', distStr),
+    _kv('Time', legTimeStr),
+    _kv('SOG', sog),
+    _kv('COG', cog),
+    _kv('Wind', wind),
+    _kv('TWA', twaStr),
+    _kv('Tack', tack ? (tack === 'port' ? 'Port' : 'Starboard') : null),
+    _kv('Current', curStr),
+    _kv('Waves', wavesStr),
+    `<span class="kv"><span class="k">Depth</span><span class="v">${depth}</span></span>`,
+  ].filter(Boolean).join('');
 
-    const footer = (p.lat != null && p.lon != null)
-      ? `<div class="leg-footer">${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}${p.role === 'via' ? ' · via' : ''}</div>`
-      : '';
+  const footer = (p.lat != null && p.lon != null)
+    ? `<div class="leg-footer">${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}${p.role === 'via' ? ' · via' : ''}</div>`
+    : '';
 
-    const cw = cardWarn.get(i);
-    const warnCls = cw ? (cw.land ? ' has-land' : ' has-warn') : '';
-    const warnChip = cw ? `<span class="leg-warn-chip${cw.land ? ' land' : ''}" title="${cw.n} warning(s) on this leg">⚠${cw.n > 1 ? ' ' + cw.n : ''}</span>` : '';
-    // The leg leaving this point ends after the forecast's last step (the
-    // arrival card: the point itself is after it).
-    const beyond = isArrival ? !!p.beyond_forecast : !!p.next_beyond_forecast;
-    const beyondCls = beyond ? ' beyond-forecast' : '';
-    const beyondChip = beyond ? '<span class="leg-beyond-chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '';
-    const snapChip = p.snap_distance_m > 0 ? '<span class="leg-warn-chip" title="The drawn point was on land according to the coastline data; the route uses the nearest water">moved ' + Math.round(p.snap_distance_m) + ' m</span>' : '';
-    return `<div class="leg-card ${modeCls} ${tackCls}${warnCls}${beyondCls}" data-idx="${i}">`
-      + `<div class="leg-head">`
-      + `  <span><span class="leg-num">${i + 1}.</span> <span class="leg-time">${t}</span>${warnChip}${beyondChip}${snapChip}</span>`
-      + `  <span class="leg-mode ${modeCls} ${tackCls}">${mode || '—'}</span>`
-      + `</div>`
-      + `<div class="leg-grid">${fields || '<span style="color:#666;">—</span>'}</div>`
-      + footer
-      + `</div>`;
-  }).join('');
+  const warnCls = cw ? (cw.land ? ' has-land' : ' has-warn') : '';
+  const warnChip = cw ? `<span class="leg-warn-chip${cw.land ? ' land' : ''}" title="${cw.n} warning(s) on this leg">⚠${cw.n > 1 ? ' ' + cw.n : ''}</span>` : '';
+  // The leg leaving this point ends after the forecast's last step (the
+  // arrival card: the point itself is after it).
+  const beyond = isArrival ? !!p.beyond_forecast : !!p.next_beyond_forecast;
+  const beyondCls = beyond ? ' beyond-forecast' : '';
+  const beyondChip = beyond ? '<span class="leg-beyond-chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '';
+  const snapChip = p.snap_distance_m > 0 ? '<span class="leg-warn-chip" title="The drawn point was on land according to the coastline data; the route uses the nearest water">moved ' + Math.round(p.snap_distance_m) + ' m</span>' : '';
+  return `<div class="leg-card ${modeCls} ${tackCls}${warnCls}${beyondCls}" data-idx="${i}">`
+    + `<div class="leg-head">`
+    + `  <span><span class="leg-num">${i + 1}.</span> <span class="leg-time">${t}</span>${warnChip}${beyondChip}${snapChip}</span>`
+    + `  <span class="leg-mode ${modeCls} ${tackCls}">${mode || '—'}</span>`
+    + `</div>`
+    + `<div class="leg-grid">${fields || '<span style="color:#666;">—</span>'}</div>`
+    + footer
+    + `</div>`;
+}
+
+// The warnings block above the cards (click one to see it on the map).
+function _itineraryWarnBlockHtml(warnRows) {
   let warnBlock = '';
   if (warnRows.length) {
     const nLand = warnRows.filter(r => r.land).length;
@@ -940,8 +956,10 @@ function populateItinerary(features) {
       + warnRows.map(r => `<div class="iw-row${r.land ? ' land' : ''}" data-wi="${r.wi}" data-ci="${r.ci}">${r.text}</div>`).join('')
       + `</div>`;
   }
-  modalItinerary.innerHTML = warnBlock + cards;
+  return warnBlock;
+}
 
+function _bindItineraryClicks() {
   modalItinerary.querySelectorAll('#itinWarnings .iw-row').forEach(row => {
     row.addEventListener('click', () => {
       const w = _routeWarnings[parseInt(row.dataset.wi, 10)];
@@ -1100,6 +1118,9 @@ function _computeUiIdle() {
 // result. Used by Find Route and by the Saved tab for a job that is
 // still queued/running. `Last-Event-ID` is sent by the browser on
 // reconnect, so a dropped connection replays what was missed.
+// Follow a job: its SSE stream (status, progress lines, stage fronts,
+// done / error), backfilled from the status row. The result GeoJSON is
+// fetched separately when the job is done.
 function attachToJob(id, jobRow) {
   _closeJobStream();
   _activeJobId = id;
@@ -1116,129 +1137,143 @@ function attachToJob(id, jobRow) {
     // Backfill from the status row; the SSE replay adds the rest.
     for (const p of jobRow.progress) RouteProgress.feed(p);
   }
-
-  const t0 = Date.now();
-  let lineCount = 0;
   const es = _activeJobES = new EventSource(ROUTER + '/routes/' + encodeURIComponent(id) + '/events', { withCredentials: true });
-  const isMine = () => _activeJobES === es;
-
-  es.addEventListener('status', ev => {
-    if (!isMine()) return;
+  // What the handlers share: the stream (to tell a stale one from the
+  // current), timing, the line count, and the last front seen.
+  const job = { id, es, statusEl, t0: Date.now(), lineCount: 0, lastFrontLeg: -1, lastFrontStage: 0 };
+  const mine = handler => ev => {
+    if (_activeJobES !== es) return;
     let d = null; try { d = JSON.parse(ev.data); } catch (_) {}
-    if (!d) return;
-    if (d.status === 'queued') appendLog('status: queued' + (d.position ? ' (position ' + d.position + ')' : ''));
-    else if (d.status === 'running') appendLog('status: running');
-    else if (d.resource_id) {
-      appendLog('published to Signal K resources as ' + d.resource_id, 'done');
-      _pendingAnnotate = { id, resourceId: d.resource_id };
-      _annotateIfPending(id);
-    }
-    else if (d.publish_error) appendLog('publish failed: ' + d.publish_error, 'error');
-    if (d.status) modalStatus.textContent = d.status;
-    RouteProgress.status(d);
-  });
-  es.addEventListener('progress', ev => {
-    if (!isMine()) return;
-    let p = null; try { p = JSON.parse(ev.data); } catch (_) {}
-    if (!p) return;
-    lineCount++;
-    const msg = String(p.message || '');
-    appendLog((p.total ? '[' + p.stage + '/' + p.total + '] ' : '') + msg, msg.startsWith('WARNING') ? 'warn' : undefined);
-    RouteProgress.feed(p);
-    modalStatus.textContent = 'Line ' + lineCount + ' | ' + ((Date.now() - t0) / 1000).toFixed(0) + 's elapsed';
-  });
-  // Stages count up within one search of a leg and restart at 1 when the
-  // leg is searched again (e.g. the retry without automatic vias), so a
-  // stage number that drops on the same leg means a re-run: clear that leg's
-  // fronts. A new leg keeps the earlier legs' fronts.
-  let lastFrontLeg = -1, lastFrontStage = 0;
-  es.addEventListener('frontier', ev => {
-    if (!isMine()) return;
-    let fr = null; try { fr = JSON.parse(ev.data); } catch (_) {}
-    if (!fr) return;
-    const leg = fr.leg || 0;
-    const first = lastFrontLeg < 0;
-    const rerun = !first && leg === lastFrontLeg && fr.stage <= lastFrontStage;
-    lastFrontLeg = leg;
-    lastFrontStage = fr.stage;
-    drawFront(fr, { reset: first, resetLeg: rerun ? leg : undefined });
-  });
-  es.addEventListener('route', () => { /* the result is fetched separately below (large payload) */ });
+    if (d) handler(job, d);
+  };
+  es.addEventListener('status', mine(_jobOnStatus));
+  es.addEventListener('progress', mine(_jobOnProgress));
+  es.addEventListener('frontier', mine(_jobOnFrontier));
+  es.addEventListener('route', () => { /* the result is fetched separately (large payload) */ });
   es.addEventListener('done', ev => {
-    if (!isMine()) return;
+    if (_activeJobES !== es) return;
     _closeJobStream();
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     let d = null; try { d = JSON.parse(ev.data); } catch (_) {}
-    appendLog('Route complete! (' + elapsed + 's)', 'done');
-    if (d && d.summary) appendLog('summary: ' + (fmtDist(d.summary.total_distance_m) || '') + ', ' + (fmtTime(d.summary.total_time_s) || '') + ', ' + d.summary.waypoint_count + ' waypoints' + (d.summary.polar ? ', polar ' + d.summary.polar : '') + (d.summary.polar_performance != null && UI_UNITS.ratio ? ' at ' + _fmt(d.summary.polar_performance, 'ratio') : ''));
-    modalStatus.textContent = 'Done in ' + elapsed + 's';
-    statusEl.textContent = '';
-    RouteProgress.done(elapsed);
-    routeActive = true;
-    _computeUiIdle();
-    // Fetch the route GeoJSON separately (SSE is not for large payloads).
-    authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, 'route-load')
-      .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
-      .then(geojson => {
-        displayRoute(geojson);
-        _displayedJobId = id;
-        _annotateIfPending(id);
-        _loadFronts(id);
-        loadRouteHistory();
-        RouteProgress.hide();
-        showTab('itinerarySection');
-      })
-      .catch(err => appendLog('Failed to load route: ' + err.message, 'error'));
-    // Fetch skeleton (coarse A* route) and draw in blue.
-    authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/skeleton', { cache: 'no-store' }, 'skeleton-load')
-      .then(r => r.ok ? r.json() : null)
-      .then(geojson => {
-        skeletonSource.clear();
-        if (!geojson) return;
-        const features = new ol.format.GeoJSON().readFeatures(geojson, { featureProjection: 'EPSG:3857' });
-        skeletonSource.addFeatures(features);
-        console.log('Skeleton loaded: ' + features.length + ' features');
-      })
-      .catch(err => { console.log('Skeleton fetch error:', err); skeletonSource.clear(); });
-    loadPluginStatus();
+    _jobOnDone(job, d);
   });
   es.addEventListener('error', ev => {
-    if (!isMine()) return;
-    if (ev && ev.data) {
-      // Server-pushed `event: error` — terminal (failed or cancelled).
-      _closeJobStream();
-      let d = null; try { d = JSON.parse(ev.data); } catch (_) {}
-      const msg = (d && d.message) || 'compute error';
-      const cancelled = d && d.status === 'cancelled';
-      appendLog((cancelled ? 'Cancelled: ' : 'ERROR: ') + msg, 'error');
-      modalStatus.textContent = cancelled ? 'Cancelled' : 'Failed';
-      statusEl.textContent = cancelled ? 'Route cancelled.' : 'Error: ' + msg;
-      RouteProgress.fail(cancelled ? 'Cancelled' : 'Failed: ' + msg);
-      _computeUiIdle();
-      showTab('logSection');
-      const rawLog = document.getElementById('rawLog');
-      if (rawLog) rawLog.open = true;
-      loadRouteHistory();
-      loadPluginStatus();
-      return;
-    }
-    // Native connection drop: the browser retries with Last-Event-ID
-    // while readyState is CONNECTING. CLOSED means it gave up (or the
-    // server answered 404/401) — check the job's status once.
-    if (es.readyState === EventSource.CLOSED) {
-      _closeJobStream();
-      authFetch(ROUTER + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
-        .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
-        .then(j => {
-          if (j.status === 'done') { appendLog('stream closed; job finished — loading result', 'done'); _computeUiIdle(); RouteProgress.hide(); _loadRouteJob(id); }
-          else if (j.status === 'queued' || j.status === 'running') { appendLog('stream lost; reconnecting…', 'error'); setTimeout(() => attachToJob(id, j), 2000); }
-          else { appendLog('job ' + j.status + (j.error ? ': ' + j.error : ''), 'error'); RouteProgress.fail(j.status); _computeUiIdle(); }
-        })
-        .catch(e => { appendLog('Connection error: ' + e.message, 'error'); statusEl.textContent = 'Error: ' + e.message; RouteProgress.fail('Connection error'); _computeUiIdle(); });
-    } else {
-      appendLog('(event stream interrupted — reconnecting)', 'error');
-    }
+    if (_activeJobES !== es) return;
+    _jobOnError(job, ev);
   });
+}
+
+function _jobOnStatus(job, d) {
+  const { id } = job;
+  if (d.status === 'queued') appendLog('status: queued' + (d.position ? ' (position ' + d.position + ')' : ''));
+  else if (d.status === 'running') appendLog('status: running');
+  else if (d.resource_id) {
+    appendLog('published to Signal K resources as ' + d.resource_id, 'done');
+    _pendingAnnotate = { id, resourceId: d.resource_id };
+    _annotateIfPending(id);
+  }
+  else if (d.publish_error) appendLog('publish failed: ' + d.publish_error, 'error');
+  if (d.status) modalStatus.textContent = d.status;
+  RouteProgress.status(d);
+}
+
+function _jobOnProgress(job, p) {
+  job.lineCount++;
+  const msg = String(p.message || '');
+  appendLog((p.total ? '[' + p.stage + '/' + p.total + '] ' : '') + msg, msg.startsWith('WARNING') ? 'warn' : undefined);
+  RouteProgress.feed(p);
+  modalStatus.textContent = 'Line ' + job.lineCount + ' | ' + ((Date.now() - job.t0) / 1000).toFixed(0) + 's elapsed';
+}
+
+// Stages count up within one search of a leg and restart at 1 when the
+// leg is searched again (e.g. the retry without automatic vias), so a
+// stage number that drops on the same leg means a re-run: clear that leg's
+// fronts. A new leg keeps the earlier legs' fronts.
+function _jobOnFrontier(job, fr) {
+  const leg = fr.leg || 0;
+  const first = job.lastFrontLeg < 0;
+  const rerun = !first && leg === job.lastFrontLeg && fr.stage <= job.lastFrontStage;
+  job.lastFrontLeg = leg;
+  job.lastFrontStage = fr.stage;
+  drawFront(fr, { reset: first, resetLeg: rerun ? leg : undefined });
+}
+
+// The job finished: log the summary, fetch the route (and the skeleton),
+// draw them, refresh the history and status.
+function _jobOnDone(job, d) {
+  const { id, statusEl } = job;
+  const elapsed = ((Date.now() - job.t0) / 1000).toFixed(1);
+  appendLog('Route complete! (' + elapsed + 's)', 'done');
+  if (d && d.summary) appendLog('summary: ' + (fmtDist(d.summary.total_distance_m) || '') + ', ' + (fmtTime(d.summary.total_time_s) || '') + ', ' + d.summary.waypoint_count + ' waypoints' + (d.summary.polar ? ', polar ' + d.summary.polar : '') + (d.summary.polar_performance != null && UI_UNITS.ratio ? ' at ' + _fmt(d.summary.polar_performance, 'ratio') : ''));
+  modalStatus.textContent = 'Done in ' + elapsed + 's';
+  statusEl.textContent = '';
+  RouteProgress.done(elapsed);
+  routeActive = true;
+  _computeUiIdle();
+  // Fetch the route GeoJSON separately (SSE is not for large payloads).
+  authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, 'route-load')
+    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+    .then(geojson => {
+      displayRoute(geojson);
+      _displayedJobId = id;
+      _annotateIfPending(id);
+      _loadFronts(id);
+      loadRouteHistory();
+      RouteProgress.hide();
+      showTab('itinerarySection');
+    })
+    .catch(err => appendLog('Failed to load route: ' + err.message, 'error'));
+  // Fetch skeleton (coarse A* route) and draw in blue.
+  authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/skeleton', { cache: 'no-store' }, 'skeleton-load')
+    .then(r => r.ok ? r.json() : null)
+    .then(geojson => {
+      skeletonSource.clear();
+      if (!geojson) return;
+      const features = new ol.format.GeoJSON().readFeatures(geojson, { featureProjection: 'EPSG:3857' });
+      skeletonSource.addFeatures(features);
+      console.log('Skeleton loaded: ' + features.length + ' features');
+    })
+    .catch(err => { console.log('Skeleton fetch error:', err); skeletonSource.clear(); });
+  loadPluginStatus();
+}
+
+// `event: error` from the server (failed or cancelled), or a dropped
+// connection: when the browser gave up, check the job's status once.
+function _jobOnError(job, ev) {
+  const { id, es, statusEl } = job;
+  if (ev && ev.data) {
+    // Server-pushed `event: error` — terminal (failed or cancelled).
+    _closeJobStream();
+    let d = null; try { d = JSON.parse(ev.data); } catch (_) {}
+    const msg = (d && d.message) || 'compute error';
+    const cancelled = d && d.status === 'cancelled';
+    appendLog((cancelled ? 'Cancelled: ' : 'ERROR: ') + msg, 'error');
+    modalStatus.textContent = cancelled ? 'Cancelled' : 'Failed';
+    statusEl.textContent = cancelled ? 'Route cancelled.' : 'Error: ' + msg;
+    RouteProgress.fail(cancelled ? 'Cancelled' : 'Failed: ' + msg);
+    _computeUiIdle();
+    showTab('logSection');
+    const rawLog = document.getElementById('rawLog');
+    if (rawLog) rawLog.open = true;
+    loadRouteHistory();
+    loadPluginStatus();
+    return;
+  }
+  // Native connection drop: the browser retries with Last-Event-ID
+  // while readyState is CONNECTING. CLOSED means it gave up (or the
+  // server answered 404/401) — check the job's status once.
+  if (es.readyState === EventSource.CLOSED) {
+    _closeJobStream();
+    authFetch(ROUTER + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+      .then(j => {
+        if (j.status === 'done') { appendLog('stream closed; job finished — loading result', 'done'); _computeUiIdle(); RouteProgress.hide(); _loadRouteJob(id); }
+        else if (j.status === 'queued' || j.status === 'running') { appendLog('stream lost; reconnecting…', 'error'); setTimeout(() => attachToJob(id, j), 2000); }
+        else { appendLog('job ' + j.status + (j.error ? ': ' + j.error : ''), 'error'); RouteProgress.fail(j.status); _computeUiIdle(); }
+      })
+      .catch(e => { appendLog('Connection error: ' + e.message, 'error'); statusEl.textContent = 'Error: ' + e.message; RouteProgress.fail('Connection error'); _computeUiIdle(); });
+  } else {
+    appendLog('(event stream interrupted — reconnecting)', 'error');
+  }
 }
 
 document.getElementById('findRoute').addEventListener('click', function() {
@@ -1582,7 +1617,23 @@ function _drawArrow(ctx, x, y, deg, color) {
   ctx.restore();
 }
 
+// The conditions chart: frame and time axis, value scales (left and
+// right axes), grid and axes, the series, then the markers (direction
+// arrows, reference level, tide marks, the map hour, the hover). `g`
+// carries what the steps share.
 function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
+  const g = _chartFrame(canvas, tab, series);
+  if (!g) return;
+  if (!_chartScales(g, tab, series, instant)) return;
+  _chartAxes(g, tab);
+  _chartSeries(g, tab, series);
+  _chartMarkers(g, tab, series, hourIso, instant, hoverIdx);
+  return { xOf: g.xOf, t0: g.t0, tN: g.tN };
+}
+
+// Canvas at device resolution, the plot frame and the time → x mapping;
+// null (after writing "No series") when there is nothing to plot.
+function _chartFrame(canvas, tab, series) {
   const dpr = window.devicePixelRatio || 1;
   canvas.width = _CH.w * dpr; canvas.height = _CH.h * dpr;
   canvas.style.width = _CH.w + 'px'; canvas.style.height = _CH.h + 'px';
@@ -1592,10 +1643,17 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
   ctx.font = '10px sans-serif';
   const x0 = _CH.left, x1 = _CH.w - _chRight(tab), y0 = _CH.top, y1 = _CH.h - _CH.bottom;
   const n = series.length;
-  if (n < 2) { ctx.fillStyle = '#666'; ctx.fillText('No series', x0, (y0 + y1) / 2); return; }
+  if (n < 2) { ctx.fillStyle = '#666'; ctx.fillText('No series', x0, (y0 + y1) / 2); return null; }
   const t0 = new Date(series[0].time).getTime(), tN = new Date(series[n - 1].time).getTime();
   const xOf = t => x0 + (t - t0) / (tN - t0) * (x1 - x0);
+  return { ctx, x0, x1, y0, y1, n, t0, tN, xOf };
+}
 
+// Value ranges in display units (padded; a fixed `tab.range` wins), the
+// lines on the left axis and those on the right (tide & current), and
+// the value → y mappings. False (after writing "No data") when empty.
+function _chartScales(g, tab, series, instant) {
+  const { ctx, x0, y0, y1 } = g;
   // Value range across all lines (display units), padded.
   const allLines = tab.lines.map(l => ({ ...l, u: l.unit(), vals: series.map(r => _condDisplay(r[l.key], l.unit())) }));
   // Lines on a right-hand axis get their own range and scale (tide & current).
@@ -1605,7 +1663,7 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
   let vmin = Infinity, vmax = -Infinity;
   for (const l of lines) for (const v of l.vals) if (v != null) { vmin = Math.min(vmin, v); vmax = Math.max(vmax, v); }
   if (instant) for (const l of lines) { const v = _condDisplay(instant[l.key], l.u); if (v != null) { vmin = Math.min(vmin, v); vmax = Math.max(vmax, v); } }
-  if (!isFinite(vmin) && !rightLines.length) { ctx.fillStyle = '#666'; ctx.fillText('No data', x0, (y0 + y1) / 2); return; }
+  if (!isFinite(vmin) && !rightLines.length) { ctx.fillStyle = '#666'; ctx.fillText('No data', x0, (y0 + y1) / 2); return false; }
   if (!isFinite(vmin)) { vmin = 0; vmax = 1; }
   let rmin = 0, rmax = -Infinity;
   for (const l of rightLines) for (const v of l.vals) if (v != null) rmax = Math.max(rmax, v);
@@ -1621,7 +1679,14 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
   const yOf = v => y1 - (v - vmin) / (vmax - vmin) * (y1 - y0);
   const yOfLine = l => (l.axis === 'right' ? yOfR : yOf);
   const drawn = lines.concat(rightLines);
+  Object.assign(g, { lines, rightLines, drawn, vmin, vmax, rmin, rmax, yOf, yOfR, yOfLine });
+  return true;
+}
 
+// Y grid with labels, the right-hand axis, band boundaries (sea state),
+// the x ticks every 6 h local with the day at midnight, the baseline.
+function _chartAxes(g, tab) {
+  const { ctx, x0, x1, y0, y1, t0, tN, xOf, yOf, yOfR, vmin, vmax, rmin, rmax, lines, rightLines } = g;
   // Y grid + labels.
   ctx.strokeStyle = '#e6e6e6'; ctx.fillStyle = '#555'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
   const yTicks = tab.yTicks || 4;
@@ -1669,7 +1734,12 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
     ctx.fillText(h === 0 ? d.toLocaleDateString([], { weekday: 'short' }) : String(h).padStart(2, '0'), x, y1 + 4);
   }
   ctx.strokeStyle = '#999'; ctx.beginPath(); ctx.moveTo(x0, y1); ctx.lineTo(x1, y1); ctx.stroke();
+}
 
+// Filled areas, then the lines (`tab.colorBy`: each segment in the colour
+// of the category at its end point; `l.step`: a step chart).
+function _chartSeries(g, tab, series) {
+  const { ctx, n, xOf, yOfR, yOfLine, vmin, vmax, rmin, drawn } = g;
   // Lines. With `tab.colorBy`, each segment takes the colour of the
   // category at its end point (precip type), so the rate line changes
   // colour where the type changes.
@@ -1714,7 +1784,12 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
     }
     ctx.setLineDash([]);
   }
+}
 
+// Direction arrows along the top, the reference level, high / low water
+// marks, the map hour with the instant values, the hover marker.
+function _chartMarkers(g, tab, series, hourIso, instant, hoverIdx) {
+  const { ctx, x0, x1, y0, y1, n, t0, tN, xOf, yOf, yOfLine, vmin, vmax, lines, drawn } = g;
   // Direction arrows along the top (thinned when dense).
   if (tab.dir) {
     const every = n > 40 ? 3 : n > 20 ? 2 : 1;
@@ -1770,7 +1845,6 @@ function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
     ctx.strokeStyle = '#999'; ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
     for (const l of drawn) { const v = l.vals[hoverIdx]; if (v == null) continue; ctx.fillStyle = l.color; ctx.beginPath(); ctx.arc(x, yOfLine(l)(v), 3, 0, Math.PI * 2); ctx.fill(); }
   }
-  return { xOf, t0, tN };
 }
 
 function _condIdxAtX(series, px, tab) {
@@ -1854,17 +1928,41 @@ function _tideDetailsHtml(series) {
   return h + '</div>';
 }
 
+// The conditions popup: tabs (and sub-tabs) for the fields the series
+// holds, the map-overlay pills, then the raw table or a chart with its
+// legend and readout.
 function _renderConditionsPopup() {
   if (!_cond) return;
   const { lon, lat, hourIso, instant, series, note } = _cond;
-  // Marine tabs (waves, current, sea state) mean nothing on land, and a
-  // tab whose fields are absent from the series has nothing to draw.
+  const tabs = _condVisibleTabs(series);
+  const el = popup.getElement();
+  let html = _condHeaderHtml(lon, lat, tabs);
+  let tab = tabs.find(t => t.id === _condTab) || tabs[0];
+  const sub = _condResolveSubTab(tab);
+  html += sub.html;
+  tab = sub.tab;
+  html += _condOverlaysHtml(tab);
+  html += _condBodyHtml(tab, series, instant, hourIso);
+  if (note) html += '<div style="color:#666;margin-top:4px;font-size:11px;">' + note + '</div>';
+  el.innerHTML = html;
+  el.style.maxWidth = (_CH.w + 20) + 'px';
+  _bindConditionsPopup(el, tab, series, instant, hourIso);
+}
+
+// Marine tabs (waves, current, sea state) mean nothing on land, and a
+// tab whose fields are absent from the series has nothing to draw. Keeps
+// `_condTab` on a tab that exists.
+function _condVisibleTabs(series) {
   const tabs = _COND_TABS
     .filter(t => !(t.marine && _cond.isLand))
     .map(t => t.sub ? Object.assign({}, t, { sub: t.sub.filter(st => _tabHasData(st, series)) }) : t)
     .filter(t => t.id === 'raw' || (t.sub ? t.sub.length > 0 : _tabHasData(t, series)));
   if (!tabs.some(t => t.id === _condTab)) _condTab = tabs.length ? tabs[0].id : 'raw';
-  const el = popup.getElement();
+  return tabs;
+}
+
+// Title line and the tab bar.
+function _condHeaderHtml(lon, lat, tabs) {
   let html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">'
     + '<b>Conditions at ' + lat.toFixed(4) + ', ' + lon.toFixed(4) + '</b>'
     + (_cond.isLand ? '<span style="color:#b71c1c;font-weight:600;margin-left:8px;">on land</span>' : '')
@@ -1877,7 +1975,14 @@ function _renderConditionsPopup() {
       + '">' + t.label + '</span>';
   }
   html += '</div>';
-  let tab = tabs.find(t => t.id === _condTab) || tabs[0];
+  return html;
+}
+
+// A tab with sub-tabs: the second row of pills, and the chosen sub-tab
+// as the chart definition. On land a "water" temperature is the ground:
+// that line is left out.
+function _condResolveSubTab(tab) {
+  let html = '';
   if (tab.sub) {
     // Second row of pills inside this tab; the chosen sub-tab is the
     // chart definition.
@@ -1899,9 +2004,14 @@ function _renderConditionsPopup() {
   if (_cond.isLand && tab.lines && tab.lines.some(l => l.marine)) {
     tab = Object.assign({}, tab, { lines: tab.lines.filter(l => !l.marine) });
   }
-  // Map overlays that show the same field as this chart, as pills that
-  // mirror (and click) their Layers-tab checkboxes. `overlays` is
-  // [checkboxId, label] pairs on the tab or sub-tab definition.
+  return { tab, html };
+}
+
+// Map overlays that show the same field as this chart, as pills that
+// mirror (and click) their Layers-tab checkboxes. `overlays` is
+// [checkboxId, label] pairs on the tab or sub-tab definition.
+function _condOverlaysHtml(tab) {
+  let html = '';
   const overlays = (tab.overlays || []).filter(([id]) => document.getElementById(id));
   if (overlays.length) {
     html += '<div id="condOverlays" style="display:flex;gap:4px;align-items:center;margin:0 0 6px 0;font-size:11px;">'
@@ -1915,6 +2025,13 @@ function _renderConditionsPopup() {
     }
     html += '</div>';
   }
+  return html;
+}
+
+// The raw table, or the chart canvas with legend, readout and (tide) the
+// high/low water details.
+function _condBodyHtml(tab, series, instant, hourIso) {
+  let html = '';
   if (tab.id === 'raw') {
     html += '<div style="max-height:300px;overflow:auto;"><table style="border-collapse:collapse;font-size:11px;white-space:nowrap;">' + _COND_HEAD;
     if (instant) html += '<tr style="background:#eef;"><td>' + _fmtWhen(hourIso) + ' (map)</td>' + _rowCells(instant) + '</tr>';
@@ -1933,10 +2050,11 @@ function _renderConditionsPopup() {
       + '<div id="condReadout" style="font-size:11px;color:#333;min-height:14px;margin-top:2px;"></div>';
     if (tab.tideMarks) html += _tideDetailsHtml(series);
   }
-  if (note) html += '<div style="color:#666;margin-top:4px;font-size:11px;">' + note + '</div>';
-  el.innerHTML = html;
-  el.style.maxWidth = (_CH.w + 20) + 'px';
+  return html;
+}
 
+// Close, tab and pill clicks, row clicks, and the chart's hover / click.
+function _bindConditionsPopup(el, tab, series, instant, hourIso) {
   el.querySelector('#condClose').onclick = () => { popup.setPosition(undefined); el.style.maxWidth = '300px'; };
   el.querySelectorAll('#condTabs span').forEach(sp => {
     sp.onclick = () => { _condTab = sp.dataset.tab; _renderConditionsPopup(); };

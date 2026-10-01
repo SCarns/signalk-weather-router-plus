@@ -27,6 +27,7 @@
 
 import type { ForecastStore } from '../data/forecast';
 import { HOUR_MS } from '../geo/units';
+import type { QueryArgs, TideSeriesResult } from './protocol';
 import { relativeHumidity } from '../engine/conditions';
 import { sampleSeries, signalKTendency, slopeAt, type RegularSeries } from '../tides/tidecalc';
 
@@ -211,4 +212,53 @@ export function pointForecasts(
     if (maxCount && out.length >= maxCount) break;
   }
   return out;
+}
+
+/**
+ * Register the plugin as a Weather API provider (point forecasts read by
+ * the data worker from the decoded run; water level from its tide point
+ * series). True when registered. Extracted from index.ts (phase 2.3).
+ */
+export function registerWeatherProvider(
+  app: { registerWeatherProvider?: (provider: unknown) => void },
+  d: {
+    pluginId: string;
+    tidesEnabled: () => boolean;
+    hasForecast: () => boolean;
+    pointQuery: (kind: 'tide_series' | 'weather_point', args: QueryArgs['tide_series'] | QueryArgs['weather_point']) => Promise<unknown>;
+    log: (m: string) => void;
+    error: (m: string) => void;
+  }
+): boolean {
+  if (typeof app.registerWeatherProvider !== 'function') {
+    d.log('Weather API not available on this server; provider not registered');
+    return false;
+  }
+  try {
+    // Water level for point forecasts comes from the data worker's tide point series (on demand).
+    const tideSeries = async (lat: number, lon: number, fromMs: number, hours: number): Promise<TideSeriesResult | null> => {
+      if (!d.tidesEnabled()) return null;
+      return (await d.pointQuery('tide_series', { lat, lon, fromMs, hours })) as TideSeriesResult;
+    };
+    // Point forecasts are read by the data worker from the decoded run (this thread holds no forecast).
+    const points = async (
+      position: { latitude: number; longitude: number },
+      options?: { startDate?: string; maxCount?: number }
+    ): Promise<WeatherData[]> => {
+      if (!d.hasForecast()) throw new Error('no forecast loaded yet');
+      return (await d.pointQuery('weather_point', {
+        lat: position.latitude,
+        lon: position.longitude,
+        // No start given: from the start of this hour (not this millisecond), so the answer can be kept for the hour.
+        startMs: startMsOf(options) ?? Math.floor(Date.now() / HOUR_MS) * HOUR_MS,
+        maxCount: options?.maxCount ?? null,
+      })) as WeatherData[];
+    };
+    app.registerWeatherProvider(makeWeatherProvider(points, d.pluginId, tideSeries, m => d.log(m)));
+    d.log('registered as a Weather API provider');
+    return true;
+  } catch (err) {
+    d.error(`Weather API registration failed: ${(err as Error).message}`);
+    return false;
+  }
 }

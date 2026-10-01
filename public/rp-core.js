@@ -551,6 +551,9 @@ function _mapFitPadding() {
   return pad;
 }
 
+// Draw a route (GeoJSON from GET /api/routes/{id}/result): the pins, the
+// legs coloured by tack, where the forecast runs out, the snap connectors,
+// the result strip and the itinerary.
 function displayRoute(geojson) {
   _selectedRouteFeature = null;
   routeSource.clear();
@@ -558,51 +561,71 @@ function displayRoute(geojson) {
     featureProjection: 'EPSG:3857'
   });
   routeSource.addFeatures(features);
-
-  // Read snap metadata from the LineString props before manipulating
-  // features — we need it for both pin placement and the dashed connector.
-  const _lineFeatForSnap = features.find(
-    f => f.getGeometry().getType() === 'LineString');
-  const _snapProps = _lineFeatForSnap
-    ? _lineFeatForSnap.getProperties() : {};
-
+  // Snap metadata lives on the LineString's props; the pins and the
+  // dashed connectors both need it.
+  const lineFeat = features.find(f => f.getGeometry().getType() === 'LineString');
+  const snapProps = lineFeat ? lineFeat.getProperties() : {};
   const pts = features.filter(f => f.getGeometry().getType() === 'Point');
-  // Move the start/end pin markers to the reloaded route's first/last
-  // waypoint so a history-loaded route shows the same green-start and
-  // red-end icons as a freshly-computed one. When the server
-  // snapped an endpoint to a nearby navigable cell, the visible pin
-  // stays at the original (user-intent) point — the dashed maroon
-  // connector below bridges intent → anchor.
-  if (pts.length > 0) {
-    const startLonLat = _snapProps.start_original
-      ? _snapProps.start_original
-      : ol.proj.toLonLat(pts[0].getGeometry().getCoordinates());
-    const endLonLat = _snapProps.end_original
-      ? _snapProps.end_original
-      : ol.proj.toLonLat(pts[pts.length - 1].getGeometry().getCoordinates());
-    const startMercator = ol.proj.fromLonLat(startLonLat);
-    const endMercator = ol.proj.fromLonLat(endLonLat);
-    startFeature.setGeometry(new ol.geom.Point(startMercator));
-    endFeature.setGeometry(new ol.geom.Point(endMercator));
-    // Keep the global [lon, lat] state in sync with the visible pins
-    // so the next "Find Route" POSTs the right endpoints.
-    startCoord = [startLonLat[0], startLonLat[1]];
-    endCoord = [endLonLat[0], endLonLat[1]];
-    if (typeof updateCoordDisplay === 'function') {
-      updateCoordDisplay('start', startCoord);
-      updateCoordDisplay('end', endCoord);
-    }
-    // Via points the route was asked to pass through become draggable
-    // orange pins again, so a re-run keeps them.
-    const vias = pts.filter(f => f.get('role') === 'via').map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()));
-    if (vias.length && typeof _rebuildWaypointFeatures === 'function') {
-      waypointCoords = vias.map(c => [c[0], c[1]]);
-      _rebuildWaypointFeatures();
-    }
-    if (typeof refreshFindRouteEnabled === 'function') {
-      refreshFindRouteEnabled();
-    }
+  if (pts.length > 0) _placeRoutePins(pts, snapProps);
+  _drawRouteLegs(pts);
+  _markForecastEnd(pts, snapProps);
+  if (lineFeat) {
+    const p = lineFeat.getProperties();
+    const navWarns = _drawSnapConnectors(p);
+    _routeWarnings = Array.isArray(p.warnings) ? p.warnings : [];
+    renderResultStrip(p, navWarns);
+    const nameInput = document.getElementById('routeNameInput');
+    if (nameInput) nameInput.value = p.name || _currentRouteName || '';
+    routeSource.removeFeature(lineFeat);
   }
+  // Refresh the itinerary tab with this route's waypoints.
+  if (typeof populateItinerary === 'function') {
+    populateItinerary(features);
+  }
+}
+
+// Move the start/end pin markers to the route's first/last waypoint so a
+// history-loaded route shows the same green-start and red-end icons as a
+// freshly-computed one. When the server snapped an endpoint to a nearby
+// navigable cell, the visible pin stays at the original (user-intent)
+// point; the dashed connector bridges intent → anchor. Via points become
+// draggable orange pins again, so a re-run keeps them.
+function _placeRoutePins(pts, snapProps) {
+  const startLonLat = snapProps.start_original
+    ? snapProps.start_original
+    : ol.proj.toLonLat(pts[0].getGeometry().getCoordinates());
+  const endLonLat = snapProps.end_original
+    ? snapProps.end_original
+    : ol.proj.toLonLat(pts[pts.length - 1].getGeometry().getCoordinates());
+  const startMercator = ol.proj.fromLonLat(startLonLat);
+  const endMercator = ol.proj.fromLonLat(endLonLat);
+  startFeature.setGeometry(new ol.geom.Point(startMercator));
+  endFeature.setGeometry(new ol.geom.Point(endMercator));
+  // Keep the global [lon, lat] state in sync with the visible pins
+  // so the next "Find Route" POSTs the right endpoints.
+  startCoord = [startLonLat[0], startLonLat[1]];
+  endCoord = [endLonLat[0], endLonLat[1]];
+  if (typeof updateCoordDisplay === 'function') {
+    updateCoordDisplay('start', startCoord);
+    updateCoordDisplay('end', endCoord);
+  }
+  // Via points the route was asked to pass through become draggable
+  // orange pins again, so a re-run keeps them.
+  const vias = pts.filter(f => f.get('role') === 'via').map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()));
+  if (vias.length && typeof _rebuildWaypointFeatures === 'function') {
+    waypointCoords = vias.map(c => [c[0], c[1]]);
+    _rebuildWaypointFeatures();
+  }
+  if (typeof refreshFindRouteEnabled === 'function') {
+    refreshFindRouteEnabled();
+  }
+}
+
+// Leg colouring: each point learns its outgoing course and the next leg's
+// conditions; a sailing leg is coloured by tack (TACK_COLOR), a motoring
+// leg black, a leg past the forecast's last step dashed. Dateline legs
+// are split at ±180 so they render the short way.
+function _drawRouteLegs(pts) {
   // Set outgoing_cog on each point
   for (let k = 0; k < pts.length - 1; k++) {
     const c1 = pts[k].getGeometry().getCoordinates();
@@ -665,9 +688,12 @@ function displayRoute(geojson) {
       routeSource.addFeature(segLine);
     }
   }
-  // Where the forecast runs out along the route: a marker on the first leg
-  // that ends after the last forecast step, placed by time along that leg.
-  const _validTo = _snapProps.forecast_valid_to ? Date.parse(_snapProps.forecast_valid_to) : NaN;
+}
+
+// Where the forecast runs out along the route: a marker on the first leg
+// that ends after the last forecast step, placed by time along that leg.
+function _markForecastEnd(pts, snapProps) {
+  const _validTo = snapProps.forecast_valid_to ? Date.parse(snapProps.forecast_valid_to) : NaN;
   const _firstBeyond = pts.findIndex(f => f.get('beyond_forecast'));
   if (Number.isFinite(_validTo) && _firstBeyond > 0) {
     const a = pts[_firstBeyond - 1], b = pts[_firstBeyond];
@@ -677,76 +703,68 @@ function displayRoute(geojson) {
     let dLon = bLL[0] - aLL[0];
     if (dLon > 180) dLon -= 360; else if (dLon < -180) dLon += 360;
     const at = ol.proj.fromLonLat([aLL[0] + dLon * frac, aLL[1] + (bLL[1] - aLL[1]) * frac]);
-    routeSource.addFeature(new ol.Feature({ geometry: new ol.geom.Point(at), kind: 'forecast_end', valid_to: _snapProps.forecast_valid_to }));
+    routeSource.addFeature(new ol.Feature({ geometry: new ol.geom.Point(at), kind: 'forecast_end', valid_to: snapProps.forecast_valid_to }));
   }
+}
 
-  const lineFeat = features.find(f => f.getGeometry().getType() === 'LineString');
-  if (lineFeat) {
-    const p = lineFeat.getProperties();
-
-    // Maroon dashed connector(s): intent → anchor where the server
-    // snapped an unnavigable endpoint to the nearest navigable cell.
-    const _dashedStyle = new ol.style.Style({
-      stroke: new ol.style.Stroke({
-        color: '#7F0000', width: 2, lineDash: [6, 6]
-      })
+// Maroon dashed connectors from each drawn point that was on land to the
+// water it was moved to (start, end and waypoints), and the warning
+// lines for the result strip. Returns the warnings.
+function _drawSnapConnectors(p) {
+  // Maroon dashed connector(s): intent → anchor where the server
+  // snapped an unnavigable endpoint to the nearest navigable cell.
+  const _dashedStyle = new ol.style.Style({
+    stroke: new ol.style.Stroke({
+      color: '#7F0000', width: 2, lineDash: [6, 6]
+    })
+  });
+  if (p.start_original && p.start_anchor && p.start_snap_distance_m > 0) {
+    const f = new ol.Feature({
+      geometry: new ol.geom.LineString([
+        ol.proj.fromLonLat(p.start_original),
+        ol.proj.fromLonLat(p.start_anchor),
+      ])
     });
-    if (p.start_original && p.start_anchor && p.start_snap_distance_m > 0) {
-      const f = new ol.Feature({
-        geometry: new ol.geom.LineString([
-          ol.proj.fromLonLat(p.start_original),
-          ol.proj.fromLonLat(p.start_anchor),
-        ])
-      });
-      f.setStyle(_dashedStyle);
-      routeSource.addFeature(f);
-    }
-    if (p.end_original && p.end_anchor && p.end_snap_distance_m > 0) {
-      const f = new ol.Feature({
-        geometry: new ol.geom.LineString([
-          ol.proj.fromLonLat(p.end_original),
-          ol.proj.fromLonLat(p.end_anchor),
-        ])
-      });
-      f.setStyle(_dashedStyle);
-      routeSource.addFeature(f);
-    }
-    // Drawn waypoints that were on land and were moved to the nearest water
-    // (`snaps`, every stop; the start and end are drawn above).
-    const _snaps = Array.isArray(p.snaps) ? p.snaps : [];
-    const _lastStop = p.stop_count > 0 ? p.stop_count - 1 : -1;
-    for (const s of _snaps) {
-      if (s.index === 0 || s.index === _lastStop || !s.original || !s.anchor) continue;
-      const f = new ol.Feature({ geometry: new ol.geom.LineString([ol.proj.fromLonLat(s.original), ol.proj.fromLonLat(s.anchor)]) });
-      f.setStyle(_dashedStyle);
-      routeSource.addFeature(f);
-    }
+    f.setStyle(_dashedStyle);
+    routeSource.addFeature(f);
+  }
+  if (p.end_original && p.end_anchor && p.end_snap_distance_m > 0) {
+    const f = new ol.Feature({
+      geometry: new ol.geom.LineString([
+        ol.proj.fromLonLat(p.end_original),
+        ol.proj.fromLonLat(p.end_anchor),
+      ])
+    });
+    f.setStyle(_dashedStyle);
+    routeSource.addFeature(f);
+  }
+  // Drawn waypoints that were on land and were moved to the nearest water
+  // (`snaps`, every stop; the start and end are drawn above).
+  const _snaps = Array.isArray(p.snaps) ? p.snaps : [];
+  const _lastStop = p.stop_count > 0 ? p.stop_count - 1 : -1;
+  for (const s of _snaps) {
+    if (s.index === 0 || s.index === _lastStop || !s.original || !s.anchor) continue;
+    const f = new ol.Feature({ geometry: new ol.geom.LineString([ol.proj.fromLonLat(s.original), ol.proj.fromLonLat(s.anchor)]) });
+    f.setStyle(_dashedStyle);
+    routeSource.addFeature(f);
+  }
 
-    // Warning text for the info card — surfaces snaps and the
-    // forecast-horizon note to the user.
-    const _navWarns = [];
-    if (p.start_snap_distance_m > 0) {
-      _navWarns.push('Start not navigable — anchored '
-        + Math.round(p.start_snap_distance_m) + ' m away');
-    }
-    if (p.end_snap_distance_m > 0) {
-      _navWarns.push('End not navigable — anchored '
-        + Math.round(p.end_snap_distance_m) + ' m away');
-    }
-    for (const s of _snaps) {
-      if (s.index === 0 || s.index === _lastStop) continue;
-      _navWarns.push('Waypoint ' + s.index + ' was on land — anchored ' + Math.round(s.distance_m) + ' m away');
-    }
-    _routeWarnings = Array.isArray(p.warnings) ? p.warnings : [];
-    renderResultStrip(p, _navWarns);
-    const nameInput = document.getElementById('routeNameInput');
-    if (nameInput) nameInput.value = p.name || _currentRouteName || '';
-    routeSource.removeFeature(lineFeat);
+  // Warning text for the info card — surfaces snaps and the
+  // forecast-horizon note to the user.
+  const _navWarns = [];
+  if (p.start_snap_distance_m > 0) {
+    _navWarns.push('Start not navigable — anchored '
+      + Math.round(p.start_snap_distance_m) + ' m away');
   }
-  // Refresh the itinerary tab with this route's waypoints.
-  if (typeof populateItinerary === 'function') {
-    populateItinerary(features);
+  if (p.end_snap_distance_m > 0) {
+    _navWarns.push('End not navigable — anchored '
+      + Math.round(p.end_snap_distance_m) + ' m away');
   }
+  for (const s of _snaps) {
+    if (s.index === 0 || s.index === _lastStop) continue;
+    _navWarns.push('Waypoint ' + s.index + ' was on land — anchored ' + Math.round(s.distance_m) + ' m away');
+  }
+  return _navWarns;
 }
 
 // ─────────── Polar picker (GET /api/polars) ───────────
