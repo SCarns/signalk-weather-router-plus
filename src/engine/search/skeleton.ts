@@ -8,7 +8,7 @@
  */
 
 import { bboxFromLonLat, haversineDistanceM } from '../../geo/geodesy';
-import { buildCoarseGrid, type NavigabilityGrid } from '../../geo/grid';
+import { buildCoarseGrid, forEachRingCell, type NavigabilityGrid } from '../../geo/grid';
 import { astarRoute, AstarError } from '../astar';
 import { resizeBudget } from './context';
 import { RouteCancelled, type SearchContext } from './types';
@@ -32,20 +32,17 @@ function snapToPassable(grid: NavigabilityGrid, p: [number, number], maxRadius: 
   for (let r = 1; r <= maxRadius; r++) {
     let best: [number, number] | null = null;
     let bestD = Infinity;
-    for (let di = -r; di <= r; di++) {
-      for (let dj = -r; dj <= r; dj++) {
-        if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
-        const i = i0 + di;
-        const j = j0 + dj;
-        if (!grid.isPassable(i, j)) continue;
-        const [lon, lat] = grid.spec.ijToLonLat(i, j);
-        const d = haversineDistanceM(p[0], p[1], lon, lat);
-        if (d < bestD) {
-          bestD = d;
-          best = [lon, lat];
-        }
+    forEachRingCell(r, (di, dj) => {
+      const i = i0 + di;
+      const j = j0 + dj;
+      if (!grid.isPassable(i, j)) return;
+      const [lon, lat] = grid.spec.ijToLonLat(i, j);
+      const d = haversineDistanceM(p[0], p[1], lon, lat);
+      if (d < bestD) {
+        bestD = d;
+        best = [lon, lat];
       }
-    }
+    });
     if (best) return best;
   }
   return p;

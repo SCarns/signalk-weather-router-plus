@@ -69,6 +69,32 @@ uses [Semantic Versioning](https://semver.org/).
   itinerary, the job stream handlers, the conditions popup and its chart
   are each a handful of named functions instead of one long one. No
   behaviour change.
+- **One heap, one string-pull, one ring iterator** (phase 3.1) for the
+  three A* searches; same exploration order, golden routes identical.
+- **One bilinear sampler** (phase 3.2) for the forecast, Copernicus
+  area and coastal-fill grids; one difference: a coordinate below zero
+  now clamps to the first cell where the Copernicus corner lookup read
+  out of bounds.
+- **One HTTP retry policy** (phase 3.3) for the ECMWF, Copernicus Marine
+  and RTOFS clients, with a test; RTOFS now honours `Retry-After`.
+- **One route pipeline** (phase 3.5): the leg pipeline (corridor, land
+  mask, forecast and current areas, isochrone search with the retry
+  without automatic vias, simplification, smoothing, re-validation,
+  forecast-horizon warning) lives in `src/engine/pipeline.ts`; the route
+  worker and the `wrp-route` CLI both run it. The CLI therefore gains
+  the vias retry, RDP simplification, the shortcut smoother and the
+  re-validation it lacked, using the plugin's default routing settings.
+- **One physics step** (phase 3.4) shared by the leg simulator and the
+  batched candidate scorer, and then one loop: the straight-leg
+  simulator (final legs, beats, smoother shortcuts) is the batched scorer
+  with one candidate, so every leg is timed under the same rules as the
+  search's candidates. Routes with a time-varying forecast can change
+  slightly in their final legs' times; the synthetic golden routes did not.
+- **Web app duplicates removed** (phase 3.6): one HTML escape, one
+  skeleton loader, one time formatter (clock times now follow the
+  browser's locale rather than en-US), one overlay reload, one colour
+  tile layer factory for the eight heatmaps, one particle layer for the
+  wave and wind flow lines.
 
 ## [0.1.0-beta.5] - 2026-09-30
 

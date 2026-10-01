@@ -23,7 +23,7 @@
   let rows = [];          // [{spec, input, row, errEl, conv, initialText}]
   let loading = false;
 
-  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const esc = escapeHtml; // rp-core.js
   const getVal = (key) => { const [g, k] = key.split('.'); return values && values[g] ? values[g][k] : undefined; };
 
   // Display conversion for a spec: display = fn(si), si = inv(display).

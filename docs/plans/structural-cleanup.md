@@ -114,7 +114,69 @@ lines, corridor + decoded-run window + SMOC check all logged). Page: no
 console errors, all 24 split functions present; the job stream, route
 drawing, itinerary cards, and the conditions popup with all eight tabs
 and chart hover work; the route worker released its forecast window
-after the route. Every step is a
+after the route.
+Phase 3.1 built 2026-10-01: `engine/heap.ts` (one MinHeap; the three it
+replaced had identical ordering semantics, so the searches explore in
+the same order), `engine/pathutil.ts` (`stringPull`, the greedy loop
+shared by `smoothGridPath` and fineTrace), `geo/grid.ts
+forEachRingCell` (the ring iteration order every ring search used; the
+selection rule at each of the four sites stays its own, because they
+differ: nearest cell, all nodes of the first ring with any, first found).
+The two line-of-sight routines stay: one walks a water grid with its
+diagonal rules, the other samples a raster with a clearance threshold;
+they are different predicates, not copies. Golden routes identical.
+Phase 3.2 built 2026-10-01: `data/sampling.ts` (`gridXY`,
+`bilinearCorners`, `lerp2`); `forecast.ts` sampleField / sampleWindow /
+sampleFieldNearest, `arco.ts` (re-export), `coastfill.ts` bilinearFilled
+/ bilinearFilledScalar / sampleFieldPairFilled use it. Golden samples:
+identical except 5 of 155 `bilinearCorners` cases with a negative input
+coordinate, where arco's copy produced negative indices (out-of-bounds
+reads) and the shared form clamps as the other samplers did; fixture
+regenerated after that review. `harmonic.ts` interp/pointAt stay: they
+clamp the fraction, not the coordinate, and mirror the Python reference.
+The three bbox→index routines (regionForBBox, DecodedRun.geometry,
+cropField) are not unified here (different edge rules; phase 5 candidate).
+Phase 3.3 built 2026-10-01: `data/http.ts` (`fetchWithRetry`,
+`parseRetryAfterMs`, `sleep`) with `data/http.test.ts`; the ECMWF client
+keeps its mirror rotation around it, the Zarr reader no longer imports
+from the ECMWF client, RTOFS gains Retry-After. 234 tests pass.
+Phase 3.4 built 2026-10-01 (decision D, first step): `legsim.ts
+stepAlongHeading` is the one physics sub-step (polar at the TWA, mode
+choice, SOG along the heading with the current); both loops call it;
+their two differences in NaN handling are at the call sites with a
+comment. Golden routes identical. The loop unification is the last step
+of phase 3.
+Phase 3.5 built 2026-10-01: `engine/pipeline.ts runLegPipeline` holds
+the leg pipeline (corridor → land → areas → propagate → vias retry →
+RDP → smoother → enrich / revalidate → horizon warning) with the
+worker's progress messages; `plugin/worker/route.ts` (508 → 362 lines)
+and `cli.ts` call it, the CLI with the plugin's default routing settings
+(so it gains the vias retry, RDP, smoother and revalidation it lacked).
+`engine/pipeline.test.ts` checks the pipeline without a water grid
+equals the propagator alone. CLI output format changed slightly (the
+leg tag follows the stage brackets).
+Phase 3.6 built 2026-10-01 (page): one `escapeHtml` (rp-core; the
+vessel-form IIFE, the Live block and rp-settings use it), one
+`loadSkeleton(id)`, one `fmtWhen(iso)` for the weekday-clock format and
+`formatTime` in the browser's locale instead of hard-coded en-US (the
+one visible change: 24 h clock in the user's locale), one
+`reloadOverlays({ currents, streamlines })` fan-out for the three
+copies, one `_heatmapLayer(zIndex, toggle, layer, spec)` factory for the
+eight colour layers (same global names), one `_streamlines(spec)` for the
+wave and wind particle layers. The Signal K formula parser stays
+duplicated in remoteEntry.js: the Admin UI loads that file alone, and
+its header already says it carries no shared code. Syntax-checked; page
+walk-through at the Phase 3 brain check.
+Phase 3, last step (decision D, second part) built 2026-10-01:
+`simulateLegTime` is `scoreCandidatesFromParent` with one candidate, so
+final legs, beats, smoother shortcuts and via inserts are timed under
+the stage candidates' rules (sample time per sub-step = departure +
+k × the motor-speed estimate; NaN wind and current read as calm; the
+wave limit through wavesAtMany). All five golden routes are identical,
+which shows the golden winds vary in space only: they cannot tell the
+two time models apart. The route on brain with the real forecast (same
+request as the Phase 2 check, 19.0 nmi, 2.5 h, 6 waypoints) is the
+comparison that can; recorded at the Phase 3 deploy. Every step is a
 behaviour-preserving refactor: same routes, same tiles, same API, same
 page. Lint hygiene is already clean (0 TODO/HACK markers, 0
 eslint-disable, 2 `any`); this plan is about shape.

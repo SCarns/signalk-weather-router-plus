@@ -20,14 +20,15 @@
  */
 
 import * as fs from 'node:fs';
-import { NM_M, KTS_TO_MS, HOUR_S, HOUR_MS } from './geo/units';
+import { NM_M, KTS_TO_MS, HOUR_S } from './geo/units';
 import { loadForecastForBBox, resolveCycle } from './data/loader';
 import { EcmwfClient, ECMWF_MIRRORS } from './data/ecmwf';
 import { bboxFromLonLat } from './geo/geodesy';
 import { LandMask } from './geo/landmask';
-import { OceanPropagator } from './engine/propagator';
-import { legLabel, routeMultiLeg, validateLegOptions, type LegPlan, type Precision, type Stop } from './engine/multileg';
-import { CorridorError, mergeVias, planCorridor, type Corridor } from './engine/corridor';
+import { runLegPipeline, type LegPipelineInputs } from './engine/pipeline';
+import { NoCurrent } from './engine/environment';
+import { defaultSettings } from './plugin/settings';
+import { routeMultiLeg, validateLegOptions, type LegPlan, type Precision, type Stop } from './engine/multileg';
 import { WaterGrid } from './geo/watergrid';
 import { chooseWaterGrid } from './geo/watergrid_store';
 import { routeToGeoJSON, type Route } from './engine/route';
@@ -133,81 +134,40 @@ async function main(): Promise<void> {
   const cycle = client ? (await resolveCycle(client, hours * HOUR_S, { log: m => log(`  forecast: ${m}`) })).cycle : null;
   let cycleLabel: string | undefined;
 
-  // Waypoints are leg ends (engine/multileg.ts); each leg is its own route.
-  const runLeg = async (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> => {
-    const tag = multi ? `${legLabel(plan)} ` : '';
-    // A collapsed approximate run passes through its waypoint circles (plan.vias).
-    const chain: [number, number][] = [legStart, ...plan.vias.map(v => [v.lon, v.lat] as [number, number]), plan.end];
-    let corridor: Corridor | null = null;
-    if (grid) {
-      t = Date.now();
-      try {
-        corridor = planCorridor(grid, chain, { landFor, stages, onProgress: m => log(`  ${tag}corridor: ${m}`) });
-        const st = corridor.stats;
-        log(
-          `${tag}corridor: ${(corridor.lengthM / 1000).toFixed(1)} km, A* ${st.astarMs} ms (${st.expanded} cells expanded, window ≤ ${st.windowCells} cells), verify ${st.verifyMs} ms, ${st.refines} refinement(s), ${st.reroutes} re-route(s), total ${Date.now() - t} ms`
-        );
-        for (const v of corridor.autoVias)
-          log(
-            `${tag}corridor: auto via at ${v.name}, width ${(v.widthM / 1000).toFixed(1)} km (${v.lat.toFixed(4)}, ${v.lon.toFixed(4)}, radius ${(v.radiusM / 1000).toFixed(1)} km)`
-          );
-      } catch (err) {
-        if (!(err instanceof CorridorError) || err.fatal) throw err;
-        log(`WARNING: ${tag}corridor failed (${err.message}); falling back to the per-route skeleton`);
-        corridor = null;
-      }
-    }
-    let lm: LandMask;
-    let bbox;
-    if (corridor) {
-      lm = corridor.land;
-      bbox = corridor.bbox;
-    } else {
-      bbox = bboxFromLonLat(
-        chain.map(p => p[0]),
-        chain.map(p => p[1]),
-        1.0
-      );
-      lm = landFor(bbox);
-    }
-    log(`${tag}bbox W${bbox.west.toFixed(2)} S${bbox.south.toFixed(2)} E${bbox.east.toFixed(2)} N${bbox.north.toFixed(2)}`);
-
-    let wind;
-    if (client && cycle) {
-      t = Date.now();
-      wind = await loadForecastForBBox(client, bbox, { horizonS: hours * HOUR_S, cycle, log: m => log(`  forecast: ${m}`) });
-      log(`${tag}forecast: ${wind.steps.length} steps, ${(wind.bytes() / 1024).toFixed(0)} kB resident, ${Date.now() - t} ms`);
+  // Waypoints are leg ends (engine/multileg.ts); each leg is its own route,
+  // through the same pipeline as the plugin's route worker (engine/pipeline.ts)
+  // with the plugin's default routing settings.
+  const d = defaultSettings().routing;
+  let legCounter = 0;
+  const pipeline: LegPipelineInputs = {
+    waterGrid: grid,
+    allowCanals: flag('allow-canals'),
+    landFor,
+    stages,
+    propagator: { subsectors: d.subsectors, headings: d.headings, headingIncrementDeg: d.headingIncrement },
+    vessel,
+    polar,
+    sim: { modePolicy: mode, sailThreshMs: d.sailThreshold, simStepM: d.simStep },
+    simplifyM: d.simplify,
+    smoother: d.smoother,
+    smootherTolerance: d.smootherTolerance,
+    loadAreas: async (bbox, what) => {
+      log(`${what}: W${bbox.west.toFixed(2)} S${bbox.south.toFixed(2)} E${bbox.east.toFixed(2)} N${bbox.north.toFixed(2)}`);
+      if (!(client && cycle)) return null;
+      const t0 = Date.now();
+      const wind = await loadForecastForBBox(client, bbox, { horizonS: hours * HOUR_S, cycle, log: m => log(`  forecast: ${m}`) });
+      log(`${what}: forecast ${wind.steps.length} steps, ${(wind.bytes() / 1024).toFixed(0)} kB resident, ${Date.now() - t0} ms`);
       cycleLabel = wind.meta.cycleTime.toISOString();
-    }
-
-    const prop = new OceanPropagator(lm, { stages });
-    const vias = corridor ? mergeVias(plan.vias, corridor.autoVias) : plan.vias;
-    const r = prop.computeRoute({
-      start: legStart,
-      end: plan.end,
-      departureTime: legDeparture,
-      vessel,
-      polar,
-      wind,
-      modePolicy: mode,
-      vias: vias.length ? vias : undefined,
-      corridor: corridor ? { skeleton: corridor.skeleton, widthM: corridor.widthM } : undefined,
-      arrivalRadiusM: plan.arrivalRadiusM,
-      snapToExact: plan.snapToExact,
-      onProgress: (s, K, msg) => log(`  ${tag}[${s}/${K}] ${msg}`),
-    });
-    if (wind) {
-      const lastValid = wind.validRange[1].getTime();
-      const arrival = r.waypoints[r.waypoints.length - 1].time.getTime();
-      if (arrival > lastValid) {
-        r.forecastHorizonExceededS = (arrival - lastValid) / 1000;
-        log(
-          `WARNING: ${tag}arrival is ${((arrival - lastValid) / HOUR_MS).toFixed(1)} h after the last forecast step; conditions beyond it are held constant`
-        );
-      }
-    }
-    return r;
+      return wind;
+    },
+    currents: () => ({ source: new NoCurrent(), names: null }),
+    multi,
+    progress: (s, K, msg) => log(K ? `  [${s}/${K}] ${msg}` : `  ${msg}`),
+    shouldCancel: () => false,
+    log,
   };
+  const runLeg = (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> =>
+    runLegPipeline(pipeline, plan, legCounter++, legStart, legDeparture);
   const routeT0 = Date.now();
   const route = await routeMultiLeg({ stops, departureTime: departure, precision, arrivalRadiusM, runLeg, onProgress: log });
   if (cycleLabel) route.forecastCycle = cycleLabel;

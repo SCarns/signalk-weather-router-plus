@@ -29,6 +29,7 @@ import { norm360, wrapLon, lonOffset } from '../geo/angles';
 import { HOUR_MS } from '../geo/units';
 import type { BBox } from '../geo/geodesy';
 import { bboxWidth } from '../geo/geodesy';
+import { bilinearCorners, gridXY, lerp2 } from './sampling';
 import type { WaveConditions, WindSource } from '../engine/environment';
 
 export interface FieldGrid {
@@ -343,56 +344,9 @@ export function nanFillLimited(f: FieldGrid, maxCells: number, opts: { inPlace?:
  */
 export function sampleField(f: FieldGrid, lon: number, lat: number): number {
   if (f.win) return sampleWindow(f, f.win, lon, lat);
-  const { nLat, nLon } = f;
-  if (f.wrapLon) return sampleWrapped(f, lon, lat);
-  const offLon = lonOffset(lon, f.lon0);
-  // If the offset is closer going west (box near the seam), allow negative.
-  let x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
-  let y = (lat - f.lat0) / f.dLat;
-  if (x < 0) x = 0;
-  if (x > nLon - 1) x = nLon - 1;
-  if (y < 0) y = 0;
-  if (y > nLat - 1) y = nLat - 1;
-  let c = Math.floor(x);
-  let r = Math.floor(y);
-  if (nLon === 1) c = 0;
-  else c = Math.max(0, Math.min(nLon - 2, c));
-  if (nLat === 1) r = 0;
-  else r = Math.max(0, Math.min(nLat - 2, r));
-  const tx = nLon === 1 ? 0 : x - c;
-  const ty = nLat === 1 ? 0 : y - r;
-  const v00 = f.values[r * nLon + c];
-  const v01 = f.values[r * nLon + Math.min(nLon - 1, c + 1)];
-  const v10 = f.values[Math.min(nLat - 1, r + 1) * nLon + c];
-  const v11 = f.values[Math.min(nLat - 1, r + 1) * nLon + Math.min(nLon - 1, c + 1)];
-  const a = v00 + tx * (v01 - v00);
-  const b = v10 + tx * (v11 - v10);
-  return a + ty * (b - a);
-}
-
-/** Bilinear sample on a full-circle grid (longitude wraps). */
-function sampleWrapped(f: FieldGrid, lon: number, lat: number): number {
-  const { nLat, nLon } = f;
-  const x = lonOffset(lon, f.lon0) / f.dLon;
-  let c = Math.floor(x);
-  if (c >= nLon) c -= nLon;
-  const tx = x - Math.floor(x);
-  const c1 = c + 1 === nLon ? 0 : c + 1;
-  let y = (lat - f.lat0) / f.dLat;
-  if (y < 0) y = 0;
-  if (y > nLat - 1) y = nLat - 1;
-  let r = Math.floor(y);
-  if (nLat === 1) r = 0;
-  else r = Math.max(0, Math.min(nLat - 2, r));
-  const ty = nLat === 1 ? 0 : y - r;
-  const r1 = Math.min(nLat - 1, r + 1);
-  const v00 = f.values[r * nLon + c];
-  const v01 = f.values[r * nLon + c1];
-  const v10 = f.values[r1 * nLon + c];
-  const v11 = f.values[r1 * nLon + c1];
-  const a = v00 + tx * (v01 - v00);
-  const b = v10 + tx * (v11 - v10);
-  return a + ty * (b - a);
+  const [x, y] = gridXY(f, lon, lat);
+  const k = bilinearCorners(f.nLat, f.nLon, !!f.wrapLon, x, y);
+  return lerp2(f.values[k.i00], f.values[k.i01], f.values[k.i10], f.values[k.i11], k.tx, k.ty);
 }
 
 /** Local row of global row `r` in a window (clamped to the window). */
@@ -418,48 +372,15 @@ function winCol(w: FieldWindow, nLon: number, wrap: boolean, c: number): number 
  * result is therefore identical to sampling the whole grid.
  */
 function sampleWindow(f: FieldGrid, w: FieldWindow, lon: number, lat: number): number {
-  const { nLat, nLon } = f;
-  let c: number;
-  let c1: number;
-  let tx: number;
-  if (f.wrapLon) {
-    const x = lonOffset(lon, f.lon0) / f.dLon;
-    c = Math.floor(x);
-    if (c >= nLon) c -= nLon;
-    tx = x - Math.floor(x);
-    c1 = c + 1 === nLon ? 0 : c + 1;
-  } else {
-    const offLon = lonOffset(lon, f.lon0);
-    let x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
-    if (x < 0) x = 0;
-    if (x > nLon - 1) x = nLon - 1;
-    c = Math.floor(x);
-    if (nLon === 1) c = 0;
-    else c = Math.max(0, Math.min(nLon - 2, c));
-    tx = nLon === 1 ? 0 : x - c;
-    c1 = Math.min(nLon - 1, c + 1);
-  }
-  let y = (lat - f.lat0) / f.dLat;
-  if (y < 0) y = 0;
-  if (y > nLat - 1) y = nLat - 1;
-  let r = Math.floor(y);
-  if (nLat === 1) r = 0;
-  else r = Math.max(0, Math.min(nLat - 2, r));
-  const ty = nLat === 1 ? 0 : y - r;
-  const r1 = Math.min(nLat - 1, r + 1);
+  const [x, y] = gridXY(f, lon, lat);
+  const k = bilinearCorners(f.nLat, f.nLon, !!f.wrapLon, x, y);
   const wrap = !!f.wrapLon;
   const nc = w.nc;
-  const lr = winRow(w, r) * nc;
-  const lr1 = winRow(w, r1) * nc;
-  const lc = winCol(w, nLon, wrap, c);
-  const lc1 = winCol(w, nLon, wrap, c1);
-  const v00 = f.values[lr + lc];
-  const v01 = f.values[lr + lc1];
-  const v10 = f.values[lr1 + lc];
-  const v11 = f.values[lr1 + lc1];
-  const a = v00 + tx * (v01 - v00);
-  const b = v10 + tx * (v11 - v10);
-  return a + ty * (b - a);
+  const lr = winRow(w, k.r) * nc;
+  const lr1 = winRow(w, k.r1) * nc;
+  const lc = winCol(w, f.nLon, wrap, k.c);
+  const lc1 = winCol(w, f.nLon, wrap, k.c1);
+  return lerp2(f.values[lr + lc], f.values[lr + lc1], f.values[lr1 + lc], f.values[lr1 + lc1], k.tx, k.ty);
 }
 
 /**
@@ -478,34 +399,14 @@ export function windowCovers(f: FieldGrid, w: FieldWindow, lon: number, lat: num
 
 /** Nearest-cell sample (categorical fields). */
 export function sampleFieldNearest(f: FieldGrid, lon: number, lat: number): number {
-  if (f.win) {
-    const w = f.win;
-    let x: number;
-    let y: number;
-    if (f.wrapLon) {
-      x = Math.round(lonOffset(lon, f.lon0) / f.dLon);
-      if (x >= f.nLon) x -= f.nLon;
-      y = Math.max(0, Math.min(f.nLat - 1, Math.round((lat - f.lat0) / f.dLat)));
-    } else {
-      const offLon = lonOffset(lon, f.lon0);
-      x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
-      y = (lat - f.lat0) / f.dLat;
-      x = Math.max(0, Math.min(f.nLon - 1, Math.round(x)));
-      y = Math.max(0, Math.min(f.nLat - 1, Math.round(y)));
-    }
-    return f.values[winRow(w, y) * w.nc + winCol(w, f.nLon, !!f.wrapLon, x)];
-  }
+  const [fx, fy] = gridXY(f, lon, lat);
+  let x: number;
   if (f.wrapLon) {
-    let x = Math.round(lonOffset(lon, f.lon0) / f.dLon);
+    x = Math.round(fx);
     if (x >= f.nLon) x -= f.nLon;
-    const y = Math.max(0, Math.min(f.nLat - 1, Math.round((lat - f.lat0) / f.dLat)));
-    return f.values[y * f.nLon + x];
-  }
-  const offLon = lonOffset(lon, f.lon0);
-  let x = offLon > 180 ? (offLon - 360) / f.dLon : offLon / f.dLon;
-  let y = (lat - f.lat0) / f.dLat;
-  x = Math.max(0, Math.min(f.nLon - 1, Math.round(x)));
-  y = Math.max(0, Math.min(f.nLat - 1, Math.round(y)));
+  } else x = Math.max(0, Math.min(f.nLon - 1, Math.round(fx)));
+  const y = Math.max(0, Math.min(f.nLat - 1, Math.round(fy)));
+  if (f.win) return f.values[winRow(f.win, y) * f.win.nc + winCol(f.win, f.nLon, !!f.wrapLon, x)];
   return f.values[y * f.nLon + x];
 }
 

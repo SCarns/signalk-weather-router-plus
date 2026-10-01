@@ -652,20 +652,7 @@ function loadWindOverlay() {
   _syncPointSource(windSource);
 }
 
-document.getElementById('departure').addEventListener('change', function() {
-  loadWindOverlay();
-  loadWindHeatmap();
-  loadCurrentHeatmap();
-  loadRoughness();
-  loadWaveHeatmap();
-  loadPrecipHeatmap();
-  loadTemperature();
-  loadSst();
-  loadTide();
-  loadPressure();
-  if (waveStreamlines.enabled) waveStreamlines._fetchField();
-  if (windStreamlines.enabled) windStreamlines._fetchField();
-});
+document.getElementById('departure').addEventListener('change', () => reloadOverlays({ currents: false, streamlines: true }));
 
 
 // ─────────── Heatmap engine (JSON grid → canvas → ImageStatic) ───────────
@@ -999,100 +986,59 @@ function _heatmapLoader(layer, toggleId, fieldLayer, spec) {
   };
 }
 
+// A colour tile layer and its debounced loader (300 ms after the last
+// view change; nothing when the layer is off). `zIndex` orders the
+// layers; the per-layer notes are at each layer below.
+function _heatmapLayer(zIndex, toggleId, fieldLayer, spec) {
+  const layer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex, visible: false });
+  const doLoad = _heatmapLoader(layer, toggleId, fieldLayer, spec);
+  let debounce = null;
+  const load = () => {
+    if (!layer.getVisible()) return;
+    if (debounce) clearTimeout(debounce);
+    debounce = setTimeout(doLoad, 300);
+  };
+  return { layer, load };
+}
+
 // ─────────── Wind-speed heatmap ───────────
 // Same ramp as the barbs (0–50 kt, 8 stops), alpha 0.55, not land
 // masked (wind is a real field over land, as on the routing server).
-const windHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
-let _windHeatmapDebounce = null;
-const _doLoadWindHeatmap = _heatmapLoader(windHeatmapLayer, 'windCombinedToggle', 'wind', { field: 'speed_ms', legend: 'wind', maskLand: false });
-function loadWindHeatmap() {
-  if (!windHeatmapLayer.getVisible()) return;
-  if (_windHeatmapDebounce) clearTimeout(_windHeatmapDebounce);
-  _windHeatmapDebounce = setTimeout(_doLoadWindHeatmap, 300);
-}
+const { layer: windHeatmapLayer, load: loadWindHeatmap } = _heatmapLayer(6, 'windCombinedToggle', 'wind', { field: 'speed_ms', legend: 'wind', maskLand: false });
 
 // ─────────── Current-speed heatmap ───────────
 // Land masked so the coasts stay sharp.
-const currentHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
-let _currentHeatmapDebounce = null;
-const _doLoadCurrentHeatmap = _heatmapLoader(currentHeatmapLayer, 'currentHeatmapToggle', 'current', { field: 'speed_ms', legend: 'current', maskLand: true, hatchNoData: true, attributions: CURRENT_ATTRIBUTION });
-function loadCurrentHeatmap() {
-  if (!currentHeatmapLayer.getVisible()) return;
-  if (_currentHeatmapDebounce) clearTimeout(_currentHeatmapDebounce);
-  _currentHeatmapDebounce = setTimeout(_doLoadCurrentHeatmap, 300);
-}
+const { layer: currentHeatmapLayer, load: loadCurrentHeatmap } = _heatmapLayer(6, 'currentHeatmapToggle', 'current', { field: 'speed_ms', legend: 'current', maskLand: true, hatchNoData: true, attributions: CURRENT_ATTRIBUTION });
 
 // ─────────── Sea-state / roughness heatmap ───────────
 // Combined wind + swell + current index, painted blue→red (RdYlBu_r,
 // 0–150). Alpha is 0.55 × the grid's `signal` (0..1 fade from calm),
 // 0 over land.
-const roughnessLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
-let _roughnessDebounce = null;
-const _doLoadRoughness = _heatmapLoader(roughnessLayer, 'roughnessToggle', 'sea_state', { field: 'index', legend: 'sea_state', maskLand: true, alphaField: 'signal', attributions: CURRENT_ATTRIBUTION });
-function loadRoughness() {
-  if (!roughnessLayer.getVisible()) return;
-  if (_roughnessDebounce) clearTimeout(_roughnessDebounce);
-  _roughnessDebounce = setTimeout(_doLoadRoughness, 300);
-}
+const { layer: roughnessLayer, load: loadRoughness } = _heatmapLayer(6, 'roughnessToggle', 'sea_state', { field: 'index', legend: 'sea_state', maskLand: true, alphaField: 'signal', attributions: CURRENT_ATTRIBUTION });
 
 // ─────────── Wave height heatmap (0–6 m, 7 stops, land masked) ───────────
-const waveHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
-let _waveHeatmapDebounce = null;
-const _doLoadWaveHeatmap = _heatmapLoader(waveHeatmapLayer, 'wavesCombinedToggle', 'waves', { field: 'swh', legend: 'waves', maskLand: true });
-function loadWaveHeatmap() {
-  if (!waveHeatmapLayer.getVisible()) return;
-  if (_waveHeatmapDebounce) clearTimeout(_waveHeatmapDebounce);
-  _waveHeatmapDebounce = setTimeout(_doLoadWaveHeatmap, 300);
-}
+const { layer: waveHeatmapLayer, load: loadWaveHeatmap } = _heatmapLayer(6, 'wavesCombinedToggle', 'waves', { field: 'swh', legend: 'waves', maskLand: true });
 
 // ─────────── Precipitation rate heatmap ────
 // Alpha fades to 0 below 0.5 mm/h (linear ramp across [0, 0.5 mm/h])
 // so the broad zero-precip background does not wash out the basemap;
 // land masked like the routing server's PNG.
-const precipHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
-let _precipHeatmapDebounce = null;
-const _doLoadPrecipHeatmap = _heatmapLoader(precipHeatmapLayer, 'precipToggle', 'precip', { field: 'rate', legend: 'precip', maskLand: true });
-function loadPrecipHeatmap() {
-  if (!precipHeatmapLayer.getVisible()) return;
-  if (_precipHeatmapDebounce) clearTimeout(_precipHeatmapDebounce);
-  _precipHeatmapDebounce = setTimeout(_doLoadPrecipHeatmap, 300);
-}
+const { layer: precipHeatmapLayer, load: loadPrecipHeatmap } = _heatmapLayer(6, 'precipToggle', 'precip', { field: 'rate', legend: 'precip', maskLand: true });
 
 // ─────────── 2-m air temperature heatmap ─────────────
 // Constant alpha, no land mask: air temp is meaningful everywhere and a
 // sailor at anchor still cares about the shore-side temp.
-const temperatureLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 5, visible: false });
-let _temperatureDebounce = null;
-const _doLoadTemperature = _heatmapLoader(temperatureLayer, 'temperatureToggle', 'temperature', { field: 't2m', legend: 'temperature', maskLand: false });
-function loadTemperature() {
-  if (!temperatureLayer.getVisible()) return;
-  if (_temperatureDebounce) clearTimeout(_temperatureDebounce);
-  _temperatureDebounce = setTimeout(_doLoadTemperature, 300);
-}
+const { layer: temperatureLayer, load: loadTemperature } = _heatmapLayer(5, 'temperatureToggle', 'temperature', { field: 't2m', legend: 'temperature', maskLand: false });
 
 // ─────────── Sea-surface (skin) temperature heatmap ──
 // Land masked: over land `skt` is the land-surface temperature, not SST.
-const sstLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 5, visible: false });
-let _sstDebounce = null;
-const _doLoadSst = _heatmapLoader(sstLayer, 'sstToggle', 'sst', { field: 'skt', legend: 'sst', maskLand: true });
-function loadSst() {
-  if (!sstLayer.getVisible()) return;
-  if (_sstDebounce) clearTimeout(_sstDebounce);
-  _sstDebounce = setTimeout(_doLoadSst, 300);
-}
+const { layer: sstLayer, load: loadSst } = _heatmapLayer(5, 'sstToggle', 'sst', { field: 'skt', legend: 'sst', maskLand: true });
 
 // ─────────── Tide height heatmap (Copernicus Marine, −3..+3 m around mean sea level) ──
 // Land masked at the true coastline; the plugin extends the 1/12° field
 // up to 2 cells towards the coast for display. Hourly: reloads with the
 // overlay time like the other layers.
-const tideLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 5, visible: false });
-let _tideDebounce = null;
-const _doLoadTide = _heatmapLoader(tideLayer, 'tideToggle', 'tide', { field: 'tide_m', legend: 'tide', maskLand: true, hatchNoData: true, autoScaleSym: true, minScale: 0.5, attributions: TIDE_ATTRIBUTION });
-function loadTide() {
-  if (!tideLayer.getVisible()) return;
-  if (_tideDebounce) clearTimeout(_tideDebounce);
-  _tideDebounce = setTimeout(_doLoadTide, 300);
-}
+const { layer: tideLayer, load: loadTide } = _heatmapLayer(5, 'tideToggle', 'tide', { field: 'tide_m', legend: 'tide', maskLand: true, hatchNoData: true, autoScaleSym: true, minScale: 0.5, attributions: TIDE_ATTRIBUTION });
 
 // ─────────── MSL pressure synoptic chart (vector GeoJSON) ─────────
 // Plugin returns isobars + hPa labels along each contour + H/L glyphs
@@ -1190,280 +1136,161 @@ function _doLoadPressure() {
     .catch(err => { if (err.name !== 'AbortError') { console.log('Pressure overlay error: ' + err); _noteOverlay('pressureToggle', err.message); } });
 }
 
-// ─────────── Wave streamlines (animated canvas overlay) ───────────
-// Fetches the wave grid (`/api/field?layer=waves`) for the current
-// viewport, spawns particles anywhere swh is finite, advects them in the
-// mwd propagation direction, and fades a trail. Color matches the
-// wave-height heatmap ramp so the two layers reinforce each other.
-const waveStreamlines = {
-  canvas: null,
-  ctx: null,
-  enabled: false,
-  particles: [],
-  vectorField: null,
-  rafId: null,
-  fetching: false,
-  _onMoveEnd: null,
+// ─────────── Streamlines (animated canvas overlay) ───────────
+// One animated particle layer per vector field (waves, wind): fetches the
+// field (`/api/field?layer=…`) for the current viewport, spawns particles
+// where the magnitude is finite and the cell is water, advects them in the
+// direction the field moves TO (the fields give the direction FROM), and
+// fades a trail. The colour is the field's legend ramp, so the layer
+// reinforces the matching heatmap. `spec`: { layer, channel, label,
+// magKey, dirKey, legend, stepDeg(mag) → degrees per frame }.
+function _streamlines(spec) {
+  return {
+    spec,
+    canvas: null,
+    ctx: null,
+    enabled: false,
+    particles: [],
+    vectorField: null,
+    rafId: null,
+    fetching: false,
+    _onMoveEnd: null,
 
-  _init() {
-    if (this.canvas) return;
-    this.canvas = document.createElement('canvas');
-    this.canvas.style.cssText =
-      'position:absolute;top:0;left:0;pointer-events:none;z-index:5;display:none;';
-    document.getElementById('map').appendChild(this.canvas);
-    this.ctx = this.canvas.getContext('2d');
-    this._resize();
-    window.addEventListener('resize', () => this._resize());
-    map.on('change:size', () => this._resize());
-  },
+    _init() {
+      if (this.canvas) return;
+      this.canvas = document.createElement('canvas');
+      this.canvas.style.cssText =
+        'position:absolute;top:0;left:0;pointer-events:none;z-index:5;display:none;';
+      document.getElementById('map').appendChild(this.canvas);
+      this.ctx = this.canvas.getContext('2d');
+      this._resize();
+      window.addEventListener('resize', () => this._resize());
+      map.on('change:size', () => this._resize());
+    },
 
-  _resize() {
-    const size = map.getSize();
-    if (!size) return;
-    this.canvas.width = size[0];
-    this.canvas.height = size[1];
-  },
+    _resize() {
+      const size = map.getSize();
+      if (!size) return;
+      this.canvas.width = size[0];
+      this.canvas.height = size[1];
+    },
 
-  setEnabled(on) {
-    this._init();
-    this.enabled = on;
-    this.canvas.style.display = on ? '' : 'none';
-    if (on) {
-      this._fetchField();
-      if (!this.rafId) this._loop();
-      this._onMoveEnd = () => this._fetchField();
-      map.on('moveend', this._onMoveEnd);
-    } else {
-      if (this.rafId) cancelAnimationFrame(this.rafId);
-      this.rafId = null;
-      this.particles = [];
-      this.vectorField = null;
-      if (this._onMoveEnd) { map.un('moveend', this._onMoveEnd); this._onMoveEnd = null; }
-      if (this.ctx) this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    }
-  },
-
-  _fetchField() {
-    if (!this.enabled || this.fetching || AuthGate.tripped) return;
-    this.fetching = true;
-    fetchField('waves', 'wave-vec').then(d => {
-      this.vectorField = d;
-      _attachLandMask(this, d);
-      // Respawn the whole particle population — old particles are at
-      // positions now out of the field's bounds.
-      const N = 1500;
-      this.particles = new Array(N);
-      for (let i = 0; i < N; i++) this.particles[i] = this._spawn();
-    }).catch(err => { if (err.name !== 'AbortError') console.log('wave field error:', err.message); })
-      .finally(() => { this.fetching = false; });
-  },
-
-  _spawn() {
-    const f = this.vectorField;
-    if (!f || !f.bbox) return null;
-    const [w, s, e, n] = f.bbox;
-    for (let i = 0; i < 20; i++) {
-      const lon = w + Math.random() * (e - w);
-      const lat = s + Math.random() * (n - s);
-      const sample = this._sample(lon, lat);
-      if (sample) {
-        return { lon, lat, age: 0, maxAge: 60 + Math.random() * 60 };
+    setEnabled(on) {
+      this._init();
+      this.enabled = on;
+      this.canvas.style.display = on ? '' : 'none';
+      if (on) {
+        this._fetchField();
+        if (!this.rafId) this._loop();
+        this._onMoveEnd = () => this._fetchField();
+        map.on('moveend', this._onMoveEnd);
+      } else {
+        if (this.rafId) cancelAnimationFrame(this.rafId);
+        this.rafId = null;
+        this.particles = [];
+        this.vectorField = null;
+        if (this._onMoveEnd) { map.un('moveend', this._onMoveEnd); this._onMoveEnd = null; }
+        if (this.ctx) this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
       }
-    }
-    return null;  // couldn't find a live cell
-  },
+    },
 
-  _sample(lon, lat) {
-    const f = this.vectorField;
-    if (!f || !f.res || !f.fields || !f.fields.swh) return null;
-    // Offset east of the field's first column in [0, 360) (fields can span > 180°).
-    let dx = ((lon - f.lons[0]) % 360 + 360) % 360;
-    if (dx > 360 - f.res / 2) dx -= 360;
-    const j = Math.round(dx / f.res);
-    const i = Math.round((lat - f.lats[0]) / f.res);
-    if (i < 0 || i >= f.lats.length || j < 0 || j >= f.lons.length) return null;
-    const ml = _maskIsLand(f, this.landMask, lon, lat);
-    if (ml === true) return null;
-    if (ml === null && f.land && f.land[i] && f.land[i][j]) return null;
-    const swh = f.fields.swh[i][j];
-    const mwd = f.fields.mwd[i][j];
-    if (swh == null || mwd == null) return null;
-    return { swh, mwd };
-  },
+    _fetchField() {
+      if (!this.enabled || this.fetching || AuthGate.tripped) return;
+      this.fetching = true;
+      fetchField(this.spec.layer, this.spec.channel).then(d => {
+        this.vectorField = d;
+        _attachLandMask(this, d);
+        // Respawn the whole particle population: old particles are at
+        // positions now out of the field's bounds.
+        const N = 1500;
+        this.particles = new Array(N);
+        for (let i = 0; i < N; i++) this.particles[i] = this._spawn();
+      }).catch(err => { if (err.name !== 'AbortError') console.log(this.spec.label + ':', err.message); })
+        .finally(() => { this.fetching = false; });
+    },
 
-  _loop() {
-    if (!this.enabled) { this.rafId = null; return; }
-    const ctx = this.ctx;
-    // Fade the previous frame to leave trails.
-    ctx.globalCompositeOperation = 'destination-in';
-    ctx.fillStyle = 'rgba(0,0,0,0.92)';
-    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    ctx.globalCompositeOperation = 'source-over';
-
-    for (let k = 0; k < this.particles.length; k++) {
-      let p = this.particles[k];
-      if (!p) { this.particles[k] = this._spawn(); continue; }
-      const sample = this._sample(p.lon, p.lat);
-      if (!sample) { this.particles[k] = this._spawn(); continue; }
-      // ECMWF mwd is direction FROM; velocity TO is mwd + 180°.
-      const dirTo = (sample.mwd + 180) % 360;
-      const rad = dirTo * Math.PI / 180;
-      const speed = 0.0008 + 0.00025 * sample.swh;   // deg per frame
-      const coslat = Math.max(0.1, Math.cos(p.lat * Math.PI / 180));
-      p.lat += Math.cos(rad) * speed;
-      p.lon += Math.sin(rad) * speed / coslat;
-      p.age++;
-      if (p.age > p.maxAge) { this.particles[k] = this._spawn(); continue; }
-      const pix = map.getPixelFromCoordinate(ol.proj.fromLonLat([p.lon, p.lat]));
-      if (!pix) continue;
-      ctx.fillStyle = this._color(sample.swh);
-      ctx.fillRect(pix[0], pix[1], 2, 2);
-    }
-    this.rafId = requestAnimationFrame(() => this._loop());
-  },
-
-  // The waves legend ramp (GET /api/legends).
-  _color(swh) {
-    return _stopsColor(_legendStops('waves'), swh);
-  },
-};
-
-// ─────────── Wind streamlines (animated canvas overlay) ───────────
-// Parallel to waveStreamlines. Fetches the wind grid, advects particles
-// in the (dir_from + 180) direction, colors by wind speed in knots using
-// the same 8-stop ramp as the wind heatmap.
-const windStreamlines = {
-  canvas: null,
-  ctx: null,
-  enabled: false,
-  particles: [],
-  vectorField: null,
-  rafId: null,
-  fetching: false,
-  _onMoveEnd: null,
-
-  _init() {
-    if (this.canvas) return;
-    this.canvas = document.createElement('canvas');
-    this.canvas.style.cssText =
-      'position:absolute;top:0;left:0;pointer-events:none;z-index:5;display:none;';
-    document.getElementById('map').appendChild(this.canvas);
-    this.ctx = this.canvas.getContext('2d');
-    this._resize();
-    window.addEventListener('resize', () => this._resize());
-    map.on('change:size', () => this._resize());
-  },
-
-  _resize() {
-    const size = map.getSize();
-    if (!size) return;
-    this.canvas.width = size[0];
-    this.canvas.height = size[1];
-  },
-
-  setEnabled(on) {
-    this._init();
-    this.enabled = on;
-    this.canvas.style.display = on ? '' : 'none';
-    if (on) {
-      this._fetchField();
-      if (!this.rafId) this._loop();
-      this._onMoveEnd = () => this._fetchField();
-      map.on('moveend', this._onMoveEnd);
-    } else {
-      if (this.rafId) cancelAnimationFrame(this.rafId);
-      this.rafId = null;
-      this.particles = [];
-      this.vectorField = null;
-      if (this._onMoveEnd) { map.un('moveend', this._onMoveEnd); this._onMoveEnd = null; }
-      if (this.ctx) this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    }
-  },
-
-  _fetchField() {
-    if (!this.enabled || this.fetching || AuthGate.tripped) return;
-    this.fetching = true;
-    fetchField('wind', 'wind-vec').then(d => {
-      this.vectorField = d;
-      _attachLandMask(this, d);
-      const N = 1500;
-      this.particles = new Array(N);
-      for (let i = 0; i < N; i++) this.particles[i] = this._spawn();
-    }).catch(err => { if (err.name !== 'AbortError') console.log('wind field error:', err.message); })
-      .finally(() => { this.fetching = false; });
-  },
-
-  _spawn() {
-    const f = this.vectorField;
-    if (!f || !f.bbox) return null;
-    const [w, s, e, n] = f.bbox;
-    for (let i = 0; i < 20; i++) {
-      const lon = w + Math.random() * (e - w);
-      const lat = s + Math.random() * (n - s);
-      const sample = this._sample(lon, lat);
-      if (sample) {
-        return { lon, lat, age: 0, maxAge: 60 + Math.random() * 60 };
+    _spawn() {
+      const f = this.vectorField;
+      if (!f || !f.bbox) return null;
+      const [w, s, e, n] = f.bbox;
+      for (let i = 0; i < 20; i++) {
+        const lon = w + Math.random() * (e - w);
+        const lat = s + Math.random() * (n - s);
+        const sample = this._sample(lon, lat);
+        if (sample) {
+          return { lon, lat, age: 0, maxAge: 60 + Math.random() * 60 };
+        }
       }
-    }
-    return null;
-  },
+      return null;  // couldn't find a live cell
+    },
 
-  _sample(lon, lat) {
-    const f = this.vectorField;
-    if (!f || !f.res || !f.fields || !f.fields.speed_ms) return null;
-    // Offset east of the field's first column in [0, 360) (fields can span > 180°).
-    let dx = ((lon - f.lons[0]) % 360 + 360) % 360;
-    if (dx > 360 - f.res / 2) dx -= 360;
-    const j = Math.round(dx / f.res);
-    const i = Math.round((lat - f.lats[0]) / f.res);
-    if (i < 0 || i >= f.lats.length || j < 0 || j >= f.lons.length) return null;
-    // Land cells are skipped so particles don't drift over the shore
-    // (the routing server nulled them in its wind-vector field).
-    const ml = _maskIsLand(f, this.landMask, lon, lat);
-    if (ml === true) return null;
-    if (ml === null && f.land && f.land[i] && f.land[i][j]) return null;
-    const spd = f.fields.speed_ms[i][j];
-    const dir = f.fields.dir_from[i][j];
-    if (spd == null || dir == null) return null;
-    return { speed_ms: spd, dir_from: dir };
-  },
+    // { mag, dirFrom } at a position, or null over land / outside the field / without data.
+    _sample(lon, lat) {
+      const f = this.vectorField;
+      if (!f || !f.res || !f.fields || !f.fields[this.spec.magKey]) return null;
+      // Offset east of the field's first column in [0, 360) (fields can span > 180°).
+      let dx = ((lon - f.lons[0]) % 360 + 360) % 360;
+      if (dx > 360 - f.res / 2) dx -= 360;
+      const j = Math.round(dx / f.res);
+      const i = Math.round((lat - f.lats[0]) / f.res);
+      if (i < 0 || i >= f.lats.length || j < 0 || j >= f.lons.length) return null;
+      // Land cells are skipped so particles don't drift over the shore.
+      const ml = _maskIsLand(f, this.landMask, lon, lat);
+      if (ml === true) return null;
+      if (ml === null && f.land && f.land[i] && f.land[i][j]) return null;
+      const mag = f.fields[this.spec.magKey][i][j];
+      const dirFrom = f.fields[this.spec.dirKey][i][j];
+      if (mag == null || dirFrom == null) return null;
+      return { mag, dirFrom };
+    },
 
-  _loop() {
-    if (!this.enabled) { this.rafId = null; return; }
-    const ctx = this.ctx;
-    ctx.globalCompositeOperation = 'destination-in';
-    ctx.fillStyle = 'rgba(0,0,0,0.92)';
-    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    ctx.globalCompositeOperation = 'source-over';
+    _loop() {
+      if (!this.enabled) { this.rafId = null; return; }
+      const ctx = this.ctx;
+      // Fade the previous frame to leave trails.
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.fillStyle = 'rgba(0,0,0,0.92)';
+      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      ctx.globalCompositeOperation = 'source-over';
 
-    for (let k = 0; k < this.particles.length; k++) {
-      let p = this.particles[k];
-      if (!p) { this.particles[k] = this._spawn(); continue; }
-      const sample = this._sample(p.lon, p.lat);
-      if (!sample) { this.particles[k] = this._spawn(); continue; }
-      // meteorological dir_from → velocity TO is +180°
-      const dirTo = (sample.dir_from + 180) % 360;
-      const rad = dirTo * Math.PI / 180;
-      // Wind visual step: scale with speed (m/s). Tuned so 20 kt ≈ quick drift.
-      const speed = 0.001 + 0.00012 * sample.speed_ms;
-      const coslat = Math.max(0.1, Math.cos(p.lat * Math.PI / 180));
-      p.lat += Math.cos(rad) * speed;
-      p.lon += Math.sin(rad) * speed / coslat;
-      p.age++;
-      if (p.age > p.maxAge) { this.particles[k] = this._spawn(); continue; }
-      const pix = map.getPixelFromCoordinate(ol.proj.fromLonLat([p.lon, p.lat]));
-      if (!pix) continue;
-      ctx.fillStyle = this._color(sample.speed_ms);
-      ctx.fillRect(pix[0], pix[1], 2, 2);
-    }
-    this.rafId = requestAnimationFrame(() => this._loop());
-  },
+      for (let k = 0; k < this.particles.length; k++) {
+        let p = this.particles[k];
+        if (!p) { this.particles[k] = this._spawn(); continue; }
+        const sample = this._sample(p.lon, p.lat);
+        if (!sample) { this.particles[k] = this._spawn(); continue; }
+        // Meteorological direction FROM; velocity TO is +180°.
+        const dirTo = (sample.dirFrom + 180) % 360;
+        const rad = dirTo * Math.PI / 180;
+        const speed = this.spec.stepDeg(sample.mag);   // deg per frame
+        const coslat = Math.max(0.1, Math.cos(p.lat * Math.PI / 180));
+        p.lat += Math.cos(rad) * speed;
+        p.lon += Math.sin(rad) * speed / coslat;
+        p.age++;
+        if (p.age > p.maxAge) { this.particles[k] = this._spawn(); continue; }
+        const pix = map.getPixelFromCoordinate(ol.proj.fromLonLat([p.lon, p.lat]));
+        if (!pix) continue;
+        ctx.fillStyle = this._color(sample.mag);
+        ctx.fillRect(pix[0], pix[1], 2, 2);
+      }
+      this.rafId = requestAnimationFrame(() => this._loop());
+    },
 
-  // The wind legend ramp (GET /api/legends).
-  _color(speed_ms) {
-    return _stopsColor(_legendStops('wind'), speed_ms);
-  },
-};
+    // The field's legend ramp (GET /api/legends).
+    _color(mag) {
+      return _stopsColor(_legendStops(this.spec.legend), mag);
+    },
+  };
+}
+// Waves: direction mwd (FROM), coloured by significant wave height.
+const waveStreamlines = _streamlines({
+  layer: 'waves', channel: 'wave-vec', label: 'wave field error', magKey: 'swh', dirKey: 'mwd', legend: 'waves',
+  stepDeg: swh => 0.0008 + 0.00025 * swh,
+});
+// Wind: direction dir_from, coloured by speed; the step is tuned so 20 kt is a quick drift.
+const windStreamlines = _streamlines({
+  layer: 'wind', channel: 'wind-vec', label: 'wind field error', magKey: 'speed_ms', dirKey: 'dir_from', legend: 'wind',
+  stepDeg: v => 0.001 + 0.00012 * v,
+});
 
 // --- Map ---
 const _DEFAULT_LONLAT = [-71.7, 41.25];
@@ -1531,10 +1358,13 @@ if (!_SAVED_VIEW && typeof navigator !== 'undefined' && navigator.geolocation) {
   }, () => { _geoPending = false; }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 });
 }
 
-// Reload overlays when map view changes (each loader debounces itself).
-map.on('moveend', function() {
-  if (AuthGate.tripped) return;
-  loadCurrentOverlay();
+// Every overlay keyed by the view and the overlay time (each loader
+// debounces itself and does nothing when its layer is off). `currents`:
+// the current arrows too (they do not follow the departure change);
+// `streamlines`: refetch the wave / wind streamline fields (they attach
+// their own moveend listener in setEnabled, so the view change skips them).
+function reloadOverlays({ currents = true, streamlines = false } = {}) {
+  if (currents) loadCurrentOverlay();
   loadWindOverlay();
   loadWindHeatmap();
   loadCurrentHeatmap();
@@ -1545,7 +1375,15 @@ map.on('moveend', function() {
   loadSst();
   loadTide();
   loadPressure();
-  // wave/wind streamlines each attach their own moveend listener in setEnabled
+  if (streamlines) {
+    if (waveStreamlines.enabled) waveStreamlines._fetchField();
+    if (windStreamlines.enabled) windStreamlines._fetchField();
+  }
+}
+// Reload overlays when map view changes.
+map.on('moveend', function() {
+  if (AuthGate.tripped) return;
+  reloadOverlays({ currents: true, streamlines: false });
 });
 
 // --- Drag interaction ---

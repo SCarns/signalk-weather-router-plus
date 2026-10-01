@@ -33,6 +33,9 @@ import { describePassage } from '../geo/straits';
 import type { WaterGrid } from '../geo/watergrid';
 import { GridAstarError, gridAstar, smoothGridPath, type GridNode, type GridSource } from './gridastar';
 import { distanceTransformCells } from './astar';
+import { MinHeap } from './heap';
+import { stringPull } from './pathutil';
+import { forEachRingCell } from '../geo/grid';
 
 /** Finest local refinement of the route raster, degrees (≈ 55 m): passages narrower than about 3 cells stay closed. */
 export const MIN_PATCH_RES = 0.0005;
@@ -136,17 +139,14 @@ function endpointNodes(grid: WaterGrid, lon: number, lat: number, radius: number
   const nodes: GridSource[] = [];
   let radiusM = 0;
   for (let rad = 1; rad <= radius && nodes.length === 0; rad++) {
-    for (let dr = -rad; dr <= rad; dr++) {
-      for (let dc = -rad; dc <= rad; dc++) {
-        if (Math.max(Math.abs(dr), Math.abs(dc)) !== rad) continue;
-        for (const comp of grid.nodeComponents(r0 + dr, c0 + dc)) {
-          const [clon, clat] = grid.cellCentre(r0 + dr, c0 + dc);
-          const d = haversineDistanceM(lon, lat, clon, clat);
-          nodes.push({ r: r0 + dr, c: c0 + dc, comp, cost: d });
-          radiusM = Math.max(radiusM, d);
-        }
+    forEachRingCell(rad, (dr, dc) => {
+      for (const comp of grid.nodeComponents(r0 + dr, c0 + dc)) {
+        const [clon, clat] = grid.cellCentre(r0 + dr, c0 + dc);
+        const d = haversineDistanceM(lon, lat, clon, clat);
+        nodes.push({ r: r0 + dr, c: c0 + dc, comp, cost: d });
+        radiusM = Math.max(radiusM, d);
       }
-    }
+    });
   }
   return { nodes, radiusM };
 }
@@ -217,21 +217,17 @@ function legAstar(
     const [r0, c0] = grid.cellOf(lonlat[0], lonlat[1]);
     const alt: GridSource[] = [];
     let radiusM = 0;
-    for (let rad = 1; rad <= 5; rad++) {
-      for (let dr = -rad; dr <= rad; dr++) {
-        for (let dc = -rad; dc <= rad; dc++) {
-          if (Math.max(Math.abs(dr), Math.abs(dc)) !== rad) continue;
-          for (const comp of grid.nodeComponents(r0 + dr, c0 + dc)) {
-            if (pr.cells.has(((r0 + dr) * grid.nx + grid.wrapCol(c0 + dc)) * 16 + comp)) continue;
-            if (probeComponent(grid, [{ r: r0 + dr, c: c0 + dc, comp }], PROBE_CAP).small) continue;
-            const [clon, clat] = grid.cellCentre(r0 + dr, c0 + dc);
-            const d = haversineDistanceM(lonlat[0], lonlat[1], clon, clat);
-            alt.push({ r: r0 + dr, c: c0 + dc, comp, cost: d });
-            radiusM = Math.max(radiusM, d);
-          }
+    for (let rad = 1; rad <= 5 && alt.length === 0; rad++) {
+      forEachRingCell(rad, (dr, dc) => {
+        for (const comp of grid.nodeComponents(r0 + dr, c0 + dc)) {
+          if (pr.cells.has(((r0 + dr) * grid.nx + grid.wrapCol(c0 + dc)) * 16 + comp)) continue;
+          if (probeComponent(grid, [{ r: r0 + dr, c: c0 + dc, comp }], PROBE_CAP).small) continue;
+          const [clon, clat] = grid.cellCentre(r0 + dr, c0 + dc);
+          const d = haversineDistanceM(lonlat[0], lonlat[1], clon, clat);
+          alt.push({ r: r0 + dr, c: c0 + dc, comp, cost: d });
+          radiusM = Math.max(radiusM, d);
         }
-      }
-      if (alt.length) break;
+      });
     }
     if (!alt.length)
       throw new CorridorError(
@@ -901,17 +897,20 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
     while (x - first.lon < -180) x += 360;
     const cx = Math.min(nx - 1, Math.max(0, Math.floor((x - west) / res)));
     const cy = Math.min(ny - 1, Math.max(0, Math.floor((p.lat - south) / res)));
-    // Nearest water cell.
-    for (let r = 0; r < 40; r++) {
-      for (let dy = -r; dy <= r; dy++)
-        for (let dx = -r; dx <= r; dx++) {
-          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-          const xx = cx + dx;
-          const yy = cy + dy;
-          if (xx >= 0 && yy >= 0 && xx < nx && yy < ny && water[yy * nx + xx]) return yy * nx + xx;
+    // Nearest water cell (the first found, ring by ring).
+    let found = -1;
+    for (let r = 0; r < 40 && found < 0; r++) {
+      forEachRingCell(r, (dy, dx) => {
+        const xx = cx + dx;
+        const yy = cy + dy;
+        if (xx >= 0 && yy >= 0 && xx < nx && yy < ny && water[yy * nx + xx]) {
+          found = yy * nx + xx;
+          return true;
         }
+        return false;
+      });
     }
-    return -1;
+    return found;
   };
   const s0 = cellOf(first);
   const e0 = cellOf(last);
@@ -921,46 +920,12 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
   const g = new Float64Array(nx * ny).fill(Infinity);
   const par = new Int32Array(nx * ny).fill(-1);
   const done = new Uint8Array(nx * ny);
-  const heapK: number[] = [];
-  const heapV: number[] = [];
-  const push = (k: number, v: number): void => {
-    let i = heapK.length;
-    heapK.push(k);
-    heapV.push(v);
-    while (i > 0) {
-      const p = (i - 1) >> 1;
-      if (heapK[p] <= heapK[i]) break;
-      [heapK[p], heapK[i]] = [heapK[i], heapK[p]];
-      [heapV[p], heapV[i]] = [heapV[i], heapV[p]];
-      i = p;
-    }
-  };
-  const pop = (): number => {
-    const top = heapV[0];
-    const lk = heapK.pop()!;
-    const lv = heapV.pop()!;
-    if (heapK.length) {
-      heapK[0] = lk;
-      heapV[0] = lv;
-      let i = 0;
-      for (;;) {
-        const l = 2 * i + 1;
-        if (l >= heapK.length) break;
-        const r = l + 1;
-        const m = r < heapK.length && heapK[r] < heapK[l] ? r : l;
-        if (heapK[m] >= heapK[i]) break;
-        [heapK[m], heapK[i]] = [heapK[i], heapK[m]];
-        [heapV[m], heapV[i]] = [heapV[i], heapV[m]];
-        i = m;
-      }
-    }
-    return top;
-  };
+  const heap = new MinHeap();
   const ex = e0 % nx;
   const ey = Math.floor(e0 / nx);
   const h = (c: number): number => Math.hypot(((c % nx) - ex) * cosL, Math.floor(c / nx) - ey);
   g[s0] = 0;
-  push(h(s0), s0);
+  heap.push(h(s0), s0);
   const DIRS: [number, number][] = [
     [1, 0],
     [-1, 0],
@@ -972,8 +937,8 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
     [-1, -1],
   ];
   let found = false;
-  while (heapK.length) {
-    const c = pop();
+  while (heap.size > 0) {
+    const c = heap.pop();
     if (done[c]) continue;
     done[c] = 1;
     if (c === e0) {
@@ -995,7 +960,7 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
       if (ng < g[k]) {
         g[k] = ng;
         par[k] = c;
-        push(ng + h(k), k);
+        heap.push(ng + h(k), k);
       }
     }
   }
@@ -1018,19 +983,7 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
     }
     return true;
   };
-  const kept: number[] = [cells[0]];
-  let ai = 0;
-  while (ai < cells.length - 1) {
-    let best = ai + 1;
-    for (let q = Math.min(cells.length - 1, ai + 400); q > ai + 1; q--) {
-      if (los(cells[ai], cells[q])) {
-        best = q;
-        break;
-      }
-    }
-    kept.push(cells[best]);
-    ai = best;
-  }
+  const kept = stringPull(cells, (ai, q) => q <= ai + 400 && los(cells[ai], cells[q]));
   const poly = kept.map(c => ({ lon: wrapLon(west + ((c % nx) + 0.5) * res), lat: south + (Math.floor(c / nx) + 0.5) * res }));
   poly[0] = first;
   poly[poly.length - 1] = last;

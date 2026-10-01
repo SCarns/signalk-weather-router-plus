@@ -936,32 +936,7 @@ export function timeWeights(steps: number[], tMs: number): [number, number, numb
   return [lo, lo + 1, (tMs - steps[lo]) / (steps[lo + 1] - steps[lo])];
 }
 
-/**
- * Bilinear corner indices and weights at fractional local cell
- * coordinates (x = column, y = row) of an nRows × nCols block (`wrap`:
- * columns span the full circle).
- */
-export function bilinearCorners(
-  nRows: number,
-  nCols: number,
-  wrap: boolean,
-  x: number,
-  y: number
-): { i00: number; i01: number; i10: number; i11: number; tx: number; ty: number; r: number; c: number; r1: number; c1: number } {
-  let c = Math.floor(x);
-  let r = Math.floor(y);
-  if (wrap) {
-    if (c >= nCols) c -= nCols;
-  } else if (nCols === 1) c = 0;
-  else c = Math.min(nCols - 2, c);
-  if (nRows === 1) r = 0;
-  else r = Math.min(nRows - 2, r);
-  const tx = nCols === 1 ? 0 : x - (wrap ? Math.floor(x) : c);
-  const ty = nRows === 1 ? 0 : y - r;
-  const c1 = wrap ? (c + 1 === nCols ? 0 : c + 1) : Math.min(nCols - 1, c + 1);
-  const r1 = Math.min(nRows - 1, r + 1);
-  return { i00: r * nCols + c, i01: r * nCols + c1, i10: r1 * nCols + c, i11: r1 * nCols + c1, tx, ty, r, c, r1, c1 };
-}
+export { bilinearCorners } from './sampling';
 
 // ─────────────── area set (resident + on-demand LRU) ───────────────
 

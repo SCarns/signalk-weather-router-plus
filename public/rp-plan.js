@@ -566,7 +566,7 @@ function renderResultStrip(p, navWarns) {
   if (!p) { el.innerHTML = ''; return; }
   const distStr = p.total_distance_m != null ? fmtDist(p.total_distance_m) : '?';
   const timeStr = p.total_time_s != null ? fmtTime(p.total_time_s) : '?';
-  const arrStr = p.arrival ? new Date(p.arrival).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : null;
+  const arrStr = p.arrival ? fmtWhen(p.arrival) : null;
   const sailStr = fmtTime(p.sailing_time_s || 0), motorStr = fmtTime(p.motoring_time_s || 0);
   const warns = Array.isArray(p.warnings) ? p.warnings : [];
   const land = p.land_crossings || 0;
@@ -590,7 +590,7 @@ function renderResultStrip(p, navWarns) {
     + (p.max_swh_m != null ? '<span>waves max ' + fmtSwh(p.max_swh_m) + '</span>' : '')
     + badge + beyondBadge + repaired + '</div>';
   if (beyond > 0) {
-    const ends = p.forecast_valid_to ? _whenText(p.forecast_valid_to) : 'before the route does';
+    const ends = p.forecast_valid_to ? fmtWhen(p.forecast_valid_to) : 'before the route does';
     html += '<div class="rs-beyond">Forecast ends ' + ends + '; the last ' + beyond + ' leg' + (beyond > 1 ? 's' : '') + ' ran on conditions held at that step'
       + (p.limits_beyond_forecast ? ', and the wind/wave limit was checked against those held conditions' : '')
       + '. A longer <a id="rsBeyondLink">Forecast horizon</a> in Settings covers more of the passage.</div>';
@@ -710,12 +710,8 @@ function _plainFairFoul(cog, currentDir) {
   const diff = Math.abs(((((currentDir - cog + 180) % 360) + 360) % 360) - 180);
   return diff < 80 ? 'fair' : diff > 100 ? 'foul' : 'cross';
 }
-function _whenText(iso) {
-  const d = iso ? new Date(iso) : null;
-  return d && !isNaN(d) ? d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
-}
 function _legDescription(p, isArrival) {
-  const parts = [_whenText(p.time)];
+  const parts = [fmtWhen(p.time)];
   const mode = isArrival ? 'arrival' : (p.next_mode || null);
   const cogDeg = p.next_cog != null ? p.next_cog : p.outgoing_cog;
   const tack = !isArrival && mode === 'sailing' ? tackSide(cogDeg, p.next_wind_dir_deg) : null;
@@ -756,11 +752,11 @@ function _routeDescription(p, n) {
   if (p.total_time_s != null && fmtTime(p.total_time_s)) parts.push(fmtTime(p.total_time_s));
   if (fmtTime(p.sailing_time_s || 0)) parts.push('sailing ' + fmtTime(p.sailing_time_s || 0) + ', motoring ' + fmtTime(p.motoring_time_s || 0));
   parts.push(n + ' waypoints');
-  if (p.departure) parts.push('departs ' + _whenText(p.departure));
-  if (p.arrival) parts.push('arrives ' + _whenText(p.arrival));
+  if (p.departure) parts.push('departs ' + fmtWhen(p.departure));
+  if (p.arrival) parts.push('arrives ' + fmtWhen(p.arrival));
   let s = 'Weather route: ' + parts.join(', ') + '.';
   const beyond = p.legs_beyond_forecast || 0;
-  if (beyond > 0) s += ' Forecast ends ' + (p.forecast_valid_to ? _whenText(p.forecast_valid_to) : 'before the route does') + '; the last ' + beyond + ' leg' + (beyond > 1 ? 's' : '') + ' ran on conditions held at that step.';
+  if (beyond > 0) s += ' Forecast ends ' + (p.forecast_valid_to ? fmtWhen(p.forecast_valid_to) : 'before the route does') + '; the last ' + beyond + ' leg' + (beyond > 1 ? 's' : '') + ' ran on conditions held at that step.';
   return s;
 }
 function _annotateIfPending(jobId) {
@@ -1222,17 +1218,7 @@ function _jobOnDone(job, d) {
       showTab('itinerarySection');
     })
     .catch(err => appendLog('Failed to load route: ' + err.message, 'error'));
-  // Fetch skeleton (coarse A* route) and draw in blue.
-  authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/skeleton', { cache: 'no-store' }, 'skeleton-load')
-    .then(r => r.ok ? r.json() : null)
-    .then(geojson => {
-      skeletonSource.clear();
-      if (!geojson) return;
-      const features = new ol.format.GeoJSON().readFeatures(geojson, { featureProjection: 'EPSG:3857' });
-      skeletonSource.addFeatures(features);
-      console.log('Skeleton loaded: ' + features.length + ' features');
-    })
-    .catch(err => { console.log('Skeleton fetch error:', err); skeletonSource.clear(); });
+  loadSkeleton(id);
   loadPluginStatus();
 }
 
@@ -1372,10 +1358,10 @@ function pointOfSail(twa, windMs) {
   return 'downwind';
 }
 
+// A clock time (24 h) in the browser's locale; '—' when missing.
 function formatTime(iso) {
   if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', hour12: false});
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 function fairFoul(cog, currentDir) {
@@ -1397,19 +1383,7 @@ let _selectedRouteFeature = null;
 // `_currentTimeOverride` changes (waypoint click, conditions row
 // click, reset).
 function _reloadTimedOverlays() {
-  loadCurrentOverlay();
-  loadWindOverlay();
-  loadWindHeatmap();
-  loadCurrentHeatmap();
-  loadRoughness();
-  loadWaveHeatmap();
-  loadPrecipHeatmap();
-  loadTemperature();
-  loadSst();
-  loadTide();
-  loadPressure();
-  if (waveStreamlines.enabled) waveStreamlines._fetchField();
-  if (windStreamlines.enabled) windStreamlines._fetchField();
+  reloadOverlays({ currents: true, streamlines: true });
 }
 
 function _showPopupForFeature(f) {
@@ -1474,10 +1448,6 @@ function _fmtHpa(pa)   { return fmtPressure(pa) || '—'; }
 function _fmtDegC(k)   { return fmtTemp(k) || '—'; }
 function _fmtMmH(rate) { return fmtPrecip(rate) || '—'; }
 function _fmtDir(deg)  { return deg == null ? '' : ' ' + degToCardinal(deg) + ' (' + Math.round(deg) + '°)'; }
-function _fmtWhen(iso) {
-  const d = new Date(iso);
-  return d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' });
-}
 function _rowCells(r) {
   return '<td>' + (fmtSpeed(r.wind_ms) || '—') + _fmtDir(r.wind_dir_deg) + '</td>'
        + '<td>' + (r.swh_m == null ? '—' : (fmtSwh(r.swh_m) + (r.mwp_s != null ? ' / ' + fmtWavePeriod(r.mwp_s) : '') + _fmtDir(r.mwd_deg))) + '</td>'
@@ -1858,7 +1828,7 @@ function _condIdxAtX(series, px, tab) {
 }
 
 function _condReadout(tab, r) {
-  const parts = [_fmtWhen(r.time)];
+  const parts = [fmtWhen(r.time)];
   for (const l of tab.lines) {
     const u = l.unit(), v = _condDisplay(r[l.key], u);
     if (v == null && tab.lines.length > 1) continue;   // optional line, nothing this hour
@@ -1907,7 +1877,7 @@ function _tideDetailsHtml(series) {
     if (ev.length) {
       h += '<div style="display:flex;flex-wrap:wrap;gap:2px 10px;">' + ev.map(({ e, hi }) =>
         '<span><b style="color:' + (hi ? '#004d40' : '#6d4c41') + ';">' + (hi ? '▲ High' : '▼ Low') + '</b> '
-        + _fmtWhen(e.time) + ' ' + _fmtTideH(e.height_m) + '</span>').join('') + '</div>';
+        + fmtWhen(e.time) + ' ' + _fmtTideH(e.height_m) + '</span>').join('') + '</div>';
     } else h += '<div>No high or low water within this window.</div>';
     if (T.range_m != null) h += '<div>Tidal range: ' + _fmtTideH(T.range_m) + ' mean' + (T.max_range_m != null ? ', ' + _fmtTideH(T.max_range_m) + ' largest' : '') + '</div>';
   } else if (_cond && _cond.tidesError) {
@@ -2034,13 +2004,13 @@ function _condBodyHtml(tab, series, instant, hourIso) {
   let html = '';
   if (tab.id === 'raw') {
     html += '<div style="max-height:300px;overflow:auto;"><table style="border-collapse:collapse;font-size:11px;white-space:nowrap;">' + _COND_HEAD;
-    if (instant) html += '<tr style="background:#eef;"><td>' + _fmtWhen(hourIso) + ' (map)</td>' + _rowCells(instant) + '</tr>';
+    if (instant) html += '<tr style="background:#eef;"><td>' + fmtWhen(hourIso) + ' (map)</td>' + _rowCells(instant) + '</tr>';
     if (series && series.length) {
       const curHour = hourIso.slice(0, 13);
       for (const r of series) {
         const isCur = r.time.slice(0, 13) === curHour;
         html += '<tr class="cond-row" data-time="' + r.time + '" style="cursor:pointer;' + (isCur ? 'background:#ffe;font-weight:600;' : '')
-          + '"><td>' + _fmtWhen(r.time) + '</td>' + _rowCells(r) + '</tr>';
+          + '"><td>' + fmtWhen(r.time) + '</td>' + _rowCells(r) + '</tr>';
       }
     }
     html += '</table></div>';
@@ -2113,7 +2083,7 @@ function openConditionsAt(coordinate, pixel) {
       mine.tides = d.tides || null;
       mine.tidesError = d.tides_error || null;
       mine.note = (d.truncated && Array.isArray(d.forecast_time_range)
-        ? 'Series clipped to the forecast (' + _fmtWhen(d.forecast_time_range[0]) + ' → ' + _fmtWhen(d.forecast_time_range[1]) + '). '
+        ? 'Series clipped to the forecast (' + fmtWhen(d.forecast_time_range[0]) + ' → ' + fmtWhen(d.forecast_time_range[1]) + '). '
         : '') + 'Click the chart or a row to retime the overlays.'
         + (d.sources && d.sources.currents && d.sources.currents.length ? ' Currents: ' + d.sources.currents.join(', ') + '.' : '');
       _renderConditionsPopup();
@@ -2444,7 +2414,7 @@ popup.on('change:position', () => {
     payload.name = (payload.name ? payload.name + ' ' : '') + '(re-plan)';
     payload.publish = false;
 
-    summaryEl.innerHTML = `<span style="color:#ffcf7a">${escapeForHtml(reason)}</span><br>Computing re-plan…`;
+    summaryEl.innerHTML = `<span style="color:#ffcf7a">${escapeHtml(reason)}</span><br>Computing re-plan…`;
     banner.style.display = '';
     appendLog(`[re-plan] ${reason}`, 'done');
     showTab('logSection');
@@ -2462,7 +2432,7 @@ popup.on('change:position', () => {
     .then(geojson => { renderProposal(geojson, reason); banner.dataset.jobId = jobId; loadRouteHistory(); })
     .catch(err => {
       summaryEl.innerHTML =
-        `<span style="color:#ff9090">Re-plan failed: ${escapeForHtml(err.message)}</span>`;
+        `<span style="color:#ff9090">Re-plan failed: ${escapeHtml(err.message)}</span>`;
       appendLog(`[re-plan] FAILED: ${err.message}`, 'error');
     });
   }
@@ -2546,7 +2516,7 @@ popup.on('change:position', () => {
     const fmtArr = s => s == null ? '—' : new Date(s).toLocaleString();
     const fmtDistOrDash = m => m == null ? '—' : fmtDist(m);
     summaryEl.innerHTML =
-      `<span style="color:#ffcf7a">${escapeForHtml(reason)}</span>` +
+      `<span style="color:#ffcf7a">${escapeHtml(reason)}</span>` +
       `<br>Distance: ${fmtDistOrDash(distOld)} → ${fmtDistOrDash(distNew)}` +
       `<br>Arrival:  ${fmtArr(arrivalOld)} → ${fmtArr(arrivalNew)}`;
   }
@@ -2571,11 +2541,6 @@ popup.on('change:position', () => {
     delete banner.dataset.geojson;
     delete banner.dataset.reason;
     delete banner.dataset.jobId;
-  }
-
-  function escapeForHtml(s) {
-    return String(s ?? '').replace(/[&<>"']/g,
-      c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
   // ── wiring ───────────────────────────────────────────────────────

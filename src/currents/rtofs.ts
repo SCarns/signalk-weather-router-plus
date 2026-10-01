@@ -22,7 +22,8 @@
  */
 
 import * as fs from 'node:fs';
-import { MINUTE_MS, HOUR_MS, HOUR_S } from '../geo/units';
+import { fetchWithRetry, sleep } from '../data/http';
+import { HOUR_MS, HOUR_S } from '../geo/units';
 import * as path from 'node:path';
 import type { BBox } from '../geo/geodesy';
 import { iterateGrib2 } from '../grib/grib2';
@@ -80,8 +81,6 @@ export interface RtofsClientOptions {
   sleepImpl?: (ms: number) => Promise<void>;
 }
 
-const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
-
 export class RtofsClient {
   readonly cacheDir: string;
   readonly region: string;
@@ -118,32 +117,16 @@ export class RtofsClient {
    * failure is retried like a failed connection.
    */
   private async request(url: string, init: RequestInit = {}): Promise<{ status: number; body: Uint8Array }> {
-    let lastErr: unknown;
-    for (let attempt = 1; attempt <= this.retries; attempt++) {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
-      try {
-        const res = await this.fetchImpl(url, { ...init, signal: ctrl.signal });
-        const retriable = res.status === 408 || res.status === 429 || res.status >= 500;
-        if (!retriable) {
-          const body = init.method === 'HEAD' ? new Uint8Array(0) : new Uint8Array(await res.arrayBuffer());
-          return { status: res.status, body };
-        }
-        lastErr = new Error(`HTTP ${res.status} for ${url}`);
-        await res.arrayBuffer().catch(() => undefined);
-      } catch (err) {
-        lastErr = err;
-      } finally {
-        clearTimeout(timer);
-      }
-      if (attempt === this.retries) break;
-      const backoff = Math.min(MINUTE_MS, 2000 * 2 ** (attempt - 1)) + Math.random() * 500;
-      this.log(
-        `rtofs: retry ${attempt}/${this.retries - 1} for ${url} after ${(backoff / 1000).toFixed(1)} s: ${(lastErr as Error).message}`
-      );
-      await this.sleepImpl(backoff);
-    }
-    throw lastErr instanceof Error ? lastErr : new Error(`request failed: ${url}`);
+    const r = await fetchWithRetry(url, init, {
+      timeoutMs: this.timeoutMs,
+      retries: this.retries,
+      fetchImpl: this.fetchImpl,
+      sleepImpl: this.sleepImpl,
+      log: this.log,
+      tag: 'rtofs',
+      readBody: init.method !== 'HEAD',
+    });
+    return { status: r.status, body: r.body ?? new Uint8Array(0) };
   }
 
   async filePublished(run: RtofsRun, file: string): Promise<boolean> {

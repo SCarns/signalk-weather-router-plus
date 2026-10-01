@@ -50,17 +50,47 @@ function selectSpeed(sailSpeed: number, motorSpeed: number, policy: ModePolicy, 
   return sailSpeed >= sailThreshMs ? [sailSpeed, true] : [motorSpeed, false];
 }
 
-/** True when the wind or the waves at (lon, lat, t) exceed a limit set in `opts`. */
-function overLimit(ws: number, opts: SimOptions, wind: WindSource, lon: number, lat: number, t: Date): boolean {
-  if (opts.maxWindMs !== undefined && ws > opts.maxWindMs) return true;
-  if (opts.maxSwhM !== undefined && wind.hasWaves) {
-    const wv = wind.wavesAt(lon, lat, t);
-    if (wv && wv.swh > opts.maxSwhM) return true;
+/**
+ * One sub-step through the water on a fixed heading: boat speed from the
+ * polar at the true wind angle (0 without a polar), the mode choice, and
+ * the progress made along the heading once the current is added.
+ * `inNoGo`: the polar gave no speed because the heading is inside its
+ * no-go angle. The two callers differ in how they treat missing data and
+ * keep doing so until the loops are unified (structural cleanup, phase 3):
+ * simulateLegTime passes no polar when the wind is NaN and zeroes a NaN
+ * current; scoreCandidatesFromParent zeroes NaN wind and current first.
+ */
+export function stepAlongHeading(
+  bearingDeg: number,
+  headingU: number,
+  headingV: number,
+  ws: number,
+  wd: number,
+  cu: number,
+  cv: number,
+  polar: PolarDiagram | null,
+  motorMs: number,
+  opts: SimOptions
+): { progress: number; sailUsed: boolean; inNoGo: boolean } {
+  let sailSpeed = 0;
+  let inNoGo = false;
+  if (polar) {
+    const twa = twaFromHeading(bearingDeg, wd);
+    sailSpeed = polar.boatSpeed(twa, ws);
+    inNoGo = sailSpeed <= 0 && twa < polar.noGoFloor(ws);
   }
-  return false;
+  const [waterSpeed, sailUsed] = selectSpeed(sailSpeed, motorMs, opts.modePolicy, opts.sailThreshMs);
+  const sogU = waterSpeed * headingU + cu;
+  const sogV = waterSpeed * headingV + cv;
+  return { progress: sogU * headingU + sogV * headingV, sailUsed, inNoGo };
 }
 
-/** Simulate traversal of the straight line a→c starting at aTime. */
+/**
+ * Simulate traversal of the straight line a→c starting at aTime: the
+ * batched scorer with one candidate, so a final leg, a beat and a
+ * smoother shortcut are timed under exactly the rules the stage
+ * candidates were (structural cleanup, decision D: the loops unified).
+ */
 export function simulateLegTime(
   aLon: number,
   aLat: number,
@@ -78,50 +108,28 @@ export function simulateLegTime(
     return { seconds: 0, dominantMode: 'motoring', sampleCount: 0, sailingSeconds: 0, motoringSeconds: 0 };
   }
   const bearingDeg = haversineBearing(aLon, aLat, cLon, cLat);
-  const headingU = Math.sin(bearingDeg * DEG);
-  const headingV = Math.cos(bearingDeg * DEG);
-  const motor = vessel.motorSpeedMs;
+  const sc = scoreCandidatesFromParent(
+    aLon,
+    aLat,
+    aTime,
+    Float64Array.of(bearingDeg),
+    Float64Array.of(totalDistM),
+    vessel,
+    polar,
+    wind,
+    current,
+    opts
+  );
   const nSteps = Math.max(1, Math.ceil(totalDistM / opts.simStepM));
-  const stepM = totalDistM / nSteps;
-
-  let sailing = 0;
-  let motoring = 0;
-  let elapsed = 0;
-  let lon = aLon;
-  let lat = aLat;
-  let tMs = aTime.getTime();
-  for (let k = 0; k < nSteps; k++) {
-    const t = new Date(tMs);
-    const [ws, wd] = wind.at(lon, lat, t);
-    if (overLimit(ws, opts, wind, lon, lat, t)) {
-      return { seconds: Infinity, dominantMode: 'stuck', sampleCount: k + 1, sailingSeconds: 0, motoringSeconds: 0 };
-    }
-    const [cu, cv] = current.at(lon, lat, t);
-    let sailSpeed = 0;
-    if (polar && Number.isFinite(ws)) {
-      const twa = twaFromHeading(bearingDeg, wd);
-      sailSpeed = polar.boatSpeed(twa, ws);
-    }
-    const [waterSpeed, sailUsed] = selectSpeed(sailSpeed, motor, opts.modePolicy, opts.sailThreshMs);
-    const sogU = waterSpeed * headingU + (Number.isFinite(cu) ? cu : 0);
-    const sogV = waterSpeed * headingV + (Number.isFinite(cv) ? cv : 0);
-    const progress = sogU * headingU + sogV * headingV;
-    if (progress <= 0) {
-      return { seconds: Infinity, dominantMode: 'stuck', sampleCount: k + 1, sailingSeconds: 0, motoringSeconds: 0 };
-    }
-    const stepS = stepM / progress;
-    elapsed += stepS;
-    if (sailUsed) sailing += stepS;
-    else motoring += stepS;
-    [lon, lat] = projectAlongBearing(lon, lat, bearingDeg, stepM);
-    tMs += stepS * 1000;
+  if (!Number.isFinite(sc.seconds[0]) || sc.seconds[0] <= 0) {
+    return { seconds: Infinity, dominantMode: 'stuck', sampleCount: nSteps, sailingSeconds: 0, motoringSeconds: 0 };
   }
   return {
-    seconds: elapsed,
-    dominantMode: sailing >= motoring ? 'sailing' : 'motoring',
+    seconds: sc.seconds[0],
+    dominantMode: sc.dominant[0] === 1 ? 'sailing' : 'motoring',
     sampleCount: nSteps,
-    sailingSeconds: sailing,
-    motoringSeconds: motoring,
+    sailingSeconds: sc.sailing[0],
+    motoringSeconds: sc.motoring[0],
   };
 }
 
@@ -225,17 +233,7 @@ export function scoreCandidatesFromParent(
       const cu = Number.isFinite(c.u[q]) ? c.u[q] : 0;
       const cv = Number.isFinite(c.v[q]) ? c.v[q] : 0;
 
-      let sailSpeed = 0;
-      let inNoGo = false;
-      if (polar) {
-        const twa = twaFromHeading(bearings[i], wd);
-        sailSpeed = polar.boatSpeed(twa, ws);
-        inNoGo = sailSpeed <= 0 && twa < polar.noGoFloor(ws);
-      }
-      const [waterSpeed, sailUsed] = selectSpeed(sailSpeed, motor, opts.modePolicy, opts.sailThreshMs);
-      const sogU = waterSpeed * headingU[i] + cu;
-      const sogV = waterSpeed * headingV[i] + cv;
-      const progress = sogU * headingU[i] + sogV * headingV[i];
+      const { progress, sailUsed, inNoGo } = stepAlongHeading(bearings[i], headingU[i], headingV[i], ws, wd, cu, cv, polar, motor, opts);
       if (progress <= 0) {
         stuck[i] = 1;
         if (inNoGo) noGo[i] = 1;

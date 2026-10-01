@@ -17,6 +17,7 @@
  */
 
 import * as fs from 'node:fs';
+import { fetchWithRetry, sleep } from './http';
 import { MINUTE_MS, HOUR_MS, HOUR_S } from '../geo/units';
 import * as path from 'node:path';
 
@@ -93,15 +94,7 @@ export function latestExpectedCycle(now: Date, horizonS: number): Cycle {
   }
 }
 
-/** Parse a Retry-After header (seconds or HTTP date) into milliseconds, or null. */
-export function parseRetryAfterMs(value: string | null, now = Date.now()): number | null {
-  if (!value) return null;
-  const secs = Number(value);
-  if (Number.isFinite(secs) && secs >= 0) return secs * 1000;
-  const date = Date.parse(value);
-  if (!Number.isNaN(date)) return Math.max(0, date - now);
-  return null;
-}
+export { parseRetryAfterMs } from './http';
 
 export class EcmwfError extends Error {
   constructor(message: string) {
@@ -134,8 +127,6 @@ export function availableSteps(cycle: Pick<Cycle, 'maxStep'>, horizonHours: numb
   for (let s = 0; s <= Math.min(horizonHours, cycle.maxStep); s += s < 144 ? 3 : 6) steps.push(s);
   return steps;
 }
-
-const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
 
 export class EcmwfClient {
   /** Mirrors in order; index 0 is the one currently in use. */
@@ -185,28 +176,18 @@ export class EcmwfClient {
     let lastErr: unknown;
     for (let m = 0; m < this.mirrors.length; m++) {
       const url = this.baseUrl + pathSuffix;
-      for (let attempt = 1; attempt <= this.retries; attempt++) {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
-        let retryAfterMs: number | null = null;
-        try {
-          const res = await this.fetchImpl(url, { ...init, signal: ctrl.signal });
-          const retriable = res.status === 408 || res.status === 429 || res.status >= 500;
-          if (!retriable) return res;
-          retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
-          lastErr = new EcmwfError(`HTTP ${res.status} for ${url}`);
-          await res.arrayBuffer().catch(() => undefined);
-        } catch (err) {
-          lastErr = err;
-        } finally {
-          clearTimeout(timer);
-        }
-        if (attempt === this.retries) break;
-        let backoff = Math.min(MINUTE_MS, 2000 * 2 ** (attempt - 1));
-        if (retryAfterMs !== null) backoff = Math.min(MINUTE_MS, Math.max(backoff, retryAfterMs));
-        backoff += Math.random() * 500;
-        this.log(`retry ${attempt}/${this.retries - 1} for ${url} after ${(backoff / 1000).toFixed(1)} s: ${(lastErr as Error).message}`);
-        await this.sleepImpl(backoff);
+      try {
+        const r = await fetchWithRetry(url, init, {
+          timeoutMs: this.timeoutMs,
+          retries: this.retries,
+          fetchImpl: this.fetchImpl,
+          sleepImpl: this.sleepImpl,
+          log: this.log,
+          makeError: msg => new EcmwfError(msg),
+        });
+        return r.response;
+      } catch (err) {
+        lastErr = err;
       }
       if (m + 1 < this.mirrors.length) {
         this.log(`mirror ${this.baseUrl} exhausted (${(lastErr as Error).message}); switching to ${this.mirrors[1]}`);

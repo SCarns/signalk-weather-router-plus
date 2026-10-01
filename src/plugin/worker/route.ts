@@ -6,7 +6,8 @@
  * instead of module-level variables.
  */
 
-import { HOUR_MS, HOUR_S, NM_M } from '../../geo/units';
+import { HOUR_S, NM_M } from '../../geo/units';
+import { runLegPipeline, type LegPipelineInputs } from '../../engine/pipeline';
 import * as path from 'node:path';
 import { ForecastStore } from '../../data/forecast';
 import { loadForecastForBBox, resolveCycle } from '../../data/loader';
@@ -15,31 +16,14 @@ import { checkRouteForecastMemory } from '../memguard';
 import { type BBox, bboxFromLonLat, bboxHeight, bboxWidth, haversineDistanceM } from '../../geo/geodesy';
 import { LandMask } from '../../geo/landmask';
 import { releaseMemory } from '../../util/gc';
-import { type CurrentSource, NoCurrent, NoWind } from '../../engine/environment';
-import { enrichWaypoints, OceanPropagator, RouteCancelled, ViasNotCrossedError } from '../../engine/propagator';
-import { rdpSimplify, recomputeTotals, revalidateLand, shortcutSmoother } from '../../engine/smoother';
-import {
-  type ChainVia,
-  type Corridor,
-  CorridorError,
-  mergeVias,
-  nearestExactWater,
-  planCorridor,
-  waterAround,
-} from '../../engine/corridor';
+import { NoCurrent } from '../../engine/environment';
+import { RouteCancelled } from '../../engine/propagator';
+import { nearestExactWater, waterAround } from '../../engine/corridor';
 import { DEFAULT_PRECISION, legLabel, type LegPlan, routeMultiLeg, type Stop, validateLegOptions } from '../../engine/multileg';
-import {
-  recomputePerWaypointMetadata,
-  type Route,
-  routeToGeoJSON,
-  routeToSignalKRoute,
-  skeletonToGeoJSON,
-  type StageFront,
-  type StopSnap,
-} from '../../engine/route';
+import { type Route, routeToGeoJSON, routeToSignalKRoute, skeletonToGeoJSON, type StageFront, type StopSnap } from '../../engine/route';
 import { PolarDiagram } from '../../vessel/polar';
 import { loadPolarCached, resolvePolarPath } from '../polars';
-import { CurrentStack } from '../../currents/stack';
+
 import { routeVessel } from '../config';
 import { type RouteRequest, type RouteSummary } from '../protocol';
 import { requireInit } from './state';
@@ -181,7 +165,7 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
     let cycleLabel: string | undefined;
 
     // Forecast area and SMOC area for a box, held until releaseAreas().
-    const loadAreas = async (bbox: BBox, what: string): Promise<void> => {
+    const loadAreas = async (bbox: BBox, what: string): Promise<ForecastStore | null> => {
       if (useForecast) {
         // The route area of the forecast: the corridor box plus a margin, the
         // fields the engine reads, every step. Held only while this route runs.
@@ -244,6 +228,7 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
         }
       }
       if (shouldCancel()) throw new RouteCancelled();
+      return wind;
     };
     const releaseAreas = (): void => {
       if (st.routeWindow) {
@@ -267,174 +252,43 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
       }
     };
     let legCounter = 0;
-    const legRoute = async (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> => {
-      const legIndex = legCounter++;
-      const legEnd = plan.end;
-      // A collapsed approximate run passes through its waypoint circles (plan.vias).
-      const chain: [number, number][] = [legStart, ...plan.vias.map(v => [v.lon, v.lat] as [number, number]), legEnd];
-      const tag = multi ? `${legLabel(plan)} ` : '';
-      // Corridor from the global water grid: its box (not the endpoints') sets
-      // the land raster, SMOC area and forecast crop.
-      let corridor: Corridor | null = null;
-      if (st.waterGrid) {
-        st.waterGrid.setCanalsAllowed(cfg.routing.allowCanals);
-        progress(0, 0, `${tag}corridor: searching the global 0.02° water grid (canals ${cfg.routing.allowCanals ? 'allowed' : 'blocked'})`);
-        try {
-          corridor = planCorridor(st.waterGrid, chain, {
-            landFor: b => landMaskFor(st, b, cfg.routing.landRasterMaxCells, cfg.landShapefiles),
-            stages,
-            onProgress: m => progress(0, 0, `${tag}corridor: ${m}`),
-            shouldCancel,
-          });
-          const cst = corridor.stats;
-          progress(
-            0,
-            0,
-            `${tag}corridor: ${(corridor.lengthM / NM_M).toFixed(1)} nm, A* ${cst.astarMs} ms (${cst.expanded} cells), ${cst.refines} local refinement(s), ${cst.reroutes} re-route(s)`
-          );
-          for (const v of corridor.autoVias)
-            progress(0, 0, `${tag}corridor: auto via at ${v.name}, width ${(v.widthM / 1000).toFixed(1)} km`);
-        } catch (err) {
-          if (shouldCancel()) throw new RouteCancelled();
-          if (!(err instanceof CorridorError) || err.fatal) throw err;
-          progress(
-            0,
-            0,
-            `WARNING: ${tag}corridor search failed (${err.message}); using the per-route skeleton inside the box around ${multi ? "the leg's ends" : 'start and end'}`
-          );
-          corridor = null;
-        }
-      }
-      let bbox: BBox;
-      if (corridor) {
-        bbox = corridor.bbox;
-      } else {
-        bbox = bboxFromLonLat(
-          chain.map(p => p[0]),
-          chain.map(p => p[1]),
-          1.0
-        );
-        if (bboxWidth(bbox) > 120 || bboxHeight(bbox) > 90) throw new Error('route bounding box is too large (max 120° × 90°)');
-      }
-      const land = corridor ? corridor.land : landMaskFor(st, bbox, cfg.routing.landRasterMaxCells, cfg.landShapefiles);
-      if (shouldCancel()) throw new RouteCancelled();
-      // Forecast and SMOC areas per leg (measured on brain: the same time as
-      // one area for all legs, and at most the same memory).
-      await loadAreas(bbox, multi ? `${tag}area` : 'route area');
-      const current: CurrentSource = request.no_currents || st.stack.isEmpty ? new NoCurrent() : st.stack;
-      if (!st.stack.isEmpty && !request.no_currents && plan.index === 0)
-        progress(0, 0, `currents: ${st.stack.sources.map(s => s.name).join(' > ')}`);
-
-      const prop = new OceanPropagator(land, {
-        stages,
+    const pipeline: LegPipelineInputs = {
+      waterGrid: st.waterGrid,
+      allowCanals: cfg.routing.allowCanals,
+      landFor: b => landMaskFor(st, b, cfg.routing.landRasterMaxCells, cfg.landShapefiles),
+      stages,
+      propagator: {
         subsectors: cfg.routing.subsectors,
         headings: cfg.routing.headings,
         headingIncrementDeg: cfg.routing.headingIncrementDeg,
-      });
-      const t = Date.now();
-      const vias: ChainVia[] = corridor ? mergeVias(plan.vias, corridor.autoVias) : plan.vias;
-      const hasAuto = vias.some(v => v.auto);
-      const legWind: ForecastStore | null = wind;
-      const legArgs = {
-        start: legStart,
-        end: legEnd,
-        departureTime: legDeparture,
-        vessel,
-        polar: routePolar,
-        wind: legWind ?? undefined,
-        current,
+      },
+      vessel,
+      polar: routePolar,
+      sim: {
         modePolicy: request.mode ?? 'sail_max',
         sailThreshMs: request.sail_thresh_ms ?? cfg.routing.sailThreshMs,
+        simStepM: cfg.routing.simStepM,
         maxWindMs: request.max_wind_ms ?? cfg.routing.maxWindMs ?? undefined,
         maxSwhM: request.max_swh_m ?? cfg.routing.maxSwhM ?? undefined,
-        forecastEndMs: legWind ? legWind.validRange[1].getTime() : undefined,
-        simStepM: cfg.routing.simStepM,
-        vias: vias.length ? vias : undefined,
-        corridor: corridor ? { skeleton: corridor.skeleton, widthM: corridor.widthM } : undefined,
-        arrivalRadiusM: plan.arrivalRadiusM,
-        snapToExact: plan.snapToExact,
-        onProgress: multi ? (st: number, tot: number, m: string) => progress(st, tot, `${tag}${m}`) : progress,
-        // Each stage's front, streamed for the web app's display (never stored with the job).
-        onFrontier: (front: StageFront) => st.send({ type: 'frontier', id, leg: legIndex, ...compactFront(front) }),
-        shouldCancel,
-      };
-      let r: Route;
-      try {
-        r = prop.computeRoute(legArgs);
-      } catch (err) {
-        // The corridor's automatic vias are only guidance: when the search
-        // finds another passage (e.g. The Race instead of the gap past
-        // Gardiners Island) no branch crosses them. Retry without them,
-        // keeping the waypoint circles of a collapsed run.
-        if (!(err instanceof ViasNotCrossedError) || !hasAuto) throw err;
-        progress(
-          0,
-          0,
-          `${tag}no branch went through the auto via(s) at ${vias
-            .filter(v => v.auto)
-            .map(v => v.name ?? 'a narrow passage')
-            .join(', ')}; routing again without them`
-        );
-        r = prop.computeRoute({ ...legArgs, vias: plan.vias.length ? plan.vias : undefined });
-      }
-      // Simplification (parent order: RDP, then the shortcut smoother).
-      const simplifyM = request.simplify_m ?? cfg.routing.simplifyM;
-      const nRdp = rdpSimplify(r, land, simplifyM);
-      if (nRdp) recomputeTotals(r);
-      const nSm =
-        (request.smoother ?? cfg.routing.smoother)
-          ? shortcutSmoother(r, {
-              land,
-              vessel,
-              polar: routePolar,
-              wind: legWind ?? new NoWind(),
-              current,
-              sim: {
-                modePolicy: legArgs.modePolicy,
-                sailThreshMs: legArgs.sailThreshMs,
-                simStepM: legArgs.simStepM,
-                maxWindMs: legArgs.maxWindMs,
-                maxSwhM: legArgs.maxSwhM,
-              },
-              tolerance: request.smoother_tolerance ?? cfg.routing.smootherTolerance,
-            })
-          : 0;
-      if (nSm) r.smootherDrops = nSm;
-      if (nRdp || nSm) {
-        enrichWaypoints(r.waypoints, legWind ?? new NoWind(), current);
-        recomputePerWaypointMetadata(r);
-        revalidateLand(r, land);
-        progress(
-          0,
-          0,
-          `${tag}simplified: ${nRdp} waypoint(s) within ${simplifyM} m of a straight line, ${nSm} replaced by straight shortcuts; ${r.waypoints.length} left`
-        );
-      }
-      if (legWind) {
-        const lastValid = legWind.validRange[1].getTime();
-        r.forecastValidToMs = lastValid;
-        const arrival = r.waypoints[r.waypoints.length - 1].time.getTime();
-        if (arrival > lastValid) {
-          r.forecastHorizonExceededS = (arrival - lastValid) / 1000;
-          const beyond = r.waypoints.filter(w => w.time.getTime() > lastValid).length;
-          const limited = legArgs.maxWindMs !== undefined || legArgs.maxSwhM !== undefined;
-          if (limited) r.limitsBeyondForecast = true;
-          progress(
-            0,
-            0,
-            `WARNING: ${multi ? `${legLabel(plan)} ` : ''}arrival is ${((arrival - lastValid) / HOUR_MS).toFixed(1)} h after the last forecast step (${legWind.validRange[1].toISOString().slice(0, 16).replace('T', ' ')} UTC); the last ${beyond} leg${beyond === 1 ? '' : 's'} ran on conditions held at that step${limited ? ', and the wind/wave limit was checked against those held conditions' : ''}. A longer forecast horizon (Settings) covers more of the passage`
-          );
-        }
-      }
-      if (current instanceof CurrentStack) r.currentSources = current.sources.map(s => s.name);
-      if (multi)
-        st.log(
-          'info',
-          `job ${id}: ${tag}${r.waypoints.length} waypoints, ${(r.totalDistanceM / NM_M).toFixed(1)} nm, ${(r.totalTimeS / HOUR_S).toFixed(1)} h, ${Date.now() - t} ms`
-        );
-      if (multi) releaseAreas();
-      return r;
+      },
+      simplifyM: request.simplify_m ?? cfg.routing.simplifyM,
+      smoother: request.smoother ?? cfg.routing.smoother,
+      smootherTolerance: request.smoother_tolerance ?? cfg.routing.smootherTolerance,
+      loadAreas,
+      releaseAreas,
+      currents: () =>
+        request.no_currents || st.stack.isEmpty
+          ? { source: new NoCurrent(), names: null }
+          : { source: st.stack, names: st.stack.sources.map(s => s.name) },
+      multi,
+      progress,
+      shouldCancel,
+      // Each stage's front, streamed for the web app's display (never stored with the job).
+      onFrontier: (leg, front) => st.send({ type: 'frontier', id, leg, ...compactFront(front) }),
+      log: m => st.log('info', `job ${id}: ${m}`),
     };
+    const legRoute = (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> =>
+      runLegPipeline(pipeline, plan, legCounter++, legStart, legDeparture);
 
     const t = Date.now();
     const result = await routeMultiLeg({

@@ -1075,7 +1075,6 @@ loadPolarList();
   const sbdLink = document.getElementById('sbdLink');
   const resultDiv = document.getElementById('vf_result');
   const warnDiv = document.getElementById('vf_warnings');
-  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
   function openModal() {
     overlay.style.display = 'flex';
@@ -1163,13 +1162,13 @@ loadPolarList();
       }
       const data = await resp.json();
       if (!resp.ok) {
-        warnDiv.innerHTML = 'Error: ' + esc(data.error || data.detail || resp.status);
+        warnDiv.innerHTML = 'Error: ' + escapeHtml(data.error || data.detail || resp.status);
         return;
       }
       const warnings = (data.warnings || []).join('; ');
       resultDiv.innerHTML =
-        '<div style="color:#2a7;">✓ Polar saved to ' + esc(data.path) + ' (' + esc(data.label) + ')</div>'
-        + (warnings ? '<div style="color:#c60;margin-top:4px;">Warnings: ' + esc(warnings) + '</div>' : '')
+        '<div style="color:#2a7;">✓ Polar saved to ' + escapeHtml(data.path) + ' (' + escapeHtml(data.label) + ')</div>'
+        + (warnings ? '<div style="color:#c60;margin-top:4px;">Warnings: ' + escapeHtml(warnings) + '</div>' : '')
         + '<div style="margin-top:8px;">Refreshing polar list…</div>';
 
       // Refresh the polar dropdown so the new entry appears, and select it.
@@ -1196,7 +1195,7 @@ loadPolarList();
         ? '<div style="color:#2a7;margin-top:4px;">Selected as active polar.</div>'
         : '<div style="color:#c60;margin-top:4px;">Saved, but it is not in the polar list (check the plugin\'s polars directory).</div>';
     } catch (e) {
-      warnDiv.innerHTML = 'Request failed: ' + esc(e.message);
+      warnDiv.innerHTML = 'Request failed: ' + escapeHtml(e.message);
     } finally {
       generateBtn.disabled = false;
       generateBtn.textContent = 'Generate polar';
@@ -1207,6 +1206,25 @@ loadPolarList();
 // ─────────── Plugin status (header line + Forecast data section) ───────────
 let _pluginStatus = null;
 /** Text for innerHTML: escapes &, <, >, " and '. */
+// A job's skeleton (coarse A* / corridor) drawn in blue, when it has one.
+function loadSkeleton(id) {
+  authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/skeleton', { cache: 'no-store' }, 'skeleton-load')
+    .then(r => r.ok ? r.json() : null)
+    .then(geojson => {
+      skeletonSource.clear();
+      if (!geojson) return;
+      const features = new ol.format.GeoJSON().readFeatures(geojson, { featureProjection: 'EPSG:3857' });
+      skeletonSource.addFeatures(features);
+    })
+    .catch(() => skeletonSource.clear());
+}
+
+// A time as "Thu 06:00 PM" in the browser's locale; '' when missing or invalid.
+function fmtWhen(iso) {
+  const d = iso ? new Date(iso) : null;
+  return d && !isNaN(d) ? d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+}
+
 function escapeHtml(v) {
   return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -1321,16 +1339,7 @@ function _loadRouteJob(id) {
       const st = document.getElementById('status');
       if (st) st.textContent = 'Could not load route: ' + err.message;
     });
-  // Skeleton (coarse A*) when the job has one.
-  authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/skeleton', { cache: 'no-store' }, 'skeleton-load')
-    .then(r => r.ok ? r.json() : null)
-    .then(geojson => {
-      skeletonSource.clear();
-      if (!geojson) return;
-      const features = new ol.format.GeoJSON().readFeatures(geojson, { featureProjection: 'EPSG:3857' });
-      skeletonSource.addFeatures(features);
-    })
-    .catch(() => skeletonSource.clear());
+  loadSkeleton(id);
   if (typeof _loadFronts === 'function') _loadFronts(id);
 }
 
