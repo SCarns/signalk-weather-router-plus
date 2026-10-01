@@ -1,0 +1,824 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weather Router Plus</title>
+<!-- One file, style and script inline: the extension manifest links this page
+     under a URL that carries a hash of its content, so a browser can never run
+     the script of one version with the markup of another. -->
+<style>
+:root {
+  --bg: #fff;
+  --fg: #1f2328;
+  --muted: #6b7280;
+  --border: #d0d7de;
+  --primary: #1565c0;
+  --primary-fg: #fff;
+  --danger: #b42318;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e;
+    --fg: #e6e6e6;
+    --muted: #9aa0a6;
+    --border: #444;
+    --primary: #64b5f6;
+    --primary-fg: #0b1a2b;
+    --danger: #f28b82;
+  }
+}
+html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+body { padding: 12px; }
+section, details { margin-bottom: 14px; }
+h2 { font-size: 15px; margin: 0 0 4px; }
+summary { cursor: pointer; font-weight: 600; margin-bottom: 8px; }
+.row > select { flex: 1; min-width: 0; }
+.field { margin-bottom: 10px; }
+.label { display: block; font-weight: 600; margin-bottom: 3px; }
+.row { display: flex; gap: 6px; align-items: center; }
+.row > input { flex: 1; min-width: 0; }
+input, select { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; }
+button { padding: 7px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; cursor: pointer; }
+button.primary { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+button[disabled] { opacity: .5; cursor: default; }
+button.link { border: 0; background: none; color: var(--primary); padding: 2px 0; font-size: 13px; }
+.status { padding: 6px 8px; margin-bottom: 12px; border-radius: 6px; background: rgba(127,127,127,.12); }
+.status.error { color: var(--danger); }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+/* The trip summary stays in view while the itinerary scrolls under it. */
+.sum { position: sticky; top: 0; z-index: 1; background: var(--bg); padding: 8px 0 10px; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
+.sum-main { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; font-size: 15px; margin-bottom: 6px; }
+.sum-main b { font-size: 18px; }
+.sum-grid, .leg-grid { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; font-size: 13px; }
+.k { color: var(--muted); }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+.badge.ok { background: rgba(67,160,71,.15); color: #2e7d32; }
+.badge.warn { background: rgba(249,168,37,.2); color: #8a5a00; }
+.badge.danger { background: rgba(211,47,47,.15); color: #c62828; }
+.sum .row { margin-top: 8px; }
+/* One card per waypoint: the leg leaving it (the web app's itinerary cards). */
+.leg { border: 1px solid var(--border); border-left-width: 4px; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
+.leg.sailing { border-left-color: #43a047; }
+.leg.motoring { border-left-color: #f9a825; }
+.leg.arrival { border-left-color: var(--primary); }
+.leg.tack-port { border-left-color: #d32f2f; }
+.leg-head { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.leg-mode { font-weight: 600; text-transform: capitalize; }
+.leg.sailing .leg-mode, .leg.tack-starboard .leg-mode { color: #2e7d32; }
+.leg.motoring .leg-mode { color: #b26a00; }
+.leg.tack-port .leg-mode { color: #d32f2f; }
+.leg-foot { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.fair { color: #2e7d32; font-weight: 600; }
+.foul { color: #c62828; font-weight: 600; }
+.cross { color: #b8860b; }
+</style>
+</head>
+<body>
+<div id="status" class="status">Connecting to the chartplotter…</div>
+
+<section id="chartRoute">
+  <h2>Route on the chart</h2>
+  <p class="muted small">Draw a route with the chartplotter's <b>Draw Route</b> tool (pencil menu): tap the start, any waypoints, the destination, then Finish. Or show a saved route. Then weather-route it here.</p>
+  <select id="routeSelect" aria-label="Route to weather-route"><option value="">No route on the chart</option></select>
+  <div id="routeInfo" class="muted small"></div>
+  <div class="row">
+    <button id="routeIt" type="button" class="primary" disabled>Weather-route it</button>
+    <button id="restore" type="button" hidden>Restore drawn route</button>
+  </div>
+</section>
+
+<details id="boatRoute">
+  <summary>From the boat to a position</summary>
+  <div class="field">
+    <span class="label">From</span>
+    <div class="row">
+      <input id="fromLat" type="number" step="0.0001" min="-90" max="90" placeholder="latitude" aria-label="Start latitude">
+      <input id="fromLon" type="number" step="0.0001" min="-180" max="180" placeholder="longitude" aria-label="Start longitude">
+    </div>
+    <span id="fromText" class="muted small">waiting for the vessel position…</span>
+    <button id="useVessel" type="button" class="link" hidden>Use the vessel position</button>
+  </div>
+  <div class="field">
+    <span class="label">To</span>
+    <div class="row">
+      <input id="toLat" type="number" step="0.0001" min="-90" max="90" placeholder="latitude" aria-label="Destination latitude">
+      <input id="toLon" type="number" step="0.0001" min="-180" max="180" placeholder="longitude" aria-label="Destination longitude">
+    </div>
+    <div class="row">
+      <button id="useCentre" type="button" class="link">Use the map centre</button>
+      <select id="waypointSelect" aria-label="A saved waypoint as the destination"><option value="">…or a saved waypoint</option></select>
+    </div>
+  </div>
+  <div class="row">
+    <button id="find" type="button" class="primary" disabled>Find route</button>
+  </div>
+</details>
+
+<section id="options">
+  <div class="field">
+    <label class="label" for="polar">Polar</label>
+    <select id="polar"><option value="">Loading…</option></select>
+  </div>
+  <div class="field">
+    <label class="label" for="mode">Mode</label>
+    <select id="mode">
+      <option value="sail_max">Sail max</option>
+      <option value="fastest">Fastest</option>
+      <option value="motor">Motor</option>
+    </select>
+  </div>
+  <div class="field" id="sailThreshField">
+    <label class="label" for="sailThresh">Min sail speed</label>
+    <div class="row">
+      <input id="sailThresh" type="number" step="0.1" min="0" aria-label="Minimum sailing speed">
+      <span id="sailThreshUnit" class="muted"></span>
+    </div>
+    <span class="muted small">Below this boat speed under sail, motor instead. Lower = more sailing.</span>
+  </div>
+  <div class="row">
+    <button id="cancel" type="button" hidden>Cancel</button>
+    <span id="progress" class="muted"></span>
+  </div>
+</section>
+
+<section id="result" hidden>
+  <div id="summary" class="sum">
+    <div id="sumBody"></div>
+    <div class="row">
+      <button id="save" type="button" class="primary">Save route…</button>
+      <button id="discard" type="button">Discard</button>
+    </div>
+    <div id="saved" class="muted small"></div>
+  </div>
+  <h2>Itinerary</h2>
+  <div id="itinerary"></div>
+</section>
+
+<p class="muted small">Open water only: the route avoids land but knows nothing about depths, channels or bridges. Review it before use.</p>
+<script>
+/*
+ * Weather Router Plus: plotter-extension panel (Signal K Plotter Extensions
+ * API, version 1). Runs inside the chartplotter (Freeboard-SK) as a sandboxed
+ * iframe, talking to the host over the documented bus (JSON-RPC 2.0 in a
+ * routing envelope over postMessage; the client below is written by hand,
+ * as the documented wire format, not any package, is the contract) and to
+ * this plugin's own API with the user's session, which the iframe shares.
+ *
+ * Two ways to route:
+ *  - A route on the chart (the main way): the user draws it with the host's
+ *    own tool (map taps: start, waypoints, end) or shows a saved one; the
+ *    panel lists the host's visible routes (`route.list`, kept in sync from
+ *    the `route.*` events) and "Weather-route it" rewrites the chosen route's
+ *    geometry in place (`route.replace`): first point = start, last =
+ *    destination, the others = precise waypoints. The route stays the host's
+ *    draft (or an unsaved edit of a saved route) until the user saves it.
+ *  - From the boat to a position: start = the vessel (editable), end = typed,
+ *    the map centre or a saved waypoint; the result becomes a new draft
+ *    (`route.create`).
+ *
+ * Units: distances and speeds in the host's unit preferences (`units.get`);
+ * a quantity whose unit the host does not give is left out.
+ */
+(function () {
+  'use strict';
+  var API = '/plugins/signalk-weather-router-plus/api';
+  var BUS = 'plotterExt/1';
+
+  // ---- bus client ---------------------------------------------------------
+  function connectHost() {
+    return new Promise(function (resolve) {
+      var pending = {};
+      var seq = 0;
+      var subs = [];
+      var handshake = null;
+      var origin = window.location.origin;
+      function post(msg) { window.parent.postMessage({ bus: BUS, msg: msg }, origin); }
+      function toRegExp(pattern) {
+        var re = pattern.split('.').map(function (seg) {
+          return seg === '**' ? '.*' : seg === '*' ? '[^.]+' : seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }).join('\\.');
+        return new RegExp('^' + re + '$');
+      }
+      var api = {
+        info: function () { return handshake; },
+        has: function (cap) { return !!(handshake && handshake.capabilities.indexOf(cap) >= 0); },
+        call: function (method, params, timeoutMs) {
+          return new Promise(function (res, rej) {
+            var id = 'wrp-' + (++seq);
+            var timer = setTimeout(function () {
+              delete pending[id];
+              rej(new Error(method + ': no answer from the chartplotter'));
+            }, timeoutMs || 20000);
+            pending[id] = { res: res, rej: rej, timer: timer };
+            post({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
+          });
+        },
+        subscribe: function (patterns, handler) {
+          return api.call('events.subscribe', { patterns: patterns }).then(function (r) {
+            subs.push({ res: patterns.map(toRegExp), handler: handler });
+            return r.subscriptionId;
+          });
+        }
+      };
+      window.addEventListener('message', function (ev) {
+        var d = ev.data;
+        if (!d || d.bus !== BUS || !d.msg) return;
+        var m = d.msg;
+        if (m.id !== undefined && pending[m.id]) {
+          var p = pending[m.id];
+          delete pending[m.id];
+          clearTimeout(p.timer);
+          if (m.error) {
+            var err = new Error(m.error.message || 'host error');
+            err.reason = m.error.data && m.error.data.reason;
+            p.rej(err);
+          } else p.res(m.result);
+          return;
+        }
+        if (m.method === 'bus.handshake') {
+          if (handshake) return;
+          handshake = m.params;
+          clearInterval(ready);
+          resolve(api);
+          return;
+        }
+        if (m.method && m.id === undefined) {
+          subs.forEach(function (s) {
+            if (s.res.some(function (re) { return re.test(m.method); })) s.handler(m.method, m.params);
+          });
+        }
+      });
+      // The caller repeats bus.ready until the host answers (it may attach late).
+      var ready = setInterval(function () { post({ jsonrpc: '2.0', method: 'bus.ready', params: {} }); }, 250);
+      post({ jsonrpc: '2.0', method: 'bus.ready', params: {} });
+    });
+  }
+
+  // ---- helpers ------------------------------------------------------------
+  function $(id) { return document.getElementById(id); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function setStatus(text, kind) { var el = $('status'); el.textContent = text; el.className = 'status' + (kind ? ' ' + kind : ''); }
+  function get(url) {
+    return fetch(url, { credentials: 'same-origin', cache: 'no-store' }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + (t ? ' ' + t.slice(0, 200) : '')); });
+      return r.json();
+    });
+  }
+  function post(url, body) {
+    return fetch(url, { method: 'POST', credentials: 'same-origin', headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) {
+        return r.text().then(function (t) {
+          var j = null;
+          try { j = t ? JSON.parse(t) : null; } catch (_) { j = null; }
+          if (!r.ok) throw new Error((j && (j.error || j.message)) || ('HTTP ' + r.status));
+          return j;
+        });
+      });
+  }
+  function fmtLatLon(lat, lon) {
+    return Math.abs(lat).toFixed(4) + (lat >= 0 ? '°N ' : '°S ') + Math.abs(lon).toFixed(4) + (lon >= 0 ? '°E' : '°W');
+  }
+  function fmtTime(iso) {
+    var d = new Date(iso);
+    return isNaN(d) ? '' : d.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+  function fmtDuration(s) {
+    var h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+    return h ? h + ' h ' + (m ? m + ' min' : '') : m + ' min';
+  }
+  // Host unit vocabulary (Plotter Extensions API, `units.get`).
+  var SPEED = { kn: [1.943844, 'kn'], 'm/s': [1, 'm/s'], 'km/h': [3.6, 'km/h'], mph: [2.236936, 'mph'] };
+  var DISTANCE = { 'naut-mile': [1 / 1852, 'nm'], kilometer: [1 / 1000, 'km'] };
+  function fmtSpeed(ms) { var u = units && SPEED[units.speed]; return u ? (ms * u[0]).toFixed(1) + ' ' + u[1] : null; }
+  function fmtDistance(m) { var u = units && DISTANCE[units.distance]; return u ? (m * u[0]).toFixed(1) + ' ' + u[1] : null; }
+  function num(id) { var v = parseFloat($(id).value); return isFinite(v) ? v : null; }
+
+  // ---- state --------------------------------------------------------------
+  var host = null;
+  var units = null;
+  var vessel = null;        // {lat, lon}
+  var job = null;           // {id, links, es, onDone}
+  var result = null;        // {routeId, created: bool, original: points|null, props}
+  var visible = [];         // the host's visible routes: {routeId, name, pointCount, saved, dirty}
+  var autoSelected = false;
+
+  // ---- plugin status ------------------------------------------------------
+  var statusTimer = null;
+  function pollStatus() {
+    get(API + '/status').then(function (s) {
+      if (s.starting) { setStatus(s.starting); scheduleStatus(5000); return; }
+      if (s.forecast_error && !s.forecast) { setStatus('Forecast: ' + s.forecast_error, 'error'); scheduleStatus(30000); return; }
+      if (!s.forecast) { setStatus('Waiting for the first forecast…'); scheduleStatus(5000); return; }
+      setStatus('Forecast ' + (s.forecast.cycle ? 'cycle ' + fmtTime(s.forecast.cycle) : 'ready'));
+      scheduleStatus(60000);
+    }).catch(function (e) { setStatus('Weather Router Plus: ' + e.message, 'error'); scheduleStatus(15000); });
+  }
+  function scheduleStatus(ms) { clearTimeout(statusTimer); statusTimer = setTimeout(pollStatus, ms); }
+
+  // ---- polars, waypoints --------------------------------------------------
+  function loadPolars() {
+    var sel = $('polar');
+    var remembered = null;
+    try { remembered = localStorage.getItem('wrp-plotterext-polar'); } catch (_) {}
+    return get(API + '/polars').then(function (items) {
+      sel.innerHTML = '';
+      items.forEach(function (it) {
+        var o = document.createElement('option');
+        o.value = it.path; o.textContent = it.label;
+        sel.appendChild(o);
+      });
+      if (remembered && items.some(function (it) { return it.path === remembered; })) sel.value = remembered;
+    }).catch(function (e) { sel.innerHTML = '<option value="">polars unavailable: ' + esc(e.message) + '</option>'; });
+  }
+  $('polar').addEventListener('change', function () { try { localStorage.setItem('wrp-plotterext-polar', this.value); } catch (_) {} });
+
+  function loadWaypoints() {
+    if (!host.has('resources')) return;
+    host.call('resources.list', { type: 'waypoints' }).then(function (col) {
+      var sel = $('waypointSelect');
+      var items = Object.keys(col || {}).map(function (id) {
+        var w = col[id];
+        var pos = w && w.feature && w.feature.geometry && w.feature.geometry.coordinates;
+        return pos ? { id: id, name: (w.name || id).toString(), lon: pos[0], lat: pos[1] } : null;
+      }).filter(Boolean).sort(function (a, b) { return a.name.localeCompare(b.name); });
+      sel.innerHTML = '<option value="">…or a saved waypoint</option>';
+      items.forEach(function (w) {
+        var o = document.createElement('option');
+        o.value = w.lon + ',' + w.lat; o.textContent = w.name;
+        sel.appendChild(o);
+      });
+    }).catch(function () {});
+  }
+  $('waypointSelect').addEventListener('change', function () {
+    var v = this.value.split(',');
+    if (v.length === 2) { $('toLon').value = (+v[0]).toFixed(4); $('toLat').value = (+v[1]).toFixed(4); refreshFind(); }
+  });
+
+  // ---- the host's visible routes -----------------------------------------
+  function upsertVisible(r) {
+    var i = -1;
+    visible.forEach(function (v, k) { if (v.routeId === r.routeId) i = k; });
+    if (i >= 0) visible[i] = Object.assign(visible[i], r); else visible.push(r);
+  }
+  function removeVisible(routeId) { visible = visible.filter(function (v) { return v.routeId !== routeId; }); }
+  function renderRoutes() {
+    var sel = $('routeSelect');
+    var current = sel.value;
+    sel.innerHTML = '';
+    if (!visible.length) {
+      sel.innerHTML = '<option value="">No route on the chart</option>';
+      $('routeInfo').textContent = 'Draw one, or tick a saved route in the Routes list.';
+    } else {
+      visible.forEach(function (v) {
+        var o = document.createElement('option');
+        o.value = v.routeId;
+        o.textContent = (v.name || 'Unnamed route') + (!v.saved || v.dirty ? ' · unsaved' : '');
+        sel.appendChild(o);
+      });
+      if (visible.some(function (v) { return v.routeId === current; })) sel.value = current;
+      else if (visible.length === 1 || autoSelected) { sel.value = visible[0].routeId; autoSelected = true; }
+      var v = visible.filter(function (x) { return x.routeId === sel.value; })[0];
+      $('routeInfo').textContent = v ? v.pointCount + ' points: start, ' + Math.max(0, v.pointCount - 2) + ' waypoint' + (v.pointCount - 2 === 1 ? '' : 's') + ', destination' : '';
+    }
+    refreshRouteIt();
+  }
+  function refreshRouteIt() { $('routeIt').disabled = !$('routeSelect').value || !!job; }
+  $('routeSelect').addEventListener('change', function () { autoSelected = false; renderRoutes(); });
+
+  // ---- a route job --------------------------------------------------------
+  function startJob(body, onDone) {
+    $('progress').textContent = 'Submitting…';
+    refreshRouteIt(); refreshFind();
+    return post(API + '/routes', body).then(function (r) {
+      job = { id: r.id, links: r.links, es: null, onDone: onDone };
+      $('cancel').hidden = false;
+      refreshRouteIt(); refreshFind();
+      follow();
+    }).catch(function (e) {
+      job = null;
+      $('progress').textContent = 'Could not start: ' + e.message;
+      refreshRouteIt(); refreshFind();
+    });
+  }
+  function follow() {
+    var es = new EventSource(job.links.events, { withCredentials: true });
+    job.es = es;
+    es.addEventListener('status', function (ev) {
+      var d = JSON.parse(ev.data);
+      $('progress').textContent = d.status === 'queued' ? 'Queued (' + d.position + ' ahead)' : d.status === 'running' ? 'Routing…' : d.status;
+    });
+    es.addEventListener('progress', function (ev) {
+      var d = JSON.parse(ev.data);
+      $('progress').textContent = (d.total ? 'Stage ' + d.stage + '/' + d.total + ': ' : '') + (d.message || '');
+    });
+    es.addEventListener('error', function (ev) {
+      if (!ev.data) return;   // a dropped connection, not a job error; EventSource reconnects
+      var d = JSON.parse(ev.data);
+      finishJob('Failed: ' + (d.message || d.status));
+    });
+    es.addEventListener('done', function () {
+      var onDone = job.onDone;
+      get(job.links.result).then(function (geojson) { onDone(geojson); }).catch(function (e) { finishJob('Could not read the result: ' + e.message); });
+    });
+  }
+  function finishJob(message) {
+    if (job && job.es) job.es.close();
+    job = null;
+    $('cancel').hidden = true;
+    $('progress').textContent = message || '';
+    refreshRouteIt(); refreshFind();
+  }
+  function cancelJob() {
+    if (!job) return;
+    post(job.links.cancel).catch(function () {});
+    finishJob('Cancelled');
+  }
+  function requestBody(start, end, waypoints, name) {
+    var body = {
+      start: { lat: start[1], lon: start[0] },
+      end: { lat: end[1], lon: end[0] },
+      mode: $('mode').value,
+      publish: false,   // the chartplotter stores the route, if the user keeps it
+      name: name
+    };
+    if (waypoints && waypoints.length) {
+      body.waypoints = waypoints.map(function (p) { return { lat: p[1], lon: p[0] }; });
+      body.precision = 'precise';
+    }
+    if ($('mode').value !== 'motor') {
+      if ($('polar').value) body.vessel = { polar: $('polar').value };
+      var st = sailThreshMs();
+      if (st !== null) body.sail_thresh_ms = st;
+    }
+    return body;
+  }
+
+  // ---- min sail speed (sail_thresh_ms): the plugin's routing setting as the
+  // default, edited in the host's speed unit, remembered in this browser.
+  var sailThreshDefaultMs = null;
+  function speedUnit() { return units && SPEED[units.speed] ? SPEED[units.speed] : null; }
+  function sailThreshMs() {
+    var u = speedUnit();
+    var v = num('sailThresh');
+    return u && v !== null ? v / u[0] : null;
+  }
+  function showSailThresh() {
+    var u = speedUnit();
+    var field = $('sailThreshField');
+    field.hidden = $('mode').value === 'motor' || !u;
+    if (!u) return;
+    $('sailThreshUnit').textContent = u[1];
+    if ($('sailThresh').value === '') {
+      var ms = null;
+      try { var s = localStorage.getItem('wrp-plotterext-sail-thresh-ms'); if (s !== null && isFinite(+s)) ms = +s; } catch (_) {}
+      if (ms === null) ms = sailThreshDefaultMs;
+      if (ms !== null) $('sailThresh').value = (ms * u[0]).toFixed(1);
+    }
+  }
+  function loadSailThreshDefault() {
+    return get(API + '/settings').then(function (s) {
+      var v = s && s.values && s.values.routing && s.values.routing.sailThreshold;
+      if (isFinite(v)) sailThreshDefaultMs = v;
+      showSailThresh();
+    }).catch(function () { showSailThresh(); });
+  }
+  $('mode').addEventListener('change', showSailThresh);
+  $('sailThresh').addEventListener('change', function () {
+    var ms = sailThreshMs();
+    try { if (ms !== null) localStorage.setItem('wrp-plotterext-sail-thresh-ms', String(ms)); } catch (_) {}
+  });
+
+  // ---- legs, as the web app's itinerary cards show them --------------------
+  // The leg leaving waypoint i is described by the next waypoint's values
+  // (its mode, COG, SOG, wind, TWA, current and waves are those of the leg
+  // arriving there), the leg's distance and time from the two positions and
+  // times; the last waypoint is the arrival, with the conditions on arrival.
+  var CARDINALS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
+  function fin(v) { return typeof v === 'number' && isFinite(v); }
+  function cardinal(deg) { return CARDINALS[Math.round((((deg % 360) + 360) % 360) / 22.5) % 16]; }
+  function tackSide(cogDeg, windFromDeg) {
+    if (!fin(cogDeg) || !fin(windFromDeg)) return null;
+    var rel = (((windFromDeg - cogDeg) % 360) + 360) % 360;
+    return rel <= 180 ? 'starboard' : 'port';
+  }
+  // Default bands (the web app refines them from the polar's angles).
+  function pointOfSail(twa) {
+    if (!fin(twa)) return null;
+    var a = Math.abs(twa);
+    return a < 35 ? 'in irons' : a < 55 ? 'close hauled' : a < 75 ? 'close reach' : a <= 105 ? 'beam reach' : a <= 135 ? 'broad reach' : 'downwind';
+  }
+  function fairFoul(cogDeg, curToDeg) {
+    if (!fin(cogDeg) || !fin(curToDeg)) return null;
+    var diff = Math.abs(((((curToDeg - cogDeg + 180) % 360) + 360) % 360) - 180);
+    return diff < 80 ? 'fair' : diff > 100 ? 'foul' : 'cross';
+  }
+  function haversineM(a, b) {
+    var toR = Math.PI / 180;
+    var dLat = (b[1] - a[1]) * toR, dLon = (b[0] - a[0]) * toR;
+    var s = Math.pow(Math.sin(dLat / 2), 2) + Math.cos(a[1] * toR) * Math.cos(b[1] * toR) * Math.pow(Math.sin(dLon / 2), 2);
+    return 2 * 6371008.8 * Math.asin(Math.sqrt(s));
+  }
+  function fmtWaves(m) { return units && units.length === 'foot' ? (m * 3.28084).toFixed(1) + ' ft' : m.toFixed(1) + ' m'; }
+  function fmtHM(s) { var t = Math.round(s / 60); return Math.floor(t / 60) + ':' + ('0' + (t % 60)).slice(-2); }
+  function leg(feats, i) {
+    var f = feats[i], p = f.properties;
+    var last = i === feats.length - 1;
+    var n = last ? null : feats[i + 1].properties;
+    var a = f.geometry.coordinates;
+    var out = { time: p.time, last: last, lat: fin(p.lat) ? p.lat : a[1], lon: fin(p.lon) ? p.lon : a[0], via: p.role === 'via', mode: last ? 'arrival' : (n.mode || null) };
+    if (last) {
+      out.windMs = p.wind_ms; out.windDir = p.wind_dir_deg; out.curMs = p.current_ms; out.curDir = p.current_dir_deg;
+      out.swh = p.swh_m; out.mwp = p.mwp_s; out.mwd = p.mwd_deg;
+      return out;
+    }
+    var b = feats[i + 1].geometry.coordinates;
+    out.distM = fin(p.leg_distance_m) ? p.leg_distance_m : haversineM(a, b);
+    out.timeS = fin(p.leg_time_s) ? p.leg_time_s : (new Date(n.time) - new Date(p.time)) / 1000;
+    out.sogMs = n.sog_ms; out.cogDeg = fin(n.cog_deg) ? n.cog_deg : null;
+    out.windMs = n.wind_ms; out.windDir = n.wind_dir_deg; out.twa = n.twa_deg;
+    out.tack = out.mode === 'sailing' ? tackSide(out.cogDeg, out.windDir) : null;
+    out.curMs = n.current_ms; out.curDir = n.current_dir_deg;
+    out.swh = n.swh_m; out.mwp = n.mwp_s; out.mwd = n.mwd_deg;
+    return out;
+  }
+  // [label, value, class?] rows of a leg card, in the host's units; a quantity whose unit the host does not give is left out.
+  function legFields(l) {
+    var rows = [];
+    var v;
+    if (fin(l.distM) && (v = fmtDistance(l.distM))) rows.push(['Distance', v]);
+    if (fin(l.timeS)) rows.push(['Time', fmtHM(l.timeS)]);
+    if (fin(l.sogMs) && (v = fmtSpeed(l.sogMs))) rows.push(['SOG', v]);
+    if (fin(l.cogDeg)) rows.push(['COG', cardinal(l.cogDeg) + ' ' + Math.round(l.cogDeg) + '°']);
+    if (fin(l.windMs) && (v = fmtSpeed(l.windMs))) {
+      var pos = l.last ? null : pointOfSail(l.twa);
+      rows.push(['Wind', v + (fin(l.windDir) ? ' from ' + cardinal(l.windDir) + ' (' + Math.round(l.windDir) + '°)' : '') + (pos ? ' · ' + pos : '')]);
+    }
+    if (!l.last && fin(l.twa)) rows.push(['TWA', Math.round(l.twa) + '°']);
+    if (l.tack) rows.push(['Tack', l.tack === 'port' ? 'Port' : 'Starboard']);
+    if (fin(l.curMs) && l.curMs > 0.05 && (v = fmtSpeed(l.curMs))) {
+      var from = fin(l.curDir) ? (l.curDir + 180) % 360 : null;
+      var ff = l.last ? null : fairFoul(l.cogDeg, l.curDir);
+      rows.push(['Current', v + (from !== null ? ' from ' + cardinal(from) + ' (' + Math.round(from) + '°)' : '') + (ff ? ' · ' + ff : ''), ff]);
+    }
+    if (fin(l.swh)) {
+      var wv = [fmtWaves(l.swh)];
+      if (fin(l.mwp)) wv.push(Math.round(l.mwp) + ' s');
+      if (fin(l.mwd)) wv.push('from ' + cardinal(l.mwd) + ' ' + Math.round(l.mwd) + '°');
+      rows.push(['Waves', wv.join(' · ')]);
+    }
+    return rows;
+  }
+  // One line per point, for the chartplotter's point descriptions (Info and Points views).
+  function legText(feats, i) {
+    var l = leg(feats, i);
+    var head = fmtTime(l.time) + ' · ' + (l.mode || '—') + (l.tack ? ' (' + l.tack + ')' : '');
+    return [head].concat(legFields(l).map(function (r) { return r[0] + ' ' + r[1]; })).join(' · ');
+  }
+  // One line for the route's own description.
+  function summaryLine(p, n) {
+    var parts = [];
+    var dist = fin(p.total_distance_m) ? fmtDistance(p.total_distance_m) : null;
+    if (dist) parts.push(dist);
+    if (fin(p.total_time_s)) parts.push(fmtDuration(p.total_time_s));
+    parts.push('sailing ' + fmtDuration(p.sailing_time_s || 0) + ', motoring ' + fmtDuration(p.motoring_time_s || 0));
+    parts.push(n + ' waypoints');
+    if (p.departure) parts.push('departs ' + fmtTime(p.departure));
+    if (p.arrival) parts.push('arrives ' + fmtTime(p.arrival));
+    return 'Weather route: ' + parts.join(', ') + '.';
+  }
+  function renderItinerary(feats, points) {
+    var el = $('itinerary');
+    el.innerHTML = '';
+    feats.forEach(function (f, i) {
+      var l = leg(feats, i);
+      var card = document.createElement('div');
+      card.className = 'leg ' + (l.mode || '') + (l.tack ? ' tack-' + l.tack : '');
+      var grid = legFields(l).map(function (r) {
+        return '<span class="k">' + esc(r[0]) + '</span><span class="v' + (r[2] ? ' ' + r[2] : '') + '">' + esc(r[1]) + '</span>';
+      }).join('');
+      card.innerHTML =
+        '<div class="leg-head"><span><b>' + (i + 1) + '.</b> ' + esc(fmtTime(l.time)) + ' <span class="muted">' + esc(points[i] ? points[i].name : '') + '</span></span>'
+        + '<span class="leg-mode">' + esc(l.mode || '—') + (l.tack ? ' · ' + esc(l.tack) : '') + '</span></div>'
+        + '<div class="leg-grid">' + (grid || '<span class="muted">—</span>') + '</div>'
+        + '<div class="leg-foot">' + l.lat.toFixed(4) + ', ' + l.lon.toFixed(4) + (l.via ? ' · via' : '') + '</div>';
+      el.appendChild(card);
+    });
+  }
+
+  // The result's waypoints as host route points. A point that coincides with
+  // one of the user's own named points keeps that name.
+  function resultPoints(geojson, userPoints) {
+    var feats = (geojson.features || []).filter(function (f) { return f.geometry && f.geometry.type === 'Point' && f.properties && f.properties.time; });
+    var line = (geojson.features || []).filter(function (f) { return f.geometry && f.geometry.type === 'LineString'; })[0];
+    var points = feats.map(function (f, i) {
+      var lon = f.geometry.coordinates[0], lat = f.geometry.coordinates[1];
+      var name = i === 0 ? 'Start' : i === feats.length - 1 ? 'Arrival' : 'WP ' + i;
+      (userPoints || []).forEach(function (u) {
+        if (u.name && Math.abs(u.position[0] - lon) < 1e-4 && Math.abs(u.position[1] - lat) < 1e-4) name = u.name;
+      });
+      return { position: [lon, lat], name: name, description: legText(feats, i) };
+    });
+    return { points: points, props: (line && line.properties) || {}, feats: feats };
+  }
+
+  // ---- weather-route a route on the chart ---------------------------------
+  function routeIt() {
+    var routeId = $('routeSelect').value;
+    if (!routeId || job) return;
+    host.call('route.get', { routeId: routeId }).then(function (r) {
+      var pts = r.points || [];
+      if (pts.length < 2) { $('progress').textContent = 'The route needs at least two points.'; return; }
+      var start = pts[0].position, end = pts[pts.length - 1].position;
+      var vias = pts.slice(1, -1).map(function (p) { return p.position; });
+      return startJob(requestBody(start, end, vias, r.name || 'Weather route'), function (geojson) {
+        var out = resultPoints(geojson, pts);
+        if (out.points.length < 2) { finishJob('The result has no waypoints'); return; }
+        host.call('route.replace', { routeId: routeId, points: out.points }).then(function () {
+          result = { routeId: routeId, created: false, original: pts, props: out.props, saved: r.saved, n: out.points.length, hasDescription: !!(r.description && String(r.description).trim()) };
+          finishJob('');
+          showResult(out.props, out.points.length);
+          renderItinerary(out.feats, out.points);
+          $('restore').hidden = false;
+          fitTo(out.points);
+        }).catch(function (e) { finishJob('The chartplotter refused the route: ' + e.message); });
+      });
+    }).catch(function (e) { $('progress').textContent = 'Could not read the route: ' + e.message; });
+  }
+  function restore() {
+    if (!result || !result.original) return;
+    host.call('route.replace', { routeId: result.routeId, points: result.original }).then(function () {
+      clearResult();
+      $('progress').textContent = 'The drawn route is back.';
+    }).catch(function (e) { $('progress').textContent = 'Could not restore: ' + e.message; });
+  }
+
+  // ---- from the boat to a position ----------------------------------------
+  function fromIsVessel() {
+    return !!vessel && num('fromLat') !== null && num('fromLon') !== null &&
+      Math.abs(num('fromLat') - vessel.lat) < 1e-4 && Math.abs(num('fromLon') - vessel.lon) < 1e-4;
+  }
+  function refreshFind() {
+    $('find').disabled = !(num('fromLat') !== null && num('fromLon') !== null && num('toLat') !== null && num('toLon') !== null && !job);
+    $('useVessel').hidden = !vessel || fromIsVessel();
+    $('fromText').textContent = !vessel ? 'waiting for the vessel position…' : fromIsVessel() ? 'the vessel' : 'not the vessel position';
+  }
+  var fromEdited = false;
+  function setVessel(lat, lon) {
+    if (!(isFinite(lat) && isFinite(lon))) return;
+    vessel = { lat: lat, lon: lon };
+    if (!fromEdited) {
+      $('fromLat').value = lat.toFixed(4);
+      $('fromLon').value = lon.toFixed(4);
+    }
+    refreshFind();
+  }
+  function useVessel() {
+    if (!vessel) return;
+    fromEdited = false;
+    setVessel(vessel.lat, vessel.lon);
+  }
+  function findRoute() {
+    var lat = num('toLat'), lon = num('toLon'), fromLat = num('fromLat'), fromLon = num('fromLon');
+    if (lat === null || lon === null || fromLat === null || fromLon === null || job) return;
+    startJob(requestBody([fromLon, fromLat], [lon, lat], [], 'Weather route to ' + fmtLatLon(lat, lon)), function (geojson) {
+      var out = resultPoints(geojson, []);
+      if (out.points.length < 2) { finishJob('The result has no waypoints'); return; }
+      var name = 'Weather route, ' + fmtTime(out.props.departure || new Date().toISOString());
+      host.call('route.create', { points: out.points, name: name }).then(function (r) {
+        result = { routeId: r.routeId, created: true, original: null, props: out.props, saved: false, n: out.points.length, hasDescription: false };
+        finishJob('');
+        showResult(out.props, out.points.length);
+        renderItinerary(out.feats, out.points);
+        $('restore').hidden = true;
+        fitTo(out.points);
+      }).catch(function (e) { finishJob('The chartplotter refused the route: ' + e.message); });
+    });
+  }
+
+  // ---- result -------------------------------------------------------------
+  function fitTo(points) {
+    if (!host.has('map')) return;
+    var lons = points.map(function (p) { return p.position[0]; }), lats = points.map(function (p) { return p.position[1]; });
+    host.call('map.fitBounds', { bounds: [Math.min.apply(null, lons), Math.min.apply(null, lats), Math.max.apply(null, lons), Math.max.apply(null, lats)] }).catch(function () {});
+  }
+  // The trip summary (the web app's result strip): distance, time, arrival,
+  // sailing and motoring time, waypoints, highest waves, validation badge.
+  function showResult(p, n) {
+    var kv = function (k, v) { return '<span class="k">' + esc(k) + '</span><span>' + esc(v) + '</span>'; };
+    var dist = fin(p.total_distance_m) ? fmtDistance(p.total_distance_m) : null;
+    var warns = Array.isArray(p.warnings) ? p.warnings.length : 0;
+    var land = p.land_crossings || 0;
+    var badge = land > 0 ? '<span class="badge danger">' + land + ' land crossing' + (land > 1 ? 's' : '') + '</span>'
+      : warns ? '<span class="badge warn">' + warns + ' warning' + (warns > 1 ? 's' : '') + '</span>'
+      : p.validated === false ? '<span class="badge">not validated</span>' : '<span class="badge ok">validated</span>';
+    var html = '<div class="sum-main"><b>' + esc(dist || '—') + '</b><span>' + esc(fin(p.total_time_s) ? fmtDuration(p.total_time_s) : '—') + '</span>'
+      + (p.arrival ? '<span>arrives ' + esc(fmtTime(p.arrival)) + '</span>' : '') + badge + '</div>'
+      + '<div class="sum-grid">'
+      + kv('Sailing', fmtDuration(p.sailing_time_s || 0)) + kv('Motoring', fmtDuration(p.motoring_time_s || 0))
+      + kv('Waypoints', String(n))
+      + (p.departure ? kv('Departs', fmtTime(p.departure)) : '')
+      + (fin(p.max_swh_m) ? kv('Waves max', fmtWaves(p.max_swh_m)) : '')
+      + (p.forecast_cycle ? kv('Forecast', fmtTime(p.forecast_cycle)) : '')
+      + '</div>';
+    if (land > 0 || p.has_land_crossing) html += '<div class="status error">A leg crosses land. Do not use this route.</div>';
+    if (p.forecast_horizon_note) html += '<div class="muted small">' + esc(p.forecast_horizon_note) + '</div>';
+    $('sumBody').innerHTML = html;
+    $('result').hidden = false;
+    $('saved').textContent = '';
+    $('save').textContent = result && result.saved ? 'Save changes' : 'Save route…';
+  }
+  function saveResult() {
+    if (!result) return;
+    $('save').disabled = true;
+    // A route with no description of its own gets the summary as one (shown
+    // in the chartplotter's Info); a description the user wrote is kept.
+    var params = { routeId: result.routeId, dialog: !result.saved };
+    if (!result.hasDescription) params.description = summaryLine(result.props, result.n);
+    host.call('route.save', params, 10 * 60 * 1000).then(function (r) {
+      $('saved').textContent = 'Saved as ' + r.href;
+      $('save').disabled = false;
+      result.saved = true;
+      $('save').textContent = 'Save changes';
+    }).catch(function (e) {
+      $('saved').textContent = e.reason === 'routes.saveCancelled' ? '' : 'Not saved: ' + e.message;
+      $('save').disabled = false;
+    });
+  }
+  function discardResult() {
+    if (!result) return;
+    if (result.created) host.call('route.hide', { routeId: result.routeId }).catch(function () {});
+    else if (result.original) { restore(); return; }
+    clearResult();
+  }
+  function clearResult() {
+    result = null;
+    $('result').hidden = true;
+    $('sumBody').innerHTML = '';
+    $('saved').textContent = '';
+    $('restore').hidden = true;
+    refreshRouteIt(); refreshFind();
+  }
+
+  // ---- start --------------------------------------------------------------
+  $('routeIt').addEventListener('click', routeIt);
+  $('restore').addEventListener('click', restore);
+  $('find').addEventListener('click', findRoute);
+  $('cancel').addEventListener('click', cancelJob);
+  $('save').addEventListener('click', saveResult);
+  $('discard').addEventListener('click', discardResult);
+  $('toLat').addEventListener('input', refreshFind);
+  $('toLon').addEventListener('input', refreshFind);
+  $('fromLat').addEventListener('input', function () { fromEdited = true; refreshFind(); });
+  $('fromLon').addEventListener('input', function () { fromEdited = true; refreshFind(); });
+  $('useVessel').addEventListener('click', useVessel);
+  $('useCentre').addEventListener('click', function () {
+    if (!host || !host.has('map')) return;
+    host.call('map.getView').then(function (v) {
+      $('toLon').value = v.center[0].toFixed(4);
+      $('toLat').value = v.center[1].toFixed(4);
+      refreshFind();
+    }).catch(function () {});
+  });
+
+  connectHost().then(function (h) {
+    host = h;
+    if (!host.has('routes')) {
+      setStatus('This chartplotter cannot show routes from extensions (no "routes" capability).', 'error');
+      return;
+    }
+    var unitsReady = host.has('units') ? host.call('units.get').then(function (r) { units = r.units || null; }).catch(function () {}) : Promise.resolve();
+    unitsReady.then(loadSailThreshDefault);
+    // The host's visible routes: seed from route.list, then follow the events.
+    host.subscribe(['route.**'], function (name, ev) {
+      if (!ev || !ev.routeId) return;
+      if (name === 'route.visible') upsertVisible({ routeId: ev.routeId, name: ev.name, pointCount: ev.pointCount, saved: ev.saved, dirty: ev.dirty });
+      else if (name === 'route.hidden') { removeVisible(ev.routeId); if (result && result.routeId === ev.routeId) clearResult(); }
+      else if (name === 'route.saved') upsertVisible({ routeId: ev.routeId, name: ev.name, saved: true, dirty: false });
+      else if (name === 'route.dirty') upsertVisible({ routeId: ev.routeId, dirty: true });
+      renderRoutes();
+    }).then(function () { return host.call('route.list'); }).then(function (r) {
+      (r.routes || []).forEach(upsertVisible);
+      renderRoutes();
+    }).catch(function () { renderRoutes(); });
+    // The vessel position, relayed by the host over its own Signal K connection.
+    if (host.has('signalk.stream')) {
+      host.subscribe(['sk.navigation.position'], function (_name, ev) {
+        var v = ev && ev.value;
+        if (v) setVessel(v.latitude, v.longitude);
+      }).then(function () { return host.call('signalk.subscribe', { paths: ['navigation.position'] }); }).catch(function () {});
+    }
+    get('/signalk/v1/api/vessels/self/navigation/position').then(function (p) {
+      var v = p && (p.value || p);
+      if (!vessel && v) setVessel(v.latitude, v.longitude);
+    }).catch(function () {});
+    if (!host.has('map')) $('useCentre').hidden = true;
+    pollStatus();
+    loadPolars();
+    loadWaypoints();
+  });
+})();
+</script>
+</body>
+</html>

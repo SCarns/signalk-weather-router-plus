@@ -2,6 +2,17 @@
 
 ## 0.1.0-beta.5
 
+- **Weather routing inside Freeboard-SK.** With Freeboard-SK 3.0 or
+  later: draw a route on the chart as usual (start, waypoints,
+  destination), tap the grid icon at the top right, then **Weather
+  route** → **Weather-route it**, and the drawn route becomes the weather
+  route, still editable, saved with Freeboard's own Save. Or route from
+  your boat to a position or a saved waypoint. Each point shows its ETA,
+  sailing or motoring, and the wind.
+- **The weather layers in Freeboard-SK too.** Wind, waves, currents, sea
+  state, rain, temperatures and tide height appear in Freeboard's Chart
+  list, with Freeboard's own time control to play them through the
+  forecast.
 - **Simpler vessel settings.** Draught, air draft, length, beam,
   under-keel and overhead margins, maximum wave height and tack penalty
   are gone from the Settings tab and the Plan tab: the router never used

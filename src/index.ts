@@ -13,6 +13,8 @@
  * none of it: forecast reads happen in the workers.
  */
 
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { IRouter } from 'express';
@@ -21,6 +23,8 @@ import { mergeSettings, reloadsFor, settingsSchema, SettingsStore, SettingsValid
 import { checkDecodeResources } from './plugin/memguard';
 import { JobManager, type Job } from './plugin/jobs';
 import { registerApi } from './plugin/api';
+import { PNG_LAYERS, PNG_LAYER_SPECS, type PngLayer } from './plugin/pngtiles';
+import { GLYPH_LAYERS, GLYPH_LAYER_SPECS, type GlyphLayer } from './plugin/glyphtiles';
 import { TileService, TileStore, type TileGroup, type TileLayer } from './plugin/tiles';
 import { TilePrebuilder } from './plugin/prebuild';
 import { runLastMs, type ArcoRun } from './data/arco';
@@ -56,6 +60,15 @@ interface SkApp {
   getSelfPath?: (path: string) => unknown;
   handleMessage?: (id: string, delta: unknown) => void;
   registerWeatherProvider?: (provider: unknown) => void;
+  registerResourceProvider?: (provider: {
+    type: string;
+    methods: {
+      listResources: (query?: unknown) => Promise<Record<string, unknown>>;
+      getResource: (id: string) => Promise<unknown>;
+      setResource: (id: string, value: unknown) => Promise<void>;
+      deleteResource: (id: string) => Promise<void>;
+    };
+  }) => void;
   resourcesApi?: {
     setResource: (type: string, id: string, data: Record<string, unknown>, providerId?: string) => Promise<void>;
   };
@@ -485,6 +498,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'forecast':
         if (role !== 'data') return;
         forecastRun = msg.run;
+        void publishChartGroups();
         updateTileGenerations();
         forecastError = null;
         if (failedRefreshTimer) {
@@ -803,9 +817,348 @@ export = function plugin(app: SkApp): SignalKPlugin {
     prebuilder.start();
   }
 
+  /**
+   * The plugin as a chartplotter extension (Signal K Plotter Extensions API,
+   * version 1): a toolbar button and a panel (public/plotterext/) that run a
+   * route and hand it to the plotter as a draft route. Discovered by hosts
+   * such as Freeboard-SK through the `plotterExtensions` resource type; the
+   * panel is served by the server as part of this webapp, so no extra route
+   * is mounted. Registered once; while the plugin is stopped the collection
+   * is empty, which is how a host learns the extension is gone.
+   */
+  /** A short hash of the files under a directory (name and content), or 'nofiles'. */
+  function filesHash(dir: string): string {
+    const h = createHash('sha1');
+    const walk = (d: string): void => {
+      for (const f of fs.readdirSync(d).sort()) {
+        const p = path.join(d, f);
+        if (fs.statSync(p).isDirectory()) walk(p);
+        else h.update(path.relative(dir, p)).update(fs.readFileSync(p));
+      }
+    };
+    try {
+      walk(dir);
+    } catch {
+      return 'nofiles';
+    }
+    return h.digest('hex').slice(0, 8);
+  }
+  /** The panel's files (public/plotterext), for its cache-busting URL. */
+  function panelFilesHash(): string {
+    return filesHash(path.join(__dirname, '..', 'public', 'plotterext'));
+  }
+  /**
+   * Files installed by npm carry npm's fixed date (26 Oct 1985), which the
+   * server sends as Last-Modified, with no ETag. A browser that already has
+   * a file then asks "modified since 1985?", is told "no", and keeps its old
+   * copy after an update, for the web app's page, the configuration panel's
+   * script and the plotter panel alike, until the URL changes. So on the
+   * first start after the files changed (by their content), set their dates
+   * to now, and the next conditional request gets the new file.
+   */
+  function refreshPublicFileDates(dataDir: string): void {
+    const pub = path.join(__dirname, '..', 'public');
+    const stamp = path.join(dataDir, 'public-files.hash');
+    const hash = filesHash(pub);
+    let previous: string;
+    try {
+      previous = fs.readFileSync(stamp, 'utf8').trim();
+    } catch {
+      previous = '';
+    }
+    if (hash === previous) return;
+    const now = new Date();
+    let n = 0;
+    const walk = (d: string): void => {
+      for (const f of fs.readdirSync(d)) {
+        const p = path.join(d, f);
+        if (fs.statSync(p).isDirectory()) walk(p);
+        else {
+          fs.utimesSync(p, now, now);
+          n++;
+        }
+      }
+    };
+    try {
+      walk(pub);
+      fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(stamp, hash);
+      log(`web files changed since the last start: dated ${n} files now, so browsers refetch them`);
+    } catch (err) {
+      app.error(`could not re-date the web files: ${(err as Error).message}`);
+    }
+  }
+  function plotterExtensionManifest(): Record<string, unknown> {
+    let version: string;
+    try {
+      version = (JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')) as { version?: string }).version ?? '';
+    } catch {
+      version = '';
+    }
+    return {
+      name: 'Weather Router Plus',
+      description: 'Weather routing between the vessel and a destination, as a draft route on the chart.',
+      version,
+      apiVersion: '1',
+      requires: ['buttons', 'panels.iframe', 'routes'],
+      optional: ['map', 'units', 'signalk.stream'],
+      buttons: [
+        {
+          id: 'open-weather-router',
+          title: 'Weather route',
+          slot: 'mapToolbar',
+          icon: 'sailing',
+          action: { type: 'togglePanel', panel: 'weather-router-panel' },
+        },
+      ],
+      panels: [
+        {
+          id: 'weather-router-panel',
+          title: 'Weather Router Plus',
+          type: 'iframe',
+          // Versioned by the panel files' own content, so a browser's cached
+          // copy (the server serves these files with a 4-hour cache lifetime)
+          // is bypassed whenever they change, release or not.
+          url: `/${PLUGIN_ID}/plotterext/panel.html?v=${encodeURIComponent(version)}-${panelFilesHash()}`,
+          lifecycle: 'keepAlive',
+        },
+      ],
+    };
+  }
+  let plotterExtensionRegistered = false;
+  function registerPlotterExtension(): void {
+    if (plotterExtensionRegistered || typeof app.registerResourceProvider !== 'function') return;
+    try {
+      app.registerResourceProvider({
+        type: 'plotterExtensions',
+        methods: {
+          listResources: async () => (stopped ? {} : { [PLUGIN_ID]: plotterExtensionManifest() }),
+          getResource: async (id: string) => {
+            if (stopped || id !== PLUGIN_ID) throw new Error(`no plotterExtensions resource ${id}`);
+            return plotterExtensionManifest();
+          },
+          setResource: async () => {
+            throw new Error('plotterExtensions is read-only');
+          },
+          deleteResource: async () => {
+            throw new Error('plotterExtensions is read-only');
+          },
+        },
+      });
+      plotterExtensionRegistered = true;
+      log('registered as a plotter extension (plotterExtensions resource provider)');
+    } catch (err) {
+      app.error(`plotter extension not registered: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * The colour overlays as Signal K chart resources (`charts`): PNG tiles
+   * served by /api/tile/<layer>/{z}/{x}/{y}.png (pngtiles.ts). A chartplotter
+   * such as Freeboard-SK lists them with its charts and, from the `time`
+   * block, offers its own time scrubber over the forecast hours; the
+   * plotter re-reads the resource every `refreshInterval`, so a new cycle
+   * moves the timeline on. Listed only while the data is there (forecast;
+   * currents or tides for those layers). A display setting the plotter
+   * saves on one of them (opacity, minimum zoom, image adjustment) is kept
+   * in chart-overrides.json in the data directory; the charts themselves
+   * cannot be deleted.
+   */
+  const CHART_OVERRIDE_KEYS = ['defaultOpacity', 'displayMinZoom', 'imageAdjustment'];
+  let chartOverrides: Record<string, Record<string, unknown>> = {};
+  const chartOverridesFile = (): string => path.join(app.getDataDirPath(), 'chart-overrides.json');
+  function chartLayerAvailable(layer: PngLayer | GlyphLayer): boolean {
+    if (!forecastRun) return false;
+    if (layer === 'tide') return !!config?.tides.enabled && !!tidesRun;
+    if (layer === 'current' || layer === 'arrows') return (dataStatus?.currents.length ?? 0) > 0;
+    if (layer === 'isobars') return forecastRun.index.request.params.includes('msl');
+    if ((layer === 'waves' || layer === 'sea_state') && dataStatus?.forecast && !dataStatus.forecast.hasWaves) return false;
+    const params = forecastRun.index.request.params;
+    return (LAYER_NEEDS[layer] ?? []).every(p => params.includes(p));
+  }
+  function chartResource(layer: PngLayer | GlyphLayer): Record<string, unknown> | null {
+    if (stopped || !forecastRun || !chartLayerAvailable(layer)) return null;
+    const spec = layer in PNG_LAYER_SPECS ? PNG_LAYER_SPECS[layer as PngLayer] : GLYPH_LAYER_SPECS[layer as GlyphLayer];
+    const steps = forecastRun.index.steps;
+    const lastMs = layer === 'tide' ? (tidesRun ? runLastMs(tidesRun) : null) : steps[steps.length - 1].validMs;
+    if (lastMs === null) return null;
+    const fromMs = Math.max(steps[0].validMs, Math.floor(Date.now() / 3600_000) * 3600_000);
+    const base = `${BASE_PATH}/api/tile/${layer}/{z}/{x}/{y}.png`;
+    return {
+      identifier: spec.chartId,
+      name: `${spec.name} (Weather Router Plus)`,
+      description: spec.description,
+      type: 'tilelayer',
+      format: 'png',
+      url: base,
+      time: {
+        url: `${base}?time={time}`,
+        current: true,
+        from: new Date(fromMs).toISOString(),
+        to: new Date(Math.max(fromMs, lastMs)).toISOString(),
+        step: 3600_000,
+      },
+      refreshInterval: 600_000,
+      bounds: [-180, -85.0511, 180, 85.0511],
+      minzoom: 2,
+      maxzoom: 18,
+      tileSize: 256,
+      defaultOpacity: 0.7,
+      ...(chartOverrides[spec.chartId] ?? {}),
+    };
+  }
+  function chartResources(): Record<string, Record<string, unknown>> {
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const layer of [...PNG_LAYERS, ...GLYPH_LAYERS]) {
+      const c = chartResource(layer);
+      if (c) out[c.identifier as string] = c;
+    }
+    return out;
+  }
+  /**
+   * The chart layers in Freeboard-SK's resource Groups (the `groups`
+   * collection: named sets a chartplotter shows in one tap). One group per
+   * colour layer, with its glyphs, written whenever the forecast is
+   * (re)loaded and holding the layers whose data is there; ids are fixed,
+   * so they are updated in place, and a group with no available layer is
+   * left out. Needs a `groups` collection on the
+   * server (Freeboard creates one in resources-provider); otherwise skipped.
+   */
+  const CHART_GROUPS: { id: string; name: string; description: string; layers: (PngLayer | GlyphLayer)[] }[] = [
+    // One colour layer per group (two heatmaps over each other are unreadable), with the glyphs that belong with it.
+    {
+      id: 'c2b7e6a0-5d1c-4abc-9000-000000000001',
+      name: 'Wind (Weather Router Plus)',
+      description: 'Wind speed with wind barbs, by the hour.',
+      layers: ['wind', 'barbs'],
+    },
+    {
+      id: 'c2b7e6a0-5d1c-4abc-9000-000000000002',
+      name: 'Waves (Weather Router Plus)',
+      description: 'Wave height with wind barbs, by the hour.',
+      layers: ['waves', 'barbs'],
+    },
+    {
+      id: 'c2b7e6a0-5d1c-4abc-9000-000000000003',
+      name: 'Currents (Weather Router Plus)',
+      description: 'Current speed with current arrows, by the hour.',
+      layers: ['current', 'arrows'],
+    },
+    {
+      id: 'c2b7e6a0-5d1c-4abc-9000-000000000004',
+      name: 'Pressure (Weather Router Plus)',
+      description: 'Isobars with wind barbs, by the hour.',
+      layers: ['isobars', 'barbs'],
+    },
+    {
+      id: 'c2b7e6a0-5d1c-4abc-9000-000000000005',
+      name: 'Sea state (Weather Router Plus)',
+      description: 'Wind-against-current sea state with current arrows, by the hour.',
+      layers: ['sea_state', 'arrows'],
+    },
+    {
+      id: 'c2b7e6a0-5d1c-4abc-9000-000000000006',
+      name: 'Tide (Weather Router Plus)',
+      description: 'Tide height with current arrows, by the hour.',
+      layers: ['tide', 'arrows'],
+    },
+    {
+      id: 'c2b7e6a0-5d1c-4abc-9000-000000000007',
+      name: 'Rain (Weather Router Plus)',
+      description: 'Precipitation with isobars, by the hour.',
+      layers: ['precip', 'isobars'],
+    },
+    {
+      id: 'c2b7e6a0-5d1c-4abc-9000-000000000008',
+      name: 'Air temperature (Weather Router Plus)',
+      description: 'Air temperature with isobars, by the hour.',
+      layers: ['temperature', 'isobars'],
+    },
+    {
+      id: 'c2b7e6a0-5d1c-4abc-9000-000000000009',
+      name: 'Sea temperature (Weather Router Plus)',
+      description: 'Sea surface temperature with current arrows, by the hour.',
+      layers: ['sst', 'arrows'],
+    },
+  ];
+  let chartGroupsWritten = '';
+  async function publishChartGroups(): Promise<void> {
+    if (!app.resourcesApi?.setResource || stopped) return;
+    const charts = chartResources();
+    const groups = CHART_GROUPS.map(g => ({
+      ...g,
+      charts: g.layers
+        .map(l => (l in PNG_LAYER_SPECS ? PNG_LAYER_SPECS[l as PngLayer] : GLYPH_LAYER_SPECS[l as GlyphLayer]).chartId)
+        .filter(id => id in charts),
+    })).filter(g => g.charts.length > 0);
+    const key = JSON.stringify(groups.map(g => [g.id, g.charts]));
+    if (key === chartGroupsWritten) return;
+    try {
+      for (const g of groups)
+        await app.resourcesApi.setResource('groups', g.id, { name: g.name, description: g.description, charts: g.charts });
+      chartGroupsWritten = key;
+      log(`chart groups written: ${groups.map(g => `${g.name.replace(' (Weather Router Plus)', '')} (${g.charts.length})`).join(', ')}`);
+    } catch (err) {
+      // Not recorded as written: a transient or partial failure is tried again on the next forecast.
+      // (No groups collection on this server, or no permission: the layers are still in the Chart list.)
+      log(`chart groups not written: ${(err as Error).message}`);
+    }
+  }
+  let chartsRegistered = false;
+  function registerChartsProvider(): void {
+    if (chartsRegistered || typeof app.registerResourceProvider !== 'function') return;
+    try {
+      chartOverrides = JSON.parse(fs.readFileSync(chartOverridesFile(), 'utf8')) as Record<string, Record<string, unknown>>;
+    } catch {
+      chartOverrides = {};
+    }
+    try {
+      app.registerResourceProvider({
+        type: 'charts',
+        methods: {
+          listResources: async () => chartResources(),
+          getResource: async (id: string) => {
+            const c = chartResources()[id];
+            if (!c) throw new Error(`no chart ${id}`);
+            return c;
+          },
+          setResource: async (id: string, value: unknown) => {
+            if (![...Object.values(PNG_LAYER_SPECS), ...Object.values(GLYPH_LAYER_SPECS)].some(s => s.chartId === id))
+              throw new Error(`no chart ${id}`);
+            const v = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+            const keep: Record<string, unknown> = {};
+            for (const k of CHART_OVERRIDE_KEYS) {
+              if (!(k in v)) continue;
+              const x = v[k];
+              if (k === 'defaultOpacity' && !(typeof x === 'number' && x >= 0 && x <= 1)) throw new Error(`${k} must be a number from 0 to 1`);
+              if (k === 'displayMinZoom' && !(typeof x === 'number' && Number.isInteger(x) && x >= 0 && x <= 24))
+                throw new Error(`${k} must be a whole number from 0 to 24`);
+              if (k === 'imageAdjustment' && !(x && typeof x === 'object' && !Array.isArray(x))) throw new Error(`${k} must be an object`);
+              keep[k] = x;
+            }
+            // Persist a candidate first: the map changes only once the write succeeded.
+            const next = { ...chartOverrides, [id]: { ...(chartOverrides[id] ?? {}), ...keep } };
+            fs.writeFileSync(chartOverridesFile(), JSON.stringify(next, null, 2));
+            chartOverrides = next;
+          },
+          deleteResource: async (id: string) => {
+            throw new Error(`chart ${id} is provided by the plugin and cannot be deleted`);
+          },
+        },
+      });
+      chartsRegistered = true;
+      log(`registered as a charts provider (${PNG_LAYERS.length + GLYPH_LAYERS.length} overlay layers as PNG tiles)`);
+    } catch (err) {
+      app.error(`charts provider not registered: ${(err as Error).message}`);
+    }
+  }
+
   async function start(options: PluginConfig): Promise<void> {
     stopped = false;
     pluginOptions = options;
+    refreshPublicFileDates(app.getDataDirPath());
+    registerPlotterExtension();
+    registerChartsProvider();
     try {
       settings = new SettingsStore(app.getDataDirPath());
       // First start with settings.json absent: migrate the old plugin-config keys.

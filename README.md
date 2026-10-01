@@ -367,6 +367,88 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   whenever a file in `public/` changes, so browsers and proxies in front
   of Signal K always load the current scripts after an update.
 
+## In Freeboard-SK
+
+The plugin is also a **plotter extension** (Signal K Plotter Extensions
+API, version 1), so weather routing is available inside Freeboard-SK 3.0
+or later without any change to Freeboard: Freeboard finds the extension
+through the `plotterExtensions` resource collection the plugin provides,
+and the panel runs in a sandboxed iframe served from
+`/signalk-weather-router-plus/plotterext/`.
+
+![The Weather Router Plus panel in Freeboard-SK, with a draft route on the chart](public/screenshots/07-freeboard.jpg)
+
+- Tap the grid icon at the top right of the chart to show the extension
+  toolbar, then **Weather route**. The panel slides in on the right.
+- **Route on the chart** (the usual way): draw the route with Freeboard's
+  own **Draw Route** tool (pencil menu), tapping the start, any
+  waypoints and the destination on the chart, then Finish; or tick a
+  saved route in the Routes list. The panel lists the routes shown on the
+  chart (one is picked by itself). **Weather-route it** sends the first
+  point as the start, the last as the destination and the points between
+  as precise waypoints, and rewrites that route's geometry in place with
+  the result, which stays Freeboard's editable draft (or an unsaved edit
+  of a saved route). Drag a point and press the button again to re-route;
+  **Restore drawn route** puts the drawn points back.
+- **From the boat to a position** (the quick way): **From** is the
+  vessel's position, kept up to date through Freeboard's own Signal K
+  connection (editable; **Use the vessel position** snaps back); **To** is
+  typed, **Use the map centre**, or one of your saved waypoints. **Find
+  route** places the result on the chart as a new draft route.
+- Both use the chosen polar (the same list as the web app), mode (Sail
+  max, Fastest, Motor) and, under sail, the **min sail speed** (the boat
+  speed under sail below which the router motors; the plugin's routing
+  setting by default, in Freeboard's speed unit). Progress is shown;
+  Cancel stops the job. The map
+  is fitted to the result; the panel shows distance and time in
+  Freeboard's unit preferences, the sailing/motoring split, the arrival
+  time and an **itinerary**: for every point its time, whether the next
+  leg is sailed or motored, wind speed and direction, TWA, current,
+  waves and the boat's speed and course. Each point's name and
+  description also carry its ETA, mode and wind, which Freeboard shows
+  in its route points list; your own point names are kept.
+- **Save route…** opens Freeboard's Route Details dialog and stores the
+  route in Signal K's Resources (the plugin does not publish it itself in
+  this case, so there is one copy); for a saved route, **Save changes**
+  updates it. **Discard** removes a new draft or restores a rewritten
+  route.
+- The panel keeps running while closed, so a long route finishes in the
+  background. Routes started here are ordinary jobs: they appear in the
+  web app's run log and in `GET /api/routes`.
+
+**Map overlays.** The eight colour layers (wind speed, wave height,
+current speed, sea state, precipitation, air and sea temperature, tide
+height) are published as Signal K chart resources, served as PNG tiles
+(`/api/tile/<layer>/{z}/{x}/{y}.png`, see [Map layers](#map-layers)) with
+a `time` block covering the forecast hours. In Freeboard's **Chart list**
+they appear as "Wind speed (Weather Router Plus)" and so on: tick one to
+show it, set its opacity and order like any chart, and use the **clock**
+action on its row for Freeboard's Time palette (scrub, step, loop, play
+through the forecast; **NOW** returns to the current hour). A layer is
+listed only while its data is there: currents need a current source,
+tides the tide data, waves and the temperatures the forecast fields. The
+colours are the web app's; Freeboard has no legend, so the scale is in
+the web app's layer legend (`GET /api/legends`). The tide layer uses its
+fixed ±3 m scale here. Three glyph layers come with them: **Wind barbs**,
+**Current arrows** and **Isobars** (4 hPa, bold every 20 hPa; highs and
+lows as blue and red dots; no pressure labels, as the server has no
+font). The layers are also organised as Freeboard **Groups** (resources
+menu → Groups), one colour layer each with the glyphs that belong with
+it, shown in one tap: *Wind* (speed, barbs), *Waves* (height, barbs),
+*Currents* (speed, arrows), *Pressure* (isobars, barbs), *Sea state*
+(index, arrows), *Tide* (height, arrows), *Rain* (precipitation,
+isobars), *Air temperature* and *Sea temperature* (with isobars and
+arrows). Two colour layers over each other are unreadable, so no group
+has more than one. A group holds the layers whose data is there and is
+rewritten when the forecast is reloaded; it needs the server's `groups`
+collection, which Freeboard creates.
+
+Not yet available in the panel: waypoints, a departure time other than
+now, polar performance and the other web-app settings (they apply as set
+in the web app's Settings tab). A "weather route to here" entry in
+Freeboard's map menu needs a change to Freeboard; see
+[docs/plans/freeboard-sk-integration.md](docs/plans/freeboard-sk-integration.md).
+
 ## Routing engine
 
 A port of the routePlanning `OceanPropagator` (subsector isochrone,
@@ -1456,6 +1538,7 @@ nested `smoc` and `tides` fields in full.
 | GET | `/api/pressure` | readonly | isobars and highs/lows as GeoJSON |
 | GET | `/api/land-mask` | readonly | binary land mask at screen resolution |
 | GET | `/api/tile/{layer}/{z}/{x}/{y}` | readonly | one web-map tile of a layer at a whole hour, saved on the server |
+| GET | `/api/tile/{layer}/{z}/{x}/{y}.png` | readonly | the same tile as a PNG image, for chartplotters (the eight colour layers, and the `barbs`, `arrows` and `isobars` glyph layers) |
 | GET | `/api/legends` | readonly | colour ramps for every layer |
 
 **Common parameters.**
@@ -1612,6 +1695,28 @@ clients do this themselves), the body is `w × h` bytes, one per pixel,
 and latitude `north − (y + 0.5) × (north − south) / h`. The raster
 follows the pixel size (finest 0.002°). `400 {error: "no coastline
 configured"}` without coastline shapefiles.
+
+#### GET /api/tile/{layer}/{z}/{x}/{y}.png
+
+The colour layers as 256 × 256 PNG image tiles, for chartplotters that
+draw image tiles (Freeboard-SK's chart layers; the plugin publishes the
+matching chart resources, see [In Freeboard-SK](#in-freeboard-sk)).
+`layer` is one of `wind`, `waves`, `current`, `sea_state`, `precip`,
+`temperature`, `sst`, `tide` (colour layers), `barbs`, `arrows`, `isobars`
+(glyph layers); `z`, `x`, `y` and `?time=` as for the data tile below
+(time rounded to the nearest hour, default now). A colour layer is what
+the web app paints from the data tile: the legend's colour ramp
+(`GET /api/legends`), alpha 0.55, land transparent for the layers that
+mask it, water without model data hatched for currents and tides; the
+tide layer uses its fixed ±3 m scale. A glyph layer draws the web app's
+barbs and arrows from the point tiles of the tile and its eight
+neighbours (so a glyph on a tile edge is whole), and isobars from the
+joined 0.25° pressure field (`/api/pressure`), without labels. Rendered
+on the server from the saved data tiles and kept in memory (48 MB, least
+recently used first);
+`X-Tile-Cache: hit | miss` says which, and `Cache-Control` is as for the
+data tile. Errors: 400 for a bad layer, tile or time, 503 before the
+plugin has started.
 
 #### GET /api/tile/{layer}/{z}/{x}/{y}
 

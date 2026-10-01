@@ -473,6 +473,40 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           },
         },
       },
+      '/api/tile/{layer}/{z}/{x}/{y}.png': {
+        get: {
+          summary: 'One colour-layer tile as a 256 × 256 PNG image, for chartplotters (the picture the web app paints from the data tile)',
+          description:
+            'Layers wind, waves, current, sea_state, precip, temperature, sst, tide. The legend colour ramp (/api/legends), alpha 0.55, land transparent for the layers that mask it, water without model data hatched (current, tide); the tide layer uses its fixed ±3 m scale. ' +
+            'Rendered on the server from the saved data tile and kept in memory. The plugin also publishes these layers as Signal K chart resources (/signalk/v2/api/resources/charts, ids wrp-…) with a time block over the forecast hours.',
+          parameters: [
+            {
+              name: 'layer',
+              in: 'path',
+              required: true,
+              schema: {
+                type: 'string',
+                enum: ['wind', 'waves', 'current', 'sea_state', 'precip', 'temperature', 'sst', 'tide', 'barbs', 'arrows', 'isobars'],
+              },
+            },
+            { name: 'z', in: 'path', required: true, schema: { type: 'integer', minimum: 0, maximum: 18 } },
+            { name: 'x', in: 'path', required: true, schema: { type: 'integer', minimum: 0 }, description: '0 to 2^z − 1, from 180° W' },
+            { name: 'y', in: 'path', required: true, schema: { type: 'integer', minimum: 0 }, description: '0 to 2^z − 1, from the north' },
+            {
+              name: 'time',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', format: 'date-time' },
+              description: 'Default now; rounded to the nearest hour',
+            },
+          ],
+          responses: {
+            200: { description: 'image/png; X-Tile-Cache: hit | miss' },
+            400: { description: 'Bad layer, z, x, y or time, or the layer has no data' },
+            503: { description: 'Plugin not started' },
+          },
+        },
+      },
       '/api/tile/{layer}/{z}/{x}/{y}': {
         get: {
           summary: 'One web-map tile of a layer at a whole hour, saved on the server and answered again from disk',

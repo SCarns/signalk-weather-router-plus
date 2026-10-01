@@ -48,6 +48,8 @@ import { SettingsValidationError, type AppSettings, type SettingsGroup, type Set
 import { validateLegOptions } from '../engine/multileg';
 import { checkTile, roundHour, TILE_LAYERS, type TileLayer, type TileService } from './tiles';
 import { joinField, joinLandMask, joinPoints, joinPressure, type TileGetter } from './tilejoin';
+import { isPngLayer, PNG_LAYERS, PngCache, renderTilePng } from './pngtiles';
+import { GLYPH_LAYERS, isGlyphLayer, renderGlyphTilePng } from './glyphtiles';
 import type { FieldLayer } from './overlays';
 
 export interface ApiDeps {
@@ -376,6 +378,42 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const out = await joinPoints(getter(service, clientGone(res)), 'arrows', bbox, hour, resDeg);
       cacheHeaders(res, new Date(hour));
       json(res, 200, out);
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // The colour overlays as PNG image tiles (pngtiles.ts), for chartplotters
+  // that draw image tiles (Freeboard-SK's chart layers): the picture the web
+  // app paints from the data tile, rendered on demand from the data tiles
+  // below and kept in memory. Registered before the data-tile route, whose
+  // `:y` would otherwise swallow "5.png".
+  const pngCache = new PngCache(48e6);
+  ro.get('/api/tile/:layer/:z/:x/:y.png', async (req: Request, res: Response) => {
+    try {
+      const service = deps.tiles();
+      if (!service) {
+        json(res, 503, { error: deps.notReady() });
+        return;
+      }
+      const layer = String(req.params.layer);
+      if (!isPngLayer(layer) && !isGlyphLayer(layer))
+        throw new Error(`layer must be one of ${[...PNG_LAYERS, ...GLYPH_LAYERS].join(', ')}`);
+      const z = Number(req.params.z);
+      const x = Number(req.params.x);
+      const y = Number(req.params.y);
+      checkTile(z, x, y);
+      const hourMs = roundHour(parseTime(req.query.time).getTime());
+      deps.noteTileRequest(z, x, y);
+      const { png, cached } = isGlyphLayer(layer)
+        ? await renderGlyphTilePng(service, pngCache, layer, z, x, y, hourMs, clientGone(res))
+        : await renderTilePng(service, pngCache, layer, z, x, y, hourMs, clientGone(res));
+      if (res.destroyed) return;
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('X-Tile-Cache', cached ? 'hit' : 'miss');
+      res.setHeader('Access-Control-Expose-Headers', 'X-Tile-Cache');
+      cacheHeaders(res, new Date(hourMs));
+      res.status(200).end(png);
     } catch (err) {
       fail(res, err);
     }

@@ -671,6 +671,90 @@ function _warningText(w) {
   return kind + at + (w.repaired ? ' · repaired' : '');
 }
 
+// ── Details for the saved route ──────────────────────────────────────
+// The plugin publishes a route with every waypoint's SI numbers but no
+// text, and chartplotters (Freeboard-SK) show only names and
+// descriptions. Once the route is published and the itinerary is on
+// screen, write the itinerary into the saved route: the summary as the
+// route's description, one line per point as the point's description,
+// in the user's display units (a quantity whose unit is not set is left
+// out). The same text the Freeboard panel writes.
+let _pendingAnnotate = null;   // {id, resourceId} from the publish status
+let _displayedJobId = null;    // the job whose itinerary is on screen
+function _plainFairFoul(cog, currentDir) {
+  if (cog == null || currentDir == null) return null;
+  const diff = Math.abs(((((currentDir - cog + 180) % 360) + 360) % 360) - 180);
+  return diff < 80 ? 'fair' : diff > 100 ? 'foul' : 'cross';
+}
+function _whenText(iso) {
+  const d = iso ? new Date(iso) : null;
+  return d && !isNaN(d) ? d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+}
+function _legDescription(p, isArrival) {
+  const parts = [_whenText(p.time)];
+  const mode = isArrival ? 'arrival' : (p.next_mode || null);
+  const cogDeg = p.next_cog != null ? p.next_cog : p.outgoing_cog;
+  const tack = !isArrival && mode === 'sailing' ? tackSide(cogDeg, p.next_wind_dir_deg) : null;
+  if (mode) parts.push(mode + (tack ? ' (' + tack + ')' : ''));
+  const add = (label, v) => { if (v != null && v !== '') parts.push(label + ' ' + v); };
+  if (!isArrival) {
+    add('Distance', p.leg_distance_m != null ? fmtDist(p.leg_distance_m) : null);
+    if (p.leg_time_s != null) { const m = Math.round(p.leg_time_s / 60); add('Time', Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0')); }
+    add('SOG', p.next_sog_ms != null ? fmtSpeed(p.next_sog_ms) : null);
+    if (cogDeg != null) add('COG', degToCardinal(cogDeg) + ' ' + Math.round(cogDeg) + '°');
+  }
+  const windMs = isArrival ? p.wind_ms : p.next_wind_ms, windDir = isArrival ? p.wind_dir_deg : p.next_wind_dir_deg;
+  if (windMs != null && fmtSpeed(windMs)) {
+    const pos = !isArrival ? pointOfSail(p.next_twa_deg, windMs) : null;
+    add('Wind', fmtSpeed(windMs) + (windDir != null ? ' from ' + degToCardinal(windDir) + ' (' + Math.round(windDir) + '°)' : '') + (pos ? ' · ' + pos : ''));
+  }
+  if (!isArrival && p.next_twa_deg != null) add('TWA', Math.round(p.next_twa_deg) + '°');
+  const curMs = isArrival ? p.current_ms : p.next_current_ms, curDir = isArrival ? p.current_dir_deg : p.next_current_dir_deg;
+  if (curMs != null && curMs > 0.05 && fmtSpeed(curMs)) {
+    const ff = !isArrival ? _plainFairFoul(cogDeg, curDir) : null;
+    add('Current', fmtSpeed(curMs) + (curDir != null ? ' from ' + degToCardinal((curDir + 180) % 360) + ' (' + Math.round((curDir + 180) % 360) + '°)' : '') + (ff ? ' · ' + ff : ''));
+  }
+  const swh = isArrival ? p.swh_m : (p.next_swh_m != null ? p.next_swh_m : p.swh_m);
+  if (swh != null && fmtSwh(swh)) {
+    const w = [fmtSwh(swh)];
+    const mwp = isArrival ? p.mwp_s : p.next_mwp_s, mwd = isArrival ? p.mwd_deg : p.next_mwd_deg;
+    if (mwp != null && fmtWavePeriod(mwp)) w.push(fmtWavePeriod(mwp));
+    if (mwd != null) w.push('from ' + degToCardinal(mwd) + ' ' + Math.round(mwd) + '°');
+    add('Waves', w.join(' · '));
+  }
+  return parts.filter(Boolean).join(' · ');
+}
+function _routeDescription(p, n) {
+  const parts = [];
+  if (p.total_distance_m != null && fmtDist(p.total_distance_m)) parts.push(fmtDist(p.total_distance_m));
+  if (p.total_time_s != null && fmtTime(p.total_time_s)) parts.push(fmtTime(p.total_time_s));
+  if (fmtTime(p.sailing_time_s || 0)) parts.push('sailing ' + fmtTime(p.sailing_time_s || 0) + ', motoring ' + fmtTime(p.motoring_time_s || 0));
+  parts.push(n + ' waypoints');
+  if (p.departure) parts.push('departs ' + _whenText(p.departure));
+  if (p.arrival) parts.push('arrives ' + _whenText(p.arrival));
+  return 'Weather route: ' + parts.join(', ') + '.';
+}
+function _annotateIfPending(jobId) {
+  const pending = _pendingAnnotate;
+  if (!pending || pending.id !== jobId || _displayedJobId !== jobId || !_itineraryFeatures.length) return;
+  _pendingAnnotate = null;
+  const feats = _itineraryFeatures;
+  const resourceId = pending.resourceId;
+  authFetch(ROUTER + '/routes/' + encodeURIComponent(jobId) + '/signalk', { cache: 'no-store' }, null)
+    .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
+    .then(route => {
+      const meta = route && route.feature && route.feature.properties && route.feature.properties.coordinatesMeta;
+      if (!Array.isArray(meta) || meta.length !== feats.length) throw new Error('waypoints do not match the itinerary');
+      meta.forEach((m, i) => { m.description = _legDescription(feats[i].getProperties(), i === feats.length - 1); });
+      if (_lastRouteProps) route.description = _routeDescription(_lastRouteProps, feats.length);
+      return authFetch('/signalk/v2/api/resources/routes/' + encodeURIComponent(resourceId), {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(route),
+      }, null);
+    })
+    .then(r => { if (!r.ok) return _apiErrorText(r).then(t => Promise.reject(new Error(t))); appendLog('itinerary written into the saved route (shown by chartplotters as the points’ details)', 'done'); })
+    .catch(err => appendLog('could not write the itinerary into the saved route: ' + err.message, 'warn'));
+}
+
 function _kv(label, value) {
   if (value == null || value === '' || value === '—') return '';
   return `<span class="kv"><span class="k">${label}</span><span class="v">${value}</span></span>`;
@@ -967,7 +1051,11 @@ function attachToJob(id, jobRow) {
     if (!d) return;
     if (d.status === 'queued') appendLog('status: queued' + (d.position ? ' (position ' + d.position + ')' : ''));
     else if (d.status === 'running') appendLog('status: running');
-    else if (d.resource_id) appendLog('published to Signal K resources as ' + d.resource_id, 'done');
+    else if (d.resource_id) {
+      appendLog('published to Signal K resources as ' + d.resource_id, 'done');
+      _pendingAnnotate = { id, resourceId: d.resource_id };
+      _annotateIfPending(id);
+    }
     else if (d.publish_error) appendLog('publish failed: ' + d.publish_error, 'error');
     if (d.status) modalStatus.textContent = d.status;
     RouteProgress.status(d);
@@ -1000,6 +1088,8 @@ function attachToJob(id, jobRow) {
       .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
       .then(geojson => {
         displayRoute(geojson);
+        _displayedJobId = id;
+        _annotateIfPending(id);
         loadRouteHistory();
         RouteProgress.hide();
         showTab('itinerarySection');
@@ -1164,7 +1254,7 @@ function fairFoul(cog, currentDir) {
   // Foul = any backward component (from ahead semicircle),
   // Cross = narrow ±10° band around the beam.
   if (cog == null || currentDir == null) return '';
-  const diff = Math.abs(((currentDir - cog + 180) % 360) - 180);
+  const diff = Math.abs(((((currentDir - cog + 180) % 360) + 360) % 360) - 180);
   if (diff < 80) return '<span style="color:green;font-weight:bold">fair</span>';
   if (diff > 100) return '<span style="color:red;font-weight:bold">foul</span>';
   return '<span style="color:#b8860b">cross</span>';

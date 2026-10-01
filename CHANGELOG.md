@@ -8,6 +8,46 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [0.1.0-beta.5] - 2026-09-30
 
+### Added
+
+- **Weather routing inside Freeboard-SK.** The plugin is now a plotter
+  extension (Signal K Plotter Extensions API, version 1): Freeboard-SK
+  3.0 and later shows a **Weather route** button in its extension
+  toolbar, which opens a panel. Draw a route on the chart with
+  Freeboard's own tool (start, waypoints, destination by tapping) or show
+  a saved one, and **Weather-route it** rewrites it in place with the
+  weather route (first point = start, last = destination, the others =
+  precise waypoints), still Freeboard's editable draft; or route from the
+  vessel to a typed position, the map centre or a saved waypoint as a new
+  draft. Each point carries its ETA, the leg's mode and the wind;
+  **Save route…** opens Freeboard's own Route Details dialog and stores
+  the route in Signal K. Needs no change to Freeboard. The
+  panel is served as part of this webapp (`/signalk-weather-router-plus/
+  plotterext/`) and is versioned, so an update never runs a cached copy.
+- **Map overlays as chart layers.** The eight colour layers (wind speed,
+  wave height, current speed, sea state, precipitation, air and sea
+  temperature, tide height) are also served as **PNG image tiles**
+  (`GET /api/tile/<layer>/{z}/{x}/{y}.png?time=<ISO>`, the picture the web
+  app paints, rendered on the server from the same cached data tiles) and
+  published as Signal K **chart resources** (`/signalk/v2/api/resources/
+  charts`, ids `wrp-wind-speed` …) with a `time` block covering the forecast
+  hours. Freeboard-SK lists them in its Chart list with opacity and order,
+  and its Time palette scrubs, steps and plays them through the forecast
+  with no change to Freeboard. A layer is listed only while its data is
+  there (currents, tides, waves, the extra fields). Display settings a
+  plotter saves on a layer (opacity, minimum zoom, image adjustment) are
+  kept in `chart-overrides.json` in the plugin data directory. The tide
+  layer uses its fixed ±3 m scale here (the web app's auto-scale spans
+  tiles). Three glyph layers too: wind barbs, current arrows and isobars
+  (`barbs`, `arrows`, `isobars`; ids `wrp-wind-barbs`,
+  `wrp-current-arrows`, `wrp-isobars`), drawn as the web app draws them;
+  isobars without pressure labels, highs and lows as dots. The layers are
+  also written as Freeboard resource Groups into the server's `groups`
+  collection when it exists: one colour layer per group with its glyphs
+  (Wind, Waves, Currents, Pressure, Sea state, Tide, Rain, Air
+  temperature, Sea temperature), each holding the layers whose data is
+  there.
+
 ### Removed
 
 - Eight vessel settings that the router never used: draught, air draft,
@@ -30,9 +70,16 @@ uses [Semantic Versioning](https://semver.org/).
   UI enables a plugin that has no saved configuration ("Save
   configuration to enable this plugin"). The button is now enabled at
   first setup and reads "Save and enable the plugin". (Verified on a
-  fresh App Store install on Signal K 2.33.0. The browser keeps the old
-  panel script for up to four hours after an update: hard-refresh the
-  Admin UI to see the change.)
+  fresh App Store install on Signal K 2.33.0.)
+- **Stale web files after an update.** Files installed by npm carry
+  npm's fixed date (26 Oct 1985); Signal K sends it as `Last-Modified`
+  with no ETag, so a browser that already had the web app's page, the
+  configuration panel's script or the plotter panel was told "not
+  modified" after an update and kept the old copy until the URL changed.
+  The plugin now sets its web files' dates to the time of the first start
+  after they changed (a hash of `public/` is kept in the data directory),
+  so the next conditional request gets the new file; the plotter panel's
+  URL also carries a hash of its files.
 
 ### Known issues
 
@@ -227,11 +274,15 @@ builds before this release, with their measurements, is in
   horizon use the last forecast step.
 - Map layers show the forecast on the hour; latitudes beyond ±85° have no
   map tiles.
-- After an update, the browser can keep the previous version's scripts
-  (web app and configuration panel) for up to four hours; Signal K
-  serves them with a 4-hour cache lifetime and no version tag. Hard-
-  refresh, or open `/plugins/signalk-weather-router-plus/ui`, which
-  always loads the current scripts.
+- After an update, the browser could keep the previous version's web
+  app page, configuration panel script and plotter panel: files installed
+  by npm all carry npm's fixed date (26 Oct 1985), Signal K serves that as
+  `Last-Modified` with no ETag, so a browser that had the file was told
+  "not modified" and kept its copy until the URL changed (fixed in
+  0.1.0-beta.5: the plugin re-dates its web files on the first start after
+  they changed, and the plotter panel's URL carries a content hash). Hard-
+  refresh, or open `/plugins/signalk-weather-router-plus/ui`, which always
+  loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
 [Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.5...HEAD

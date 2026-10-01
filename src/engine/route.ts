@@ -208,7 +208,11 @@ export function routeToSignalKRoute(route: Route, name: string, description?: st
   const wps = route.waypoints;
   return {
     name,
-    description: description ?? `Weather route, ${(route.totalDistanceM / 1852).toFixed(1)} nm, ${(route.totalTimeS / 3600).toFixed(1)} h`,
+    // Unit-free: the web app rewrites this (and each point's description) in the
+    // user's display units once the route is published.
+    description:
+      description ??
+      `Weather route: ${wps.length} waypoints, sailing ${route.totalTimeS > 0 ? Math.round((100 * route.sailingTimeS) / route.totalTimeS) : 0}% of the time`,
     distance: round(route.totalDistanceM, 1),
     start: wps.length ? wps[0].time.toISOString() : undefined,
     end: wps.length ? wps[wps.length - 1].time.toISOString() : undefined,
