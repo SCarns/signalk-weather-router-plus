@@ -1,5 +1,44 @@
 # What's new
 
+## 0.1.0-beta.6
+
+- **Freeboard's wind barbs from this plugin.** The Weather API now
+  answers observations: the conditions right now at any point, from the
+  ECMWF forecast, with the surface current where the current data covers
+  the point. Freeboard-SK's Wind overlay asks for exactly that, so make
+  this plugin the server's default weather provider and its barbs come
+  from the same forecast as your routes. Freeboard's currents overlay
+  still reads Open-Meteo; a Freeboard change for that is on our list.
+- **Approximate waypoints show their circle.** In Approximate mode a
+  dashed orange circle of the chosen radius is drawn around every
+  waypoint, following the pin as you drag it and the slider as you move
+  it, and the route is seen to touch the circle and carry on. Before,
+  after a run the pins jumped onto the route, so the route looked as if
+  it passed through the waypoint exactly and no circle was visible.
+- **Decision lines.** The router's search is drawn only when you ask:
+  the switch sits beside Find Route (and in Layers → Base), off by
+  default, remembered. The search is still recorded with every route, so
+  the switch shows it after the fact too.
+- **Routes to windward finish.** The final beat to a waypoint tries
+  wider tack angles when the wind shifts along the way, where it used to
+  fail; a Gibraltar → Canaries route that stopped 37 km short now
+  completes. When no final leg can be sailed at all, the message says
+  why, for each leg tried, with the wind and current at the nearest
+  point.
+- **Fixes from the test box.** Empty tiles left by a power cut no longer
+  blank a layer (the map rebuilds them); the web app no longer runs old
+  scripts after an update; chart groups in Freeboard are complete from
+  the first start; the world-zoom tiles were missing their eastern half;
+  the water-grid rebuild had stopped working in the previous beta.
+- **Under the hood.** A structural cleanup with no change to the routes
+  it produces, checked by golden tests: one definition each for units,
+  angles and the map projection, SI settings end to end, the search in
+  readable sections, the web app as modules. Two things it did change for
+  the better: every candidate now reads the forecast and the currents at
+  its own clock, so arrival times with a changing forecast or tide are
+  more honest, and the `wrp-route` command runs the full pipeline the
+  plugin does.
+
 ## 0.1.0-beta.5
 
 - **Weather routing inside Freeboard-SK.** With Freeboard-SK 3.0 or

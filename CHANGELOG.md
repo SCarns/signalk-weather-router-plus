@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0-beta.6] - 2026-10-02
+
 ### Added
 
 - **Weather API observations.** The provider answers
@@ -39,6 +41,16 @@ uses [Semantic Versioning](https://semver.org/).
   there, and a dashed orange circle of that radius is drawn around every
   via waypoint in Approximate mode, following the pin as it is dragged
   and the radius slider as it moves. Nothing is drawn in Precise mode.
+- **Stale web-app modules after an update, properly this time.** The
+  cache buster of the cleanup tags the page only on the plugin's own
+  `/ui` route; the webapp link everyone uses is Signal K's static mount of
+  `public/`, served untouched, so a browser kept running old modules
+  after an update (seen on the test box: the new map module on disk, the
+  old one in the page). On the first start after the web files change the
+  plugin now writes the version tag into the files on disk: the page's
+  script and style tags and the modules' import lines. The hash leaves
+  those tags out, so it stays stable; the files are written beside and
+  renamed over.
 - **Damaged saved tiles no longer break the map.** An unclean shutdown
   leaves the tiles written in the seconds before it as empty files (ext4
   delayed allocation; brain, 2 Oct: 363 of them after a crash), and the
@@ -94,6 +106,11 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Decision lines switch.** The stage fronts display is now a switch
+  beside Find Route, with the same switch in Layers → Base (moved out of
+  Weather), **off by default** and remembered. The fronts are still
+  streamed during a run and kept with the job; the switch only shows or
+  hides them, so turning it on after a run shows the search that was made.
 - **One place for units and geodetic constants** (`src/geo/units.ts`):
   the knot, nautical mile, hour and minute factors, the Earth radius,
   degrees/radians, metres per degree and the precipitation-rate factor
@@ -191,8 +208,9 @@ uses [Semantic Versioning](https://semver.org/).
   API now also rejects non-finite or out-of-range coordinates and
   non-boolean flags with a 400 instead of a failed job. The map layers
   and the forecast parameters each reads are one table. index.html is no
-  longer rewritten on disk at start: the served page carries the version
-  tag, as it already did.
+  longer rewritten on disk at start by this phase: the served page carries
+  the version tag. (The Fixed entry above brought the on-disk tagging
+  back, for the files Signal K serves itself.)
 - **Smaller things** (phase 5): dead code removed (unused helpers, an
   unused land-sampling step option, an always-null message field, a
   job event nobody listened to, the page's `ROUTER` alias and a stub);
@@ -267,10 +285,8 @@ uses [Semantic Versioning](https://semver.org/).
   temperature, Sea temperature), each holding the layers whose data is
   there.
 
-- **The search, live on the map.** The web app's new **Decision lines**
-  switch (beside Find Route, and the same switch in Layers → Base; off by
-  default, remembered; the fronts are kept with the job either way) draws
-  the router's search as it runs: the
+- **The search, live on the map.** The web app's new **Stage fronts**
+  layer (Layers, on by default) draws the router's search as it runs: the
   front of every stage (the candidates kept after pruning, sorted across
   the track, coloured blue → amber by stage; each point keeps its own
   arrival time, so these are not isochrones) and the best path so far
@@ -645,7 +661,8 @@ builds before this release, with their measurements, is in
   loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.5...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.6...HEAD
+[0.1.0-beta.6]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.5...v0.1.0-beta.6
 [0.1.0-beta.5]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.4...v0.1.0-beta.5
 [0.1.0-beta.4]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.3...v0.1.0-beta.4
 [0.1.0-beta.3]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.2...v0.1.0-beta.3
