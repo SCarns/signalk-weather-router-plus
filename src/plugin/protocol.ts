@@ -118,7 +118,8 @@ export interface QueryArgs {
   /** Hourly tide / water level / surge at a point (Weather API); result TideSeriesResult. */
   tide_series: { lat: number; lon: number; fromMs: number; hours: number };
   /** Signal K Weather API point forecasts (result WeatherData[], without water level). */
-  weather_point: { lat: number; lon: number; startMs: number | null; maxCount: number | null };
+  /** `observation`: one entry for the conditions at `startMs` (interpolated between steps) instead of the forecast steps. */
+  weather_point: { lat: number; lon: number; startMs: number | null; maxCount: number | null; observation?: boolean };
   /** GET /api/forecast samples at a point (result the `samples` array). */
   forecast_info: { lat: number; lon: number };
 }

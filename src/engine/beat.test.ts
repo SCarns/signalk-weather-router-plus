@@ -134,3 +134,36 @@ test('the final choice is the branch arriving earliest, not the nearest one (a p
     'the earliest branch was chosen over the nearest'
   );
 });
+
+test('a beat to a waypoint sails even when the wind backs along the legs (margins wider than 3° are tried)', () => {
+  // Dead upwind from the west; the wind direction turns with latitude, 20°
+  // per 0.1°, so a leg at the tightest angle runs into the no-go angle
+  // after a few km; a wider tack angle gets there.
+  const bbox = { west: -1, south: -1, east: 2, north: 2 };
+  const lm = LandMask.fromPolygons([], bbox, 0.01);
+  const turning: WindSource = {
+    at: (_lon, lat) => [8, 90 + (lat - 0.5) * 200],
+    atMany: (lons, lats) => ({ speed: new Float64Array(lons.length).fill(8), dir: Float64Array.from(lats, lat => 90 + (lat - 0.5) * 200) }),
+    hasWaves: false,
+    wavesAt: () => null,
+  };
+  const prop = new OceanPropagator(lm, { stages: 6, subsectors: 20, headings: 30 });
+  const polar = new PolarDiagram(
+    [45, 60, 90, 120, 150],
+    [4, 8, 12],
+    [2.5, 3.2, 3.5, 3.4, 3.0, 3.0, 3.8, 4.2, 4.0, 3.5, 3.3, 4.1, 4.6, 4.4, 3.9]
+  );
+  const route = prop.computeRoute({
+    start: [0, 0.5],
+    end: [0.3, 0.5],
+    departureTime: new Date('2026-01-01T00:00:00Z'),
+    vessel: makeVessel({ motorSpeedMs: 3 }),
+    polar,
+    wind: turning,
+    modePolicy: 'sail_max',
+    sailThreshMs: 0,
+  });
+  assert.equal(route.motoringTimeS, 0);
+  const last = route.waypoints[route.waypoints.length - 1];
+  assert.ok(Math.abs(last.lon - 0.3) < 1e-6 && Math.abs(last.lat - 0.5) < 1e-6);
+});

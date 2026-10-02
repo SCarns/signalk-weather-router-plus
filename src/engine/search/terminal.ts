@@ -75,38 +75,50 @@ export function beatToWindward(
   const twa = twaFromHeading(theta, wd);
   const floor = polar.noGoFloor(ws);
   if (!(twa < floor)) return null; // the straight hop can be sailed
-  const beta = Math.min(89, floor + 3);
-  const h1 = norm360(wd + beta);
-  const h2 = norm360(wd - beta);
-  const det = Math.sin((h1 - h2) * DEG);
-  if (Math.abs(det) < 1e-9) return null;
-  const d1 = (D * Math.sin((theta - h2) * DEG)) / det;
-  const d2 = (D * Math.sin((h1 - theta) * DEG)) / det;
-  if (!(d1 > 0 && d2 > 0)) return null;
-  const orders: { hFirst: number; dFirst: number; hSecond: number; dSecond: number }[] = [
-    { hFirst: h1, dFirst: d1, hSecond: h2, dSecond: d2 },
-    { hFirst: h2, dFirst: d2, hSecond: h1, dSecond: d1 },
-  ];
+  // The tack angle: the polar's tightest sailable angle plus a margin. The
+  // tightest beat (3°) is the shortest, but the wind at the start is not
+  // the wind along a leg of tens of km: a shift of a few degrees towards
+  // the heading puts the leg in the no-go angle and the beat fails (job
+  // f993afa5, Gibraltar → Canaries: four candidates 27° off the wind, no
+  // beat possible with 3°). Wider beats are tried too; the fastest that
+  // sails on both legs wins.
   let best: { tack: Candidate; final: Candidate; d1: number; d2: number; total: number } | null = null;
-  for (const o of orders) {
-    const [tLon, tLat] = projectAlongBearing(from.lon, from.lat, o.hFirst, o.dFirst);
-    const cross = ctx.landMask.legsCrossLandBulk(
-      Float64Array.of(from.lon, tLon),
-      Float64Array.of(from.lat, tLat),
-      Float64Array.of(tLon, gLon),
-      Float64Array.of(tLat, gLat)
-    );
-    if (cross[0] || cross[1]) continue;
-    const s1 = simulateLegTime(from.lon, from.lat, new Date(from.timeMs), tLon, tLat, vessel, polar, wind, current, simOpts);
-    if (!Number.isFinite(s1.seconds) || s1.seconds <= 0) continue;
-    const tack = hopCandidate(from, tLon, tLat, s1);
-    const s2 = simulateLegTime(tLon, tLat, new Date(tack.timeMs), gLon, gLat, vessel, polar, wind, current, simOpts);
-    if (!Number.isFinite(s2.seconds) || s2.seconds <= 0) continue;
-    const total = s1.seconds + s2.seconds;
-    if (!best || total < best.total) best = { tack, final: hopCandidate(tack, gLon, gLat, s2), d1: o.dFirst, d2: o.dSecond, total };
+  for (const margin of BEAT_MARGINS_DEG) {
+    const beta = Math.min(89, floor + margin);
+    const h1 = norm360(wd + beta);
+    const h2 = norm360(wd - beta);
+    const det = Math.sin((h1 - h2) * DEG);
+    if (Math.abs(det) < 1e-9) continue;
+    const d1 = (D * Math.sin((theta - h2) * DEG)) / det;
+    const d2 = (D * Math.sin((h1 - theta) * DEG)) / det;
+    if (!(d1 > 0 && d2 > 0)) continue;
+    const orders: { hFirst: number; dFirst: number; hSecond: number; dSecond: number }[] = [
+      { hFirst: h1, dFirst: d1, hSecond: h2, dSecond: d2 },
+      { hFirst: h2, dFirst: d2, hSecond: h1, dSecond: d1 },
+    ];
+    for (const o of orders) {
+      const [tLon, tLat] = projectAlongBearing(from.lon, from.lat, o.hFirst, o.dFirst);
+      const cross = ctx.landMask.legsCrossLandBulk(
+        Float64Array.of(from.lon, tLon),
+        Float64Array.of(from.lat, tLat),
+        Float64Array.of(tLon, gLon),
+        Float64Array.of(tLat, gLat)
+      );
+      if (cross[0] || cross[1]) continue;
+      const s1 = simulateLegTime(from.lon, from.lat, new Date(from.timeMs), tLon, tLat, vessel, polar, wind, current, simOpts);
+      if (!Number.isFinite(s1.seconds) || s1.seconds <= 0) continue;
+      const tack = hopCandidate(from, tLon, tLat, s1);
+      const s2 = simulateLegTime(tLon, tLat, new Date(tack.timeMs), gLon, gLat, vessel, polar, wind, current, simOpts);
+      if (!Number.isFinite(s2.seconds) || s2.seconds <= 0) continue;
+      const total = s1.seconds + s2.seconds;
+      if (!best || total < best.total) best = { tack, final: hopCandidate(tack, gLon, gLat, s2), d1: o.dFirst, d2: o.dSecond, total };
+    }
   }
   return best;
 }
+
+/** Margins (degrees) added to the polar's tightest sailable angle for the beat's two legs, tightest first. */
+export const BEAT_MARGINS_DEG = [3, 8, 15, 25, 40];
 
 export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages: Candidate[][]): Terminal {
   const { args, wind, current, polar, vessel, modePolicy, simOpts, progress, checkCancel, eLon, eLat, snapToExact, nVias, limitNote } = ctx;
@@ -157,6 +169,9 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
   // that tacked are further out but hours ahead (job e6e338f6, leg 5: the
   // nearest branch 3.5 km out at 9.85 h, four tacking branches 12–14 km
   // out at about 5 h). Nearest first, at most TERMINAL_EVAL simulated.
+  // Why a candidate's final leg failed, for the error when none succeeds.
+  type FailWhy = 'land' | 'limited' | 'no_go' | 'current' | 'no_speed';
+  const fails = new Map<Candidate, FailWhy>();
   const planFor = (c: Candidate) => {
     const hopEnd = hopEndFor(c);
     if (!hopEnd) return { hopEnd: null, beat: null, sim: null, arrivalS: c.elapsedS };
@@ -167,16 +182,39 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
         Float64Array.of(hopEnd[0]),
         Float64Array.of(hopEnd[1])
       );
-      if (cross[0]) return null;
+      if (cross[0]) {
+        fails.set(c, 'land');
+        return null;
+      }
     }
     const beat = beatToWindward(ctx, c, hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts, modePolicy);
     if (beat) return { hopEnd, beat, sim: null, arrivalS: beat.final.elapsedS };
     const sim = simulateLegTime(c.lon, c.lat, new Date(c.timeMs), hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts);
-    if (!Number.isFinite(sim.seconds) || sim.seconds <= 0) return null;
+    if (!Number.isFinite(sim.seconds) || sim.seconds <= 0) {
+      fails.set(c, sim.reason ?? 'no_speed');
+      return null;
+    }
     return { hopEnd, beat: null, sim, arrivalS: c.elapsedS + sim.seconds };
   };
   type FinalPlan = NonNullable<ReturnType<typeof planFor>>;
   const plans = new Map<Candidate, FinalPlan>();
+  // The failures of every evaluated final leg, with the conditions at the
+  // nearest candidate: what the user needs when no final leg can be sailed.
+  const failNote = (): string => {
+    if (fails.size === 0) return '';
+    const n = (w: FailWhy): number => [...fails.values()].filter(v => v === w).length;
+    const parts: string[] = [];
+    if (n('limited')) parts.push(`${n('limited')} over the wind/wave limit`);
+    if (n('no_go')) parts.push(`${n('no_go')} dead upwind with no beat possible (the polar's no-go angle)`);
+    if (n('current')) parts.push(`${n('current')} stopped by a current stronger than the boat's speed`);
+    if (n('no_speed')) parts.push(`${n('no_speed')} with no boat speed`);
+    if (n('land')) parts.push(`${n('land')} crossing land`);
+    const [ws, wd] = wind.at(nearest.lon, nearest.lat, new Date(nearest.timeMs));
+    const [cu, cv] = current.at(nearest.lon, nearest.lat, new Date(nearest.timeMs));
+    const brg = haversineBearing(nearest.lon, nearest.lat, eLon, eLat);
+    const cond = `at the nearest (${(score(nearest)[0] / 1000).toFixed(1)} km out, ${new Date(nearest.timeMs).toISOString().slice(0, 16).replace('T', ' ')} UTC): final leg bearing ${brg.toFixed(0)}°, wind ${ws.toFixed(1)} m/s from ${wd.toFixed(0)}°, current ${Math.hypot(cu, cv).toFixed(2)} m/s towards ${norm360((Math.atan2(cu, cv) * 180) / Math.PI).toFixed(0)}°`;
+    return ` Of the ${fails.size} final legs tried: ${parts.join(', ')}; ${cond}.`;
+  };
   if (clearPool.length) {
     const byDist = [...clearPool].sort((a, b) => score(a)[0] - score(b)[0]).slice(0, TERMINAL_EVAL);
     for (const c of byDist) {
@@ -254,7 +292,7 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
           );
         }
         throw new RouteError(
-          `terminal hop to the destination could not be simulated (stuck under ${modePolicy} given wind/current at the destination${limitNote})`
+          `terminal hop to the destination could not be simulated (stuck under ${modePolicy} given wind/current at the destination${limitNote}).${failNote()}${forecastNote(ctx)}`
         );
       }
       const legDistFinal = haversineDistanceM(bestC.lon, bestC.lat, hLon, hLat);

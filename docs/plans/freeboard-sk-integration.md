@@ -256,6 +256,23 @@ must not change from one part of the Freeboard interface to another, so
 the panel matches Freeboard's own route list and distances even when they
 differ from the Signal K preferences (decision 2026-10-01).
 
+### PR-9: ocean currents from the Weather API (added 2026-10-02)
+
+Freeboard's ocean-currents overlay (`layer-currents-weather.component.ts`)
+calls Open-Meteo's marine API directly from the browser, cached per 0.1°
+cell; its weather service calls that a stopgap "until the SK Weather API
+grows current support". The Weather API schema has it:
+`water.surfaceCurrentSpeed` and `water.surfaceCurrentDirection` on
+`WeatherData` (server-api 2.33). This plugin fills them (observations and
+point forecasts, from Copernicus SMOC, RTOFS or harmonic files where they
+cover the point). Proposal: the currents overlay asks the Weather API for
+an observation at each lattice point, as the wind overlay already does,
+and draws the current from those fields when present, falling back to
+Open-Meteo only when the provider gives none. One request per point
+serves both overlays (the wind layer's lattice could be shared). The
+direction convention is the set (towards), the same as Open-Meteo's
+`ocean_current_direction` and the tidal-currents plugin.
+
 ### Signal K server PR: static files served without ETags (added 2026-10-01)
 
 Files installed by npm carry npm's fixed date (26 Oct 1985); the server

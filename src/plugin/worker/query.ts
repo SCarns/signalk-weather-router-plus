@@ -69,7 +69,14 @@ export async function queryWindow(st: WorkerState, kind: string, args: QueryArgs
     }
     case 'weather_point': {
       const a = args as QueryArgs['weather_point'];
-      return readWindow(st, 'Weather API point', { bbox: pointBox(a.lon, a.lat), params: [...POINT_FORECAST_PARAMS], marginCells: 2 });
+      // An observation needs only the two steps around its time.
+      const steps = a.observation && a.startMs !== null ? st.run.bracket(a.startMs) : undefined;
+      return readWindow(st, 'Weather API point', {
+        bbox: pointBox(a.lon, a.lat),
+        params: [...POINT_FORECAST_PARAMS],
+        marginCells: 2,
+        steps,
+      });
     }
     case 'forecast_info': {
       const a = args as QueryArgs['forecast_info'];
@@ -139,7 +146,10 @@ export async function query(st: WorkerState, id: number, kind: string, args: Que
       case 'weather_point': {
         const a = args as QueryArgs['weather_point'];
         if (!win) throw new Error('no forecast loaded yet');
-        result = pointForecasts(win, a.lon, a.lat, a.startMs, a.maxCount);
+        result = pointForecasts(win, a.lon, a.lat, a.startMs, a.maxCount, {
+          currents: src.currents ?? undefined,
+          observation: !!a.observation,
+        });
         break;
       }
       case 'forecast_info': {

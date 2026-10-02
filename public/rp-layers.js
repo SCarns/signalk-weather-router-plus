@@ -203,7 +203,8 @@ const frontLayer = new ol.layer.Vector({
     return new ol.style.Style({ stroke: new ol.style.Stroke({ color: _frontColor(frac, final ? 0.45 : 0.85), width: final ? 1.2 : 2 }) });
   },
   zIndex: 14,
-  visible: true,
+  // Off by default: the Decision lines switch (Layers → Base, and beside Find Route) turns it on.
+  visible: false,
 });
 // Draw one stage: points [[lon, lat, timeMs, viaCount], …] sorted across the
 // track within each viaCount; best [[lon, lat], …]. `reset` clears earlier
@@ -411,7 +412,7 @@ function _pointTileSource(tileLayer, toggleId, toFeature, attributions) {
       if (z !== src._z) { fail(); return; }
       const hour = src._hour, level = src._z;
       _tileFetch(_tileUrl(tileLayer, z, x, y, hour))
-        .then(r => r.json())
+        .then(_tileJson)
         .then(points => {
           // A newer hour or zoom level has cleared the source meanwhile.
           if (src._hour !== hour || src._z !== level || z !== level) { fail(); return; }
@@ -844,6 +845,13 @@ async function _tileFetch(url) {
   if (!r.ok) throw new Error(await _apiErrorText(r));
   return r;
 }
+// A tile's JSON body; an empty or unparsable body (a damaged saved tile)
+// is named as such rather than by the parser's message.
+async function _tileJson(r) {
+  const text = await r.text();
+  if (!text) throw new Error('empty tile from the server (a damaged saved tile; it is rebuilt on the next request)');
+  try { return JSON.parse(text); } catch (err) { throw new Error('unreadable tile from the server (a damaged saved tile; it is rebuilt on the next request)', { cause: err }); }
+}
 // Small in-page caches so a redraw (tide rescale, hour back and forth)
 // does not refetch.
 function _lruGet(m, key, make, max) {
@@ -857,7 +865,7 @@ const _tileGridCache = new Map();
 const _landTileCache = new Map();
 function _tileGrid(layer, z, x, y, hourIso) {
   const url = _tileUrl(layer, z, x, y, hourIso);
-  return _lruGet(_tileGridCache, url, () => _tileFetch(url).then(r => r.json()), 600);
+  return _lruGet(_tileGridCache, url, () => _tileFetch(url).then(_tileJson), 600);
 }
 function _landTile(z, x, y) {
   return _lruGet(_landTileCache, z + '/' + x + '/' + y, () => _tileFetch(_tileUrl('land', z, x, y)).then(r => r.arrayBuffer()).then(buf => {
@@ -1526,7 +1534,7 @@ const LAYER_TOGGLES = [
   ['osmToggle', osmLayer],
   ['seamarkToggle', seamarkLayer],
   ['vesselToggle', vesselMarkerLayer],
-  ['frontToggle', frontLayer, null, null, null, false],
+  ['frontToggle', frontLayer],
   ['windToggle', windLayer, loadWindOverlay, () => windSource.clear()],
   ['windCombinedToggle', windHeatmapLayer, loadWindHeatmap, () => windHeatmapLayer.setSource(null), windStreamlines],
   ['precipToggle', precipHeatmapLayer, loadPrecipHeatmap, () => precipHeatmapLayer.setSource(null)],
@@ -1557,5 +1565,20 @@ for (const [id, layer, load, clear, streamlines, persist = true] of LAYER_TOGGLE
   if (el.checked !== want) {
     el.checked = want;
     el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}
+// The Decision lines switch beside Find Route is the same switch as the one
+// in Layers → Base: either drives the other, and the saved state is one.
+{
+  const main = document.getElementById('frontToggle');
+  const twin = document.getElementById('frontToggleRoute');
+  if (main && twin) {
+    twin.checked = main.checked;
+    twin.addEventListener('change', () => {
+      if (main.checked === twin.checked) return;
+      main.checked = twin.checked;
+      main.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    main.addEventListener('change', () => { twin.checked = main.checked; });
   }
 }

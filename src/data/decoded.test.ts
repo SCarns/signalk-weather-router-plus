@@ -378,3 +378,35 @@ test('streaming decode writes exactly the fields the whole-store decode builds (
   assert.equal(openDecodedRun(writer.finalDir).problem, null);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('Weather API: an observation is one entry interpolated to its time, and surface current comes from the current sources where they cover the point', async () => {
+  const store = syntheticStore(5);
+  const lon = -71.3;
+  const lat = 41.4;
+  // Halfway between the first two steps.
+  const s0 = store.steps[0].validMs;
+  const s1 = store.steps[1].validMs;
+  const mid = (s0 + s1) / 2;
+  const [obs] = pointForecasts(store, lon, lat, mid, null, { observation: true });
+  assert.equal(obs.type, 'observation');
+  assert.equal(obs.date, new Date(mid).toISOString());
+  const [ws, wd] = store.at(lon, lat, new Date(mid));
+  assert.equal(obs.wind?.speedTrue, ws);
+  assert.equal(obs.wind?.directionTrue, (wd * Math.PI) / 180);
+  assert.equal(obs.water?.surfaceCurrentSpeed, undefined, 'no current source: no current fields');
+  // A current source covering the point: u east 0.3, v north 0.4 → 0.5 m/s towards 036.87°.
+  const currents = {
+    contains: (x: number, y: number) => Math.abs(x - lon) < 1 && Math.abs(y - lat) < 1,
+    at: (): [number, number] => [0.3, 0.4],
+  };
+  const [withCur] = pointForecasts(store, lon, lat, mid, null, { observation: true, currents });
+  assert.ok(Math.abs((withCur.water?.surfaceCurrentSpeed ?? 0) - 0.5) < 1e-12);
+  assert.ok(Math.abs((withCur.water?.surfaceCurrentDirection ?? 0) - Math.atan2(0.3, 0.4)) < 1e-12);
+  // Point forecasts carry the same current fields; outside the source's area they are left out.
+  const steps = pointForecasts(store, lon, lat, s0, 2, { currents });
+  assert.equal(steps.length, 2);
+  assert.equal(steps[0].type, 'point');
+  assert.ok(Math.abs((steps[0].water?.surfaceCurrentSpeed ?? 0) - 0.5) < 1e-12);
+  const far = pointForecasts(store, lon + 5, lat, s0, 1, { currents });
+  assert.equal(far[0].water?.surfaceCurrentSpeed, undefined);
+});

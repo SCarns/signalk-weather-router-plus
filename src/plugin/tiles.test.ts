@@ -164,3 +164,24 @@ test('pyramid: full radius to zoom 8, halved deeper; nearest the centre first; w
   assert.ok(dl.some(t => t.x === n - 1) && dl.some(t => t.x === 0), 'both sides of the date line');
   assert.ok(dl.every(t => t.x >= 0 && t.x < n));
 });
+
+test('tile store: an empty or non-gzip saved file is a miss and is removed (what a crash leaves behind)', async () => {
+  const root = tmp();
+  const store = new TileStore({ root, capBytes: 1e9 });
+  store.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
+  const g = store.generation('wx');
+  await store.write(T, zlib.gzipSync('1'), g);
+  const f = store.file(T) as string;
+  fs.writeFileSync(f, Buffer.alloc(0));
+  assert.equal(await store.read(T), null, 'empty file is a miss');
+  for (let i = 0; i < 50 && fs.existsSync(f); i++) await new Promise(r => setTimeout(r, 10));
+  assert.equal(fs.existsSync(f), false, 'and it is removed');
+  await store.write(T, zlib.gzipSync('1'), g);
+  fs.writeFileSync(f, Buffer.from('not gzip at all, but long enough'));
+  assert.equal(await store.read(T), null, 'a non-gzip file is a miss');
+  await store.write(T, zlib.gzipSync('2'), g);
+  const ok = await store.read(T);
+  assert.ok(ok && zlib.gunzipSync(ok).toString() === '2', 'a real tile reads back');
+  assert.equal(store.corrupt, 2);
+  fs.rmSync(root, { recursive: true, force: true });
+});

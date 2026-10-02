@@ -1,7 +1,15 @@
 /**
- * Signal K Weather API provider backed by the decoded forecast. Point
- * forecasts only (one WeatherData per forecast step); daily summaries,
- * observations and warnings are not provided.
+ * Signal K Weather API provider backed by the decoded forecast: point
+ * forecasts (one WeatherData per forecast step) and observations (one
+ * WeatherData for the conditions now, interpolated between the two steps
+ * around the current time). Daily summaries and warnings are not provided.
+ *
+ * Surface current (`water.surfaceCurrentSpeed`, m/s, and
+ * `water.surfaceCurrentDirection`, rad, the direction the water flows
+ * TOWARDS, the set, as Signal K's `environment.water.current.setTrue`)
+ * from the loaded current sources (Copernicus SMOC, RTOFS, harmonics)
+ * where they cover the point; the fields are left out elsewhere. Beyond a
+ * source's time range its last step is held, as the overlays do.
  *
  * The main thread holds no forecast: the provider asks the data worker
  * (query 'weather_point'), which reads the few grid cells around the
@@ -63,8 +71,19 @@ export interface WeatherData {
     waveSignificantHeight?: number;
     wavePeriod?: number;
     waveDirection?: number;
+    /** m/s. */
+    surfaceCurrentSpeed?: number;
+    /** rad, the set (direction the water flows towards), true. */
+    surfaceCurrentDirection?: number;
   };
   wind?: { speedTrue?: number; directionTrue?: number };
+}
+
+/** A current source as pointForecasts samples it (the data worker's CurrentStack). */
+export interface CurrentsLike {
+  contains(lon: number, lat: number): boolean;
+  /** [u east, v north] in m/s. */
+  at(lon: number, lat: number, time: Date): [number, number];
 }
 
 export interface WeatherProviderLike {
@@ -102,8 +121,11 @@ export function applyWaterLevel(items: WeatherData[], s: TideSeriesLike): number
   return n;
 }
 
-/** Point forecasts at a position (the data worker runs pointForecasts on a window of the decoded run). */
-export type PointForecastFn = (position: SkPosition, options?: WeatherReqParams) => Promise<WeatherData[]>;
+/** Point forecasts at a position (the data worker runs pointForecasts on a window of the decoded run); `observation` asks for the conditions now instead. */
+export type PointForecastFn = (position: SkPosition, options?: WeatherReqParams & { observation?: boolean }) => Promise<WeatherData[]>;
+
+/** Observations are answered for the 5-minute slot, so the data worker's answer can be reused across a chartplotter's many points. */
+export const OBSERVATION_SLOT_MS = 5 * 60_000;
 
 /** The step start time a request asks for (options.startDate, else now). */
 export function startMsOf(options?: WeatherReqParams): number | null {
@@ -143,7 +165,10 @@ export function makeWeatherProvider(
     name: 'Weather Router Plus (ECMWF open data)',
     methods: {
       pluginId,
-      getObservations: async () => [],
+      // The conditions now: one entry, interpolated between the two forecast
+      // steps around the current time (what a chartplotter's wind overlay
+      // asks for at every point of its lattice).
+      getObservations: async position => withWaterLevel(position, await points(position, { observation: true })),
       getForecasts: async (position, type, options) => {
         if (type !== 'point') return [];
         return withWaterLevel(position, await points(position, options));
@@ -166,52 +191,96 @@ export function pointForecasts(
   lon: number,
   lat: number,
   startMs: number | null,
-  maxCount: number | null
+  maxCount: number | null,
+  opts: { currents?: CurrentsLike; observation?: boolean } = {}
 ): WeatherData[] {
   if (!store.covers(lon, lat)) {
     throw new Error(`position ${lat.toFixed(3)}, ${lon.toFixed(3)} is outside the forecast`);
   }
   const fromMs = startMs ?? Date.now();
-  const finiteOr = (v: number): number | undefined => (Number.isFinite(v) ? v : undefined);
-  const has2t = store.has('2t');
-  const hasD2m = store.has('2d');
-  const hasSkt = store.has('skt');
+  const cycle = store.meta.cycleTime.toISOString();
+  if (opts.observation) {
+    // The conditions at `fromMs`: the store interpolates between the two
+    // steps around it (held at the first or last step outside the run).
+    return [
+      weatherItemAt(
+        store,
+        lon,
+        lat,
+        new Date(fromMs),
+        'observation',
+        `ECMWF IFS 0.25° open data, cycle ${cycle}, interpolated to the time`,
+        opts.currents
+      ),
+    ];
+  }
   const out: WeatherData[] = [];
   for (let i = 0; i < store.steps.length; i++) {
     const step = store.steps[i];
     if (step.validMs + 3 * HOUR_MS <= fromMs) continue; // step already fully in the past
-    const t = new Date(step.validMs);
-    const [ws, wd] = store.at(lon, lat, t);
-    const wave = store.wavesAt(lon, lat, t);
-    const msl = store.mslAt(lon, lat, t);
-    const item: WeatherData = {
-      description: `ECMWF IFS 0.25° open data, cycle ${store.meta.cycleTime.toISOString()}, +${step.stepHours} h`,
-      date: t.toISOString(),
-      type: 'point',
-      wind: { speedTrue: ws, directionTrue: (wd * Math.PI) / 180 },
-    };
-    const outside: NonNullable<WeatherData['outside']> = {};
-    if (Number.isFinite(msl)) outside.pressure = msl;
-    const t2m = has2t ? finiteOr(store.paramAt('2t', lon, lat, t)) : undefined;
-    const d2m = hasD2m ? finiteOr(store.paramAt('2d', lon, lat, t)) : undefined;
-    if (t2m !== undefined) outside.temperature = t2m;
-    if (d2m !== undefined) outside.dewPointTemperature = d2m;
-    const rh = relativeHumidity(t2m ?? null, d2m ?? null);
-    if (rh !== null) outside.relativeHumidity = rh;
-    if (Object.keys(outside).length > 0) item.outside = outside;
-    const water: NonNullable<WeatherData['water']> = {};
-    const skt = hasSkt ? finiteOr(store.paramAt('skt', lon, lat, t)) : undefined;
-    if (skt !== undefined) water.temperature = skt;
-    if (wave && Number.isFinite(wave.swh)) {
-      water.waveSignificantHeight = wave.swh;
-      water.wavePeriod = wave.mwp;
-      water.waveDirection = (wave.mwd * Math.PI) / 180;
-    }
-    if (Object.keys(water).length > 0) item.water = water;
-    out.push(item);
+    out.push(
+      weatherItemAt(
+        store,
+        lon,
+        lat,
+        new Date(step.validMs),
+        'point',
+        `ECMWF IFS 0.25° open data, cycle ${cycle}, +${step.stepHours} h`,
+        opts.currents
+      )
+    );
     if (maxCount && out.length >= maxCount) break;
   }
   return out;
+}
+
+/** One WeatherData sampled from the store (and the currents, where they cover the point) at `t`. */
+function weatherItemAt(
+  store: ForecastStore,
+  lon: number,
+  lat: number,
+  t: Date,
+  type: WeatherData['type'],
+  description: string,
+  currents?: CurrentsLike
+): WeatherData {
+  const finiteOr = (v: number): number | undefined => (Number.isFinite(v) ? v : undefined);
+  const [ws, wd] = store.at(lon, lat, t);
+  const wave = store.wavesAt(lon, lat, t);
+  const msl = store.mslAt(lon, lat, t);
+  const item: WeatherData = {
+    description,
+    date: t.toISOString(),
+    type,
+    wind: { speedTrue: ws, directionTrue: (wd * Math.PI) / 180 },
+  };
+  const outside: NonNullable<WeatherData['outside']> = {};
+  if (Number.isFinite(msl)) outside.pressure = msl;
+  const t2m = store.has('2t') ? finiteOr(store.paramAt('2t', lon, lat, t)) : undefined;
+  const d2m = store.has('2d') ? finiteOr(store.paramAt('2d', lon, lat, t)) : undefined;
+  if (t2m !== undefined) outside.temperature = t2m;
+  if (d2m !== undefined) outside.dewPointTemperature = d2m;
+  const rh = relativeHumidity(t2m ?? null, d2m ?? null);
+  if (rh !== null) outside.relativeHumidity = rh;
+  if (Object.keys(outside).length > 0) item.outside = outside;
+  const water: NonNullable<WeatherData['water']> = {};
+  const skt = store.has('skt') ? finiteOr(store.paramAt('skt', lon, lat, t)) : undefined;
+  if (skt !== undefined) water.temperature = skt;
+  if (wave && Number.isFinite(wave.swh)) {
+    water.waveSignificantHeight = wave.swh;
+    water.wavePeriod = wave.mwp;
+    water.waveDirection = (wave.mwd * Math.PI) / 180;
+  }
+  if (currents && currents.contains(lon, lat)) {
+    const [u, v] = currents.at(lon, lat, t);
+    if (Number.isFinite(u) && Number.isFinite(v)) {
+      water.surfaceCurrentSpeed = Math.hypot(u, v);
+      // The set: direction the water flows towards, from north, clockwise.
+      water.surfaceCurrentDirection = ((Math.atan2(u, v) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    }
+  }
+  if (Object.keys(water).length > 0) item.water = water;
+  return item;
 }
 
 /**
@@ -243,9 +312,19 @@ export function registerWeatherProvider(
     // Point forecasts are read by the data worker from the decoded run (this thread holds no forecast).
     const points = async (
       position: { latitude: number; longitude: number },
-      options?: { startDate?: string; maxCount?: number }
+      options?: { startDate?: string; maxCount?: number; observation?: boolean }
     ): Promise<WeatherData[]> => {
       if (!d.hasForecast()) throw new Error('no forecast loaded yet');
+      if (options?.observation) {
+        return (await d.pointQuery('weather_point', {
+          lat: position.latitude,
+          lon: position.longitude,
+          // The current 5-minute slot, so the answer can be reused across a chartplotter's lattice.
+          startMs: Math.floor(Date.now() / OBSERVATION_SLOT_MS) * OBSERVATION_SLOT_MS,
+          maxCount: 1,
+          observation: true,
+        })) as WeatherData[];
+      }
       return (await d.pointQuery('weather_point', {
         lat: position.latitude,
         lon: position.longitude,

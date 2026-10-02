@@ -195,6 +195,8 @@ export interface TileStoreStats {
   bytes: number;
   hits: number;
   misses: number;
+  /** Saved files found empty or not gzip, removed on read. */
+  corrupt: number;
   writes: number;
   /** Answers not kept: an on-demand current or tide load was late or failed. */
   not_kept: number;
@@ -258,12 +260,26 @@ export class TileStore {
     return path.join(this.root, g, k.rel);
   }
 
-  /** The saved answer (gzip bytes), or null. */
+  /**
+   * The saved answer (gzip bytes), or null. A file that is not a gzip
+   * body (empty, or shorter than a gzip header and trailer, or without
+   * the gzip magic) is a miss and is removed: an unclean shutdown leaves
+   * files written in the seconds before it empty (ext4 delayed
+   * allocation; brain, 2026-10-02: 363 empty tiles after a crash, served
+   * as 200 with nothing in them, "Unexpected end of JSON input" on the
+   * map).
+   */
   async read(t: TileId | StoreKey): Promise<Buffer | null> {
     const f = this.file(t);
     if (!f) return null;
     try {
       const buf = await fs.promises.readFile(f);
+      if (!isGzipBody(buf)) {
+        this.corrupt++;
+        this.misses++;
+        fs.promises.rm(f, { force: true }).catch(() => undefined);
+        return null;
+      }
       this.hits++;
       const now = new Date();
       fs.promises.utimes(f, now, now).catch(() => undefined); // recency for pruning
@@ -273,6 +289,9 @@ export class TileStore {
       return null;
     }
   }
+
+  /** Saved files found empty or not gzip (removed; see read). */
+  corrupt = 0;
 
   /** Whether a tile is saved (no read). */
   async has(t: TileId | StoreKey): Promise<boolean> {
@@ -398,6 +417,7 @@ export class TileStore {
       bytes: this.totals?.bytes ?? 0,
       hits: this.hits,
       misses: this.misses,
+      corrupt: this.corrupt,
       writes: this.writes,
       not_kept: this.notKept,
       generations: { ...this.gens },
@@ -407,6 +427,11 @@ export class TileStore {
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
+
+/** A plausible gzip body: at least a header and a trailer (18 bytes) and the gzip magic. */
+export function isGzipBody(buf: Buffer): boolean {
+  return buf.length >= 18 && buf[0] === 0x1f && buf[1] === 0x8b;
+}
 
 /** JSON that keeps Float64Array (Weather API tide series); NaN in them becomes null and back. */
 function toJson(v: unknown): string {

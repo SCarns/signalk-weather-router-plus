@@ -19,6 +19,11 @@ export class CurrentStack implements CurrentSource {
     return this.sources.length === 0;
   }
 
+  /** Does any source cover the point? (`at` answers [0, 0] both for slack water and for no source.) */
+  contains(lon: number, lat: number): boolean {
+    return this.sources.some(s => s.contains(lon, lat));
+  }
+
   at(lon: number, lat: number, time: Date): [number, number] {
     for (const s of this.sources) {
       if (!s.contains(lon, lat)) continue;

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scoreCandidatesFromParent, simulateLegTime, type SimOptions } from './legsim';
+import { MAX_CURRENT_MS, scoreCandidatesFromParent, simulateLegTime, type SimOptions } from './legsim';
 import type { CurrentSource, WindSource } from './environment';
 import { makeVessel } from '../vessel/vessel';
 import { PolarDiagram } from '../vessel/polar';
@@ -173,6 +173,65 @@ test('boxed in before a via is crossed raises ViasNotCrossedError (so the router
       assert.ok(err instanceof ViasNotCrossedError, `${err.name}: ${err.message}`);
       assert.match(err.message, /deepest branch crossed 0/);
       assert.match(err.message, /next via at the band/);
+      return true;
+    }
+  );
+});
+
+test('a leg stopped by a foul current says so, and a current above MAX_CURRENT_MS is read as no data', () => {
+  // Heading east (lon 0 → 0.01), motor 3 m/s; a 5 m/s current flowing west cancels it.
+  const foul: CurrentSource = {
+    at: () => [-5, 0],
+    atMany: lons => ({ u: new Float64Array(lons.length).fill(-5), v: new Float64Array(lons.length) }),
+  };
+  const r = simulateLegTime(0, 0, t0, 0.01, 0, vessel, null, wind(10, 1), foul, base);
+  assert.equal(r.seconds, Infinity);
+  assert.equal(r.reason, 'current');
+  // A "current" of 50 m/s is a data error: ignored, the leg motors through.
+  const bad: CurrentSource = {
+    at: () => [-50, 0],
+    atMany: lons => ({ u: new Float64Array(lons.length).fill(-50), v: new Float64Array(lons.length) }),
+  };
+  assert.ok(50 > MAX_CURRENT_MS);
+  const ok = simulateLegTime(0, 0, t0, 0.01, 0, vessel, null, wind(10, 1), bad, base);
+  assert.ok(Number.isFinite(ok.seconds) && ok.seconds > 0);
+  const sc = scoreCandidatesFromParent(0, 0, t0, new Float64Array([90]), new Float64Array([1000]), vessel, null, wind(10, 1), bad, base);
+  assert.equal(sc.badCurrent[0], 1);
+  assert.equal(sc.foul[0], 0);
+});
+
+test('when no final leg can be sailed, the error says why for the legs tried and gives the conditions at the nearest candidate', () => {
+  // Open water, route east along lat 0.5; a 5 m/s westward current within
+  // 0.06° of the destination stops every final leg (motor 3 m/s).
+  const bbox = { west: -1, south: -1, east: 2, north: 2 };
+  const lm = LandMask.fromPolygons([], bbox, 0.02);
+  const end: [number, number] = [1.0, 0.5];
+  const near = (lon: number, lat: number): boolean => Math.abs(lon - end[0]) < 0.06 && Math.abs(lat - end[1]) < 0.06;
+  const band: CurrentSource = {
+    at: (lon, lat) => (near(lon, lat) ? [-5, 0] : [0, 0]),
+    atMany: (lons, lats) => ({ u: Float64Array.from(lons, (lon, i) => (near(lon, lats[i]) ? -5 : 0)), v: new Float64Array(lons.length) }),
+  };
+  const prop = new OceanPropagator(lm, { stages: 10, subsectors: 20, headings: 30 });
+  assert.throws(
+    () =>
+      prop.computeRoute({
+        start: [0, 0.5],
+        end,
+        departureTime: t0,
+        vessel,
+        polar: null,
+        wind: wind(10, 1),
+        current: band,
+        modePolicy: 'motor',
+        sailThreshMs: 0,
+      }),
+    (err: Error) => {
+      assert.match(err.message, /terminal hop to the destination could not be simulated/);
+      assert.match(err.message, /Of the \d+ final legs tried: \d+ stopped by a current stronger than the boat's speed/);
+      assert.match(
+        err.message,
+        /at the nearest \([\d.]+ km out, 2026-10-01 \d\d:\d\d UTC\): final leg bearing \d+°, wind 10\.0 m\/s from 180°, current 0\.00 m\/s towards 0°/
+      ); // the band is only around the destination
       return true;
     }
   );

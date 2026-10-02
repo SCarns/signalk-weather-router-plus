@@ -35,7 +35,7 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
 | Route job API (REST + Server-Sent Events) | `/plugins/signalk-weather-router-plus/api/…` |
 | OpenAPI | `/plugins/signalk-weather-router-plus/api/openapi.json` |
 | Finished routes | saved to `/signalk/v2/api/resources/routes/{jobId}` (needs a routes provider, e.g. `resources-provider`) |
-| Weather API provider | point forecasts anywhere from the global forecast (read from the decoded run on disk by the data worker) via `/signalk/v2/api/weather/forecasts/point?lat=&lon=`, with `water.level` / `water.levelTendency` (relative to mean sea level) when tides are on |
+| Weather API provider | point forecasts and observations anywhere from the global forecast (read from the decoded run on disk by the data worker) via `/signalk/v2/api/weather/forecasts/point?lat=&lon=` and `/observations`, with `water.level` / `water.levelTendency` (relative to mean sea level) when tides are on and `water.surfaceCurrentSpeed` / `surfaceCurrentDirection` (the set, towards) where a current source covers the point |
 | Notifications | `notifications.weatherRouterPlus.{jobId}` on completion or failure |
 | CLI (no Signal K) | `wrp-route` |
 
@@ -362,11 +362,14 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
 
   ![Polar diagram of the selected polar, and the sailing strategy modes](public/screenshots/06-polars.jpg)
 
-- **Stage fronts** (Layers, on by default): the router's search drawn as
-  it runs, one line per stage front (the candidates kept after pruning,
+- **Decision lines** (the switch beside Find Route, and the same one in
+  Layers → Base; off by default, remembered): the router's search drawn
+  as it runs, one line per stage front (the candidates kept after pruning,
   blue → amber by stage; every point has its own arrival time, so they are
-  not isochrones) and the best path so far, dashed. The finished route's
-  fronts stay, faintly, also for a past route opened from the log.
+  not isochrones) and the best path so far, dashed. The fronts are always
+  streamed and kept with the job; the switch only shows or hides them, so
+  turning it on after a run shows the search that was made. The finished
+  route's fronts stay, faintly, also for a past route opened from the log.
 - **Settings tab**: the web-app settings below, in the selected units.
 - The page references its scripts with `?v=<tag>`, a tag that changes
   whenever a file in `public/` changes, so browsers and proxies in front
@@ -2031,9 +2034,23 @@ once the first forecast run is ready. `/api/status` reports
 | Weather API method | Result |
 |---|---|
 | point forecasts (`/signalk/v2/api/weather/forecasts/point?lat=&lon=`) | one entry per forecast step, anywhere on the globe |
+| observations (`/signalk/v2/api/weather/observations?lat=&lon=`) | one entry: the conditions now, interpolated between the two forecast steps around the current time (answered per 5-minute slot, so a chartplotter's lattice of points reuses the data worker's reads) |
 | daily forecasts | empty list |
-| observations | empty list |
 | warnings | empty list |
+
+Both carry `water.surfaceCurrentSpeed` (m/s) and
+`water.surfaceCurrentDirection` (rad, the set: the direction the water
+flows towards, as Signal K's `environment.water.current.setTrue`) from
+the loaded current sources (Copernicus SMOC, RTOFS, harmonic files)
+where one covers the point: the resident area around the vessel and the
+areas loaded for routes. Elsewhere the two fields are left out. Freeboard-
+SK's wind overlay asks the Weather API for an observation at each point
+of a lattice over the chart, from the server's default provider; make
+this plugin the default provider (`POST /signalk/v2/api/weather/
+_providers/_default/signalk-weather-router-plus`, as an admin; the server
+remembers it) and its barbs come from the ECMWF forecast. Its
+currents overlay still reads Open-Meteo directly (PR-9 in
+[docs/plans/freeboard-sk-integration.md](docs/plans/freeboard-sk-integration.md)).
 
 For point forecasts the server passes the options `startDate` and
 `maxCount`, from the Weather API query parameters `date` and `count`

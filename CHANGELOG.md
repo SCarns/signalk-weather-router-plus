@@ -6,8 +6,50 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Weather API observations.** The provider answers
+  `/signalk/v2/api/weather/observations?lat=&lon=` with one entry: the
+  conditions now, interpolated between the two forecast steps around the
+  current time (wind, pressure, temperatures, humidity, waves, water
+  level), answered per 5-minute slot. Freeboard-SK's wind overlay asks for
+  exactly that at each point of a lattice over the chart, from the
+  server's default weather provider, so with this plugin as the default
+  its barbs come from the ECMWF forecast. Before, observations were an
+  empty list.
+- **Surface current in the Weather API.** Point forecasts and
+  observations carry `water.surfaceCurrentSpeed` (m/s) and
+  `water.surfaceCurrentDirection` (rad, the set, towards) from the loaded
+  current sources where one covers the point.
+
 ### Fixed
 
+- **Damaged saved tiles no longer break the map.** An unclean shutdown
+  leaves the tiles written in the seconds before it as empty files (ext4
+  delayed allocation; brain, 2 Oct: 363 of them after a crash), and the
+  server served them as 200 with nothing in them, which the map showed as
+  "Unexpected end of JSON input" under the tidal current and tide height
+  legends. The tile store now treats a saved file that is empty or not a
+  gzip body as a miss, removes it and rebuilds the tile; `/api/status`
+  counts them under `corrupt`. The map names an empty or unreadable tile
+  as such.
+- **The beat to a waypoint tries wider tack angles.** The two legs of the
+  final beat were laid at the polar's tightest sailable angle plus 3°;
+  over legs of tens of kilometres the wind direction shifts more than
+  that, the leg runs into the no-go angle and the beat fails. Margins of
+  3°, 8°, 15°, 25° and 40° are now tried and the fastest beat that sails
+  on both legs wins. Found on a Gibraltar → Canaries test: four
+  candidates 27° off the wind, "no beat possible" with 3°.
+- **"Terminal hop could not be simulated" now says why.** When no
+  candidate's final leg can be sailed, the error counts the legs tried by
+  cause (over the wind/wave limit, dead upwind with no beat possible,
+  stopped by a current stronger than the boat, no boat speed, crossing
+  land) and gives the conditions at the nearest candidate: its distance
+  and time, the final leg's bearing, the wind and the current there. A
+  current sample above 10 m/s, faster than any tidal race, is read as no
+  data and counted, instead of stopping a leg. Found on a Gibraltar →
+  Canaries test that failed 37 km from the destination with the old
+  message and succeeded with currents off.
 - **The water-grid builder thread could not start** after the cleanup
   moved its caller into `plugin/worker/`: the thread was started from a
   path one folder too deep, so every rebuild failed and routes stayed on
@@ -210,8 +252,10 @@ uses [Semantic Versioning](https://semver.org/).
   temperature, Sea temperature), each holding the layers whose data is
   there.
 
-- **The search, live on the map.** The web app's new **Stage fronts**
-  layer (Layers, on by default) draws the router's search as it runs: the
+- **The search, live on the map.** The web app's new **Decision lines**
+  switch (beside Find Route, and the same switch in Layers → Base; off by
+  default, remembered; the fronts are kept with the job either way) draws
+  the router's search as it runs: the
   front of every stage (the candidates kept after pruning, sorted across
   the track, coloured blue → amber by stage; each point keeps its own
   arrival time, so these are not isochrones) and the best path so far

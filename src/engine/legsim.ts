@@ -29,7 +29,15 @@ export interface LegSimResult {
   dominantMode: 'sailing' | 'motoring' | 'stuck';
   sailingSeconds: number;
   motoringSeconds: number;
+  /** Why the leg is stuck: over a wind/wave limit, heading in the polar's no-go angle, the current cancelling the boat's speed, or no boat speed at all. */
+  reason?: 'limited' | 'no_go' | 'current' | 'no_speed';
 }
+
+/**
+ * A current faster than this (m/s) is a data error, not water: the fastest
+ * tidal races run about 8 m/s. It is read as no data and counted.
+ */
+export const MAX_CURRENT_MS = 10;
 
 export interface SimOptions {
   modePolicy: ModePolicy;
@@ -70,7 +78,7 @@ export function stepAlongHeading(
   polar: PolarDiagram | null,
   motorMs: number,
   opts: SimOptions
-): { progress: number; sailUsed: boolean; inNoGo: boolean } {
+): { progress: number; sailUsed: boolean; inNoGo: boolean; waterSpeed: number } {
   let sailSpeed = 0;
   let inNoGo = false;
   if (polar) {
@@ -81,7 +89,7 @@ export function stepAlongHeading(
   const [waterSpeed, sailUsed] = selectSpeed(sailSpeed, motorMs, opts.modePolicy, opts.sailThreshMs);
   const sogU = waterSpeed * headingU + cu;
   const sogV = waterSpeed * headingV + cv;
-  return { progress: sogU * headingU + sogV * headingV, sailUsed, inNoGo };
+  return { progress: sogU * headingU + sogV * headingV, sailUsed, inNoGo, waterSpeed };
 }
 
 /**
@@ -120,7 +128,8 @@ export function simulateLegTime(
     opts
   );
   if (!Number.isFinite(sc.seconds[0]) || sc.seconds[0] <= 0) {
-    return { seconds: Infinity, dominantMode: 'stuck', sailingSeconds: 0, motoringSeconds: 0 };
+    const reason: LegSimResult['reason'] = sc.limited[0] ? 'limited' : sc.noGo[0] ? 'no_go' : sc.foul[0] ? 'current' : 'no_speed';
+    return { seconds: Infinity, dominantMode: 'stuck', sailingSeconds: 0, motoringSeconds: 0, reason };
   }
   return {
     seconds: sc.seconds[0],
@@ -191,6 +200,10 @@ export interface CandidateScores {
   limited: Uint8Array;
   /** 1 when the candidate was stopped because its heading lies in the polar's no-go angle (dead upwind). */
   noGo: Uint8Array;
+  /** 1 when the candidate was stopped by the current cancelling its boat speed (a foul set stronger than the boat). */
+  foul: Uint8Array;
+  /** 1 when a current sample above MAX_CURRENT_MS was read as no data along the candidate. */
+  badCurrent: Uint8Array;
 }
 
 /**
@@ -226,7 +239,9 @@ export function scoreCandidatesFromParent(
   const dominant = new Int8Array(n);
   const limited = new Uint8Array(n);
   const noGo = new Uint8Array(n);
-  if (n === 0) return { seconds, sailing, motoring, dominant, limited, noGo };
+  const foul = new Uint8Array(n);
+  const badCurrent = new Uint8Array(n);
+  if (n === 0) return { seconds, sailing, motoring, dominant, limited, noGo, foul, badCurrent };
 
   const motor = vessel.motorSpeedMs;
   let maxDist = 0;
@@ -281,13 +296,30 @@ export function scoreCandidatesFromParent(
       }
       if (!Number.isFinite(ws)) ws = 0;
       if (!Number.isFinite(wd)) wd = 0;
-      const cu = Number.isFinite(c.u[q]) ? c.u[q] : 0;
-      const cv = Number.isFinite(c.v[q]) ? c.v[q] : 0;
+      let cu = Number.isFinite(c.u[q]) ? c.u[q] : 0;
+      let cv = Number.isFinite(c.v[q]) ? c.v[q] : 0;
+      if (Math.hypot(cu, cv) > MAX_CURRENT_MS) {
+        badCurrent[i] = 1;
+        cu = 0;
+        cv = 0;
+      }
 
-      const { progress, sailUsed, inNoGo } = stepAlongHeading(bearings[i], headingU[i], headingV[i], ws, wd, cu, cv, polar, motor, opts);
+      const { progress, sailUsed, inNoGo, waterSpeed } = stepAlongHeading(
+        bearings[i],
+        headingU[i],
+        headingV[i],
+        ws,
+        wd,
+        cu,
+        cv,
+        polar,
+        motor,
+        opts
+      );
       if (progress <= 0) {
         stuck[i] = 1;
         if (inNoGo) noGo[i] = 1;
+        else if (waterSpeed > 0) foul[i] = 1;
         continue;
       }
       const stepS = stepPerCand[i] / progress;
@@ -308,5 +340,5 @@ export function scoreCandidatesFromParent(
       dominant[i] = sailing[i] >= motoring[i] ? 1 : 0;
     }
   }
-  return { seconds, sailing, motoring, dominant, limited, noGo };
+  return { seconds, sailing, motoring, dominant, limited, noGo, foul, badCurrent };
 }
