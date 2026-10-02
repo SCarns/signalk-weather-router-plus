@@ -1521,10 +1521,14 @@ function buildRoutePayload(overrides) {
   }
   if (Object.keys(vessel).length) body.vessel = vessel;
   // Waypoints: overrides win if provided (Live mode's remaining vias);
-  // otherwise use the user-picked intermediate pins.
+  // otherwise use the user-picked intermediate pins, each with the radius
+  // a loaded route gave it (the rings on the map). A moved slider clears
+  // those, so the slider's value then applies to every waypoint.
   const wps = overrides.waypoints !== undefined
       ? overrides.waypoints
-      : waypointCoords.map(c => ({ lat: c[1], lon: c[0] }));
+      : waypointCoords.map((c, i) => (Number.isFinite(waypointRadii[i])
+          ? { lat: c[1], lon: c[0], radius_m: waypointRadii[i] }
+          : { lat: c[1], lon: c[0] }));
   if (wps && wps.length > 0) {
     // Each waypoint ends one leg and starts the next. radius_m only when a
     // caller supplies one per waypoint; otherwise arrival_radius_m applies.
