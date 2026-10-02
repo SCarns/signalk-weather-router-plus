@@ -24,6 +24,16 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Waypoint pins stay where you put them, and approximate waypoints show
+  their circle.** After a route ran in Approximate mode the web app moved
+  each via pin to the point where the route entered its circle, which is
+  on the route, so the result looked as if it passed through the
+  waypoint exactly and the circle was nowhere to be seen. The route now
+  carries the stops it was asked for (`stops`, with each waypoint's
+  `radius_m` in approximate mode, and `precision`); the pins go back
+  there, and a dashed orange circle of that radius is drawn around every
+  via waypoint in Approximate mode, following the pin as it is dragged
+  and the radius slider as it moves. Nothing is drawn in Precise mode.
 - **Damaged saved tiles no longer break the map.** An unclean shutdown
   leaves the tiles written in the seconds before it as empty files (ext4
   delayed allocation; brain, 2 Oct: 363 of them after a crash), and the

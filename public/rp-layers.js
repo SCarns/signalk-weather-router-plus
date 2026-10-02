@@ -43,6 +43,17 @@ const markerStyle = function(feature) {
   });
 };
 
+// Arrival circles around the via waypoints in Approximate mode: their own
+// layer, because every feature of the marker layer is draggable.
+export const ringSource = new ol.source.Vector({});
+export const ringLayer = new ol.layer.Vector({
+  source: ringSource,
+  zIndex: 15,
+  style: new ol.style.Style({
+    stroke: new ol.style.Stroke({ color: 'rgba(255,152,0,0.95)', width: 2, lineDash: [6, 4] }),
+    fill: new ol.style.Fill({ color: 'rgba(255,152,0,0.10)' }),
+  }),
+});
 export const markerLayer = new ol.layer.Vector({
   source: markerSource,
   style: markerStyle,
@@ -1324,7 +1335,7 @@ try {
 
 export const map = new ol.Map({
   target: 'map',
-  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, frontLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, markerLayer, condMarkerLayer],
+  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, frontLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, ringLayer, markerLayer, condMarkerLayer],
   view: new ol.View({
     // Last view this browser had (saved on every move), else Block
     // Island Sound at zoom 11. On a first visit the geolocation block

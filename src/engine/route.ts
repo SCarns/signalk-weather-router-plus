@@ -93,6 +93,10 @@ export interface Route {
   limitsBeyondForecast?: boolean;
   /** Stops that were on land and were moved to the nearest water (set by the caller). */
   snaps?: StopSnap[];
+  /** The stops the route was asked for (start, waypoints, destination; after any snap) with each waypoint's arrival radius in approximate mode (set by the caller). */
+  stops?: { lon: number; lat: number; radiusM?: number }[];
+  /** Waypoint precision the route was computed with (set by the caller). */
+  precision?: 'precise' | 'approximate';
   /** Forecast cycle used, ISO string, when any. */
   forecastCycle?: string;
   /** Names of the current sources that were stacked, when any. */

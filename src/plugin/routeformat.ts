@@ -169,6 +169,17 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
   }
   const snapped = snapProperties(route);
   Object.assign(props, snapped.props);
+  // What the route was asked for: a client keeps its waypoint pins there
+  // (the route's own via points are where it entered each circle) and
+  // draws the circles.
+  if (route.precision) props.precision = route.precision;
+  if (route.stops && route.stops.length) {
+    props.stops = route.stops.map(s => {
+      const o: Record<string, number> = { lon: round(s.lon, 6), lat: round(s.lat, 6) };
+      if (s.radiusM !== undefined) o.radius_m = round(s.radiusM, 0);
+      return o;
+    });
+  }
   const features: Record<string, unknown>[] = [
     {
       type: 'Feature',
