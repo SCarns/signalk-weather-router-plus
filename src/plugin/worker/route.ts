@@ -20,7 +20,7 @@ import { releaseMemory } from '../../util/gc';
 import { NoCurrent } from '../../engine/environment';
 import { RouteCancelled } from '../../engine/propagator';
 import { nearestExactWater, waterAround } from '../../engine/corridor';
-import { DEFAULT_PRECISION, legLabel, type LegPlan, routeMultiLeg, type Stop } from '../../engine/multileg';
+import { DEFAULT_ARRIVAL_RADIUS_M, DEFAULT_PRECISION, legLabel, type LegPlan, routeMultiLeg, type Stop } from '../../engine/multileg';
 import type { Route, StageFront, StopSnap } from '../../engine/route';
 import { routeToGeoJSON, routeToSignalKRoute, skeletonToGeoJSON } from '../routeformat';
 import { PolarDiagram } from '../../vessel/polar';
@@ -290,6 +290,18 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
     });
     if (cycleLabel) result.forecastCycle = cycleLabel;
     if (snaps.length) result.snaps = snaps;
+    // What the route was asked for, so a client can keep its waypoint pins
+    // where the user put them (the route's own via points are where it
+    // entered each circle) and draw the circles.
+    const precision = request.precision ?? DEFAULT_PRECISION;
+    const defaultRadius = request.arrival_radius_m ?? DEFAULT_ARRIVAL_RADIUS_M;
+    result.precision = precision;
+    result.stops = stops.map((s, i) => {
+      const inner = i > 0 && i < stops.length - 1;
+      return inner && precision === 'approximate'
+        ? { lon: s.lon, lat: s.lat, radiusM: s.radiusM ?? defaultRadius }
+        : { lon: s.lon, lat: s.lat };
+    });
     if (!request.no_currents && !st.stack.isEmpty) result.currentSources = st.stack.sources.map(s => s.name);
     const name =
       request.name && request.name.trim()

@@ -62,3 +62,33 @@ test('a route without snaps carries none of the snap fields', () => {
   assert.equal(line.stop_count, undefined);
   assert.equal(line.start_snap_distance_m, undefined);
 });
+
+test('the stops the route was asked for and the precision ride with the route (pins and circles for a client)', () => {
+  const route: Route = {
+    waypoints: [wp(0, 0, 0), wp(0.1, 0, 1), wp(0.2, 0, 2, 'via'), wp(0.3, 0, 3)],
+    totalTimeS: 3 * 3600,
+    totalDistanceM: 33_000,
+    motoringTimeS: 0,
+    sailingTimeS: 3 * 3600,
+    validated: true,
+    precision: 'approximate',
+    stops: [
+      { lon: 0, lat: 0 },
+      { lon: 0.2004, lat: 0.0005, radiusM: 600 },
+      { lon: 0.3, lat: 0 },
+    ],
+  };
+  const g = routeToGeoJSON(route) as { features: { geometry: { type: string }; properties: Record<string, unknown> }[] };
+  const line = g.features.find(f => f.geometry.type === 'LineString')!.properties;
+  assert.equal(line.precision, 'approximate');
+  assert.deepEqual(line.stops, [
+    { lon: 0, lat: 0 },
+    { lon: 0.2004, lat: 0.0005, radius_m: 600 },
+    { lon: 0.3, lat: 0 },
+  ]);
+  const plain: Route = { ...route, precision: undefined, stops: undefined };
+  const g2 = routeToGeoJSON(plain) as { features: { geometry: { type: string }; properties: Record<string, unknown> }[] };
+  const line2 = g2.features.find(f => f.geometry.type === 'LineString')!.properties;
+  assert.equal(line2.stops, undefined);
+  assert.equal(line2.precision, undefined);
+});

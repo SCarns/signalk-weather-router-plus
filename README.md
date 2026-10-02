@@ -21,7 +21,7 @@ much for a plugin; it lives in the separate
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
 
-**Status: beta** (0.1.0-beta.5). Please report
+**Status: beta** (0.1.0-beta.6). Please report
 problems at https://github.com/motamman/signalk-weather-router-plus/issues.
 
 What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
@@ -1349,6 +1349,8 @@ LineString `properties`:
 | `legs_beyond_forecast` | number | count | legs ending after the last forecast step; present with the above |
 | `forecast_horizon_note` | string | | explains the above: conditions beyond the last step are held at it |
 | `limits_beyond_forecast` | boolean | | `true` when a wind or wave limit was in force on legs beyond the last forecast step (checked against held conditions) |
+| `stops` | `[{lon, lat, radius_m?}]` | degrees, m | the stops the route was asked for (start, waypoints, destination; after any snap); `radius_m` on each waypoint in approximate mode |
+| `precision` | `"precise"` or `"approximate"` | | the waypoint precision the route was computed with |
 | `snaps` | `[{index, original, anchor, distance_m}]` | degrees, m | stops that were on land and were moved to the nearest water; `index` 0 = start, `stop_count - 1` = destination, others = the request's waypoints in order; present when any |
 | `stop_count` | number | count | start + waypoints + destination; present with `snaps` |
 | `start_original`, `start_anchor`, `start_snap_distance_m` | `[lon, lat]`, `[lon, lat]`, number | degrees, m | present when the start was moved: the drawn point, where the route starts, and the distance between them |

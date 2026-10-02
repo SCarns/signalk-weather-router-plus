@@ -5,7 +5,7 @@
 // Live mode with the Signal K vessel.
 
 import { _apiErrorText, _fmt, _polarAngles, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc } from './rp-core.js';
-import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, proposedRouteSource, reloadOverlays, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, vesselMarkerSource } from './rp-layers.js';
+import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, vesselMarkerSource } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
 let startCoord = null;  // [lon, lat]
@@ -15,6 +15,8 @@ let waypointCoords = [];  // [[lon, lat], ...] — intermediate stops in order
 // Waypoint features live in a parallel list so we can rebuild the set
 // on every mutation and wire drag-to-move through the Modify interaction.
 let waypointFeatures = [];  // one ol.Feature per waypoint, aligned with waypointCoords
+let waypointRadii = [];     // per waypoint: arrival radius (m) from a loaded route, or null = the slider's value
+let _settingPrecisionFromRoute = false;  // true while a loaded route sets the precision selector
 let routeActive = false;      // a route is displayed for the current markers
 let _routeStale = false;      // markers changed since that route was computed
 let _routeComputing = false;  // a route job is running
@@ -111,12 +113,31 @@ function _placeRoutePins(pts, snapProps) {
   endCoord = [endLonLat[0], endLonLat[1]];
   updateCoordDisplay('start', startCoord);
   updateCoordDisplay('end', endCoord);
-  // Via points the route was asked to pass through become draggable
-  // orange pins again, so a re-run keeps them.
-  const vias = pts.filter(f => f.get('role') === 'via').map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()));
-  if (vias.length) {
-    waypointCoords = vias.map(c => [c[0], c[1]]);
+  // The waypoints the route was asked for become draggable orange pins
+  // again, so a re-run keeps them. They come from the route's `stops`
+  // (what was requested, with each circle's radius); the route's own via
+  // points are where it entered each circle, not where the pin was, so
+  // they are used only for a route that carries no stops.
+  const stops = Array.isArray(snapProps.stops) && snapProps.stops.length >= 2 ? snapProps.stops.slice(1, -1) : null;
+  if (stops) {
+    waypointCoords = stops.map(s => [s.lon, s.lat]);
+    waypointRadii = stops.map(s => (Number.isFinite(s.radius_m) ? s.radius_m : null));
+    const precEl = document.getElementById('precision');
+    if (precEl && (snapProps.precision === 'precise' || snapProps.precision === 'approximate') && precEl.value !== snapProps.precision) {
+      // The loaded route's own precision: not a change by the user, so the
+      // route is not stale (the change listener below checks the flag).
+      precEl.value = snapProps.precision;
+      _settingPrecisionFromRoute = true;
+      try { precEl.dispatchEvent(new Event('change', { bubbles: true })); } finally { _settingPrecisionFromRoute = false; }
+    }
     _rebuildWaypointFeatures();
+  } else {
+    const vias = pts.filter(f => f.get('role') === 'via').map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()));
+    if (vias.length) {
+      waypointCoords = vias.map(c => [c[0], c[1]]);
+      waypointRadii = [];
+      _rebuildWaypointFeatures();
+    }
   }
   refreshFindRouteEnabled();
 }
@@ -568,6 +589,7 @@ modify.on('modifyend', function(e) {
       const idx = f.get('waypoint_index');
       waypointCoords[idx] = coords;
       _updateWaypointListUI();
+      _rebuildRings();
     } else {
       endCoord = coords;
       updateCoordDisplay('end', coords);
@@ -685,6 +707,38 @@ function _rebuildWaypointFeatures() {
     return f;
   });
   _updateWaypointListUI();
+  _rebuildRings();
+}
+
+// The arrival circle around each via waypoint in Approximate mode: the
+// radius a loaded route used for it, else the slider's. Nothing in Precise.
+function _rebuildRings() {
+  ringSource.clear();
+  const precEl = document.getElementById('precision');
+  if (!precEl || precEl.value !== 'approximate') return;
+  const slider = parseFloat(document.getElementById('arrivalRadiusM').value);
+  waypointCoords.forEach((c, i) => {
+    const r = Number.isFinite(waypointRadii[i]) ? waypointRadii[i] : slider;
+    if (!Number.isFinite(r) || r <= 0) return;
+    const ring = ol.geom.Polygon.circular([c[0], c[1]], r, 64).transform('EPSG:4326', 'EPSG:3857');
+    ringSource.addFeature(new ol.Feature({ name: 'ring', waypoint_index: i, geometry: ring }));
+  });
+}
+{
+  const precEl = document.getElementById('precision');
+  const slider = document.getElementById('arrivalRadiusM');
+  // Both change what a route with waypoints would be: a user's change makes
+  // the shown route stale (a loaded route setting the selector does not).
+  if (precEl) precEl.addEventListener('change', () => {
+    _rebuildRings();
+    if (!_settingPrecisionFromRoute && waypointCoords.length) markRouteStale();
+  });
+  // A moved slider is the user's new radius for every waypoint.
+  if (slider) slider.addEventListener('input', () => {
+    waypointRadii = [];
+    _rebuildRings();
+    if (precEl && precEl.value === 'approximate' && waypointCoords.length) markRouteStale();
+  });
 }
 
 function _updateWaypointListUI() {
@@ -704,6 +758,7 @@ function _updateWaypointListUI() {
     btn.addEventListener('click', function() {
       const idx = parseInt(this.dataset.idx, 10);
       waypointCoords.splice(idx, 1);
+      waypointRadii.splice(idx, 1);
       _rebuildWaypointFeatures();
       markRouteStale();
     });
@@ -834,6 +889,7 @@ document.getElementById('resetBtn').addEventListener('click', function() {
   startCoord = null;
   endCoord = null;
   waypointCoords = [];
+  waypointRadii = [];   // a loaded route's radii must not reach the next waypoints placed
   routeActive = false;
   _routeStale = false;
   startFeature.setGeometry(null);
@@ -1479,10 +1535,14 @@ function buildRoutePayload(overrides) {
   }
   if (Object.keys(vessel).length) body.vessel = vessel;
   // Waypoints: overrides win if provided (Live mode's remaining vias);
-  // otherwise use the user-picked intermediate pins.
+  // otherwise use the user-picked intermediate pins, each with the radius
+  // a loaded route gave it (the rings on the map). A moved slider clears
+  // those, so the slider's value then applies to every waypoint.
   const wps = overrides.waypoints !== undefined
       ? overrides.waypoints
-      : waypointCoords.map(c => ({ lat: c[1], lon: c[0] }));
+      : waypointCoords.map((c, i) => (Number.isFinite(waypointRadii[i])
+          ? { lat: c[1], lon: c[0], radius_m: waypointRadii[i] }
+          : { lat: c[1], lon: c[0] }));
   if (wps && wps.length > 0) {
     // Each waypoint ends one leg and starts the next. radius_m only when a
     // caller supplies one per waypoint; otherwise arrival_radius_m applies.
