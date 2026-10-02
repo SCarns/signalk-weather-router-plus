@@ -107,10 +107,16 @@ export function tagPublicFiles(publicDir: string, tag: string): number {
  * first start after the files changed (by their content), set their dates
  * to now, and the next conditional request gets the new file.
  *
- * The web app's own scripts and stylesheet are versioned (`?v=<tag>`) when
- * index.html is served (plugin/api.ts servePublic): the tag changes with
- * the files, so a plain reload never runs the old scripts. Nothing on disk
- * is rewritten.
+ * Re-dating is not enough for the web app's own scripts and stylesheet:
+ * a browser keeps a subresource without asking for a while after a
+ * Last-Modified date, so a plain reload could still run old modules. The
+ * plugin's own `/ui` route tags the page as it serves it (plugin/api.ts
+ * servePublic), but the webapp link Signal K offers is its static mount
+ * of `public/`, served untouched. So on the same first start the files
+ * on disk are tagged too (tagPublicFiles): index.html's script and style
+ * tags and the modules' import lines get `?v=<hash>`, written beside the
+ * file and renamed over it. The hash leaves those tags out, so tagging
+ * does not change it.
  */
 export function refreshPublicFileDates(publicDir: string, dataDir: string, log: (m: string) => void, error: (m: string) => void): void {
   const pub = publicDir;

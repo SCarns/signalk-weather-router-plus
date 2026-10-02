@@ -889,6 +889,7 @@ document.getElementById('resetBtn').addEventListener('click', function() {
   startCoord = null;
   endCoord = null;
   waypointCoords = [];
+  waypointRadii = [];   // a loaded route's radii must not reach the next waypoints placed
   routeActive = false;
   _routeStale = false;
   startFeature.setGeometry(null);
