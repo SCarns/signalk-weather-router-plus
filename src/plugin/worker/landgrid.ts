@@ -69,7 +69,7 @@ export function startGridRebuild(st: WorkerState, cfg: ResolvedConfig, outFile: 
   st.log('info', `water grid: rebuilding from ${cfg.landShapefiles.join(', ')} into ${outFile} (${mem.message}); this takes a few minutes`);
   const data: GridBuilderData = { shapefiles: cfg.landShapefiles, outFile };
   const isTs = __filename.endsWith('.ts');
-  const w = new Worker(path.join(__dirname, isTs ? 'gridbuilder.ts' : 'gridbuilder.js'), {
+  const w = new Worker(gridBuilderEntry(), {
     workerData: data,
     execArgv: isTs ? ['--import', 'tsx'] : [],
   });
@@ -95,4 +95,10 @@ export function startGridRebuild(st: WorkerState, cfg: ResolvedConfig, outFile: 
   w.on('exit', () => {
     st.gridBuilder = null;
   });
+}
+
+/** The grid builder thread's module: it lives in plugin/, one folder above this worker folder. */
+export function gridBuilderEntry(): string {
+  const isTs = __filename.endsWith('.ts');
+  return path.join(__dirname, '..', isTs ? 'gridbuilder.ts' : 'gridbuilder.js');
 }

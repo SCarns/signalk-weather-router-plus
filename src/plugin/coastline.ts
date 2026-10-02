@@ -73,14 +73,17 @@ export class Coastline {
       );
       // Wait for the retry time, a Download press (wakes it) or a stop.
       const ok = await new Promise<boolean>(resolve => {
+        const onAbort = (): void => done(false);
         const timer = setTimeout(() => done(true), COASTLINE_RETRY_MS);
         const done = (v: boolean): void => {
           clearTimeout(timer);
+          // One signal serves every retry: the listener must not pile up.
+          ctrl.signal.removeEventListener('abort', onAbort);
           this.wake = null;
           resolve(v);
         };
         this.wake = () => done(true);
-        ctrl.signal.addEventListener('abort', () => done(false));
+        ctrl.signal.addEventListener('abort', onAbort, { once: true });
       });
       if (!ok || !current()) return false;
     }

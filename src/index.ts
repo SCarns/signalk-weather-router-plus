@@ -183,8 +183,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
       if (stopped) return;
       app.error(`${role} worker exited with code ${code}; restarting in 5 s`);
       if (role === 'route') jobs?.failRunning(`worker exited with code ${code}`);
+      // Only for the start this exit belongs to: after a stop and a new start
+      // (whose services may still be waiting for the coastline download) the
+      // new start brings up its own workers.
+      const gen = startGen;
       setTimeout(() => {
-        if (!stopped && config && !pool.has(role)) {
+        if (!stopped && gen === startGen && config && !pool.has(role)) {
           pool.start(role);
           pool.post(role, { type: 'init', role, config, cacheDir: app.getDataDirPath() });
           if (role === 'data') requestRefresh(false);
@@ -449,6 +453,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (role === 'data') {
           tidesRun = msg.run;
           prebuilder?.broadcast({ type: 'tides-run', run: msg.run });
+          // The tide group depends on a tide run; rewritten only when the group key changes.
+          void charts.publishGroups();
         }
         return;
       case 'data-status':
@@ -456,6 +462,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
           dataStatus = msg.status;
           updateTileGenerations();
           updateStatus();
+          // The current and sea-state groups depend on the data status.
+          void charts.publishGroups();
         }
         return;
       case 'progress':

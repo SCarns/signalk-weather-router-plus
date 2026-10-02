@@ -115,10 +115,18 @@ export class JobManager extends EventEmitter {
     for (const j of finished.slice(this.keepJobs)) this.delete(j.id);
   }
 
-  private emitEvent(job: Job, event: JobEvent['event'], data: Record<string, unknown>): void {
+  /**
+   * Emit an event to the live listeners and, unless `store` is false, keep
+   * it in the job's last-500 buffer that a reconnecting SSE client replays
+   * from its Last-Event-ID. Frontier events are not kept: one per stage,
+   * large, and they would push the status and progress lines out.
+   */
+  private emitEvent(job: Job, event: JobEvent['event'], data: Record<string, unknown>, store = true): void {
     const ev: JobEvent = { id: job.nextEventId++, event, data };
-    job.events.push(ev);
-    if (job.events.length > 500) job.events.splice(0, job.events.length - 500);
+    if (store) {
+      job.events.push(ev);
+      if (job.events.length > 500) job.events.splice(0, job.events.length - 500);
+    }
     this.emit('event', job.id, ev);
   }
 
@@ -214,7 +222,7 @@ export class JobManager extends EventEmitter {
   onFrontier(id: string, front: Record<string, unknown>): void {
     const job = this.jobs.get(id);
     if (!job) return;
-    this.emitEvent(job, 'frontier', front);
+    this.emitEvent(job, 'frontier', front, false);
   }
 
   onDone(

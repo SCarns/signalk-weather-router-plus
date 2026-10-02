@@ -29,7 +29,8 @@
   are gone from the Settings tab and the Plan tab: the router never used
   them (it has no depth or bridge data). What is left is what it does
   use: name, speed under power and polar performance. A working tack
-  penalty and wave-height limit are on the to-do list.
+  penalty is on the to-do list; the wave-height limit is now a routing
+  setting (above).
 - **First setup fixed.** On a fresh install the configuration panel's
   Save button was greyed out until you changed something; it now reads
   "Save and enable the plugin" and works straight away. If you updated

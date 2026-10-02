@@ -108,6 +108,13 @@ export class WorkerPool {
   }
 
   start(role: MainRole): void {
+    // A worker already in the slot (a restart racing with a start) is shut
+    // down first, never silently abandoned.
+    const old = this.workers[role].worker;
+    if (old) {
+      old.postMessage({ type: 'shutdown' });
+      setTimeout(() => void old.terminate(), 2000);
+    }
     const worker = new Worker(this.deps.workerPath, {
       workerData: { cancelFlag: this.cancelFlag.buffer, role },
       execArgv: this.deps.execArgv,

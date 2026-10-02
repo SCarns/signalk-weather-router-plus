@@ -6,6 +6,35 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The water-grid builder thread could not start** after the cleanup
+  moved its caller into `plugin/worker/`: the thread was started from a
+  path one folder too deep, so every rebuild failed and routes stayed on
+  the per-route skeleton. (PR #11 review.)
+- **The shore-snap check read the coastline of the whole route**: one
+  land mask over every stop decoded every polygon in that box, both
+  coasts of an ocean for a crossing, on every request. It now builds one
+  small mask (0.02°) per stop.
+- **Chart groups missed the current, sea-state and tide layers on a fresh
+  start**: the groups were written on the forecast message, which comes
+  before the data status and the tide run. They are now also written when
+  those arrive (a write happens only when a group changes).
+- **The validation warning called every warning a land crossing**; wind
+  and wave limit warnings are now counted on their own.
+- **Tiles wider than 180° (zoom 0 and 1) lost their eastern half**: the
+  colour and glyph tile samplers wrapped the longitude offset into ±180°
+  instead of 0..360°, as the web app does.
+- **Frontier events no longer sit in the job's replay buffer**, where a
+  long search pushed the status and progress lines out and a reconnecting
+  client replayed every front; they reach live listeners only.
+- A coastline download that kept failing added one abort listener per
+  retry; a worker crash followed by a stop and start within five seconds
+  could leave a second worker running. Both closed.
+- `tools/golden_tiles.sh` stops on an HTTP error and exits nonzero when
+  tiles differ. README and WHATSNEW wording about panel waypoints and the
+  wave-height limit corrected.
+
 ### Changed
 
 - **One place for units and geodetic constants** (`src/geo/units.ts`):

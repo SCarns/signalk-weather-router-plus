@@ -69,13 +69,13 @@ export class Canvas {
     const minY = Math.max(0, Math.floor(Math.min(...ys)));
     const maxY = Math.min(this.height - 1, Math.ceil(Math.max(...ys)));
     const inside = (px: number, py: number): boolean => {
-      let c = false;
+      let odd = false;
       for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
         const [xi, yi] = pts[i];
         const [xj, yj] = pts[j];
-        if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) c = !c;
+        if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) odd = !odd;
       }
-      return c;
+      return odd;
     };
     for (let y = minY; y <= maxY; y++) {
       for (let x = minX; x <= maxX; x++) {

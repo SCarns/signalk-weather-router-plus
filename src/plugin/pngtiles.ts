@@ -16,7 +16,7 @@
 
 import { encodePng } from './png';
 import { latOfMercY, mercY } from '../geo/mercator';
-import { wrapLon } from '../geo/angles';
+import { lonOffset } from '../geo/angles';
 import type { FieldGridResponse } from './overlays';
 import {
   CURRENT_STOPS,
@@ -181,8 +181,12 @@ export function sampleGrid(
   const nx = grid.lons.length;
   const ny = grid.lats.length;
   if (!nx || !ny) return null;
-  let d = lon - grid.lons[0];
-  d = wrapLon(d);
+  // Offset east of the grid's first column in [0, 360): a grid may span more
+  // than 180° (a zoom 0 or 1 tile), so a ±180 wrap would lose its eastern
+  // half. A point just west of the first column reads as a small negative
+  // offset (the same rule as the web app's sampler).
+  let d = lonOffset(lon, grid.lons[0]);
+  if (d > 360 - grid.res / 2) d -= 360;
   const fx = d / grid.res;
   const fy = (lat - grid.lats[0]) / grid.res;
   if (fx < -0.5 || fx > nx - 0.5 || fy < -0.5 || fy > ny - 0.5) return null;

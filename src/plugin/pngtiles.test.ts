@@ -112,3 +112,25 @@ test('png cache: bounded by bytes, least recently used evicted first', () => {
   assert.ok(c.get('a') && c.get('c'));
   assert.equal(c.size, 2);
 });
+
+test('sampleGrid reads a grid wider than 180° all the way to its eastern edge (zoom 0 and 1 tiles)', () => {
+  // A global lattice from -180 east in 10° steps: 36 columns, one row.
+  const res = 10;
+  const lons = Array.from({ length: 36 }, (_, i) => -180 + i * res);
+  const values = [lons.map((_, i) => i)];
+  const g = { lons, lats: [0], res };
+  assert.equal(sampleGrid(g, values, -180, 0), 0);
+  assert.equal(sampleGrid(g, values, 0, 0), 18);
+  assert.equal(sampleGrid(g, values, 100, 0), 28, 'an offset over 180° east is still inside the grid');
+  assert.equal(sampleGrid(g, values, 170, 0), 35, 'the last column');
+  // On a global grid, 10° west of the first column is the last column.
+  assert.equal(sampleGrid(g, values, -180 - res, 0), 35);
+  // On a partial grid, a point just west of the first column reads as a small
+  // negative offset and still samples that column (as the web app does); one
+  // further west is outside.
+  const part = { lons: Array.from({ length: 20 }, (_, i) => i * res), lats: [0], res };
+  const pv = [part.lons.map((_, i) => 100 + i)];
+  assert.equal(sampleGrid(part, pv, -3, 0), 100);
+  assert.equal(sampleGrid(part, pv, -8, 0), null);
+  assert.equal(sampleGrid(part, pv, 190, 0), 119);
+});

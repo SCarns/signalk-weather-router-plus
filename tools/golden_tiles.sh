@@ -51,6 +51,7 @@ print(t.strftime("%Y-%m-%dT%H:00:00Z"))')
       local hdr
       hdr=$(curl -sk -o "$f" -D - "$BASE/api/tile/$L/$z/$x/$y?time=$time" | tr -d '\r' | awk 'tolower($1)=="x-tile-cache:"{print $2} /^HTTP/{print $2}' | paste -sd' ')
       echo "json $L $z/$x/$y $hdr" >> "$dir/cache-headers"
+      case "$hdr" in 200*) ;; *) echo "FETCH FAILED: json $L $z/$x/$y (HTTP $hdr)"; return 1;; esac
       n=$((n+1)); case "$hdr" in *hit*) hits=$((hits+1));; esac
       # gzip bodies carry an mtime header; store the decompressed bytes for comparison.
       gzip -dc "$f" > "${f%.gz}.raw" 2>/dev/null || true
@@ -63,6 +64,7 @@ print(t.strftime("%Y-%m-%dT%H:00:00Z"))')
       local hdr
       hdr=$(curl -sk -o "$f" -D - "$BASE/api/tile/$L/$z/$x/$y.png?time=$time" | tr -d '\r' | awk 'tolower($1)=="x-tile-cache:"{print $2} /^HTTP/{print $2}' | paste -sd' ')
       echo "png $L $z/$x/$y $hdr" >> "$dir/cache-headers"
+      case "$hdr" in 200*) ;; *) echo "FETCH FAILED: png $L $z/$x/$y (HTTP $hdr)"; return 1;; esac
       n=$((n+1)); case "$hdr" in *hit*) hits=$((hits+1));; esac
     done
   done
@@ -84,6 +86,8 @@ compare() {
     if cmp -s "$f" "$b/$base"; then same=$((same+1)); else diff=$((diff+1)); echo "DIFFERS: $base ($(stat -c%s "$f") vs $(stat -c%s "$b/$base") bytes)"; fi
   done
   echo "$same identical, $diff differ, $missing missing"
+  # Nonzero when anything differs or is missing, so the script can gate a check.
+  [ "$diff" -eq 0 ] && [ "$missing" -eq 0 ]
 }
 
 case ${1:-} in

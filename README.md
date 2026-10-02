@@ -460,8 +460,9 @@ has more than one. A group holds the layers whose data is there and is
 rewritten when the forecast is reloaded; it needs the server's `groups`
 collection, which Freeboard creates.
 
-Not yet available in the panel: waypoints, a departure time other than
-now, polar performance and the other web-app settings (they apply as set
+Not yet available in the panel: waypoints in the "from the boat" flow
+(draw a route on the chart for those), a departure time other than now,
+polar performance and the other web-app settings (they apply as set
 in the web app's Settings tab). A "weather route to here" entry in
 Freeboard's map menu needs a change to Freeboard; see
 [docs/plans/freeboard-sk-integration.md](docs/plans/freeboard-sk-integration.md).

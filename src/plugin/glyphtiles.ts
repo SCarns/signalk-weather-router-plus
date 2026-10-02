@@ -11,7 +11,7 @@
 
 import { encodePng } from './png';
 import { clampMercLat, mercY } from '../geo/mercator';
-import { wrapLon } from '../geo/angles';
+import { lonOffset } from '../geo/angles';
 import { KTS_TO_MS } from '../geo/units';
 import { Canvas, hexRgba, type Rgba } from './raster';
 import { PngCache, TILE_PX } from './pngtiles';
@@ -59,9 +59,14 @@ function projector(z: number, x: number, y: number): (lon: number, lat: number) 
   const yN = mercY(box.north);
   const yS = mercY(box.south);
   const width = box.east - box.west;
+  // Degrees of the margin west of the tile from which a glyph may still reach in.
+  const marginDeg = (GLYPH_MARGIN / TILE_PX) * width;
   return (lon, lat) => {
-    let d = lon - box.west;
-    d = wrapLon(d);
+    // Offset east of the tile's west edge in [0, 360): a tile may be wider
+    // than 180° (zoom 0 or 1); only a point within the margin west of the
+    // tile is taken as a negative offset.
+    let d = lonOffset(lon, box.west);
+    if (d > 360 - marginDeg) d -= 360;
     const my = mercY(clampMercLat(lat));
     return [(d / width) * TILE_PX, ((yN - my) / (yN - yS)) * TILE_PX];
   };

@@ -149,11 +149,15 @@ export function assembleRoute(ctx: SearchContext, guide: SkeletonGuide, stages: 
   route.validated = true;
   if (warns.length) {
     route.warnings = warns;
-    progress(
-      Math.max(kEff, stages.length - 1),
-      Math.max(kEff, stages.length - 1),
-      `WARNING: ${warns.length} leg(s) cross land in the exact polygon check`
-    );
+    const count = (v: RouteWarning['violation']): number => warns.filter(w => w.violation === v).length;
+    const parts: string[] = [];
+    const land = count('leg_crosses_land');
+    const wind = count('wind_over_limit');
+    const waves = count('waves_over_limit');
+    if (land) parts.push(`${land} leg(s) cross land in the exact polygon check`);
+    if (wind) parts.push(`${wind} leg(s) over the wind limit at a waypoint`);
+    if (waves) parts.push(`${waves} leg(s) over the wave limit at a waypoint`);
+    progress(Math.max(kEff, stages.length - 1), Math.max(kEff, stages.length - 1), `WARNING: ${parts.join('; ')}`);
   }
   progress(
     Math.max(kEff, stages.length - 1),

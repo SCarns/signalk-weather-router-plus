@@ -89,15 +89,13 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
       const SNAP_CLEAR_M = 150;
       const label = (i: number): string =>
         i === 0 ? 'the start point' : i === stops.length - 1 ? 'the destination' : `your point ${i + 1} of ${stops.length} (waypoint ${i})`;
-      const bbox = bboxFromLonLat(
-        stops.map(s => s.lon),
-        stops.map(s => s.lat),
-        0.05
-      );
-      // Polygons only matter here; a coarse raster keeps the build cheap.
-      const land = LandMask.fromShapefiles(cfg.landShapefiles, bbox, { resolutionDeg: 0.05 });
       for (let i = 0; i < stops.length; i++) {
         const s = stops[i];
+        // Only the polygons near this stop (0.02° ≈ 2 km covers SNAP_MAX_M +
+        // SNAP_CLEAR_M): one box over every stop would decode the coastline
+        // of the whole route, both coasts of an ocean for a crossing. The
+        // raster is coarse because only the polygons matter here.
+        const land = LandMask.fromShapefiles(cfg.landShapefiles, bboxFromLonLat([s.lon], [s.lat], 0.02), { resolutionDeg: 0.05 });
         if (!land.hasPolygons || waterAround(land, s.lon, s.lat, SNAP_CLEAR_M)) continue;
         const why = land.isLandExact(s.lon, s.lat) ? 'is on land' : `is within ${SNAP_CLEAR_M} m of the shore`;
         const near = nearestExactWater(land, s.lon, s.lat, SNAP_MAX_M, SNAP_CLEAR_M);
