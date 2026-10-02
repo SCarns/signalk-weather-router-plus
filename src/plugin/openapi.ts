@@ -3,6 +3,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SETTINGS_GROUPS, SETTINGS_SPEC, type SettingSpec } from './settings';
+import { routeRequestSchema } from './request_schema';
 
 /** JSON schema of one setting's value (SI). */
 function settingValueSchema(s: SettingSpec): Record<string, unknown> {
@@ -48,76 +49,7 @@ function packageVersion(): string {
 }
 
 export function openApiDocument(basePath: string): Record<string, unknown> {
-  const point = {
-    type: 'object',
-    required: ['lat', 'lon'],
-    properties: { lat: { type: 'number' }, lon: { type: 'number' } },
-  };
-  const routeRequest = {
-    type: 'object',
-    required: ['start', 'end'],
-    properties: {
-      start: point,
-      end: point,
-      waypoints: {
-        type: 'array',
-        maxItems: 20,
-        description:
-          'Ordered waypoints; each ends one leg and starts the next. radius_m overrides arrival_radius_m for that waypoint (approximate precision).',
-        items: { ...point, properties: { ...point.properties, radius_m: { type: 'number', minimum: 0, maximum: 5000 } } },
-      },
-      precision: {
-        type: 'string',
-        enum: ['precise', 'approximate'],
-        default: 'precise',
-        description:
-          'precise: each leg ends exactly on its waypoint; approximate: consecutive approximate waypoints are routed as one search that must pass through each waypoint circle in order (leg by leg if no branch passes them all). The destination is always exact.',
-      },
-      arrival_radius_m: {
-        type: 'number',
-        minimum: 0,
-        maximum: 5000,
-        default: 200,
-        description: 'Waypoint circle radius in metres for approximate precision (must be > 0 then); ignored when precise.',
-      },
-      departure: { type: 'string', format: 'date-time', description: 'Empty or absent = now' },
-      mode: { type: 'string', enum: ['sail_max', 'fastest', 'motor'], default: 'sail_max' },
-      sail_thresh_ms: { type: 'number', minimum: 0, description: 'Overrides the routing.sailThreshold setting (m/s)' },
-      simplify_m: {
-        type: 'number',
-        minimum: 0,
-        maximum: 5000,
-        description: 'RDP simplification tolerance in metres (0 = off); overrides routing.simplify',
-      },
-      smoother: { type: 'boolean', description: 'Run the shortcut smoother; overrides routing.smoother' },
-      smoother_tolerance: {
-        type: 'number',
-        minimum: 0,
-        maximum: 0.5,
-        description: 'Shortcut time tolerance as a ratio; overrides routing.smootherTolerance',
-      },
-      name: { type: 'string', description: 'Name for the Signal K route resource' },
-      stages: { type: 'number', minimum: 4, maximum: 200, description: 'Overrides the routing.stages setting' },
-      no_forecast: { type: 'boolean', description: 'Route with calm wind' },
-      no_currents: { type: 'boolean', description: 'Route without currents' },
-      publish: { type: 'boolean', description: 'Override the publish.toResources setting for this route' },
-      vessel: {
-        type: 'object',
-        description: 'Per-route overrides of the vessel settings (SI); absent keys use the settings.',
-        properties: {
-          name: { type: 'string' },
-          motor_speed_ms: { type: 'number' },
-          polar_performance: {
-            type: 'number',
-            minimum: 0.3,
-            maximum: 1.2,
-            description: 'Share of the polar boat speeds achieved under sail (ratio, 1 = as written)',
-          },
-          polar: { type: 'string', maxLength: 200, description: 'Polar token from /api/polars; absent = the configured default' },
-        },
-      },
-    },
-  };
+  const routeRequest = routeRequestSchema();
   const job = {
     type: 'object',
     properties: {
@@ -383,7 +315,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       '/api/legends': {
         get: {
           summary:
-            'Colour ramps for the heatmap layers: {key: {title, quantity, category, si_unit, kind, stops: [[SI value, css colour]], bands?}}; `category` is the Signal K unit category for display; `tide`: tide height above mean sea level, −3..+3 m diverging',
+            'Colour ramps for the heatmap layers: {key: {title, quantity, category, si_unit, kind, stops: [[SI value, css colour]], bands?, fade_below?}}; `category` is the Signal K unit category for display; `fade_below`: values under it fade to transparent (precipitation); `tide`: tide height above mean sea level, −3..+3 m diverging',
           responses: { 200: { description: 'OK' } },
         },
       },
@@ -470,6 +402,40 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               description: 'gzip-encoded bytes, one per pixel (1 = land), row 0 at the north edge; X-Mask-Width/X-Mask-Height headers',
             },
             400: { description: 'Bad bbox, w or h' },
+          },
+        },
+      },
+      '/api/tile/{layer}/{z}/{x}/{y}.png': {
+        get: {
+          summary: 'One colour-layer tile as a 256 × 256 PNG image, for chartplotters (the picture the web app paints from the data tile)',
+          description:
+            'Layers wind, waves, current, sea_state, precip, temperature, sst, tide. The legend colour ramp (/api/legends), alpha 0.55, land transparent for the layers that mask it, water without model data hatched (current, tide); the tide layer uses its fixed ±3 m scale. ' +
+            'Rendered on the server from the saved data tile and kept in memory. The plugin also publishes these layers as Signal K chart resources (/signalk/v2/api/resources/charts, ids wrp-…) with a time block over the forecast hours.',
+          parameters: [
+            {
+              name: 'layer',
+              in: 'path',
+              required: true,
+              schema: {
+                type: 'string',
+                enum: ['wind', 'waves', 'current', 'sea_state', 'precip', 'temperature', 'sst', 'tide', 'barbs', 'arrows', 'isobars'],
+              },
+            },
+            { name: 'z', in: 'path', required: true, schema: { type: 'integer', minimum: 0, maximum: 18 } },
+            { name: 'x', in: 'path', required: true, schema: { type: 'integer', minimum: 0 }, description: '0 to 2^z − 1, from 180° W' },
+            { name: 'y', in: 'path', required: true, schema: { type: 'integer', minimum: 0 }, description: '0 to 2^z − 1, from the north' },
+            {
+              name: 'time',
+              in: 'query',
+              required: false,
+              schema: { type: 'string', format: 'date-time' },
+              description: 'Default now; rounded to the nearest hour',
+            },
+          ],
+          responses: {
+            200: { description: 'image/png; X-Tile-Cache: hit | miss' },
+            400: { description: 'Bad layer, z, x, y or time, or the layer has no data' },
+            503: { description: 'Plugin not started' },
           },
         },
       },

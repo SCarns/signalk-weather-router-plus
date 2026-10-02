@@ -15,7 +15,8 @@
  */
 
 import { bloscDecompress } from './blosc';
-import { parseRetryAfterMs } from './ecmwf';
+import { MINUTE_MS } from '../geo/units';
+import { fetchWithRetry } from './http';
 
 export interface ZarrArrayMeta {
   shape: number[];
@@ -159,10 +160,10 @@ export function parseCfTimeUnits(units: string, calendar?: string): { unitMs: nu
     h: 3_600_000,
     hr: 3_600_000,
     hrs: 3_600_000,
-    minutes: 60_000,
-    minute: 60_000,
-    min: 60_000,
-    mins: 60_000,
+    minutes: MINUTE_MS,
+    minute: MINUTE_MS,
+    min: MINUTE_MS,
+    mins: MINUTE_MS,
     seconds: 1000,
     second: 1000,
     s: 1000,
@@ -178,7 +179,7 @@ export function parseCfTimeUnits(units: string, calendar?: string): { unitMs: nu
   const tz = m[8];
   if (tz && tz !== 'Z' && tz.toUpperCase() !== 'UTC') {
     const t = /^([+-])(\d{2}):?(\d{2})$/.exec(tz)!;
-    epochMs -= (t[1] === '-' ? -1 : 1) * (+t[2] * 60 + +t[3]) * 60_000;
+    epochMs -= (t[1] === '-' ? -1 : 1) * (+t[2] * 60 + +t[3]) * MINUTE_MS;
   }
   return { unitMs, epochMs };
 }
@@ -199,45 +200,23 @@ export interface ZarrHttpOptions {
   tag?: string;
 }
 
-const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
-
-/** GET with timeout, retries, backoff and Retry-After (see the file comment). */
+/** GET with timeout, retries, backoff and Retry-After (data/http.ts). */
 export async function httpGet(url: string, opts: ZarrHttpOptions = {}): Promise<HttpResult> {
-  const timeoutMs = opts.timeoutMs ?? 60_000;
-  const retries = opts.retries ?? 6;
-  const fetchImpl = opts.fetchImpl ?? fetch;
-  const sleepImpl = opts.sleepImpl ?? sleep;
-  const log = opts.log ?? (() => undefined);
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    let retryAfterMs: number | null = null;
-    try {
-      const res = await fetchImpl(url, { signal: ctrl.signal });
-      const retriable = res.status === 408 || res.status === 429 || res.status >= 500;
-      if (!retriable) {
-        const body = new Uint8Array(await res.arrayBuffer());
-        return { status: res.status, body, headers: res.headers };
-      }
-      retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
-      lastErr = new ZarrError(`HTTP ${res.status} for ${url}`);
-      await res.arrayBuffer().catch(() => undefined);
-    } catch (err) {
-      lastErr = err;
-    } finally {
-      clearTimeout(timer);
+  const r = await fetchWithRetry(
+    url,
+    {},
+    {
+      timeoutMs: opts.timeoutMs ?? MINUTE_MS,
+      retries: opts.retries ?? 6,
+      fetchImpl: opts.fetchImpl,
+      sleepImpl: opts.sleepImpl,
+      log: opts.log,
+      tag: opts.tag ?? 'zarr',
+      makeError: msg => new ZarrError(msg),
+      readBody: true,
     }
-    if (attempt === retries) break;
-    let backoff = Math.min(60_000, 2000 * 2 ** (attempt - 1));
-    if (retryAfterMs !== null) backoff = Math.min(60_000, Math.max(backoff, retryAfterMs));
-    backoff += Math.random() * 500;
-    log(
-      `${opts.tag ?? 'zarr'}: retry ${attempt}/${retries - 1} for ${url} after ${(backoff / 1000).toFixed(1)} s: ${(lastErr as Error).message}`
-    );
-    await sleepImpl(backoff);
-  }
-  throw lastErr instanceof Error ? lastErr : new ZarrError(`request failed: ${url}`);
+  );
+  return { status: r.status, body: r.body!, headers: r.headers };
 }
 
 export interface ConsolidatedStore {

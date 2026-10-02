@@ -362,10 +362,110 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
 
   ![Polar diagram of the selected polar, and the sailing strategy modes](public/screenshots/06-polars.jpg)
 
+- **Stage fronts** (Layers, on by default): the router's search drawn as
+  it runs, one line per stage front (the candidates kept after pruning,
+  blue → amber by stage; every point has its own arrival time, so they are
+  not isochrones) and the best path so far, dashed. The finished route's
+  fronts stay, faintly, also for a past route opened from the log.
 - **Settings tab**: the web-app settings below, in the selected units.
 - The page references its scripts with `?v=<tag>`, a tag that changes
   whenever a file in `public/` changes, so browsers and proxies in front
   of Signal K always load the current scripts after an update.
+
+## In Freeboard-SK
+
+The plugin is also a **plotter extension** (Signal K Plotter Extensions
+API, version 1), so weather routing is available inside Freeboard-SK 3.0
+or later without any change to Freeboard: Freeboard finds the extension
+through the `plotterExtensions` resource collection the plugin provides,
+and the panel runs in a sandboxed iframe served from
+`/signalk-weather-router-plus/plotterext/`.
+
+![The Weather Router Plus panel in Freeboard-SK, with a draft route on the chart](public/screenshots/07-freeboard.jpg)
+
+- Tap the grid icon at the top right of the chart to show the extension
+  toolbar, then **Weather route**. The panel slides in on the right.
+- **Route on the chart** (the usual way): draw the route with Freeboard's
+  own **Draw Route** tool (pencil menu), tapping the start, any
+  waypoints and the destination on the chart, then Finish; or tick a
+  saved route in the Routes list. The panel lists the routes shown on the
+  chart (one is picked by itself). **Weather-route it** sends the first
+  point as the start, the last as the destination and the points between
+  as precise waypoints, and rewrites that route's geometry in place with
+  the result, which stays Freeboard's editable draft (or an unsaved edit
+  of a saved route). Drag a point and press the button again to re-route;
+  **Restore drawn route** puts the drawn points back.
+- **From the boat to a position** (the quick way): **From** is the
+  vessel's position, kept up to date through Freeboard's own Signal K
+  connection (editable; **Use the vessel position** snaps back); **To** is
+  typed, **Use the map centre**, or one of your saved waypoints. **Find
+  route** places the result on the chart as a new draft route.
+- Both use the chosen polar (the same list as the web app), mode (Sail
+  max, Fastest, Motor) and, under sail, the **min sail speed** (the boat
+  speed under sail below which the router motors; the plugin's routing
+  setting by default, in Freeboard's speed unit), and the **Limits**: a
+  maximum wind speed and wave height that no leg may exceed (empty = no
+  limit; the routing settings' values by default). Progress is shown;
+  Cancel stops the job. The map
+  is fitted to the result; the panel shows distance and time in
+  Freeboard's unit preferences, the sailing/motoring split, the arrival
+  time and an **itinerary**: for every point its time, whether the next
+  leg is sailed or motored, wind speed and direction, TWA, current,
+  waves and the boat's speed and course. Each point's name and
+  description also carry its ETA, mode and wind, which Freeboard shows
+  in its route points list; your own point names are kept. When the
+  route is the one Freeboard is navigating (its active course), the card
+  of the leg the boat is on is outlined and tagged "boat", and moves on
+  as points are passed; Freeboard has no event for a tap on a route
+  point, so the cards cannot follow a tap. Every value in the panel is
+  in **Freeboard's own units** (its Settings → Units: speed, distance,
+  depth; wave height follows depth), so nothing changes unit from one
+  part of the Freeboard screen to another. Those can differ from your
+  Signal K unit preferences, which the web app uses, until Freeboard
+  adopts the Signal K preferences (PR-8 in
+  `docs/plans/freeboard-sk-integration.md`).
+- **Save route…** opens Freeboard's Route Details dialog and stores the
+  route in Signal K's Resources (the plugin does not publish it itself in
+  this case, so there is one copy); for a saved route, **Save changes**
+  updates it. **Discard** removes a new draft or restores a rewritten
+  route.
+- The panel keeps running while closed, so a long route finishes in the
+  background. Routes started here are ordinary jobs: they appear in the
+  web app's run log and in `GET /api/routes`.
+
+**Map overlays.** The eight colour layers (wind speed, wave height,
+current speed, sea state, precipitation, air and sea temperature, tide
+height) are published as Signal K chart resources, served as PNG tiles
+(`/api/tile/<layer>/{z}/{x}/{y}.png`, see [Map layers](#map-layers)) with
+a `time` block covering the forecast hours. In Freeboard's **Chart list**
+they appear as "Wind speed (Weather Router Plus)" and so on: tick one to
+show it, set its opacity and order like any chart, and use the **clock**
+action on its row for Freeboard's Time palette (scrub, step, loop, play
+through the forecast; **NOW** returns to the current hour). A layer is
+listed only while its data is there: currents need a current source,
+tides the tide data, waves and the temperatures the forecast fields. The
+colours are the web app's; Freeboard has no legend, so the scale is in
+the web app's layer legend (`GET /api/legends`). The tide layer uses its
+fixed ±3 m scale here. Three glyph layers come with them: **Wind barbs**,
+**Current arrows** and **Isobars** (4 hPa, bold every 20 hPa; highs and
+lows as blue and red dots; no pressure labels, as the server has no
+font). The layers are also organised as Freeboard **Groups** (resources
+menu → Groups), one colour layer each with the glyphs that belong with
+it, shown in one tap: *Wind* (speed, barbs), *Waves* (height, barbs),
+*Currents* (speed, arrows), *Pressure* (isobars, barbs), *Sea state*
+(index, arrows), *Tide* (height, arrows), *Rain* (precipitation,
+isobars), *Air temperature* and *Sea temperature* (with isobars and
+arrows). Two colour layers over each other are unreadable, so no group
+has more than one. A group holds the layers whose data is there and is
+rewritten when the forecast is reloaded; it needs the server's `groups`
+collection, which Freeboard creates.
+
+Not yet available in the panel: waypoints in the "from the boat" flow
+(draw a route on the chart for those), a departure time other than now,
+polar performance and the other web-app settings (they apply as set
+in the web app's Settings tab). A "weather route to here" entry in
+Freeboard's map menu needs a change to Freeboard; see
+[docs/plans/freeboard-sk-integration.md](docs/plans/freeboard-sk-integration.md).
 
 ## Routing engine
 
@@ -483,7 +583,63 @@ to the corridor length, not the straight-line distance, so detours around
 land fit within the configured number of stages.
 
 If a route arrives after the last forecast step, conditions are held at
-the last step and the GeoJSON carries `forecast_horizon_exceeded_s`.
+the last step. The GeoJSON carries `forecast_valid_to`,
+`forecast_horizon_exceeded_s` and `legs_beyond_forecast`, every point
+after the last step has `beyond_forecast: true`, and the web app shows
+it: an amber badge in the result strip with the end time, the legs after
+it drawn dashed with a "forecast ends" marker on the map, a chip on the
+itinerary cards, and a note in the saved route's description. The
+Freeboard panel shows the same note. The **Forecast horizon** setting
+(Settings tab, Forecast group, 3 h to 360 h) decides how far the forecast
+reaches.
+
+When the search stops, the final leg of every branch with a clear
+straight hop to the waypoint (the nearest 64) is simulated, straight or
+as a beat, and the branch with the earliest predicted arrival is taken,
+not the nearest one: branches advance a fixed distance per stage, so a
+slow branch crawling straight at the waypoint is nearest while faster
+branches that tacked are further out but ahead in time.
+
+Every stop (start, waypoints, destination) is tested against the exact
+coastline polygons before routing. One on land, or within 150 m of the
+shore, is moved to the nearest point with 150 m of water around it, within
+1,000 m, and reported: in the log (which point, how far), on
+the route (`snaps`, `stop_count`, the `start_`/`end_` original, anchor and
+snap-distance fields) and on the moved point (`snap_distance_m`,
+`original`); the web app draws the tie from the drawn point to the water
+and the itinerary says "moved N m". With no water within 1,000 m the
+route fails naming the point.
+
+Polar rows closer to the wind than the **Tightest sailable angle**
+setting (Settings tab, Routing group, default 30°, 0 = off) are ignored
+for routing: many library polars carry small boat speeds at 5°–25° off
+the wind, which would send a route dead upwind at a crawl instead of
+tacking. The polar files themselves are not changed.
+
+When a parent's primary heading sweep yields nothing (its headings in
+the polar's no-go angle, on land or over a limit), that parent alone gets
+the wider sweeps (±120°, then half step, then the full circle at a quarter
+step) while its siblings keep their primary candidates; the reference
+implementation widened only when the whole stage's sweep was empty, which
+left a front beating to windward tacking in place.
+
+The candidate nearest each goal always survives a stage's subsector
+pruning (the bin cost prices the remaining distance at motor speed, which
+is optimistic to windward and could drop the leading branch), so the best
+remaining distance never increases from one stage to the next.
+
+A search that stops making progress once its planned stages are used
+(three stages in a row without any candidate coming closer to the
+destination; when the front is beating, a tenth or more of its water
+candidates dead upwind, the check waits for the hard ceiling of planned
+stages plus half the configured count; progress is measured towards the
+deepest branch's next via, or the destination once every via is crossed)
+fails with "the search is boxed in" (or, with a via still uncrossed, the
+vias-not-crossed error that makes the router retry without automatic
+vias), counting how many of
+the last stage's candidates were over the wind/wave limit, crossed land
+or had no boat speed, and naming the forecast end when the search had
+run past it. Each stage's progress line also carries those counts.
 
 ### Global water grid
 
@@ -688,7 +844,7 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 | `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
-| `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (on), shortcut may be slower by (0.05 = 5%), finished routes kept (50) | applies to the next route |
+| `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (on), shortcut may be slower by (0.05 = 5%), finished routes kept (50), max wind (none), max wave height (none) | applies to the next route |
 | `publish` | save to the Resources API (on), route name prefix (`WRP`), notifications (on) | applies to the next route |
 
 **Resource guard.** The decoded forecast is on disk, so the guard
@@ -966,6 +1122,7 @@ the SSE endpoint replays.
 | GET | `/api/routes/{id}/events` | readonly | Server-Sent Events |
 | GET | `/api/routes/{id}/result` | readonly | route as GeoJSON |
 | GET | `/api/routes/{id}/skeleton` | readonly | coarse corridor skeleton as GeoJSON |
+| GET | `/api/routes/{id}/fronts` | readonly | every search stage's front and best path, compact (display only) |
 | GET | `/api/routes/{id}/signalk` | readonly | Signal K Resources API route record |
 | POST | `/api/routes/{id}/cancel` | readwrite | cancel a queued or running job |
 | POST | `/api/routes/{id}/publish` | readwrite | save the route to the Resources API |
@@ -1008,6 +1165,8 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `mode` | `"sail_max"`, `"fastest"` or `"motor"` | | `"sail_max"` | mode policy. `motor`: always motor, and no forecast is used; `fastest`: sail when the polar speed beats the motor speed; `sail_max`: sail when the polar speed is at or above `sail_thresh_ms`, otherwise motor (`src/engine/legsim.ts`). The parent routePlanning server also sails above 0.25 m/s VMG or 1.0 m/s whatever the threshold; this plugin does not |
 | `stages` | number | count | setting `routing.stages` (20) | 4..200; isochrone stages per leg |
 | `sail_thresh_ms` | number | m/s | setting `routing.sailThreshold` | ≥ 0 |
+| `max_wind_ms` | number | m/s | setting `routing.maxWind` (none) | 0..100; a leg is not allowed where the forecast wind speed is above this |
+| `max_swh_m` | number | m | setting `routing.maxSwh` (none) | 0..30; a leg is not allowed where the significant wave height is above this (needs wave data) |
 | `simplify_m` | number | m | setting `routing.simplify` | 0..5000; route simplification tolerance, 0 = off |
 | `smoother` | boolean | | setting `routing.smoother` | run the shortcut smoother |
 | `smoother_tolerance` | number | ratio | setting `routing.smootherTolerance` | 0..0.5; how much slower a shortcut may be (0.05 = 5%) |
@@ -1182,8 +1341,15 @@ LineString `properties`:
 | `smoother_drops` | number | count | points the shortcut smoother removed |
 | `forecast_cycle` | string | ISO 8601 | when a forecast was used |
 | `auto_vias` | `[{name, lat, lon, width_m, radius_m}]` | degrees, m | automatic vias; present when any |
+| `forecast_valid_to` | string | ISO 8601 | the forecast's last step; present when a forecast was used |
 | `forecast_horizon_exceeded_s` | number | s | present when the route arrives after the last forecast step |
+| `legs_beyond_forecast` | number | count | legs ending after the last forecast step; present with the above |
 | `forecast_horizon_note` | string | | explains the above: conditions beyond the last step are held at it |
+| `limits_beyond_forecast` | boolean | | `true` when a wind or wave limit was in force on legs beyond the last forecast step (checked against held conditions) |
+| `snaps` | `[{index, original, anchor, distance_m}]` | degrees, m | stops that were on land and were moved to the nearest water; `index` 0 = start, `stop_count - 1` = destination, others = the request's waypoints in order; present when any |
+| `stop_count` | number | count | start + waypoints + destination; present with `snaps` |
+| `start_original`, `start_anchor`, `start_snap_distance_m` | `[lon, lat]`, `[lon, lat]`, number | degrees, m | present when the start was moved: the drawn point, where the route starts, and the distance between them |
+| `end_original`, `end_anchor`, `end_snap_distance_m` | as above | | present when the destination was moved |
 | `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired}`, `violation` `"leg_crosses_land"` or `"leg_too_shallow"`, `from`/`to` `[lon, lat]` |
 | `land_crossings` | number | count | present when a warning is `leg_crosses_land` |
 | `has_land_crossing` | boolean | | `true` when `land_crossings` is present |
@@ -1213,6 +1379,8 @@ Point `properties` (one feature per route point, in order):
 | `role` | string | | `"via"` on the junction point of each request waypoint |
 | `leg_distance_m` | number | m | distance to the next point; absent on the last point |
 | `leg_time_s` | number | s | time to the next point; absent on the last point |
+| `beyond_forecast` | boolean | | `true` on a point whose time is after the forecast's last step |
+| `snap_distance_m`, `original` | number, `[lon, lat]` | m, degrees | present on a start, via or end point that was on land and was moved: how far, and the drawn point |
 
 The optional point properties are present only when the value was
 sampled and is finite. Property names match the routePlanning server's
@@ -1456,6 +1624,7 @@ nested `smoc` and `tides` fields in full.
 | GET | `/api/pressure` | readonly | isobars and highs/lows as GeoJSON |
 | GET | `/api/land-mask` | readonly | binary land mask at screen resolution |
 | GET | `/api/tile/{layer}/{z}/{x}/{y}` | readonly | one web-map tile of a layer at a whole hour, saved on the server |
+| GET | `/api/tile/{layer}/{z}/{x}/{y}.png` | readonly | the same tile as a PNG image, for chartplotters (the eight colour layers, and the `barbs`, `arrows` and `isobars` glyph layers) |
 | GET | `/api/legends` | readonly | colour ramps for every layer |
 
 **Common parameters.**
@@ -1612,6 +1781,28 @@ clients do this themselves), the body is `w × h` bytes, one per pixel,
 and latitude `north − (y + 0.5) × (north − south) / h`. The raster
 follows the pixel size (finest 0.002°). `400 {error: "no coastline
 configured"}` without coastline shapefiles.
+
+#### GET /api/tile/{layer}/{z}/{x}/{y}.png
+
+The colour layers as 256 × 256 PNG image tiles, for chartplotters that
+draw image tiles (Freeboard-SK's chart layers; the plugin publishes the
+matching chart resources, see [In Freeboard-SK](#in-freeboard-sk)).
+`layer` is one of `wind`, `waves`, `current`, `sea_state`, `precip`,
+`temperature`, `sst`, `tide` (colour layers), `barbs`, `arrows`, `isobars`
+(glyph layers); `z`, `x`, `y` and `?time=` as for the data tile below
+(time rounded to the nearest hour, default now). A colour layer is what
+the web app paints from the data tile: the legend's colour ramp
+(`GET /api/legends`), alpha 0.55, land transparent for the layers that
+mask it, water without model data hatched for currents and tides; the
+tide layer uses its fixed ±3 m scale. A glyph layer draws the web app's
+barbs and arrows from the point tiles of the tile and its eight
+neighbours (so a glyph on a tile edge is whole), and isobars from the
+joined 0.25° pressure field (`/api/pressure`), without labels. Rendered
+on the server from the saved data tiles and kept in memory (48 MB, least
+recently used first);
+`X-Tile-Cache: hit | miss` says which, and `Cache-Control` is as for the
+data tile. Errors: 400 for a bad layer, tile or time, 503 before the
+plugin has started.
 
 #### GET /api/tile/{layer}/{z}/{x}/{y}
 
@@ -2023,7 +2214,9 @@ per-route skeleton, `--allow-canals` opens the known canals.
 - SMOC areas are loaded whole-chunk: a box outside the resident area
   costs its chunks' download (see the measured sizes above), cached for
   the rest of the day's run.
-- Routes beyond the forecast horizon use the last step's conditions.
+- Routes beyond the forecast horizon use the last step's conditions
+  (shown: badge, dashed legs and marker, itinerary chips; raise the
+  Forecast horizon setting to cover more of the passage).
 - One route computes at a time (single worker thread); others queue.
 - Map layers show the forecast on the hour (tiles are per hour);
   latitudes beyond ±85.05° have no map tiles.

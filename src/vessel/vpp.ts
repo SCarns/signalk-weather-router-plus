@@ -10,8 +10,6 @@
  * formatted exactly as the Python f-strings produce them.
  */
 
-import type { PolarDiagram } from './polar';
-
 export const RIG_TYPES = ['sloop', 'cutter', 'ketch', 'yawl', 'cat'] as const;
 export const KEEL_TYPES = ['fin', 'bulb', 'wing', 'full', 'centerboard', 'swing'] as const;
 export const HULL_TYPES = ['monohull', 'catamaran', 'trimaran'] as const;
@@ -53,11 +51,6 @@ export class UnsupportedHull extends SpecsError {
     super(message);
     this.name = 'UnsupportedHull';
   }
-}
-
-/** Abstract VPP: specs in, polar (m/s) out; throws UnsupportedHull. */
-export interface VPP {
-  computePolar(specs: BoatSpecs): PolarDiagram;
 }
 
 /**
@@ -156,18 +149,6 @@ export function validateSpecs(specs: BoatSpecs, opts: { downwindDefault?: boolea
     warnings.push(`SA/D ratio ${pyFixed(sa_d, 1)} outside typical range 8-30 — polar may be inaccurate.`);
   }
   return warnings;
-}
-
-/**
- * Defaults for fields sailboatdata does not always expose (Python
- * `default_specs_for`). Mast height as a fraction of LOA by rig.
- */
-export function defaultSpecsFor(
-  rigType = 'sloop',
-  keelType = 'fin'
-): { rig_type: string; keel_type: string; hull_type: 'monohull'; mast_factor_of_loa: number } {
-  const factors: Record<string, number> = { sloop: 1.3, cutter: 1.3, ketch: 1.2, yawl: 1.2, cat: 1.1 };
-  return { rig_type: rigType, keel_type: keelType, hull_type: 'monohull', mast_factor_of_loa: factors[rigType] ?? 1.3 };
 }
 
 /** Python `_slugify` from routing/routers/vpp.py. */

@@ -25,6 +25,7 @@
  */
 
 import { UnsupportedHull, type BoatSpecs } from './vpp';
+import { KTS_TO_MS } from '../geo/units';
 import { POLAR_TWA_DEG, POLAR_TWS_KT, type VppTable } from './vpp_empirical';
 
 const RHO_A = 1.225;
@@ -327,9 +328,6 @@ export function boatSpeed(m: PhysicsModel, twaDeg: number, twsMs: number): numbe
   return best;
 }
 
-/** Knot factor of the CSV writer (routing.types.KTS_TO_MS). */
-const KT = 0.5144444444;
-
 /**
  * Polar table on the standard grid (vpp_empirical's POLAR_TWA_DEG ×
  * POLAR_TWS_KT), for the polar generator. No spinnaker: downwind uses the
@@ -343,7 +341,7 @@ export function computePhysicsTable(
   const hull = specs.hull_type ?? 'monohull';
   if (hull !== 'monohull') throw new UnsupportedHull(`The polar calculator handles monohulls only; got '${hull}'.`);
   const m = buildModel(specs, fit, a);
-  const tws_ms = POLAR_TWS_KT.map(k => k * KT);
+  const tws_ms = POLAR_TWS_KT.map(k => k * KTS_TO_MS);
   const speeds_ms = POLAR_TWA_DEG.map(twa => tws_ms.map(t => (twa < 30 ? 0 : boatSpeed(m, twa, t))));
   return { twa_deg: [...POLAR_TWA_DEG], tws_ms, speeds_ms };
 }

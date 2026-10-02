@@ -116,16 +116,27 @@ test('propagator finds a land-free route around an island under motor', () => {
   const lm = LandMask.fromPolygons([island], bbox, 0.005);
   const prop = new OceanPropagator(lm, { stages: 12, subsectors: 20, headings: 30 });
   const vessel = makeVessel({ motorSpeedMs: 3 });
+  let frontCalls = 0;
   const route = prop.computeRoute({
     start: [0, 0.5],
     end: [1, 0.5],
     departureTime: new Date('2026-01-01T00:00:00Z'),
     vessel,
     modePolicy: 'motor',
+    onFrontier: () => frontCalls++,
   });
   assert.ok(route.waypoints.length >= 3);
   assert.equal(route.warnings, undefined);
   assert.equal(route.validated, true);
+  // The search's stage fronts: one per stage, in order, each with a best path from the start.
+  assert.ok(route.fronts && route.fronts.length >= 2, 'fronts captured');
+  assert.equal(frontCalls, route.fronts!.length);
+  route.fronts!.forEach((f, i) => {
+    assert.equal(f.stage, i + 1);
+    assert.ok(f.points.length > 0 && f.points.every(p => Number.isFinite(p.timeMs)));
+    assert.deepEqual(f.best[0], [0, 0.5], 'best path starts at the start');
+    assert.equal(f.best.length, i + 2, 'one point per stage plus the start');
+  });
   const straight = haversineDistanceM(0, 0.5, 1, 0.5);
   assert.ok(route.totalDistanceM > straight * 1.05, 'detour must be longer than the straight line');
   // Waypoint times are Dates (integer ms); allow the accumulated rounding.
@@ -134,7 +145,7 @@ test('propagator finds a land-free route around an island under motor', () => {
   for (let i = 1; i < route.waypoints.length; i++) {
     const a = route.waypoints[i - 1];
     const b = route.waypoints[i];
-    assert.equal(lm.legCrossesLandExact(a.lon, a.lat, b.lon, b.lat, 50), false);
+    assert.equal(lm.legCrossesLandExact(a.lon, a.lat, b.lon, b.lat), false);
     assert.ok(b.time > a.time);
   }
 });

@@ -17,6 +17,8 @@
  */
 
 import * as fs from 'node:fs';
+import { fetchWithRetry, sleep } from './http';
+import { MINUTE_MS, HOUR_MS, HOUR_S } from '../geo/units';
 import * as path from 'node:path';
 
 export const ECMWF_MIRRORS: Record<string, string> = {
@@ -80,26 +82,19 @@ export const PUBLICATION_LAG_MINUTES = 400;
  * horizon exceeds what the 06z/18z cycles publish (144 h), only 00z/12z
  * cycles qualify.
  */
-export function latestExpectedCycle(now: Date, horizonHours: number): Cycle {
-  const t = new Date(now.getTime() - PUBLICATION_LAG_MINUTES * 60_000);
+export function latestExpectedCycle(now: Date, horizonS: number): Cycle {
+  const horizonHours = horizonS / HOUR_S;
+  const t = new Date(now.getTime() - PUBLICATION_LAG_MINUTES * MINUTE_MS);
   let start = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), Math.floor(t.getUTCHours() / 6) * 6));
   for (;;) {
     const c = cycleFor(start);
     const steps = availableSteps(c, horizonHours);
     if (steps[steps.length - 1] >= horizonHours || c.maxStep === MAIN_MAX_STEP) return c;
-    start = new Date(start.getTime() - 6 * 3600_000);
+    start = new Date(start.getTime() - 6 * HOUR_MS);
   }
 }
 
-/** Parse a Retry-After header (seconds or HTTP date) into milliseconds, or null. */
-export function parseRetryAfterMs(value: string | null, now = Date.now()): number | null {
-  if (!value) return null;
-  const secs = Number(value);
-  if (Number.isFinite(secs) && secs >= 0) return secs * 1000;
-  const date = Date.parse(value);
-  if (!Number.isNaN(date)) return Math.max(0, date - now);
-  return null;
-}
+export { parseRetryAfterMs } from './http';
 
 export class EcmwfError extends Error {
   constructor(message: string) {
@@ -133,8 +128,6 @@ export function availableSteps(cycle: Pick<Cycle, 'maxStep'>, horizonHours: numb
   return steps;
 }
 
-const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
-
 export class EcmwfClient {
   /** Mirrors in order; index 0 is the one currently in use. */
   private mirrors: string[];
@@ -150,7 +143,7 @@ export class EcmwfClient {
     const fallbacks = (opts.fallbackUrls ?? Object.values(ECMWF_MIRRORS)).map(u => u.replace(/\/$/, '')).filter(u => u !== primary);
     this.mirrors = [primary, ...fallbacks];
     this.cacheDir = opts.cacheDir;
-    this.timeoutMs = opts.timeoutMs ?? 60_000;
+    this.timeoutMs = opts.timeoutMs ?? MINUTE_MS;
     this.retries = opts.retries ?? 6;
     this.log = opts.log ?? (() => undefined);
     this.fetchImpl = opts.fetchImpl ?? fetch;
@@ -183,28 +176,18 @@ export class EcmwfClient {
     let lastErr: unknown;
     for (let m = 0; m < this.mirrors.length; m++) {
       const url = this.baseUrl + pathSuffix;
-      for (let attempt = 1; attempt <= this.retries; attempt++) {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
-        let retryAfterMs: number | null = null;
-        try {
-          const res = await this.fetchImpl(url, { ...init, signal: ctrl.signal });
-          const retriable = res.status === 408 || res.status === 429 || res.status >= 500;
-          if (!retriable) return res;
-          retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
-          lastErr = new EcmwfError(`HTTP ${res.status} for ${url}`);
-          await res.arrayBuffer().catch(() => undefined);
-        } catch (err) {
-          lastErr = err;
-        } finally {
-          clearTimeout(timer);
-        }
-        if (attempt === this.retries) break;
-        let backoff = Math.min(60_000, 2000 * 2 ** (attempt - 1));
-        if (retryAfterMs !== null) backoff = Math.min(60_000, Math.max(backoff, retryAfterMs));
-        backoff += Math.random() * 500;
-        this.log(`retry ${attempt}/${this.retries - 1} for ${url} after ${(backoff / 1000).toFixed(1)} s: ${(lastErr as Error).message}`);
-        await this.sleepImpl(backoff);
+      try {
+        const r = await fetchWithRetry(url, init, {
+          timeoutMs: this.timeoutMs,
+          retries: this.retries,
+          fetchImpl: this.fetchImpl,
+          sleepImpl: this.sleepImpl,
+          log: this.log,
+          makeError: msg => new EcmwfError(msg),
+        });
+        return r.response;
+      } catch (err) {
+        lastErr = err;
       }
       if (m + 1 < this.mirrors.length) {
         this.log(`mirror ${this.baseUrl} exhausted (${(lastErr as Error).message}); switching to ${this.mirrors[1]}`);
@@ -228,21 +211,20 @@ export class EcmwfClient {
    * cycle (now minus the publication lag) and walks back in 6 h cycles,
    * up to `maxAgeHours`, so the usual case costs two HEAD requests.
    */
-  async findLatestCycle(horizonHours: number, opts: { mainCyclesOnly?: boolean; maxAgeHours?: number; now?: Date } = {}): Promise<Cycle> {
+  async findLatestCycle(horizonS: number, opts: { mainCyclesOnly?: boolean; maxAgeHours?: number; now?: Date } = {}): Promise<Cycle> {
+    const horizonHours = horizonS / HOUR_S;
     const now = opts.now ?? new Date();
     const maxAge = opts.maxAgeHours ?? 48;
-    const start = latestExpectedCycle(now, horizonHours).time;
+    const start = latestExpectedCycle(now, horizonS).time;
     for (let ageH = 0; ageH <= maxAge; ageH += 6) {
-      const c = cycleFor(new Date(start.getTime() - ageH * 3600_000));
+      const c = cycleFor(new Date(start.getTime() - ageH * HOUR_MS));
       if (opts.mainCyclesOnly && c.maxStep !== MAIN_MAX_STEP) continue;
-      const atmSteps = availableSteps(c, horizonHours);
-      const waveSteps = availableSteps(c, horizonHours);
-      const lastAtm = atmSteps[atmSteps.length - 1];
-      const lastWave = waveSteps[waveSteps.length - 1];
-      if (lastAtm < horizonHours && c.maxStep < horizonHours) continue; // 06z/18z cannot cover the horizon
-      const [a, w] = await Promise.all([this.stepPublished(c, c.atmStream, lastAtm), this.stepPublished(c, c.waveStream, lastWave)]);
+      const steps = availableSteps(c, horizonHours);
+      const last = steps[steps.length - 1];
+      if (last < horizonHours && c.maxStep < horizonHours) continue; // 06z/18z cannot cover the horizon
+      const [a, w] = await Promise.all([this.stepPublished(c, c.atmStream, last), this.stepPublished(c, c.waveStream, last)]);
       if (a && w) {
-        this.log(`latest complete cycle: ${c.yyyymmdd} ${c.hh}z (${c.atmStream}/${c.waveStream}) to +${lastAtm} h`);
+        this.log(`latest complete cycle: ${c.yyyymmdd} ${c.hh}z (${c.atmStream}/${c.waveStream}) to +${last} h`);
         return c;
       }
     }
@@ -291,7 +273,8 @@ export class EcmwfClient {
    * True when every (stream, step, param) the loader will ask for is
    * already cached, so a load needs no network at all.
    */
-  cycleFullyCached(cycle: Cycle, horizonHours: number, atmParams: readonly string[], waveParams: readonly string[]): boolean {
+  cycleFullyCached(cycle: Cycle, horizonS: number, atmParams: readonly string[], waveParams: readonly string[]): boolean {
+    const horizonHours = horizonS / HOUR_S;
     for (const step of availableSteps(cycle, horizonHours)) {
       for (const p of atmParams) if (!this.hasCached(cycle, cycle.atmStream, step, p)) return false;
     }

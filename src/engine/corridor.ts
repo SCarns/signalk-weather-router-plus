@@ -25,14 +25,20 @@
  */
 
 import type { BBox } from '../geo/geodesy';
-import { DEG, R_EARTH_M, haversineBearing, haversineDistanceM, wrapLon } from '../geo/geodesy';
+import { lonOffset, unwrapLonNear } from '../geo/angles';
+import { M_PER_DEG } from '../geo/units';
+import { DEG, haversineBearing, haversineDistanceM, wrapLon } from '../geo/geodesy';
 import type { LandMask } from '../geo/landmask';
 import { describePassage } from '../geo/straits';
 import type { WaterGrid } from '../geo/watergrid';
-import { GridAstarError, gridAstar, smoothGridPath, type GridNode, type GridSource } from './gridastar';
+import { gridAstar, smoothGridPath, type GridNode, type GridSource } from './gridastar';
+import { CorridorError, GridAstarError } from './errors';
+import type { ProgressFn } from './progress';
 import { distanceTransformCells } from './astar';
+import { MinHeap } from './heap';
+import { stringPull } from './pathutil';
+import { forEachRingCell } from '../geo/grid';
 
-const M_PER_DEG = R_EARTH_M * DEG;
 /** Finest local refinement of the route raster, degrees (≈ 55 m): passages narrower than about 3 cells stay closed. */
 export const MIN_PATCH_RES = 0.0005;
 /**
@@ -88,8 +94,6 @@ export interface Corridor {
   land: LandMask;
   /** Automatic vias, in route order, with the chain segment they belong to. */
   autoVias: AutoVia[];
-  /** Raw grid path (for diagnostics). */
-  cells: GridNode[];
   stats: {
     astarMs: number;
     expanded: number;
@@ -101,22 +105,14 @@ export interface Corridor {
   };
 }
 
-export class CorridorError extends Error {
-  /** A fallback (the old per-route skeleton) cannot help either: e.g. a route point on land. */
-  readonly fatal: boolean;
-  constructor(message: string, fatal = false) {
-    super(message);
-    this.name = 'CorridorError';
-    this.fatal = fatal;
-  }
-}
+export { CorridorError };
 
 export interface CorridorOptions {
   /** Route raster for a box (cached by the caller). Must carry polygons (for refine). */
   landFor: (bbox: BBox) => LandMask;
   /** Stages the propagator will use (for the via width threshold). */
   stages: number;
-  onProgress?: (message: string) => void;
+  onProgress?: ProgressFn;
   shouldCancel?: () => boolean;
   /** Largest A* window, cells (7 bytes each). */
   maxWindowCells?: number;
@@ -135,17 +131,14 @@ function endpointNodes(grid: WaterGrid, lon: number, lat: number, radius: number
   const nodes: GridSource[] = [];
   let radiusM = 0;
   for (let rad = 1; rad <= radius && nodes.length === 0; rad++) {
-    for (let dr = -rad; dr <= rad; dr++) {
-      for (let dc = -rad; dc <= rad; dc++) {
-        if (Math.max(Math.abs(dr), Math.abs(dc)) !== rad) continue;
-        for (const comp of grid.nodeComponents(r0 + dr, c0 + dc)) {
-          const [clon, clat] = grid.cellCentre(r0 + dr, c0 + dc);
-          const d = haversineDistanceM(lon, lat, clon, clat);
-          nodes.push({ r: r0 + dr, c: c0 + dc, comp, cost: d });
-          radiusM = Math.max(radiusM, d);
-        }
+    forEachRingCell(rad, (dr, dc) => {
+      for (const comp of grid.nodeComponents(r0 + dr, c0 + dc)) {
+        const [clon, clat] = grid.cellCentre(r0 + dr, c0 + dc);
+        const d = haversineDistanceM(lon, lat, clon, clat);
+        nodes.push({ r: r0 + dr, c: c0 + dc, comp, cost: d });
+        radiusM = Math.max(radiusM, d);
       }
-    }
+    });
   }
   return { nodes, radiusM };
 }
@@ -216,21 +209,17 @@ function legAstar(
     const [r0, c0] = grid.cellOf(lonlat[0], lonlat[1]);
     const alt: GridSource[] = [];
     let radiusM = 0;
-    for (let rad = 1; rad <= 5; rad++) {
-      for (let dr = -rad; dr <= rad; dr++) {
-        for (let dc = -rad; dc <= rad; dc++) {
-          if (Math.max(Math.abs(dr), Math.abs(dc)) !== rad) continue;
-          for (const comp of grid.nodeComponents(r0 + dr, c0 + dc)) {
-            if (pr.cells.has(((r0 + dr) * grid.nx + grid.wrapCol(c0 + dc)) * 16 + comp)) continue;
-            if (probeComponent(grid, [{ r: r0 + dr, c: c0 + dc, comp }], PROBE_CAP).small) continue;
-            const [clon, clat] = grid.cellCentre(r0 + dr, c0 + dc);
-            const d = haversineDistanceM(lonlat[0], lonlat[1], clon, clat);
-            alt.push({ r: r0 + dr, c: c0 + dc, comp, cost: d });
-            radiusM = Math.max(radiusM, d);
-          }
+    for (let rad = 1; rad <= 5 && alt.length === 0; rad++) {
+      forEachRingCell(rad, (dr, dc) => {
+        for (const comp of grid.nodeComponents(r0 + dr, c0 + dc)) {
+          if (pr.cells.has(((r0 + dr) * grid.nx + grid.wrapCol(c0 + dc)) * 16 + comp)) continue;
+          if (probeComponent(grid, [{ r: r0 + dr, c: c0 + dc, comp }], PROBE_CAP).small) continue;
+          const [clon, clat] = grid.cellCentre(r0 + dr, c0 + dc);
+          const d = haversineDistanceM(lonlat[0], lonlat[1], clon, clat);
+          alt.push({ r: r0 + dr, c: c0 + dc, comp, cost: d });
+          radiusM = Math.max(radiusM, d);
         }
-      }
-      if (alt.length) break;
+      });
     }
     if (!alt.length)
       throw new CorridorError(
@@ -308,8 +297,7 @@ function legAstar(
       expanded += res.expanded;
       return { path: unwrapPath(grid, res.path), expanded, windowCells: cells };
     } catch (err) {
-      if (!(err instanceof GridAstarError)) throw err;
-      if (err.message === 'cancelled') throw err;
+      if (!(err instanceof GridAstarError)) throw err; // RouteCancelled among them
       expanded += err.expanded;
       lastErr = err;
       if (cells >= maxWindowCells || (c1 - c0 + 1 >= grid.nx && r0 === 0 && r1 === grid.ny - 1)) break;
@@ -376,7 +364,7 @@ export function verifyCorridor(
     for (const p of land.patches) {
       if (p.resolutionDeg >= res) continue;
       const pw = p.bbox.west;
-      let off = (((lonW - pw) % 360) + 360) % 360;
+      let off = lonOffset(lonW, pw);
       if (off > 180) off -= 360;
       const pWidth = p.nx * p.resolutionDeg;
       if (off + gridRes <= 0 || off >= pWidth) continue;
@@ -606,8 +594,7 @@ function gridBBox(grid: WaterGrid, path: GridNode[], extra: [number, number][], 
   const mid = (west + east) / 2;
   for (const [lon, lat] of extra) {
     let x = lon;
-    while (x - mid > 180) x -= 360;
-    while (x - mid < -180) x += 360;
+    x = unwrapLonNear(x, mid);
     west = Math.min(west, x);
     east = Math.max(east, x);
     south = Math.min(south, lat);
@@ -623,9 +610,9 @@ function gridBBox(grid: WaterGrid, path: GridNode[], extra: [number, number][], 
 
 function bboxInside(inner: BBox, outer: BBox): boolean {
   if (inner.south < outer.south || inner.north > outer.north) return false;
-  const ow = (((outer.east - outer.west) % 360) + 360) % 360 || 360;
-  const iw = (((inner.east - inner.west) % 360) + 360) % 360 || 360;
-  const off = (((inner.west - outer.west) % 360) + 360) % 360;
+  const ow = lonOffset(outer.east, outer.west) || 360;
+  const iw = lonOffset(inner.east, inner.west) || 360;
+  const off = lonOffset(inner.west, outer.west);
   return off + iw <= ow + 1e-9;
 }
 
@@ -652,7 +639,7 @@ function densify(pts: { lon: number; lat: number }[], spacingM: number): { lon: 
  * as [lon, lat]. Throws CorridorError when no water path exists.
  */
 export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: CorridorOptions): Corridor {
-  const progress = opts.onProgress ?? (() => undefined);
+  const progress = (m: string): void => opts.onProgress?.(0, 0, m);
   const maxWindowCells = opts.maxWindowCells ?? 12_000_000;
   const blocked = new Set<number>();
   const stats = { astarMs: 0, expanded: 0, windowCells: 0, reroutes: 0, refines: 0, blockedCells: 0, verifyMs: 0 };
@@ -688,7 +675,7 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
     stats.astarMs += Date.now() - t0;
     // 2. Route raster over the corridor.
     const box = gridBBox(grid, path, chain, CORRIDOR_MARGIN_DEG);
-    const w = (((box.east - box.west) % 360) + 360) % 360 || 360;
+    const w = lonOffset(box.east, box.west) || 360;
     if (w > 120 || box.north - box.south > 90) {
       throw new CorridorError(
         `the corridor's bounding box (${w.toFixed(0)}° × ${(box.north - box.south).toFixed(0)}°) is too large (max 120° × 90°); add intermediate waypoints`
@@ -816,7 +803,7 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
   // 5. Automatic vias.
   const stepM = lengthM / Math.max(1, opts.stages);
   const autoVias = findAutoVias(grid, path, segStart, chain, stepM, land);
-  return { skeleton, widthM, lengthM, bbox: landBox, land, autoVias, cells: path, stats };
+  return { skeleton, widthM, lengthM, bbox: landBox, land, autoVias, stats };
 }
 
 /**
@@ -901,17 +888,20 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
     while (x - first.lon < -180) x += 360;
     const cx = Math.min(nx - 1, Math.max(0, Math.floor((x - west) / res)));
     const cy = Math.min(ny - 1, Math.max(0, Math.floor((p.lat - south) / res)));
-    // Nearest water cell.
-    for (let r = 0; r < 40; r++) {
-      for (let dy = -r; dy <= r; dy++)
-        for (let dx = -r; dx <= r; dx++) {
-          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-          const xx = cx + dx;
-          const yy = cy + dy;
-          if (xx >= 0 && yy >= 0 && xx < nx && yy < ny && water[yy * nx + xx]) return yy * nx + xx;
+    // Nearest water cell (the first found, ring by ring).
+    let found = -1;
+    for (let r = 0; r < 40 && found < 0; r++) {
+      forEachRingCell(r, (dy, dx) => {
+        const xx = cx + dx;
+        const yy = cy + dy;
+        if (xx >= 0 && yy >= 0 && xx < nx && yy < ny && water[yy * nx + xx]) {
+          found = yy * nx + xx;
+          return true;
         }
+        return false;
+      });
     }
-    return -1;
+    return found;
   };
   const s0 = cellOf(first);
   const e0 = cellOf(last);
@@ -921,46 +911,12 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
   const g = new Float64Array(nx * ny).fill(Infinity);
   const par = new Int32Array(nx * ny).fill(-1);
   const done = new Uint8Array(nx * ny);
-  const heapK: number[] = [];
-  const heapV: number[] = [];
-  const push = (k: number, v: number): void => {
-    let i = heapK.length;
-    heapK.push(k);
-    heapV.push(v);
-    while (i > 0) {
-      const p = (i - 1) >> 1;
-      if (heapK[p] <= heapK[i]) break;
-      [heapK[p], heapK[i]] = [heapK[i], heapK[p]];
-      [heapV[p], heapV[i]] = [heapV[i], heapV[p]];
-      i = p;
-    }
-  };
-  const pop = (): number => {
-    const top = heapV[0];
-    const lk = heapK.pop()!;
-    const lv = heapV.pop()!;
-    if (heapK.length) {
-      heapK[0] = lk;
-      heapV[0] = lv;
-      let i = 0;
-      for (;;) {
-        const l = 2 * i + 1;
-        if (l >= heapK.length) break;
-        const r = l + 1;
-        const m = r < heapK.length && heapK[r] < heapK[l] ? r : l;
-        if (heapK[m] >= heapK[i]) break;
-        [heapK[m], heapK[i]] = [heapK[i], heapK[m]];
-        [heapV[m], heapV[i]] = [heapV[i], heapV[m]];
-        i = m;
-      }
-    }
-    return top;
-  };
+  const heap = new MinHeap();
   const ex = e0 % nx;
   const ey = Math.floor(e0 / nx);
   const h = (c: number): number => Math.hypot(((c % nx) - ex) * cosL, Math.floor(c / nx) - ey);
   g[s0] = 0;
-  push(h(s0), s0);
+  heap.push(h(s0), s0);
   const DIRS: [number, number][] = [
     [1, 0],
     [-1, 0],
@@ -972,8 +928,8 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
     [-1, -1],
   ];
   let found = false;
-  while (heapK.length) {
-    const c = pop();
+  while (heap.size > 0) {
+    const c = heap.pop();
     if (done[c]) continue;
     done[c] = 1;
     if (c === e0) {
@@ -995,7 +951,7 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
       if (ng < g[k]) {
         g[k] = ng;
         par[k] = c;
-        push(ng + h(k), k);
+        heap.push(ng + h(k), k);
       }
     }
   }
@@ -1018,19 +974,7 @@ function fineTrace(land: LandMask, seg: { lon: number; lat: number }[]): { lon: 
     }
     return true;
   };
-  const kept: number[] = [cells[0]];
-  let ai = 0;
-  while (ai < cells.length - 1) {
-    let best = ai + 1;
-    for (let q = Math.min(cells.length - 1, ai + 400); q > ai + 1; q--) {
-      if (los(cells[ai], cells[q])) {
-        best = q;
-        break;
-      }
-    }
-    kept.push(cells[best]);
-    ai = best;
-  }
+  const kept = stringPull(cells, (ai, q) => q <= ai + 400 && los(cells[ai], cells[q]));
   const poly = kept.map(c => ({ lon: wrapLon(west + ((c % nx) + 0.5) * res), lat: south + (Math.floor(c / nx) + 0.5) * res }));
   poly[0] = first;
   poly[poly.length - 1] = last;
@@ -1075,8 +1019,7 @@ function refineNarrowStretches(
       const r = needs(j + 1);
       if (!r) break;
       let x = pts[j + 1].lon;
-      while (x - west > 180) x -= 360;
-      while (x - west < -180) x += 360;
+      x = unwrapLonNear(x, west);
       const nw = Math.min(west, x);
       const ne = Math.max(east, x);
       const ns = Math.min(south, pts[j + 1].lat);
@@ -1188,13 +1131,37 @@ export function findAutoVias(
   return kept;
 }
 
-function nearestExactWater(land: LandMask, lon: number, lat: number, maxM: number): [number, number] | null {
+/**
+ * Is `clearM` of water around the point by the exact polygons (the point
+ * itself, and 8 bearings at clearM and at clearM / 2)? With clearM 0, just
+ * the point.
+ */
+export function waterAround(land: LandMask, lon: number, lat: number, clearM: number): boolean {
+  if (land.isLandExact(lon, lat)) return false;
+  if (!(clearM > 0)) return true;
+  const cosL = Math.max(0.05, Math.cos(lat * DEG));
+  for (const d of [clearM, clearM / 2]) {
+    for (let a = 0; a < 360; a += 45) {
+      const y = lat + (d * Math.cos(a * DEG)) / M_PER_DEG;
+      const x = wrapLon(lon + (d * Math.sin(a * DEG)) / (M_PER_DEG * cosL));
+      if (land.isLandExact(x, y)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Nearest point not on land by the exact polygons, with `clearM` of water
+ * around it (see waterAround), searched on rings of 50 m out to `maxM`;
+ * null when none.
+ */
+export function nearestExactWater(land: LandMask, lon: number, lat: number, maxM: number, clearM = 0): [number, number] | null {
   const cosL = Math.max(0.05, Math.cos(lat * DEG));
   for (let d = 50; d <= maxM; d += 50) {
     for (let a = 0; a < 360; a += 15) {
       const y = lat + (d * Math.cos(a * DEG)) / M_PER_DEG;
       const x = wrapLon(lon + (d * Math.sin(a * DEG)) / (M_PER_DEG * cosL));
-      if (!land.isLandExact(x, y)) return [x, y];
+      if (waterAround(land, x, y, clearM)) return [x, y];
     }
   }
   return null;

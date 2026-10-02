@@ -8,7 +8,8 @@ import prettierRecommended from 'eslint-plugin-prettier/recommended';
 
 export default [
   {
-    ignores: ['dist/', 'node_modules/', 'coverage/', 'public/', 'test-data/', 'data/'],
+    // public/ol.js and public/remoteEntry.js are vendored / built, not ours.
+    ignores: ['dist/', 'node_modules/', 'coverage/', 'public/ol.js', 'public/remoteEntry.js', 'test-data/', 'data/'],
   },
   js.configs.recommended,
   {
@@ -44,5 +45,36 @@ export default [
       'no-console': 'warn',
     },
   },
+  {
+    // The CLI prints by design; tests print timings the runner would otherwise hide.
+    // The warning stays for plugin code, where the Signal K log is the right place.
+    files: ['src/cli.ts', 'src/**/*.test.ts'],
+    rules: { 'no-console': 'off' },
+  },
   prettierRecommended,
+  {
+    // The web app: ES modules (rp-plan.js and rp-settings.js are the
+    // entries; rp-layers.js and rp-core.js below them). Only the browser
+    // and the vendored OpenLayers (`ol`) are globals. Not formatted by
+    // Prettier.
+    files: ['public/*.js'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: Object.fromEntries(
+        [
+          'window', 'document', 'console', 'navigator', 'localStorage', 'fetch', 'alert', 'confirm',
+          'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame',
+          'encodeURIComponent', 'AbortController', 'CustomEvent', 'DOMException', 'Event', 'EventSource', 'ImageData',
+          'MutationObserver', 'ResizeObserver', 'Uint8Array', 'Uint8ClampedArray', 'ol',
+        ].map(g => [g, 'readonly'])
+      ),
+    },
+    rules: {
+      'no-undef': 'error',
+      'no-unused-vars': ['error', { args: 'none', caughtErrors: 'none' }],
+      'no-empty': ['error', { allowEmptyCatch: true }],
+      'prettier/prettier': 'off',
+    },
+  },
 ];

@@ -18,7 +18,6 @@ import type { ResolvedConfig } from './config';
 import type { ModePolicy } from '../engine/legsim';
 import type { BBox } from '../geo/geodesy';
 import type { DecodedIndex } from '../data/decoded';
-import type { SerializedRtofs } from '../currents/rtofs';
 import type { SerializedSmoc, SmocStatus } from '../currents/smoc';
 import type { SerializedHarmonic } from '../currents/harmonic';
 import type { TideStatus } from '../tides/sealevel';
@@ -47,6 +46,9 @@ export interface RouteRequest {
   departure?: string;
   mode?: ModePolicy;
   sail_thresh_ms?: number;
+  /** Wind speed (m/s) and significant wave height (m) a leg must not exceed; default from routing.maxWind / routing.maxSwh. */
+  max_wind_ms?: number;
+  max_swh_m?: number;
   /** RDP simplification tolerance, metres (0 = off); default from routing.simplify. */
   simplify_m?: number;
   /** Run the shortcut smoother; default from routing.smoother. */
@@ -97,6 +99,8 @@ export interface RouteSummary {
   /** Routes with waypoints: number of legs and the waypoint precision used. */
   legs?: number;
   precision?: 'precise' | 'approximate';
+  /** A leg's corridor search failed and ran on the coarse per-route skeleton (counted in /api/status corridor_fallbacks). */
+  corridor_fallback?: true;
 }
 
 export type QueryKind =
@@ -245,7 +249,7 @@ export type WorkerToMain =
   /** route worker: forecast memory it holds (the corridor store while a route runs). */
   | { type: 'forecast-memory'; memory: ForecastMemory }
   | { type: 'refresh-error'; message: string }
-  | { type: 'currents'; status: DataStatus['currents']; rtofsRun: string | null; rtofs: SerializedRtofs | null }
+  | { type: 'currents'; status: DataStatus['currents']; rtofsRun: string | null }
   | { type: 'data-status'; status: DataStatus }
   /** data worker: SMOC run / resident area changed (SharedArrayBuffer views: relaying shares, not copies). */
   | { type: 'smoc'; smoc: SerializedSmoc | null }
@@ -254,12 +258,16 @@ export type WorkerToMain =
   /** data worker: tidal-harmonic sources loaded (shared constituent blocks). */
   | { type: 'harmonic'; sources: SerializedHarmonic[] }
   | { type: 'progress'; id: string; stage: number; total: number; message: string }
+  /** route worker: a search stage's front for display (streamed, never stored): points [lon, lat, timeMs, viaCount], best path [lon, lat]. */
+  | { type: 'frontier'; id: string; leg: number; stage: number; total: number; points: number[][]; best: number[][] }
   | {
       type: 'done';
       id: string;
       geojson: Record<string, unknown>;
       skRoute: Record<string, unknown>;
       skeleton: Record<string, unknown> | null;
+      /** Every stage's front and best path (see route.ts StageFront), compact: points [lon, lat, timeMs, viaCount]. */
+      fronts?: { leg: number; stage: number; total: number; points: number[][]; best: number[][] }[] | null;
       summary: RouteSummary;
     }
   | { type: 'error'; id: string; message: string; cancelled?: boolean }

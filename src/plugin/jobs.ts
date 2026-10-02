@@ -12,7 +12,7 @@ import type { JobProgress, JobStatus, RouteRequest, RouteSummary } from './proto
 
 export interface JobEvent {
   id: number;
-  event: 'status' | 'progress' | 'route' | 'done' | 'error';
+  event: 'status' | 'progress' | 'route' | 'done' | 'error' | 'frontier';
   data: Record<string, unknown>;
 }
 
@@ -29,6 +29,8 @@ export interface Job {
   geojson?: Record<string, unknown>;
   skRoute?: Record<string, unknown>;
   skeleton?: Record<string, unknown> | null;
+  /** Every search stage's front and best path, compact (display only). */
+  fronts?: unknown[] | null;
   /** Resources API id when published. */
   resourceId?: string;
   publishError?: string;
@@ -95,7 +97,8 @@ export class JobManager extends EventEmitter {
   private persist(job: Job): void {
     if (job.status === 'queued' || job.status === 'running') return;
     const tmp = path.join(this.dir, `${job.id}.json.tmp`);
-    fs.writeFileSync(tmp, JSON.stringify(job));
+    // Frontier events are display-only and large: streamed live, not kept.
+    fs.writeFileSync(tmp, JSON.stringify({ ...job, events: job.events.filter(e => e.event !== 'frontier') }));
     fs.renameSync(tmp, path.join(this.dir, `${job.id}.json`));
   }
 
@@ -112,10 +115,18 @@ export class JobManager extends EventEmitter {
     for (const j of finished.slice(this.keepJobs)) this.delete(j.id);
   }
 
-  private emitEvent(job: Job, event: JobEvent['event'], data: Record<string, unknown>): void {
+  /**
+   * Emit an event to the live listeners and, unless `store` is false, keep
+   * it in the job's last-500 buffer that a reconnecting SSE client replays
+   * from its Last-Event-ID. Frontier events are not kept: one per stage,
+   * large, and they would push the status and progress lines out.
+   */
+  private emitEvent(job: Job, event: JobEvent['event'], data: Record<string, unknown>, store = true): void {
     const ev: JobEvent = { id: job.nextEventId++, event, data };
-    job.events.push(ev);
-    if (job.events.length > 500) job.events.splice(0, job.events.length - 500);
+    if (store) {
+      job.events.push(ev);
+      if (job.events.length > 500) job.events.splice(0, job.events.length - 500);
+    }
     this.emit('event', job.id, ev);
   }
 
@@ -126,6 +137,7 @@ export class JobManager extends EventEmitter {
       events: `${b}/events`,
       result: `${b}/result`,
       skeleton: `${b}/skeleton`,
+      fronts: `${b}/fronts`,
       cancel: `${b}/cancel`,
       publish: `${b}/publish`,
     };
@@ -206,12 +218,20 @@ export class JobManager extends EventEmitter {
     this.emitEvent(job, 'progress', p as unknown as Record<string, unknown>);
   }
 
+  /** A search stage's front: streamed to listeners, not stored (see persist). */
+  onFrontier(id: string, front: Record<string, unknown>): void {
+    const job = this.jobs.get(id);
+    if (!job) return;
+    this.emitEvent(job, 'frontier', front, false);
+  }
+
   onDone(
     id: string,
     geojson: Record<string, unknown>,
     skRoute: Record<string, unknown>,
     summary: RouteSummary,
-    skeleton: Record<string, unknown> | null = null
+    skeleton: Record<string, unknown> | null = null,
+    fronts: unknown[] | null = null
   ): void {
     const job = this.jobs.get(id);
     if (!job) return;
@@ -220,6 +240,7 @@ export class JobManager extends EventEmitter {
     job.geojson = geojson;
     job.skRoute = skRoute;
     job.skeleton = skeleton;
+    job.fronts = fronts;
     job.summary = summary;
     this.emitEvent(job, 'route', geojson);
     this.emitEvent(job, 'done', { status: 'done', summary });
@@ -248,7 +269,6 @@ export class JobManager extends EventEmitter {
   private finish(job: Job): void {
     if (this.running === job.id) this.running = null;
     this.persist(job);
-    this.emit('finish', job);
     this.trim();
     this.pump();
   }

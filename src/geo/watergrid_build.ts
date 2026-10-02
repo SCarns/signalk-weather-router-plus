@@ -23,7 +23,9 @@
  */
 
 import type { BBox } from './geodesy';
-import { R_EARTH_M, DEG, wrapLon } from './geodesy';
+import { lonOffset, unwrapLonNear } from './angles';
+import { M_PER_DEG } from '../geo/units';
+import { DEG, wrapLon } from './geodesy';
 import { LandMask } from './landmask';
 import { ShapefileIndex } from './shapefile';
 import { CANALS, type CanalDef } from './watergrid_canals';
@@ -40,9 +42,6 @@ import {
   type CanalRecord,
   type WaterGridHeader,
 } from './watergrid';
-
-/** Metres per degree of latitude. */
-const M_PER_DEG = R_EARTH_M * DEG;
 
 export interface ChokepointParams {
   /** Largest clearance (half-width) reported, metres. */
@@ -507,9 +506,7 @@ export function edgesCrossedBySegment(
   nx = WG_NX,
   ny = WG_NY
 ): number[] {
-  let dl = lon2 - lon1;
-  while (dl > 180) dl -= 360;
-  while (dl < -180) dl += 360;
+  const dl = unwrapLonNear(lon2 - lon1, 0);
   const x1 = (wrapLon(lon1) + 180) / res;
   const y1 = (lat1 + 90) / res;
   const x2 = x1 + dl / res;
@@ -626,9 +623,9 @@ export function buildWaterGrid(shapefiles: string[], opts: BuildOptions = {}): W
       if (opts.region) {
         const r = opts.region;
         if (lat0 + TILE <= r.south || lat0 >= r.north) continue;
-        const rw = (((r.east - r.west) % 360) + 360) % 360 || 360;
-        const off = (((lon0 - r.west) % 360) + 360) % 360;
-        const off2 = (((r.west - lon0) % 360) + 360) % 360;
+        const rw = lonOffset(r.east, r.west) || 360;
+        const off = lonOffset(lon0, r.west);
+        const off2 = lonOffset(r.west, lon0);
         if (!(off < rw || off2 < TILE)) continue;
       }
       tiles.push([lat0, lon0]);

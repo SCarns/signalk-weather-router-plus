@@ -17,18 +17,13 @@
  */
 
 import { PolarDiagram } from './polar';
-import { pyFixed, UnsupportedHull, type BoatSpecs, type VPP } from './vpp';
+import { DEG, RAD, KTS_TO_MS } from '../geo/units';
+import { pyFixed, UnsupportedHull, type BoatSpecs } from './vpp';
 
 // ── Physical constants ──────────────────────────────────────────────
 const RHO_AIR = 1.225; // kg/m³
 const RHO_WATER = 1025.0; // kg/m³ (seawater)
 const G = 9.81; // m/s²
-/** The Python module's own knot factor (not 1852/3600): kept for parity. */
-export const VPP_KTS_TO_MS = 0.514444;
-
-// CPython math.radians / math.degrees multiply by these constants.
-const DEG_TO_RAD = Math.PI / 180.0;
-const RAD_TO_DEG = 180.0 / Math.PI;
 
 // ── Standard output grid (ORC-IMS inspired) ─────────────────────────
 export const POLAR_TWA_DEG: readonly number[] = [
@@ -87,12 +82,12 @@ export function dragForceN(boat_speed_ms: number, displacement_kg: number, lwl_m
 
 /** (AWS m/s, AWA degrees in [0, 180]) for true wind + boat speed on the TWA heading. */
 export function apparentWind(tws_ms: number, twa_deg: number, vs_ms: number): [number, number] {
-  const twa_r = twa_deg * DEG_TO_RAD;
+  const twa_r = twa_deg * DEG;
   const x = tws_ms * Math.cos(twa_r) + vs_ms;
   const y = tws_ms * Math.sin(twa_r);
   const aws = Math.hypot(x, y);
   if (aws < 1e-9) return [0.0, 0.0];
-  let awa = Math.atan2(y, x) * RAD_TO_DEG;
+  let awa = Math.atan2(y, x) * RAD;
   awa = Math.abs(awa);
   if (awa > 180.0) awa = 360.0 - awa;
   return [aws, awa];
@@ -138,8 +133,11 @@ export interface VppTable {
   speeds_ms: number[][];
 }
 
-/** Compute the polar table; throws UnsupportedHull for multihulls. */
-export function computePolarTable(specs: BoatSpecs): VppTable {
+/**
+ * The polar table on the standard grid; throws UnsupportedHull for multihulls. `twsMs` evaluates at other wind
+ * speeds (the parity tests pass the Python's, which used a rounded knot).
+ */
+export function computePolarTable(specs: BoatSpecs, twsMs: readonly number[] = POLAR_TWS_KT.map(k => k * KTS_TO_MS)): VppTable {
   const hull = specs.hull_type ?? 'monohull';
   if (hull !== 'monohull') {
     throw new UnsupportedHull(`Empirical VPP handles monohulls only; got '${hull}'. Use a physics VPP for multihulls.`);
@@ -152,9 +150,9 @@ export function computePolarTable(specs: BoatSpecs): VppTable {
   // Cap the search at 1.08 x hull speed to avoid numerical blow-up.
   const vs_max = v_hull * 1.08;
 
-  const speeds: number[][] = POLAR_TWA_DEG.map(() => new Array<number>(POLAR_TWS_KT.length).fill(0));
-  for (let j = 0; j < POLAR_TWS_KT.length; j++) {
-    const tws_ms = POLAR_TWS_KT[j] * VPP_KTS_TO_MS;
+  const speeds: number[][] = POLAR_TWA_DEG.map(() => new Array<number>(twsMs.length).fill(0));
+  for (let j = 0; j < twsMs.length; j++) {
+    const tws_ms = twsMs[j];
     for (let i = 0; i < POLAR_TWA_DEG.length; i++) {
       const twa = POLAR_TWA_DEG[i];
       if (twa < 30.0) {
@@ -164,7 +162,7 @@ export function computePolarTable(specs: BoatSpecs): VppTable {
       speeds[i][j] = solveBoatSpeed(twa, tws_ms, sa_up, sa_dn, specs.displacement_kg, specs.lwl_m, specs.beam_m, vs_max);
     }
   }
-  return { twa_deg: [...POLAR_TWA_DEG], tws_ms: POLAR_TWS_KT.map(k => k * VPP_KTS_TO_MS), speeds_ms: speeds };
+  return { twa_deg: [...POLAR_TWA_DEG], tws_ms: [...twsMs], speeds_ms: speeds };
 }
 
 /** `EmpiricalVPP.compute_polar`. */
@@ -172,15 +170,6 @@ export function computePolar(specs: BoatSpecs): PolarDiagram {
   const t = computePolarTable(specs);
   return new PolarDiagram(t.twa_deg, t.tws_ms, t.speeds_ms.flat());
 }
-
-export class EmpiricalVPP implements VPP {
-  computePolar(specs: BoatSpecs): PolarDiagram {
-    return computePolar(specs);
-  }
-}
-
-/** Knot factor the routing server's CSV writer uses (routing.types.KTS_TO_MS). */
-const CSV_KTS_TO_MS = 0.5144444444;
 
 /**
  * CSV text in the layout `PolarDiagram.save_csv` writes and
@@ -190,9 +179,9 @@ const CSV_KTS_TO_MS = 0.5144444444;
  */
 export function polarCsv(table: VppTable, headerLabel = 'twa/tws'): string {
   const lines: string[] = [];
-  lines.push([csvCell(headerLabel), ...table.tws_ms.map(t => pyFixed(t / CSV_KTS_TO_MS, 1))].join(','));
+  lines.push([csvCell(headerLabel), ...table.tws_ms.map(t => pyFixed(t / KTS_TO_MS, 1))].join(','));
   for (let i = 0; i < table.twa_deg.length; i++) {
-    lines.push([pyFixed(table.twa_deg[i], 0), ...table.speeds_ms[i].map(v => pyFixed(v / CSV_KTS_TO_MS, 2))].join(','));
+    lines.push([pyFixed(table.twa_deg[i], 0), ...table.speeds_ms[i].map(v => pyFixed(v / KTS_TO_MS, 2))].join(','));
   }
   return lines.map(l => l + '\r\n').join('');
 }

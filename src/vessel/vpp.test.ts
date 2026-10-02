@@ -18,7 +18,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { pyFixed, pyFloatRepr, slugifyPolarName, SpecsError, UnsupportedHull, validateSpecs, type BoatSpecs } from './vpp';
-import { computePolar, computePolarTable, polarCsv, POLAR_TWA_DEG } from './vpp_empirical';
+import { computePolarTable, polarCsv, POLAR_TWA_DEG, POLAR_TWS_KT } from './vpp_empirical';
+import { KTS_TO_MS } from '../geo/units';
 import { PolarDiagram } from './polar';
 
 interface Ref {
@@ -469,10 +470,17 @@ const REL_TOL = 1e-6;
 
 for (const [name, ref] of Object.entries(REF)) {
   test(`VPP ${name}: every cell matches the Python to 1e-6 relative`, () => {
-    const t = computePolarTable(ref.specs);
+    // The Python used the rounded knot 0.514444 for its wind speeds; the
+    // port evaluates at those same speeds here so the comparison is of the
+    // VPP alone. The production table uses the exact knot (geo/units).
+    const t = computePolarTable(ref.specs, ref.tws_ms);
     assert.deepEqual(t.twa_deg, [...POLAR_TWA_DEG]);
-    assert.equal(t.tws_ms.length, ref.tws_ms.length);
-    for (let j = 0; j < ref.tws_ms.length; j++) assert.ok(Math.abs(t.tws_ms[j] - ref.tws_ms[j]) <= 1e-12, `tws[${j}]`);
+    assert.deepEqual(t.tws_ms, ref.tws_ms);
+    const std = computePolarTable(ref.specs);
+    assert.deepEqual(
+      std.tws_ms,
+      POLAR_TWS_KT.map(k => k * KTS_TO_MS)
+    );
     assert.equal(t.speeds_ms.length, ref.speeds_ms.length);
     for (let i = 0; i < ref.speeds_ms.length; i++) {
       for (let j = 0; j < ref.speeds_ms[i].length; j++) {
@@ -489,7 +497,7 @@ for (const [name, ref] of Object.entries(REF)) {
   });
 
   test(`VPP ${name}: CSV identical to PolarDiagram.save_csv and loads back`, () => {
-    const t = computePolarTable(ref.specs);
+    const t = computePolarTable(ref.specs, ref.tws_ms);
     const csv = polarCsv(t, slugifyPolarName(name));
     assert.equal(csv, ref.csv);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vpp-'));
@@ -499,8 +507,8 @@ for (const [name, ref] of Object.entries(REF)) {
     assert.deepEqual(Array.from(p.twa), [...POLAR_TWA_DEG]);
     assert.equal(p.tws.length, 10);
     // 0.01 kt rounding on disk.
-    const direct = computePolar(ref.specs);
-    for (let k = 0; k < p.speeds.length; k++) assert.ok(Math.abs(p.speeds[k] - direct.speeds[k]) <= 0.005 * 0.5145 + 1e-9);
+    const direct = t.speeds_ms.flat();
+    for (let k = 0; k < p.speeds.length; k++) assert.ok(Math.abs(p.speeds[k] - direct[k]) <= 0.005 * KTS_TO_MS + 1e-9);
   });
 }
 

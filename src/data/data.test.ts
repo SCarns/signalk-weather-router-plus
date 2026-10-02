@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { HOUR_S } from '../geo/units';
 import assert from 'node:assert/strict';
 import { availableSteps, cycleFor } from './ecmwf';
 import { buildStep, cropField, nanFillLimited, sampleField, ForecastStore, type FieldGrid } from './forecast';
@@ -164,14 +165,14 @@ import { resolveCycle } from './loader';
 
 test('latestExpectedCycle applies the 400-minute lag and skips short cycles for long horizons', () => {
   // 20:00Z minus 400 min = 13:20Z → 12z cycle.
-  const c = latestExpectedCycle(new Date('2026-09-27T20:00:00Z'), 72);
+  const c = latestExpectedCycle(new Date('2026-09-27T20:00:00Z'), 72 * HOUR_S);
   assert.equal(c.yyyymmdd + c.hh, '2026092712');
   // 12:00Z minus 400 min = 05:20Z → 00z cycle.
-  assert.equal(latestExpectedCycle(new Date('2026-09-27T12:00:00Z'), 72).hh, '00');
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T12:00:00Z'), 72 * HOUR_S).hh, '00');
   // 14:00Z minus 400 min = 07:20Z → 06z (to 144 h) is fine for 72 and 144 h but not for 150 h → falls back to 00z.
-  assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 72).hh, '06');
-  assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 144).hh, '06');
-  assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 150).hh, '00');
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 72 * HOUR_S).hh, '06');
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 144 * HOUR_S).hh, '06');
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 150 * HOUR_S).hh, '00');
 });
 
 test('parseRetryAfterMs handles seconds and HTTP dates', () => {
@@ -207,7 +208,7 @@ test('EcmwfClient retries 429 with backoff, honours Retry-After, then falls back
       sleeps.push(ms);
     },
   });
-  const cycle = latestExpectedCycle(new Date('2026-09-27T20:00:00Z'), 24);
+  const cycle = latestExpectedCycle(new Date('2026-09-27T20:00:00Z'), 24 * HOUR_S);
   const idx = await client.fetchIndex(cycle, 'oper', 0);
   assert.equal(idx.length, 1);
   assert.equal(calls.filter(c => c.startsWith('https://primary')).length, 3); // exhausted
@@ -230,7 +231,7 @@ test('EcmwfClient does not retry 404 and reports it', async () => {
     fetchImpl,
     sleepImpl: async () => undefined,
   });
-  const cycle = latestExpectedCycle(new Date('2026-09-27T20:00:00Z'), 24);
+  const cycle = latestExpectedCycle(new Date('2026-09-27T20:00:00Z'), 24 * HOUR_S);
   assert.equal(await client.stepPublished(cycle, 'oper', 0), false);
   assert.equal(n, 1);
 });
@@ -244,7 +245,7 @@ test('resolveCycle uses a fully cached expected cycle without any network call',
   }) as unknown as typeof fetch;
   const client = new EcmwfClient({ baseUrl: 'https://x', fallbackUrls: [], cacheDir: dir, fetchImpl, sleepImpl: async () => undefined });
   const now = new Date('2026-09-27T20:00:00Z');
-  const expected = latestExpectedCycle(now, 6);
+  const expected = latestExpectedCycle(now, 6 * HOUR_S);
   // Fake a complete cache for +0/+3/+6 h: 3 atm params + 3 wave params per step.
   for (const step of [0, 3, 6]) {
     for (const [stream, params] of [
@@ -258,13 +259,13 @@ test('resolveCycle uses a fully cached expected cycle without any network call',
       }
     }
   }
-  const r = await resolveCycle(client, 6, { now });
+  const r = await resolveCycle(client, 6 * HOUR_S, { now });
   assert.equal(r.fromCache, true);
   assert.equal(r.cycle.yyyymmdd + r.cycle.hh, expected.yyyymmdd + expected.hh);
   assert.equal(n, 0);
   // With the network down and only an older cached cycle, that cycle is used.
   const later = new Date(now.getTime() + 6 * 3600_000);
-  const r2 = await resolveCycle(client, 6, { now: later });
+  const r2 = await resolveCycle(client, 6 * HOUR_S, { now: later });
   assert.equal(r2.fromCache, true);
   assert.ok(r2.fallback && r2.fallback.includes('using cached cycle'));
   assert.equal(r2.cycle.yyyymmdd + r2.cycle.hh, expected.yyyymmdd + expected.hh);

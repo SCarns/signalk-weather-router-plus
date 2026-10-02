@@ -2,12 +2,35 @@
 
 ## 0.1.0-beta.5
 
+- **Weather routing inside Freeboard-SK.** With Freeboard-SK 3.0 or
+  later: draw a route on the chart as usual (start, waypoints,
+  destination), tap the grid icon at the top right, then **Weather
+  route** → **Weather-route it**, and the drawn route becomes the weather
+  route, still editable, saved with Freeboard's own Save. Or route from
+  your boat to a position or a saved waypoint. Each point shows its ETA,
+  sailing or motoring, and the wind.
+- **The weather layers in Freeboard-SK too.** Wind, waves, currents, sea
+  state, rain, temperatures and tide height appear in Freeboard's Chart
+  list, with Freeboard's own time control to play them through the
+  forecast.
+- **Wind and wave limits.** Set a maximum wind speed or wave height in
+  the Plan tab (or in Settings as a default) and the router keeps every
+  leg under it, or tells you there is no such route, and why: how many
+  of its options were over the limit, and whether it had run past the
+  end of the forecast.
+- **You can see where the forecast ends.** A route that goes on past the
+  last forecast step now shows it: an amber badge with the end time, the
+  legs after it drawn dashed with a "forecast ends" marker, a chip on
+  those itinerary cards, and a note in the saved route. Those legs run on
+  conditions held at the last step. The **Forecast horizon** setting
+  (Settings tab, Forecast group) reaches up to 15 days.
 - **Simpler vessel settings.** Draught, air draft, length, beam,
   under-keel and overhead margins, maximum wave height and tack penalty
   are gone from the Settings tab and the Plan tab: the router never used
   them (it has no depth or bridge data). What is left is what it does
   use: name, speed under power and polar performance. A working tack
-  penalty and wave-height limit are on the to-do list.
+  penalty is on the to-do list; the wave-height limit is now a routing
+  setting (above).
 - **First setup fixed.** On a fresh install the configuration panel's
   Save button was greyed out until you changed something; it now reads
   "Save and enable the plugin" and works straight away. If you updated

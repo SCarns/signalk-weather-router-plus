@@ -35,20 +35,24 @@
  */
 
 import * as fs from 'node:fs';
+import { validateRouteRequest } from './request_schema';
+import { NotStartedError } from './errors';
+import { FIELD_LAYERS, isFieldLayer } from './layers';
+import { HOUR_MS } from '../geo/units';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import type { IRouter, Request, Response } from 'express';
-import type { JobManager } from './jobs';
+import { type JobManager, type Job } from './jobs';
 import type { QueryArgs, QueryKind, RouteRequest } from './protocol';
 import { openApiDocument } from './openapi';
 import { buildLegends } from './legends';
 import { listPolars, loadPolarCached, PolarNotFoundError, polarAngles, polarFromSpecs, polarTable, resolvePolarPath } from './polars';
 import type { BBox } from '../geo/geodesy';
 import { SettingsValidationError, type AppSettings, type SettingsGroup, type SettingSpec } from './settings';
-import { validateLegOptions } from '../engine/multileg';
 import { checkTile, roundHour, TILE_LAYERS, type TileLayer, type TileService } from './tiles';
 import { joinField, joinLandMask, joinPoints, joinPressure, type TileGetter } from './tilejoin';
-import type { FieldLayer } from './overlays';
+import { isPngLayer, PNG_LAYERS, PngCache, renderTilePng } from './pngtiles';
+import { GLYPH_LAYERS, isGlyphLayer, renderGlyphTilePng } from './glyphtiles';
 
 export interface ApiDeps {
   pluginId: string;
@@ -129,16 +133,31 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       return null;
     }
   };
+  /** The job named in the URL, after the 503 / 404 answers; the handler runs only when it exists. */
+  const withJob = (req: Request, res: Response, fn: (jobs: JobManager, job: Job) => void | Promise<void>): void => {
+    const jobs = jobsOr503(res);
+    if (!jobs) return;
+    const job = jobs.get(String(req.params.id));
+    if (!job) {
+      json(res, 404, { error: 'job not found' });
+      return;
+    }
+    void fn(jobs, job);
+  };
+  /** Answer an error: the status comes from its class (503 not started, 404 no such polar), else `code`. */
   const fail = (res: Response, err: unknown, code = 400): void => {
     if (res.headersSent || res.destroyed) return; // client gone (cancelled query)
-    json(res, err instanceof PolarNotFoundError ? 404 : code, { error: (err as Error).message });
+    const status = err instanceof NotStartedError ? 503 : err instanceof PolarNotFoundError ? 404 : code;
+    json(res, status, { error: (err as Error).message });
   };
 
   // The page's own scripts and styles are referenced with ?v=<tag>, where
   // the tag changes whenever any public file changes, so browsers and
   // proxies in front of Signal K (e.g. Cloudflare) never run a stale
   // script after an update. The versioned files can then be cached hard.
+  let publicVersionTag: string | null = null;
   const publicVersion = (): string => {
+    if (publicVersionTag !== null) return publicVersionTag;
     let h = 0;
     try {
       for (const f of fs.readdirSync(deps.publicDir).sort()) {
@@ -149,7 +168,8 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     } catch {
       /* fall back to a constant tag */
     }
-    return (h >>> 0).toString(36);
+    publicVersionTag = (h >>> 0).toString(36); // the files change only with an install, which restarts the server
+    return publicVersionTag;
   };
   const servePublic = (rel: string, req: Request, res: Response): void => {
     const file = path.join(deps.publicDir, rel);
@@ -172,6 +192,19 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     }
     // Versioned requests (from the page) can be cached; bare ones revalidate.
     res.setHeader('Cache-Control', req.query.v ? 'public, max-age=31536000, immutable' : 'no-cache');
+    if (/^rp-[a-z]+\.js$/.test(rel)) {
+      // The page's ES modules import each other by bare relative path; give
+      // those specifiers the same ?v= tag as the script tags, so the browser
+      // sees one URL (one module instance) per file and caches it hard.
+      try {
+        const v = publicVersion();
+        const js = fs.readFileSync(file, 'utf8').replace(/^(\s*import\b[^'"\n]*['"]\.\/rp-[a-z]+\.js)(['"])/gm, `$1?v=${v}$2`);
+        res.type('application/javascript').send(js);
+      } catch {
+        res.status(404).send(`not found: ${req.path}`);
+      }
+      return;
+    }
     res.sendFile(file, (err?: Error) => {
       if (err && !res.headersSent) res.status(404).send(`not found: ${req.path}`);
     });
@@ -189,7 +222,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       res.setHeader('Cache-Control', 'no-store');
       json(res, 200, deps.getSettings());
     } catch (err) {
-      fail(res, err, 503);
+      fail(res, err);
     }
   });
 
@@ -200,7 +233,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       json(res, 200, deps.updateSettings(req.body));
     } catch (err) {
       if (err instanceof SettingsValidationError) json(res, 400, { error: err.message, errors: err.errors });
-      else fail(res, err, /not started/.test((err as Error).message) ? 503 : 500);
+      else fail(res, err, 500);
     }
   });
 
@@ -231,7 +264,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
 
   const polarLib = (): { polarFile: string | null; polarsDir: string | null; userDir?: string | null } => {
     const lib = deps.polarLibrary();
-    if (!lib) throw new Error('plugin not started');
+    if (!lib) throw new NotStartedError();
     return lib;
   };
   ro.get('/api/polars', (_req: Request, res: Response) => {
@@ -303,21 +336,20 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     };
 
   const cacheHeaders = (res: Response, t: Date): void => {
-    res.setHeader('Cache-Control', t.getTime() < Date.now() - 3600_000 ? 'public, max-age=86400' : 'public, max-age=1800');
+    res.setHeader('Cache-Control', t.getTime() < Date.now() - HOUR_MS ? 'public, max-age=86400' : 'public, max-age=1800');
   };
 
   ro.get('/api/field', async (req: Request, res: Response) => {
     try {
       const layer = String(req.query.layer ?? '');
-      if (!['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current', 'tide'].includes(layer))
-        throw new Error('layer must be one of wind, waves, msl, temperature, sst, precip, sea_state, current, tide');
+      if (!isFieldLayer(layer)) throw new Error(`layer must be one of ${FIELD_LAYERS.join(', ')}`);
       const bbox = parseBBox(req.query.bbox);
       const time = parseTime(req.query.time);
       const resDeg = num(req.query.res, 0.25, 0.002, 2, 'res');
       const service = tilesOr503(res);
       if (!service) return;
       const hour = roundHour(time.getTime());
-      const out = await joinField(getter(service, clientGone(res)), layer as FieldLayer, bbox, hour, resDeg);
+      const out = await joinField(getter(service, clientGone(res)), layer, bbox, hour, resDeg);
       cacheHeaders(res, new Date(hour));
       json(res, 200, out);
     } catch (err) {
@@ -376,6 +408,42 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const out = await joinPoints(getter(service, clientGone(res)), 'arrows', bbox, hour, resDeg);
       cacheHeaders(res, new Date(hour));
       json(res, 200, out);
+    } catch (err) {
+      fail(res, err);
+    }
+  });
+
+  // The colour overlays as PNG image tiles (pngtiles.ts), for chartplotters
+  // that draw image tiles (Freeboard-SK's chart layers): the picture the web
+  // app paints from the data tile, rendered on demand from the data tiles
+  // below and kept in memory. Registered before the data-tile route, whose
+  // `:y` would otherwise swallow "5.png".
+  const pngCache = new PngCache(48e6);
+  ro.get('/api/tile/:layer/:z/:x/:y.png', async (req: Request, res: Response) => {
+    try {
+      const service = deps.tiles();
+      if (!service) {
+        json(res, 503, { error: deps.notReady() });
+        return;
+      }
+      const layer = String(req.params.layer);
+      if (!isPngLayer(layer) && !isGlyphLayer(layer))
+        throw new Error(`layer must be one of ${[...PNG_LAYERS, ...GLYPH_LAYERS].join(', ')}`);
+      const z = Number(req.params.z);
+      const x = Number(req.params.x);
+      const y = Number(req.params.y);
+      checkTile(z, x, y);
+      const hourMs = roundHour(parseTime(req.query.time).getTime());
+      deps.noteTileRequest(z, x, y);
+      const { png, cached } = isGlyphLayer(layer)
+        ? await renderGlyphTilePng(service, pngCache, layer, z, x, y, hourMs, clientGone(res))
+        : await renderTilePng(service, pngCache, layer, z, x, y, hourMs, clientGone(res));
+      if (res.destroyed) return;
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('X-Tile-Cache', cached ? 'hit' : 'miss');
+      res.setHeader('Access-Control-Expose-Headers', 'X-Tile-Cache');
+      cacheHeaders(res, new Date(hourMs));
+      res.status(200).end(png);
     } catch (err) {
       fail(res, err);
     }
@@ -441,7 +509,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const from =
         req.query.from !== undefined && req.query.from !== ''
           ? parseTime(req.query.from)
-          : new Date(Math.floor(Date.now() / 3600_000) * 3600_000);
+          : new Date(Math.floor(Date.now() / HOUR_MS) * HOUR_MS);
       const hours = num(req.query.hours, 72, 1, 240, 'hours');
       const stepH = num(req.query.step_h, 1, 1, 24, 'step_h');
       const service = tilesOr503(res);
@@ -461,7 +529,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       json(res, 400, { error: 'JSON body required: {start:{lat,lon}, end:{lat,lon}, ...}' });
       return;
     }
-    const err = validateRequestShape(body);
+    const err = validateRouteRequest(body);
     if (err) {
       json(res, 400, { error: err });
       return;
@@ -487,187 +555,123 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   });
 
   ro.get('/api/routes/:id', (req: Request, res: Response) => {
-    const jobs = jobsOr503(res);
-    if (!jobs) return;
-    const job = jobs.get(req.params.id);
-    if (!job) {
-      json(res, 404, { error: 'job not found' });
-      return;
-    }
-    json(res, 200, jobs.toPublic(job));
+    withJob(req, res, (jobs, job) => {
+      json(res, 200, jobs.toPublic(job));
+    });
   });
 
   ro.get('/api/routes/:id/result', (req: Request, res: Response) => {
-    const jobs = jobsOr503(res);
-    if (!jobs) return;
-    const job = jobs.get(req.params.id);
-    if (!job) {
-      json(res, 404, { error: 'job not found' });
-      return;
-    }
-    if (job.status !== 'done' || !job.geojson) {
-      json(res, 409, { error: `job is ${job.status}`, status: job.status, message: job.error });
-      return;
-    }
-    json(res, 200, job.geojson);
+    withJob(req, res, (_jobs, job) => {
+      if (job.status !== 'done' || !job.geojson) {
+        json(res, 409, { error: `job is ${job.status}`, status: job.status, message: job.error });
+        return;
+      }
+      json(res, 200, job.geojson);
+    });
   });
 
   ro.get('/api/routes/:id/skeleton', (req: Request, res: Response) => {
-    const jobs = jobsOr503(res);
-    if (!jobs) return;
-    const job = jobs.get(req.params.id);
-    if (!job) {
-      json(res, 404, { error: 'job not found' });
-      return;
-    }
-    if (!job.skeleton) {
-      json(res, 404, { error: 'no skeleton for this job' });
-      return;
-    }
-    json(res, 200, job.skeleton);
+    withJob(req, res, (_jobs, job) => {
+      if (!job.skeleton) {
+        json(res, 404, { error: 'no skeleton for this job' });
+        return;
+      }
+      json(res, 200, job.skeleton);
+    });
+  });
+
+  // Every search stage's front and best path, compact (display only):
+  // [{leg, stage, total, points: [[lon, lat, timeMs, viaCount], …], best: [[lon, lat], …]}, …].
+  ro.get('/api/routes/:id/fronts', (req: Request, res: Response) => {
+    withJob(req, res, (_jobs, job) => {
+      if (!job.fronts) {
+        json(res, 404, { error: 'no fronts for this job' });
+        return;
+      }
+      json(res, 200, job.fronts);
+    });
   });
 
   ro.get('/api/routes/:id/signalk', (req: Request, res: Response) => {
-    const jobs = jobsOr503(res);
-    if (!jobs) return;
-    const job = jobs.get(req.params.id);
-    if (!job) {
-      json(res, 404, { error: 'job not found' });
-      return;
-    }
-    if (job.status !== 'done' || !job.skRoute) {
-      json(res, 409, { error: `job is ${job.status}` });
-      return;
-    }
-    json(res, 200, job.skRoute);
+    withJob(req, res, (_jobs, job) => {
+      if (job.status !== 'done' || !job.skRoute) {
+        json(res, 409, { error: `job is ${job.status}` });
+        return;
+      }
+      json(res, 200, job.skRoute);
+    });
   });
 
   ro.get('/api/routes/:id/events', (req: Request, res: Response) => {
-    const jobs = jobsOr503(res);
-    if (!jobs) return;
-    const job = jobs.get(req.params.id);
-    if (!job) {
-      json(res, 404, { error: 'job not found' });
-      return;
-    }
-    res.status(200);
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders?.();
-    const lastIdHeader = req.headers['last-event-id'];
-    const lastId = lastIdHeader ? Number(Array.isArray(lastIdHeader) ? lastIdHeader[0] : lastIdHeader) : 0;
-    const write = (ev: { id: number; event: string; data: unknown }): void => {
-      res.write(`id: ${ev.id}\nevent: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
-    };
-    for (const ev of job.events) if (ev.id > lastId) write(ev);
-    const terminal = job.status === 'done' || job.status === 'failed' || job.status === 'cancelled';
-    if (terminal) {
-      res.end();
-      return;
-    }
-    const listener = (id: string, ev: { id: number; event: string; data: unknown }): void => {
-      if (id !== job.id) return;
-      write(ev);
-      if (ev.event === 'done' || ev.event === 'error') {
-        cleanup();
+    withJob(req, res, (jobs, job) => {
+      res.status(200);
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders?.();
+      const lastIdHeader = req.headers['last-event-id'];
+      const lastId = lastIdHeader ? Number(Array.isArray(lastIdHeader) ? lastIdHeader[0] : lastIdHeader) : 0;
+      const write = (ev: { id: number; event: string; data: unknown }): void => {
+        res.write(`id: ${ev.id}\nevent: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
+      };
+      for (const ev of job.events) if (ev.id > lastId) write(ev);
+      const terminal = job.status === 'done' || job.status === 'failed' || job.status === 'cancelled';
+      if (terminal) {
         res.end();
+        return;
       }
-    };
-    const keepalive = setInterval(() => res.write(': keepalive\n\n'), 15000);
-    const cleanup = (): void => {
-      clearInterval(keepalive);
-      jobs.off('event', listener);
-    };
-    jobs.on('event', listener);
-    req.on('close', cleanup);
+      const listener = (id: string, ev: { id: number; event: string; data: unknown }): void => {
+        if (id !== job.id) return;
+        write(ev);
+        if (ev.event === 'done' || ev.event === 'error') {
+          cleanup();
+          res.end();
+        }
+      };
+      const keepalive = setInterval(() => res.write(': keepalive\n\n'), 15000);
+      const cleanup = (): void => {
+        clearInterval(keepalive);
+        jobs.off('event', listener);
+      };
+      jobs.on('event', listener);
+      req.on('close', cleanup);
+    });
   });
 
   rw.post('/api/routes/:id/cancel', (req: Request, res: Response) => {
-    const jobs = jobsOr503(res);
-    if (!jobs) return;
-    const job = jobs.get(req.params.id);
-    if (!job) {
-      json(res, 404, { error: 'job not found' });
-      return;
-    }
-    const what = jobs.cancel(job.id);
-    if (what === 'running') deps.cancelRunning(job.id);
-    json(res, 202, { id: job.id, status: what ? 'cancelling' : job.status });
+    withJob(req, res, (jobs, job) => {
+      const what = jobs.cancel(job.id);
+      if (what === 'running') deps.cancelRunning(job.id);
+      json(res, 202, { id: job.id, status: what ? 'cancelling' : job.status });
+    });
   });
 
   rw.post('/api/routes/:id/publish', async (req: Request, res: Response) => {
-    const jobs = jobsOr503(res);
-    if (!jobs) return;
-    const job = jobs.get(req.params.id);
-    if (!job) {
-      json(res, 404, { error: 'job not found' });
-      return;
-    }
-    if (job.status !== 'done') {
-      json(res, 409, { error: `job is ${job.status}` });
-      return;
-    }
-    try {
-      const resourceId = await deps.publish(job.id);
-      json(res, 200, { id: job.id, resource_id: resourceId, href: `/signalk/v2/api/resources/routes/${resourceId}` });
-    } catch (err) {
-      fail(res, err, 502);
-    }
+    withJob(req, res, async (_jobs, job) => {
+      if (job.status !== 'done') {
+        json(res, 409, { error: `job is ${job.status}` });
+        return;
+      }
+      try {
+        const resourceId = await deps.publish(job.id);
+        json(res, 200, { id: job.id, resource_id: resourceId, href: `/signalk/v2/api/resources/routes/${resourceId}` });
+      } catch (err) {
+        fail(res, err, 502);
+      }
+    });
   });
 
   rw.delete('/api/routes/:id', (req: Request, res: Response) => {
-    const jobs = jobsOr503(res);
-    if (!jobs) return;
-    const job = jobs.get(req.params.id);
-    if (!job) {
-      json(res, 404, { error: 'job not found' });
-      return;
-    }
-    if (job.status === 'running') {
-      json(res, 409, { error: 'cancel the running job before deleting it' });
-      return;
-    }
-    jobs.delete(job.id);
-    res.status(204).end();
+    withJob(req, res, (jobs, job) => {
+      if (job.status === 'running') {
+        json(res, 409, { error: 'cancel the running job before deleting it' });
+        return;
+      }
+      jobs.delete(job.id);
+      res.status(204).end();
+    });
   });
 
   ro.get('/api/openapi.json', (_req: Request, res: Response) => json(res, 200, openApiDocument(deps.basePath)));
-}
-
-function validateRequestShape(b: RouteRequest): string | null {
-  const isPt = (p: unknown): p is { lat: number; lon: number } =>
-    !!p && typeof p === 'object' && typeof (p as { lat: unknown }).lat === 'number' && typeof (p as { lon: unknown }).lon === 'number';
-  if (!isPt(b.start)) return 'start must be {lat, lon}';
-  if (!isPt(b.end)) return 'end must be {lat, lon}';
-  if (b.waypoints !== undefined) {
-    if (!Array.isArray(b.waypoints) || !b.waypoints.every(isPt)) return 'waypoints must be an array of {lat, lon}';
-    if (b.waypoints.length > 20) return 'at most 20 waypoints';
-  }
-  const legErr = validateLegOptions(b.precision, b.arrival_radius_m, b.waypoints);
-  if (legErr) return legErr;
-  if (b.mode !== undefined && !['sail_max', 'fastest', 'motor'].includes(b.mode)) return 'mode must be sail_max, fastest or motor';
-  if (b.departure !== undefined && b.departure !== '' && Number.isNaN(Date.parse(b.departure))) return 'departure must be ISO 8601';
-  if (b.stages !== undefined && (typeof b.stages !== 'number' || b.stages < 4 || b.stages > 200)) return 'stages must be 4..200';
-  if (b.sail_thresh_ms !== undefined && (typeof b.sail_thresh_ms !== 'number' || b.sail_thresh_ms < 0))
-    return 'sail_thresh_ms must be >= 0';
-  if (b.simplify_m !== undefined && (typeof b.simplify_m !== 'number' || !(b.simplify_m >= 0 && b.simplify_m <= 5000)))
-    return 'simplify_m must be 0..5000';
-  if (b.smoother !== undefined && typeof b.smoother !== 'boolean') return 'smoother must be true or false';
-  if (
-    b.smoother_tolerance !== undefined &&
-    (typeof b.smoother_tolerance !== 'number' || !(b.smoother_tolerance >= 0 && b.smoother_tolerance <= 0.5))
-  )
-    return 'smoother_tolerance must be 0..0.5';
-  if (b.name !== undefined && typeof b.name !== 'string') return 'name must be a string';
-  if (b.vessel !== undefined && (b.vessel === null || typeof b.vessel !== 'object')) return 'vessel must be an object';
-  if (
-    b.vessel?.polar_performance !== undefined &&
-    (typeof b.vessel.polar_performance !== 'number' || !(b.vessel.polar_performance >= 0.3 && b.vessel.polar_performance <= 1.2))
-  )
-    return 'vessel.polar_performance must be 0.3..1.2';
-  if (b.vessel?.polar !== undefined && (typeof b.vessel.polar !== 'string' || b.vessel.polar.length > 200))
-    return 'vessel.polar must be a polar token from /api/polars';
-  return null;
 }

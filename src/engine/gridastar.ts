@@ -19,8 +19,12 @@
  * flag, coast memo), plus maps for split-cell components and the heap.
  */
 
-import { DEG, R_EARTH_M, haversineDistanceM } from '../geo/geodesy';
+import { DEG, haversineDistanceM } from '../geo/geodesy';
+import { M_PER_DEG } from '../geo/units';
 import type { WaterGrid } from '../geo/watergrid';
+import { MinHeap } from './heap';
+import { GridAstarError, RouteCancelled } from './errors';
+import { stringPull } from './pathutil';
 
 export interface GridNode {
   r: number;
@@ -51,70 +55,15 @@ export interface GridAstarResult {
   windowCells: number;
 }
 
-export class GridAstarError extends Error {
-  constructor(
-    message: string,
-    readonly exhausted: boolean,
-    readonly expanded: number
-  ) {
-    super(message);
-    this.name = 'GridAstarError';
-  }
-}
+export { GridAstarError };
 
 const COAST_RADIUS = 4;
 const COAST_MAX_PENALTY = 0.4;
-const M_PER_DEG = R_EARTH_M * DEG;
 
 /** Coast penalty factor for a Chebyshev distance to land in cells (1 = adjacent). */
 export function coastFactor(d: number): number {
   if (d > COAST_RADIUS) return 1;
   return 1 + (COAST_MAX_PENALTY * (COAST_RADIUS + 1 - d)) / COAST_RADIUS;
-}
-
-class Heap {
-  private k = new Float64Array(1 << 14);
-  private v = new Float64Array(1 << 14);
-  size = 0;
-  push(key: number, val: number): void {
-    if (this.size === this.k.length) {
-      const k2 = new Float64Array(this.k.length * 2);
-      k2.set(this.k);
-      this.k = k2;
-      const v2 = new Float64Array(this.v.length * 2);
-      v2.set(this.v);
-      this.v = v2;
-    }
-    let i = this.size++;
-    while (i > 0) {
-      const p = (i - 1) >> 1;
-      if (this.k[p] <= key) break;
-      this.k[i] = this.k[p];
-      this.v[i] = this.v[p];
-      i = p;
-    }
-    this.k[i] = key;
-    this.v[i] = val;
-  }
-  pop(): number {
-    const top = this.v[0];
-    const lastK = this.k[--this.size];
-    const lastV = this.v[this.size];
-    let i = 0;
-    for (;;) {
-      const l = 2 * i + 1;
-      if (l >= this.size) break;
-      const r = l + 1;
-      const m = r < this.size && this.k[r] < this.k[l] ? r : l;
-      if (this.k[m] >= lastK) break;
-      this.k[i] = this.k[m];
-      this.v[i] = this.v[m];
-      i = m;
-    }
-    this.k[i] = lastK;
-    this.v[i] = lastV;
-    return top;
-  }
 }
 
 // Direction codes 0..7: E, N, W, S, NE, NW, SW, SE.
@@ -197,7 +146,7 @@ export function gridAstar(
     return d;
   };
   const getG = (k: number): number => (k % 16 === 0 ? g[k / 16] : (splitG.get(k) ?? Infinity));
-  const heap = new Heap();
+  const heap = new MinHeap();
   for (const s0 of sources) {
     const s = { ...s0, c: norm(s0.c) };
     if (!inWin(s.r, s.c)) continue;
@@ -234,7 +183,7 @@ export function gridAstar(
       break;
     }
     if (++expanded > maxExp) throw new GridAstarError(`search stopped after ${maxExp} expansions`, false, expanded);
-    if ((expanded & 0xffff) === 0 && opts.shouldCancel?.()) throw new GridAstarError('cancelled', false, expanded);
+    if ((expanded & 0xffff) === 0 && opts.shouldCancel?.()) throw new RouteCancelled();
     const r = win.r0 + Math.floor(l / W);
     const c = win.c0 + (l % W);
     const gk = getG(k);
@@ -350,31 +299,10 @@ export function gridLineOfSight(grid: WaterGrid, a: GridNode, b: GridNode, block
  * always kept.
  */
 export function smoothGridPath(grid: WaterGrid, path: GridNode[], maxCells = 150, blocked?: Set<number>): GridNode[] {
-  if (path.length <= 2) return path.slice();
-  const out: GridNode[] = [path[0]];
-  let i = 0;
-  while (i < path.length - 1) {
-    let best = i + 1;
-    for (let j = path.length - 1; j > i + 1; j--) {
-      if (Math.max(Math.abs(path[j].r - path[i].r), Math.abs(path[j].c - path[i].c)) > maxCells) continue;
-      if (gridLineOfSight(grid, path[i], path[j], blocked)) {
-        best = j;
-        break;
-      }
-    }
-    out.push(path[best]);
-    i = best;
-  }
-  return out;
-}
-
-/** Length of a node path (cell centres), metres. */
-export function gridPathLengthM(grid: WaterGrid, path: GridNode[]): number {
-  let d = 0;
-  for (let i = 1; i < path.length; i++) {
-    const [lo1, la1] = grid.cellCentre(path[i - 1].r, path[i - 1].c);
-    const [lo2, la2] = grid.cellCentre(path[i].r, path[i].c);
-    d += haversineDistanceM(lo1, la1, lo2, la2);
-  }
-  return d;
+  return stringPull(
+    path,
+    (i, j) =>
+      Math.max(Math.abs(path[j].r - path[i].r), Math.abs(path[j].c - path[i].c)) <= maxCells &&
+      gridLineOfSight(grid, path[i], path[j], blocked)
+  );
 }

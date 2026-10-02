@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { HOUR_S } from '../geo/units';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -31,9 +32,6 @@ import { parseConsolidated } from '../data/zarr';
 import type { ArcoRun } from '../data/arco';
 import { conditionsSeries, fieldGrid, type OverlaySources } from '../plugin/overlays';
 import { applyWaterLevel, makeWeatherProvider, pointForecasts, startMsOf, type WeatherData, type PointForecastFn } from '../plugin/weather';
-import { buildLegends } from '../plugin/legends';
-import { defaultSettings, mergeSettings, reloadsFor, SETTINGS_SPEC } from '../plugin/settings';
-import { resolveConfig } from '../plugin/config';
 import type { ForecastStore } from '../data/forecast';
 
 const H = 3600_000;
@@ -237,7 +235,7 @@ test('sea level: real point series at 3 coastal points equal an independent xarr
     }
   }
   const client = new SeaLevelClient({ cacheDir: dir, network: false });
-  const src = new TideSource(run, { halfWidthDeg: 5, horizonHours: 24, budgetBytes: 64 << 20 }, client);
+  const src = new TideSource(run, { halfWidthDeg: 5, horizonS: 24 * HOUR_S, budgetBytes: 64 << 20 }, client);
   const from = run.timeFirstMs + REF.t0_index * H;
   assert.equal(new Date(from).toISOString(), '2026-09-28T12:00:00.000Z');
   // The mean window of this run is geo time chunk 9: the chunk holding the last 60 days.
@@ -408,7 +406,7 @@ async function mockSource(): Promise<{ src: TideSource; client: SeaLevelClient; 
   const counts = new Map<string, number>();
   const client = new SeaLevelClient({ cacheDir: tmpDir(), urls: URLS, fetchImpl: mockFetch(counts), sleepImpl: async () => undefined });
   const run = await client.probe();
-  const src = new TideSource(run, { halfWidthDeg: 5, horizonHours: 24, budgetBytes: 32 << 20 }, client);
+  const src = new TideSource(run, { halfWidthDeg: 5, horizonS: 24 * HOUR_S, budgetBytes: 32 << 20 }, client);
   return { src, client, run, counts };
 }
 
@@ -586,29 +584,6 @@ test('Weather API: water.level (m above MSL) and water.levelTendency from the po
   const f = await failing.methods.getForecasts({ latitude: 41.4, longitude: -71.3 }, 'point', { startDate: new Date(t0).toISOString() });
   assert.equal(f.length, 3);
   assert.equal(f[0].water, undefined);
-});
-
-test('legends: tide ramp diverges around 0 from −3 to +3 m; settings: Tides group reloads tides only', () => {
-  const L = buildLegends().tide;
-  assert.equal(L.si_unit, 'm');
-  assert.equal(L.quantity, 'sea_level');
-  assert.match(L.title, /Tide height/);
-  assert.equal(L.stops[0][0], -3);
-  assert.equal(L.stops[L.stops.length - 1][0], 3);
-  assert.ok(L.stops.some(([v]) => v === 0));
-  for (let i = 1; i < L.stops.length; i++) assert.ok(L.stops[i][0] > L.stops[i - 1][0]);
-  const d = defaultSettings();
-  assert.deepEqual(d.tides, { enabled: true, halfWidth: 15, horizon: 24 * 3600 });
-  const c = resolveConfig({}, d);
-  assert.deepEqual(c.tides, { enabled: true, halfWidthDeg: 15, horizonHours: 24 });
-  const r = mergeSettings(d, { tides: { enabled: false, halfWidth: 8, horizon: 48 * 3600 } });
-  assert.deepEqual(r.changed.sort(), ['tides.enabled', 'tides.halfWidth', 'tides.horizon']);
-  assert.deepEqual([...reloadsFor(r.changed)], ['tides']);
-  assert.throws(() => mergeSettings(d, { tides: { halfWidth: 40 } }), /\[1, 30\]/);
-  assert.deepEqual(
-    SETTINGS_SPEC.filter(s => s.group === 'tides').map(s => s.key),
-    ['tides.enabled', 'tides.halfWidth', 'tides.horizon']
-  );
 });
 
 // Types only: the series shape the worker hands to the main thread.

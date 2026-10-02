@@ -88,8 +88,8 @@ export function listPolars(cfg: PolarLibraryConfig): PolarEntry[] {
         out.push({ path: token, label: labelPrefix + label(n), source: 'library' });
       }
     };
-    // Same layers as the routing server: the bundled library, then user-generated
-    // polars in user/ (legacy flat files) and user/<slug>/ (per-account).
+    // The bundled library first, then user-generated polars in user/
+    // (legacy flat files) and user/<slug>/ (per-account).
     addDir('', '');
     addDir('user', 'user: ');
     let users: string[];
@@ -160,7 +160,7 @@ export function loadPolarCached(file: string): PolarDiagram {
 
 /**
  * Per-TWS beat (best upwind VMG) and run (best downwind VMG) angles,
- * the same 1° scan as the routing server's `/polar-angles`.
+ * from a 1° scan of the polar.
  */
 export function polarAngles(polar: PolarDiagram): { tws_ms: number[]; beat_deg: number[]; run_deg: number[] } {
   const beat: number[] = [];
@@ -212,7 +212,7 @@ export interface PolarFromSpecsResult {
 
 const NAME_MAX = 60;
 
-/** Pydantic-equivalent shape check of the request body; returns the parsed specs or an error string. */
+/** Shape check of the request body; returns the parsed specs or an error string. */
 function parseSpecsRequest(raw: unknown): { name: string; specs: BoatSpecs; overwrite: boolean } | string {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'JSON body required: {name, specs:{...}, overwrite?}';
   const b = raw as Record<string, unknown>;
@@ -256,9 +256,9 @@ function parseSpecsRequest(raw: unknown): { name: string; specs: BoatSpecs; over
 /**
  * Generate a polar from boat specs with the physics calculator
  * (vessel/vpp_physics.ts) and write it to
- * `<polarsDir>/user/<slug>.csv` in the routing server's CSV layout. Same
- * contract as the routing server's POST /polar-from-specs: 400 invalid
- * specs or name, 409 exists without overwrite, 422 unsupported hull.
+ * `<polarsDir>/user/<slug>.csv` in the library's CSV layout (knots on
+ * disk, see vessel/vpp_empirical.ts polarCsv). POST /api/polar-from-specs:
+ * 400 invalid specs or name, 409 exists without overwrite, 422 unsupported hull.
  * Responds with the library token (accepted by resolvePolarPath), the
  * picker label, validation warnings and the table in SI.
  */

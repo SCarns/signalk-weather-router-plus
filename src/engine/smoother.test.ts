@@ -52,7 +52,7 @@ const args = (land: LandMask) => ({
   wind: new NoWind(),
   current: new NoCurrent(),
   sim: SIM,
-  tolerancePct: 5,
+  tolerance: 0.05,
 });
 
 test('RDP drops points on a straight line, keeps endpoints and user waypoints', () => {

@@ -25,6 +25,7 @@
  */
 
 import type { BBox } from './geodesy';
+import { wrapLon, unwrapLonNear } from './angles';
 import { bboxHeight, bboxWidth, lonOffsetFromWest, slerpSamples, haversineDistanceM } from './geodesy';
 import { pointInShape, readShapefilePolygons, type ShapePolygon } from './shapefile';
 
@@ -124,8 +125,8 @@ export class LandMask {
     if (!(resolutionDeg > 0)) throw new Error(`LandMask resolutionDeg must be > 0 (got ${resolutionDeg})`);
     const width = bboxWidth(bbox);
     const padded: BBox = {
-      west: width + 2 * buffer >= 360 ? -180 : ((bbox.west - buffer + 540) % 360) - 180,
-      east: width + 2 * buffer >= 360 ? 180 : ((bbox.east + buffer + 540) % 360) - 180,
+      west: width + 2 * buffer >= 360 ? -180 : wrapLon(bbox.west - buffer),
+      east: width + 2 * buffer >= 360 ? 180 : wrapLon(bbox.east + buffer),
       south: Math.max(-90, bbox.south - buffer),
       north: Math.min(90, bbox.north + buffer),
     };
@@ -200,9 +201,9 @@ export class LandMask {
     const ny = (y1 - y0) * k;
     if (nx * ny > maxCells) throw new Error(`LandMask.refine: patch ${nx}x${ny} exceeds ${maxCells} cells`);
     const pb: BBox = {
-      west: ((west + 540) % 360) - 180,
+      west: wrapLon(west),
       south,
-      east: ((west + (x1 - x0) * res0 + 540) % 360) - 180,
+      east: wrapLon(west + (x1 - x0) * res0),
       north: south + (y1 - y0) * res0,
     };
     for (const p of this.patches) {
@@ -255,55 +256,52 @@ export class LandMask {
     // Row centre latitude and the row index range covering a lat span.
     const rowOfLat = (lat: number): number => Math.floor((lat - south) / res);
 
-    {
-      // Longitudes are converted to the offset frame (degrees east of
-      // bbox.west). Rings crossing the frame seam are unwrapped so
-      // consecutive vertices differ by < 180°, then processed in up to
-      // three shifted copies (-360, 0, +360) so whichever copy overlaps
-      // [0, width] gets filled.
-      const rMinRow = Math.max(0, rowOfLat(shape.minLat));
-      const rMaxRow = Math.min(ny - 1, rowOfLat(shape.maxLat));
-      if (rMinRow > rMaxRow) return;
+    // Longitudes are converted to the offset frame (degrees east of
+    // bbox.west). Rings crossing the frame seam are unwrapped so
+    // consecutive vertices differ by < 180°, then processed in up to
+    // three shifted copies (-360, 0, +360) so whichever copy overlaps
+    // [0, width] gets filled.
+    const rMinRow = Math.max(0, rowOfLat(shape.minLat));
+    const rMaxRow = Math.min(ny - 1, rowOfLat(shape.maxLat));
+    if (rMinRow > rMaxRow) return;
 
-      const rings: Float64Array[] = [];
-      for (const ring of shape.rings) {
-        const c = ring.coords;
-        const n = c.length / 2;
-        const xs = new Float64Array(2 * n);
-        let prev = lonOffsetFromWest(this.bbox, c[0]);
-        xs[0] = prev;
-        xs[1] = c[1];
-        for (let i = 1; i < n; i++) {
-          let x = lonOffsetFromWest(this.bbox, c[2 * i]);
-          // Unwrap relative to the previous vertex.
-          while (x - prev > 180) x -= 360;
-          while (x - prev < -180) x += 360;
-          xs[2 * i] = x;
-          xs[2 * i + 1] = c[2 * i + 1];
-          prev = x;
-        }
-        rings.push(xs);
+    const rings: Float64Array[] = [];
+    for (const ring of shape.rings) {
+      const c = ring.coords;
+      const n = c.length / 2;
+      const xs = new Float64Array(2 * n);
+      let prev = lonOffsetFromWest(this.bbox, c[0]);
+      xs[0] = prev;
+      xs[1] = c[1];
+      for (let i = 1; i < n; i++) {
+        let x = lonOffsetFromWest(this.bbox, c[2 * i]);
+        // Unwrap relative to the previous vertex.
+        x = unwrapLonNear(x, prev);
+        xs[2 * i] = x;
+        xs[2 * i + 1] = c[2 * i + 1];
+        prev = x;
       }
+      rings.push(xs);
+    }
 
-      for (const shift of [-360, 0, 360]) {
-        // Does any ring overlap [0, width] after this shift?
-        let overlaps = false;
-        for (const xs of rings) {
-          let mn = Infinity;
-          let mx = -Infinity;
-          for (let i = 0; i < xs.length; i += 2) {
-            const x = xs[i] + shift;
-            if (x < mn) mn = x;
-            if (x > mx) mx = x;
-          }
-          if (mx >= 0 && mn <= width) {
-            overlaps = true;
-            break;
-          }
+    for (const shift of [-360, 0, 360]) {
+      // Does any ring overlap [0, width] after this shift?
+      let overlaps = false;
+      for (const xs of rings) {
+        let mn = Infinity;
+        let mx = -Infinity;
+        for (let i = 0; i < xs.length; i += 2) {
+          const x = xs[i] + shift;
+          if (x < mn) mn = x;
+          if (x > mx) mx = x;
         }
-        if (!overlaps) continue;
-        this.fillShape(rings, shift, rMinRow, rMaxRow, nx, res, south, raster, width);
+        if (mx >= 0 && mn <= width) {
+          overlaps = true;
+          break;
+        }
       }
+      if (!overlaps) continue;
+      this.fillShape(rings, shift, rMinRow, rMaxRow, nx, res, south, raster, width);
     }
   }
 
@@ -532,17 +530,9 @@ export class LandMask {
    * covers it), not samples along it, so land narrower than the gap
    * between samples cannot be stepped over. The raster is conservative
    * (every cell a coastline edge passes through is land), so a leg whose
-   * cells are all water does not cross land. `stepM` is kept for the call
-   * signature and no longer used.
+   * cells are all water does not cross land.
    */
-  legsCrossLandBulk(
-    lonsA: ArrayLike<number>,
-    latsA: ArrayLike<number>,
-    lonsB: ArrayLike<number>,
-    latsB: ArrayLike<number>,
-    stepM = 200
-  ): Uint8Array {
-    if (!(stepM > 0)) throw new Error(`legsCrossLandBulk: stepM must be > 0 (got ${stepM})`);
+  legsCrossLandBulk(lonsA: ArrayLike<number>, latsA: ArrayLike<number>, lonsB: ArrayLike<number>, latsB: ArrayLike<number>): Uint8Array {
     const n = lonsA.length;
     const out = new Uint8Array(n);
     for (let k = 0; k < n; k++) if (this.legCrossesRaster(lonsA[k], latsA[k], lonsB[k], latsB[k])) out[k] = 1;
@@ -604,11 +594,9 @@ export class LandMask {
    * touch land in the polygons? An end point inside land, or any crossing
    * or touching of a coastline edge, counts. Legs whose raster cells are
    * all water are clear without a polygon test (the raster is
-   * conservative). No sampling: land of any width is found. `stepM` is
-   * kept for the call signature and no longer used.
+   * conservative). No sampling: land of any width is found.
    */
-  legCrossesLandExact(lonA: number, latA: number, lonB: number, latB: number, stepM = 100): boolean {
-    void stepM;
+  legCrossesLandExact(lonA: number, latA: number, lonB: number, latB: number): boolean {
     // The raster only speaks for its own box: outside it, fall through to the polygons.
     const inside = this.cellIndex(lonA, latA) >= 0 && this.cellIndex(lonB, latB) >= 0;
     if (inside && this.edgeCells && this.shapes.length && !this.legCrossesRaster(lonA, latA, lonB, latB)) return false;

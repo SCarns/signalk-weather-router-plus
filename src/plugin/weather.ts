@@ -26,7 +26,9 @@
  */
 
 import type { ForecastStore } from '../data/forecast';
-import { relativeHumidity } from '../engine/conditions';
+import { HOUR_MS } from '../geo/units';
+import type { QueryArgs, TideSeriesResult } from './protocol';
+import { relativeHumidity } from './conditions';
 import { sampleSeries, signalKTendency, slopeAt, type RegularSeries } from '../tides/tidecalc';
 
 export interface SkPosition {
@@ -121,8 +123,8 @@ export function makeWeatherProvider(
     if (!tideSeries || items.length === 0) return items;
     const times = items.map(i => Date.parse(i.date));
     // One step either side for the tendency's central difference.
-    const fromMs = Math.min(...times) - 3600_000;
-    const hours = Math.ceil((Math.max(...times) - fromMs) / 3600_000) + 1;
+    const fromMs = Math.min(...times) - HOUR_MS;
+    const hours = Math.ceil((Math.max(...times) - fromMs) / HOUR_MS) + 1;
     try {
       const s = await tideSeries(position.latitude, position.longitude, fromMs, Math.min(hours, 400));
       if (!s) return items;
@@ -177,7 +179,7 @@ export function pointForecasts(
   const out: WeatherData[] = [];
   for (let i = 0; i < store.steps.length; i++) {
     const step = store.steps[i];
-    if (step.validMs + 3 * 3600_000 <= fromMs) continue; // step already fully in the past
+    if (step.validMs + 3 * HOUR_MS <= fromMs) continue; // step already fully in the past
     const t = new Date(step.validMs);
     const [ws, wd] = store.at(lon, lat, t);
     const wave = store.wavesAt(lon, lat, t);
@@ -210,4 +212,53 @@ export function pointForecasts(
     if (maxCount && out.length >= maxCount) break;
   }
   return out;
+}
+
+/**
+ * Register the plugin as a Weather API provider (point forecasts read by
+ * the data worker from the decoded run; water level from its tide point
+ * series). True when registered. Extracted from index.ts (phase 2.3).
+ */
+export function registerWeatherProvider(
+  app: { registerWeatherProvider?: (provider: unknown) => void },
+  d: {
+    pluginId: string;
+    tidesEnabled: () => boolean;
+    hasForecast: () => boolean;
+    pointQuery: (kind: 'tide_series' | 'weather_point', args: QueryArgs['tide_series'] | QueryArgs['weather_point']) => Promise<unknown>;
+    log: (m: string) => void;
+    error: (m: string) => void;
+  }
+): boolean {
+  if (typeof app.registerWeatherProvider !== 'function') {
+    d.log('Weather API not available on this server; provider not registered');
+    return false;
+  }
+  try {
+    // Water level for point forecasts comes from the data worker's tide point series (on demand).
+    const tideSeries = async (lat: number, lon: number, fromMs: number, hours: number): Promise<TideSeriesResult | null> => {
+      if (!d.tidesEnabled()) return null;
+      return (await d.pointQuery('tide_series', { lat, lon, fromMs, hours })) as TideSeriesResult;
+    };
+    // Point forecasts are read by the data worker from the decoded run (this thread holds no forecast).
+    const points = async (
+      position: { latitude: number; longitude: number },
+      options?: { startDate?: string; maxCount?: number }
+    ): Promise<WeatherData[]> => {
+      if (!d.hasForecast()) throw new Error('no forecast loaded yet');
+      return (await d.pointQuery('weather_point', {
+        lat: position.latitude,
+        lon: position.longitude,
+        // No start given: from the start of this hour (not this millisecond), so the answer can be kept for the hour.
+        startMs: startMsOf(options) ?? Math.floor(Date.now() / HOUR_MS) * HOUR_MS,
+        maxCount: options?.maxCount ?? null,
+      })) as WeatherData[];
+    };
+    app.registerWeatherProvider(makeWeatherProvider(points, d.pluginId, tideSeries, m => d.log(m)));
+    d.log('registered as a Weather API provider');
+    return true;
+  } catch (err) {
+    d.error(`Weather API registration failed: ${(err as Error).message}`);
+    return false;
+  }
 }

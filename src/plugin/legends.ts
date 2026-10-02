@@ -1,9 +1,10 @@
 /**
- * Colour ramps and legend metadata, in SI, matching the routing
- * server's `/legends` response (routers/legends.py and the per-layer
- * ramps in wind.py, waves.py, currents.py, precip.py, temperature.py,
- * sst.py, roughness.py). The browser draws every heatmap from these.
+ * Colour ramps and legend metadata, in SI, answered by `/api/legends`.
+ * The browser draws every heatmap from these and the PNG tile renderer
+ * uses the same stops, so a layer has one ramp.
  */
+
+import { KTS_TO_MS, MMH_TO_MS } from '../geo/units';
 
 export interface LegendEntry {
   title: string;
@@ -19,29 +20,31 @@ export interface LegendEntry {
   /** [siValue, cssColor] ascending. */
   stops: [number, string][];
   bands?: [number, string][];
+  /** Values below this fade to transparent (SI); the precipitation layer's dry background. */
+  fade_below?: number;
 }
 
-const KT = 0.514444;
-const MMH = 1 / 3_600_000; // mm/h → m/s
-
+// Stop values are SI. The wind and current ramps were authored at whole
+// knots and the precipitation ramp at whole mm/h; the factors from
+// geo/units keep them so.
 export const WIND_STOPS: [number, string][] = [
   [0, '#90caf9'],
-  [5 * KT, '#4fc3f7'],
-  [10 * KT, '#00897b'],
-  [15 * KT, '#43a047'],
-  [20 * KT, '#f9a825'],
-  [25 * KT, '#e64a19'],
-  [30 * KT, '#c62828'],
-  [50 * KT, '#8a0000'],
+  [5 * KTS_TO_MS, '#4fc3f7'],
+  [10 * KTS_TO_MS, '#00897b'],
+  [15 * KTS_TO_MS, '#43a047'],
+  [20 * KTS_TO_MS, '#f9a825'],
+  [25 * KTS_TO_MS, '#e64a19'],
+  [30 * KTS_TO_MS, '#c62828'],
+  [50 * KTS_TO_MS, '#8a0000'],
 ];
 export const CURRENT_STOPS: [number, string][] = [
   [0, '#cce6fa'],
-  [0.5 * KT, '#66ccf2'],
-  [1.0 * KT, '#4ccc73'],
-  [1.5 * KT, '#f2d933'],
-  [2.0 * KT, '#f28c26'],
-  [3.0 * KT, '#d93326'],
-  [5.0 * KT, '#800d0d'],
+  [0.5 * KTS_TO_MS, '#66ccf2'],
+  [1.0 * KTS_TO_MS, '#4ccc73'],
+  [1.5 * KTS_TO_MS, '#f2d933'],
+  [2.0 * KTS_TO_MS, '#f28c26'],
+  [3.0 * KTS_TO_MS, '#d93326'],
+  [5.0 * KTS_TO_MS, '#800d0d'],
 ];
 export const WAVE_STOPS: [number, string][] = [
   [0, '#b3e5fc'],
@@ -55,12 +58,14 @@ export const WAVE_STOPS: [number, string][] = [
 /** Precipitation rate in m/s (kg m⁻² s⁻¹ × 1e-3), stops at 0/0.5/2/5/10/25 mm/h. */
 export const PRECIP_STOPS: [number, string][] = [
   [0, '#b3e5fc'],
-  [0.5 * MMH, '#b3e5fc'],
-  [2 * MMH, '#4fc3f7'],
-  [5 * MMH, '#43a047'],
-  [10 * MMH, '#fdd835'],
-  [25 * MMH, '#c2185b'],
+  [0.5 * MMH_TO_MS, '#b3e5fc'],
+  [2 * MMH_TO_MS, '#4fc3f7'],
+  [5 * MMH_TO_MS, '#43a047'],
+  [10 * MMH_TO_MS, '#fdd835'],
+  [25 * MMH_TO_MS, '#c2185b'],
 ];
+/** Precipitation below this rate (0.5 mm/h) fades to transparent so the dry background does not wash out the chart. */
+export const PRECIP_FADE_BELOW = 0.5 * MMH_TO_MS;
 export const TEMP_STOPS: [number, string][] = [
   [253.15, '#0d2673'],
   [263.15, '#3359b2'],
@@ -85,7 +90,7 @@ export const SST_STOPS: [number, string][] = [
   [303.15, '#f24c1a'],
   [305.15, '#a61a1a'],
 ];
-/** matplotlib RdYlBu_r sampled at 17 points over 0..150 (the server's legend samples). */
+/** matplotlib RdYlBu_r sampled at 17 points over 0..150. */
 export const SEA_STATE_STOPS: [number, string][] = [
   [0, '#313695'],
   [9.375, '#3d5da8'],
@@ -149,6 +154,7 @@ export function buildLegends(): Record<string, LegendEntry> {
       si_unit: 'm/s',
       kind: 'gradient',
       stops: PRECIP_STOPS,
+      fade_below: PRECIP_FADE_BELOW,
     },
     temperature: {
       title: 'Air temperature (2 m)',

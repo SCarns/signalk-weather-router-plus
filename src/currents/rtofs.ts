@@ -22,6 +22,8 @@
  */
 
 import * as fs from 'node:fs';
+import { fetchWithRetry, sleep } from '../data/http';
+import { HOUR_MS, HOUR_S } from '../geo/units';
 import * as path from 'node:path';
 import type { BBox } from '../geo/geodesy';
 import { iterateGrib2 } from '../grib/grib2';
@@ -79,8 +81,6 @@ export interface RtofsClientOptions {
   sleepImpl?: (ms: number) => Promise<void>;
 }
 
-const sleep = (ms: number): Promise<void> => new Promise(r => setTimeout(r, ms));
-
 export class RtofsClient {
   readonly cacheDir: string;
   readonly region: string;
@@ -117,32 +117,16 @@ export class RtofsClient {
    * failure is retried like a failed connection.
    */
   private async request(url: string, init: RequestInit = {}): Promise<{ status: number; body: Uint8Array }> {
-    let lastErr: unknown;
-    for (let attempt = 1; attempt <= this.retries; attempt++) {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
-      try {
-        const res = await this.fetchImpl(url, { ...init, signal: ctrl.signal });
-        const retriable = res.status === 408 || res.status === 429 || res.status >= 500;
-        if (!retriable) {
-          const body = init.method === 'HEAD' ? new Uint8Array(0) : new Uint8Array(await res.arrayBuffer());
-          return { status: res.status, body };
-        }
-        lastErr = new Error(`HTTP ${res.status} for ${url}`);
-        await res.arrayBuffer().catch(() => undefined);
-      } catch (err) {
-        lastErr = err;
-      } finally {
-        clearTimeout(timer);
-      }
-      if (attempt === this.retries) break;
-      const backoff = Math.min(60_000, 2000 * 2 ** (attempt - 1)) + Math.random() * 500;
-      this.log(
-        `rtofs: retry ${attempt}/${this.retries - 1} for ${url} after ${(backoff / 1000).toFixed(1)} s: ${(lastErr as Error).message}`
-      );
-      await this.sleepImpl(backoff);
-    }
-    throw lastErr instanceof Error ? lastErr : new Error(`request failed: ${url}`);
+    const r = await fetchWithRetry(url, init, {
+      timeoutMs: this.timeoutMs,
+      retries: this.retries,
+      fetchImpl: this.fetchImpl,
+      sleepImpl: this.sleepImpl,
+      log: this.log,
+      tag: 'rtofs',
+      readBody: init.method !== 'HEAD',
+    });
+    return { status: r.status, body: r.body ?? new Uint8Array(0) };
   }
 
   async filePublished(run: RtofsRun, file: string): Promise<boolean> {
@@ -177,8 +161,8 @@ export class RtofsClient {
     }
   }
 
-  runFullyCached(run: RtofsRun, horizonHours: number): boolean {
-    return RtofsClient.filesFor(horizonHours).every(f => this.hasCached(run, f.name));
+  runFullyCached(run: RtofsRun, horizonS: number): boolean {
+    return RtofsClient.filesFor(horizonS / HOUR_S).every(f => this.hasCached(run, f.name));
   }
 
   /** Runs present in the cache, newest first. */
@@ -200,9 +184,9 @@ export class RtofsClient {
    * Newest run (today, walking back up to `maxDaysBack` days) whose files
    * for the horizon are all published.
    */
-  async findLatestRun(horizonHours: number, opts: { now?: Date; maxDaysBack?: number } = {}): Promise<RtofsRun> {
+  async findLatestRun(horizonS: number, opts: { now?: Date; maxDaysBack?: number } = {}): Promise<RtofsRun> {
     const now = opts.now ?? new Date();
-    const files = RtofsClient.filesFor(horizonHours);
+    const files = RtofsClient.filesFor(horizonS / HOUR_S);
     const last = files[files.length - 1].name;
     for (let d = 0; d <= (opts.maxDaysBack ?? 7); d++) {
       const run = rtofsRunFor(new Date(now.getTime() - d * 86_400_000));
@@ -263,10 +247,12 @@ export async function loadRtofsSteps(
   client: RtofsClient,
   run: RtofsRun,
   bbox: BBox | null,
-  horizonHours: number,
-  stepHours: number,
+  horizonS: number,
+  stepS: number,
   opts: { log?: (m: string) => void; shouldCancel?: () => boolean } = {}
 ): Promise<RtofsStep[]> {
+  const horizonHours = horizonS / HOUR_S;
+  const stepHours = stepS / HOUR_S;
   const wanted = new Set<number>();
   for (let h = stepHours; h <= horizonHours; h += stepHours) wanted.add(h);
   const steps: RtofsStep[] = [];
@@ -291,7 +277,7 @@ export async function loadRtofsSteps(
             { west: g.lo1, east: g.lo1 + (g.ni - 1) * g.di, south: Math.min(g.la1, g.la2), north: Math.max(g.la1, g.la2) },
             0
           );
-      const entry = byHour.get(h) ?? { validMs: msg.referenceTime.getTime() + h * 3600_000 };
+      const entry = byHour.get(h) ?? { validMs: msg.referenceTime.getTime() + h * HOUR_MS };
       if (isU) entry.u = grid;
       else entry.v = grid;
       byHour.set(h, entry);
@@ -316,7 +302,7 @@ export class RtofsCurrentSource implements CurrentSourceLike {
   readonly bbox: SourceBBox;
   readonly runMs: number;
   readonly steps: RtofsStep[];
-  private static readonly GRACE_MS = 3600_000;
+  private static readonly GRACE_MS = HOUR_MS;
 
   constructor(name: string, runMs: number, bbox: SourceBBox, steps: RtofsStep[]) {
     if (steps.length === 0) throw new Error('RtofsCurrentSource needs at least one step');
@@ -395,6 +381,30 @@ export class RtofsCurrentSource implements CurrentSourceLike {
     const [i0, i1, w] = tw;
     for (let k = 0; k < n; k++) {
       if (!this.contains(lons[k], lats[k])) continue;
+      let uu = sampleField(this.steps[i0].u, lons[k], lats[k]);
+      let vv = sampleField(this.steps[i0].v, lons[k], lats[k]);
+      if (w !== 0 && i0 !== i1) {
+        uu = uu * (1 - w) + sampleField(this.steps[i1].u, lons[k], lats[k]) * w;
+        vv = vv * (1 - w) + sampleField(this.steps[i1].v, lons[k], lats[k]) * w;
+      }
+      if (Number.isFinite(uu) && Number.isFinite(vv)) {
+        u[k] = uu;
+        v[k] = vv;
+      }
+    }
+    return { u, v };
+  }
+
+  /** As atMany, each point at its own time. */
+  atManyAt(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): { u: Float64Array; v: Float64Array } {
+    const n = lons.length;
+    const u = new Float64Array(n);
+    const v = new Float64Array(n);
+    for (let k = 0; k < n; k++) {
+      if (!this.contains(lons[k], lats[k])) continue;
+      const tw = this.timeWeights(timesMs[k]);
+      if (!tw) continue;
+      const [i0, i1, w] = tw;
       let uu = sampleField(this.steps[i0].u, lons[k], lats[k]);
       let vv = sampleField(this.steps[i0].v, lons[k], lats[k]);
       if (w !== 0 && i0 !== i1) {

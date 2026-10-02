@@ -8,6 +8,7 @@
  */
 
 import { test } from 'node:test';
+import { HOUR_S } from '../geo/units';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -313,7 +314,7 @@ test('window sampling equals sampleField on the whole field for random points (r
   const msgs = [...iterateGrib2(bytes)];
   const client = fakeClient(bytes, msgs);
   const cycle = cycleFor(msgs[0].referenceTime);
-  const store = await loadGlobalForecast(client, { horizonHours: 6, cycle, includeWaves: false });
+  const store = await loadGlobalForecast(client, { horizonS: 6 * HOUR_S, cycle, includeWaves: false });
   const root = tmpDir();
   const w = new DecodedRunWriter(root, 'x');
   for (const s of store.steps) w.writeStep(s);
@@ -352,10 +353,10 @@ test('streaming decode writes exactly the fields the whole-store decode builds (
   const msgs = [...iterateGrib2(bytes)];
   const client = fakeClient(bytes, msgs);
   const cycle = cycleFor(msgs[0].referenceTime);
-  const store = await loadGlobalForecast(client, { horizonHours: 6, cycle, includeWaves: false });
+  const store = await loadGlobalForecast(client, { horizonS: 6 * HOUR_S, cycle, includeWaves: false });
   const root = tmpDir();
   const writer = new DecodedRunWriter(root, `${cycle.yyyymmdd}${cycle.hh}`);
-  const out = await decodeForecastToDisk(client, writer, { horizonHours: 6, cycle, includeWaves: false });
+  const out = await decodeForecastToDisk(client, writer, { horizonS: 6 * HOUR_S, cycle, includeWaves: false });
   // One step's block (3 atmosphere params requested; msl is absent from the fixture), not the whole store.
   assert.equal(out.stepBlockBytes, 3 * 1440 * 721 * 4);
   assert.deepEqual(out.index.stepHours, [0, 3, 6]);

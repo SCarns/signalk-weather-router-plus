@@ -84,3 +84,19 @@ export function buildCoarseGrid(landMask: LandMask, bbox: BBox, resolutionDeg: n
   }
   return new NavigabilityGrid(spec, passable);
 }
+
+/**
+ * The cells at Chebyshev distance exactly `r` from a centre, as (dRow, dCol)
+ * offsets, rows outer and columns inner (the order every ring search in
+ * the engine used). `fn` returns true to stop; the result says whether it
+ * did.
+ */
+export function forEachRingCell(r: number, fn: (dRow: number, dCol: number) => boolean | void): boolean {
+  for (let di = -r; di <= r; di++) {
+    for (let dj = -r; dj <= r; dj++) {
+      if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
+      if (fn(di, dj) === true) return true;
+    }
+  }
+  return false;
+}

@@ -16,6 +16,7 @@
  */
 
 import type { FieldGrid } from '../data/forecast';
+import { bilinearCorners, gridXY } from '../data/sampling';
 
 export const FILL_RADIUS_CELLS = 2;
 
@@ -106,18 +107,7 @@ export function filledCell(g: PairGrid, r: number, c: number): [number, number] 
  * NaN when a corner with a non-zero weight stays missing after the fill.
  */
 export function bilinearFilled(g: PairGrid, x: number, y: number): [number, number] {
-  let c = Math.floor(x);
-  let r = Math.floor(y);
-  if (g.wrap) {
-    if (c >= g.nCols) c -= g.nCols;
-  } else if (g.nCols === 1) c = 0;
-  else c = Math.max(0, Math.min(g.nCols - 2, c));
-  if (g.nRows === 1) r = 0;
-  else r = Math.max(0, Math.min(g.nRows - 2, r));
-  const tx = g.nCols === 1 ? 0 : x - (g.wrap ? Math.floor(x) : c);
-  const ty = g.nRows === 1 ? 0 : y - r;
-  const c1 = g.wrap ? (c + 1 === g.nCols ? 0 : c + 1) : Math.min(g.nCols - 1, c + 1);
-  const r1 = Math.min(g.nRows - 1, r + 1);
+  const { c, c1, r, r1, tx, ty } = bilinearCorners(g.nRows, g.nCols, g.wrap, x, y);
   const [u00, v00] = filledCell(g, r, c);
   const [u01, v01] = filledCell(g, r, c1);
   const [u10, v10] = filledCell(g, r1, c);
@@ -156,18 +146,7 @@ export function bilinearFilled(g: PairGrid, x: number, y: number): [number, numb
 export function sampleFieldPairFilled(fu: FieldGrid, fv: FieldGrid, lon: number, lat: number): [number, number] {
   const { nLat, nLon } = fu;
   const g: PairGrid = { nRows: nLat, nCols: nLon, wrap: !!fu.wrapLon, u: fu.values, v: fv.values, offset: 0 };
-  let x: number;
-  if (fu.wrapLon) {
-    x = ((((lon - fu.lon0) % 360) + 360) % 360) / fu.dLon;
-  } else {
-    const offLon = (((lon - fu.lon0) % 360) + 360) % 360;
-    x = offLon > 180 ? (offLon - 360) / fu.dLon : offLon / fu.dLon;
-    if (x < 0) x = 0;
-    if (x > nLon - 1) x = nLon - 1;
-  }
-  let y = (lat - fu.lat0) / fu.dLat;
-  if (y < 0) y = 0;
-  if (y > nLat - 1) y = nLat - 1;
+  const [x, y] = gridXY(fu, lon, lat);
   return bilinearFilled(g, x, y);
 }
 
@@ -219,18 +198,7 @@ export function filledScalarCell(g: ScalarGrid, r: number, c: number): number {
  * `value` is NaN when such a corner stays missing after the fill.
  */
 export function bilinearFilledScalar(g: ScalarGrid, x: number, y: number): { value: number; filled: boolean } {
-  let c = Math.floor(x);
-  let r = Math.floor(y);
-  if (g.wrap) {
-    if (c >= g.nCols) c -= g.nCols;
-  } else if (g.nCols === 1) c = 0;
-  else c = Math.max(0, Math.min(g.nCols - 2, c));
-  if (g.nRows === 1) r = 0;
-  else r = Math.max(0, Math.min(g.nRows - 2, r));
-  const tx = g.nCols === 1 ? 0 : x - (g.wrap ? Math.floor(x) : c);
-  const ty = g.nRows === 1 ? 0 : y - r;
-  const c1 = g.wrap ? (c + 1 === g.nCols ? 0 : c + 1) : Math.min(g.nCols - 1, c + 1);
-  const r1 = Math.min(g.nRows - 1, r + 1);
+  const { c, c1, r, r1, tx, ty } = bilinearCorners(g.nRows, g.nCols, g.wrap, x, y);
   const corners: [number, number, number][] = [
     [(1 - tx) * (1 - ty), r, c],
     [tx * (1 - ty), r, c1],

@@ -14,6 +14,7 @@
  */
 
 import * as fs from 'node:fs';
+import { foldTwa } from '../geo/angles';
 import * as path from 'node:path';
 import { KTS_TO_MS } from '../geo/geodesy';
 
@@ -87,8 +88,7 @@ export class PolarDiagram {
    * [0, 180]) and true wind speed (m/s, clamped at 0).
    */
   boatSpeed(twaDeg: number, twsMs: number): number {
-    let twa = Math.abs(twaDeg) % 360;
-    if (twa > 180) twa = 360 - twa;
+    const twa = foldTwa(twaDeg);
     const tws = Math.max(0, twsMs);
     if (twa < this.noGoFloor(tws)) return 0;
     return Math.max(0, this.interp(twa, tws));
@@ -137,6 +137,30 @@ export class PolarDiagram {
       this.tws,
       this.speeds.map(s => s * factor)
     );
+  }
+
+  /**
+   * This polar with every boat speed closer to the wind than `minTwaDeg`
+   * set to zero, so the no-go floor is at least that angle. Many library
+   * polars carry small speeds at 5°–25° off the wind, where no boat sails;
+   * left in, a route goes dead upwind at a crawl instead of tacking.
+   * Returns `this` when nothing changes.
+   */
+  withNoGoFloor(minTwaDeg: number): PolarDiagram {
+    if (!(minTwaDeg > 0)) return this;
+    const nW = this.tws.length;
+    const speeds = Float64Array.from(this.speeds);
+    let changed = false;
+    for (let i = 0; i < this.twa.length; i++) {
+      if (this.twa[i] >= minTwaDeg) continue;
+      for (let k = 0; k < nW; k++) {
+        if (speeds[i * nW + k] > 0) {
+          speeds[i * nW + k] = 0;
+          changed = true;
+        }
+      }
+    }
+    return changed ? new PolarDiagram(this.twa, this.tws, speeds) : this;
   }
 
   static load(filePath: string): PolarDiagram {

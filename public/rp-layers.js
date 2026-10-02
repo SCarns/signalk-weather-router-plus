@@ -1,9 +1,18 @@
-// Weather Router Plus — route planner UI, part 2 of 3 (map layers).
-// Markers, route styling, weather/water overlays (JSON grids drawn on
-// canvas in place of the routing server's PNG tiles), streamlines,
-// pressure, and the map itself.
+// Weather Router Plus — route planner UI: map module (imports rp-core.js).
+// The map, markers and route styling, weather/water overlays (JSON grids
+// drawn on canvas, or the plugin's PNG tiles), streamlines, pressure, the
+// layer toggles and the legends box. rp-plan.js imports what it uses.
 
-const markerSource = new ol.source.Vector({
+import { _apiErrorText, API, authFetch, AuthGate, fmtPressure, fmtWhen, KT_MS, TACK_COLOR, tackSide, UNIT_MISSING, unitDesc } from './rp-core.js';
+
+// --- Marker features and route sources (drawn by the layers below, placed by rp-plan.js) ---
+// --- Marker features ---
+export const startFeature = new ol.Feature({ name: 'start' });
+export const endFeature = new ol.Feature({ name: 'end' });
+export const routeSource = new ol.source.Vector();
+export const skeletonSource = new ol.source.Vector();
+
+export const markerSource = new ol.source.Vector({
   features: [startFeature, endFeature]
 });
 
@@ -34,14 +43,17 @@ const markerStyle = function(feature) {
   });
 };
 
-const markerLayer = new ol.layer.Vector({
+export const markerLayer = new ol.layer.Vector({
   source: markerSource,
   style: markerStyle,
   zIndex: 20
 });
 
 // --- Route layer ---
-const routeLayer = new ol.layer.Vector({
+let _selectedRouteFeature = null;  // the route point whose popup is open: drawn highlighted
+export function setSelectedRouteFeature(f) { _selectedRouteFeature = f; }
+export function selectedRouteFeature() { return _selectedRouteFeature; }
+export const routeLayer = new ol.layer.Vector({
   source: routeSource,
   style: function(feature) {
     const geomType = feature.getGeometry().getType();
@@ -49,7 +61,28 @@ const routeLayer = new ol.layer.Vector({
       return feature.getStyle();
     }
     if (geomType === 'Point') {
-      const mode = feature.get('mode');
+      // Where the forecast runs out along the route (displayRoute): an amber
+      // diamond with a label; the legs after it are drawn dashed.
+      if (feature.get('kind') === 'forecast_end') {
+        const when = feature.get('valid_to') ? fmtWhen(feature.get('valid_to')) : '';
+        return [
+          new ol.style.Style({
+            image: new ol.style.RegularShape({
+              points: 4, radius: 11, angle: 0,
+              fill: new ol.style.Fill({ color: '#f9a825' }),
+              stroke: new ol.style.Stroke({ color: '#fff', width: 2.5 }),
+            }),
+            text: new ol.style.Text({
+              text: 'forecast ends' + (when ? ' ' + when : ''),
+              font: 'bold 12px sans-serif',
+              offsetY: -20,
+              fill: new ol.style.Fill({ color: '#7a4b00' }),
+              stroke: new ol.style.Stroke({ color: '#fff', width: 4 }),
+            }),
+            zIndex: 30,
+          }),
+        ];
+      }
       const cog = feature.get('cog_deg');
       const outCog = feature.get('outgoing_cog');
       const windDir = feature.get('wind_dir_deg');
@@ -152,6 +185,61 @@ const routeLayer = new ol.layer.Vector({
   zIndex: 15
 });
 
+// --- Stage fronts (the router's search as it runs): one line per stage
+// front (the candidates kept after pruning, sorted across the track,
+// coloured cool → warm by stage) and the best path so far (dashed). Live
+// from the job's `frontier` events, then the finished job's /fronts.
+export const frontSource = new ol.source.Vector();
+function _frontColor(frac, alpha) {
+  // blue (early) → amber (late)
+  const r = Math.round(40 + 215 * frac), g = Math.round(90 + 70 * frac), b = Math.round(220 - 200 * frac);
+  return 'rgba(' + r + ',' + g + ',' + b + ',' + alpha + ')';
+}
+const frontLayer = new ol.layer.Vector({
+  source: frontSource,
+  style: f => {
+    if (f.get('kind') === 'best') return new ol.style.Style({ stroke: new ol.style.Stroke({ color: 'rgba(120,40,160,0.9)', width: 2.5, lineDash: [6, 6] }) });
+    const frac = f.get('frac') || 0, final = f.get('final');
+    return new ol.style.Style({ stroke: new ol.style.Stroke({ color: _frontColor(frac, final ? 0.45 : 0.85), width: final ? 1.2 : 2 }) });
+  },
+  zIndex: 14,
+  visible: true,
+});
+// Draw one stage: points [[lon, lat, timeMs, viaCount], …] sorted across the
+// track within each viaCount; best [[lon, lat], …]. `reset` clears earlier
+// stages (a new job); `resetLeg` clears only that leg's stages (a re-run of
+// one leg's search), keeping the other legs' fronts.
+export function drawFront(front, opts) {
+  const o = opts || {};
+  if (o.reset) frontSource.clear();
+  else if (o.resetLeg != null) {
+    frontSource.getFeatures()
+      .filter(f => f.get('kind') === 'front' && f.get('leg') === o.resetLeg)
+      .forEach(f => frontSource.removeFeature(f));
+  }
+  const total = Math.max(1, front.total || front.totalStages || 1);
+  const frac = Math.min(1, (front.stage || 0) / total);
+  const groups = new Map();
+  for (const p of front.points || []) {
+    const k = p[3] || 0;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(ol.proj.fromLonLat([p[0], p[1]]));
+  }
+  for (const [k, coords] of groups) {
+    const geom = coords.length > 1 ? new ol.geom.LineString(coords) : new ol.geom.Point(coords[0]);
+    const f = new ol.Feature({ geometry: geom, kind: 'front', stage: front.stage, leg: front.leg || 0, via: k, frac, final: !!o.final });
+    frontSource.addFeature(f);
+  }
+  if (!o.final && Array.isArray(front.best) && front.best.length > 1) {
+    frontSource.getFeatures().filter(f => f.get('kind') === 'best').forEach(f => frontSource.removeFeature(f));
+    frontSource.addFeature(new ol.Feature({ geometry: new ol.geom.LineString(front.best.map(p => ol.proj.fromLonLat([p[0], p[1]]))), kind: 'best' }));
+  }
+}
+export function drawFronts(fronts) {
+  frontSource.clear();
+  for (const fr of fronts || []) drawFront(fr, { final: true });
+}
+
 // --- Skeleton layer (A* presumptive route, blue) ---
 const skeletonLayer = new ol.layer.Vector({
   source: skeletonSource,
@@ -163,7 +251,7 @@ const skeletonLayer = new ol.layer.Vector({
 
 // --- Proposed-route layer (Live mode re-plan preview, dashed purple) ---
 // Drawn alongside the active route while the user decides Accept/Dismiss.
-const proposedRouteSource = new ol.source.Vector();
+export const proposedRouteSource = new ol.source.Vector();
 const proposedRouteLayer = new ol.layer.Vector({
   source: proposedRouteSource,
   style: function(feature) {
@@ -183,7 +271,7 @@ const proposedRouteLayer = new ol.layer.Vector({
 // Rotated to headingTrue when available, else COG. Rendered on top of
 // route/skeleton but below the start/end pin markers so dragging pins
 // stays unambiguous.
-const vesselMarkerSource = new ol.source.Vector();
+export const vesselMarkerSource = new ol.source.Vector();
 const vesselMarkerLayer = new ol.layer.Vector({
   source: vesselMarkerSource,
   style: function(feature) {
@@ -211,7 +299,7 @@ const vesselMarkerLayer = new ol.layer.Vector({
 // Target ring at the spot the conditions popup describes (shift-click
 // or "Conditions here"). Set in openConditionsAt; cleared by the
 // popup position listener there whenever the popup closes or moves.
-const condMarkerFeature = new ol.Feature();
+export const condMarkerFeature = new ol.Feature();
 const condMarkerSource = new ol.source.Vector({ features: [condMarkerFeature] });
 const condMarkerLayer = new ol.layer.Vector({
   source: condMarkerSource,
@@ -271,7 +359,10 @@ const seamarkLayer = new ol.layer.Tile({
 // The time every overlay is drawn for: a clicked waypoint / conditions
 // hour when set, else the departure input.
 let _currentTimeOverride = null;  // set when clicking a waypoint or a conditions hour
-function _overlayTimeIso() {
+/** The hour the timed overlays show instead of the departure (ISO), or null; set by rp-plan.js. */
+export function setTimeOverride(iso) { _currentTimeOverride = iso; }
+export function timeOverride() { return _currentTimeOverride; }
+export function _overlayTimeIso() {
   if (_currentTimeOverride) return _currentTimeOverride;
   const depEl = document.getElementById('departure');
   return depEl.value ? new Date(depEl.value).toISOString() : new Date().toISOString();
@@ -294,7 +385,7 @@ function _viewBBox() {
 const _overlayNotes = {};
 function _noteOverlay(key, msg) {
   if (msg) _overlayNotes[key] = msg; else delete _overlayNotes[key];
-  if (typeof updateLegends === 'function') updateLegends();
+  updateLegends();
 }
 function _bboxParam(b) { return b.map(v => +v.toFixed(5)).join(','); }
 
@@ -381,7 +472,7 @@ function _currentColor(speed) {
 const SLACK_KT = 0.05;  // below this, render as a pause symbol
 function _currentStyle(feature) {
   const speedMs = feature.get('speed_ms') || 0;
-  const speed = speedMs / MS_PER_KT;  // display thresholds are in kts
+  const speed = speedMs / KT_MS;  // the arrow classes are in knots (rp-core.js KT_MS)
   const dirDeg = feature.get('dir_deg') || 0;
   const color = _currentColor(speed);
 
@@ -535,7 +626,7 @@ function _windBarbSvg(speedKts, color) {
 
 function _windStyle(feature) {
   const speedMs = feature.get('speed_ms') || 0;
-  const kts = speedMs / MS_PER_KT;
+  const kts = speedMs / KT_MS;
   // From-direction: meteorological convention. Staff points at the
   // source, so rotation = dirDeg (with north = 0 matching our SVG's
   // up-pointing staff).
@@ -575,47 +666,28 @@ function loadWindOverlay() {
   _syncPointSource(windSource);
 }
 
-document.getElementById('departure').addEventListener('change', function() {
-  loadWindOverlay();
-  loadWindHeatmap();
-  loadCurrentHeatmap();
-  loadRoughness();
-  loadWaveHeatmap();
-  loadPrecipHeatmap();
-  loadTemperature();
-  loadSst();
-  loadTide();
-  loadPressure();
-  if (waveStreamlines.enabled) waveStreamlines._fetchField();
-  if (windStreamlines.enabled) windStreamlines._fetchField();
-});
+document.getElementById('departure').addEventListener('change', () => reloadOverlays({ currents: false, streamlines: true }));
 
 
 // ─────────── Heatmap engine (JSON grid → canvas → ImageStatic) ───────────
-// The routing server rendered translucent PNGs (matplotlib bilinear
-// imshow, alpha 0.55, land masked). The plugin instead serves the grid
-// as JSON (`GET /api/field`): lons/lats ascending, `fields` row-major
-// from the south, `land` per cell. We draw the same picture here: a
+// The plugin serves the grid as JSON (`GET /api/field`): lons/lats
+// ascending, `fields` row-major from the south, `land` per cell. We
+// draw a translucent picture (bilinear, alpha 0.55, land masked): a
 // viewport-sized canvas, bilinear interpolation between grid points,
 // the legend's SI colour stops, alpha 0.55, land masked, and hand it to
 // OpenLayers as an EPSG:4326 ImageStatic exactly where the PNG used to go.
-const KT_MS = 0.514444;
-const MMH_MS = 1 / 3600000;
-// Fallback ramps (identical to the plugin's legends.ts) used until
-// `GET /api/legends` has answered.
-const _FALLBACK_STOPS = {
-  wind: [[0, '#90caf9'], [5 * KT_MS, '#4fc3f7'], [10 * KT_MS, '#00897b'], [15 * KT_MS, '#43a047'], [20 * KT_MS, '#f9a825'], [25 * KT_MS, '#e64a19'], [30 * KT_MS, '#c62828'], [50 * KT_MS, '#8a0000']],
-  current: [[0, '#cce6fa'], [0.5 * KT_MS, '#66ccf2'], [1.0 * KT_MS, '#4ccc73'], [1.5 * KT_MS, '#f2d933'], [2.0 * KT_MS, '#f28c26'], [3.0 * KT_MS, '#d93326'], [5.0 * KT_MS, '#800d0d']],
-  waves: [[0, '#b3e5fc'], [1, '#4fc3f7'], [2, '#43a047'], [3, '#fdd835'], [4, '#fb8c00'], [5, '#e64a19'], [6, '#c62828']],
-  precip: [[0, '#b3e5fc'], [0.5 * MMH_MS, '#b3e5fc'], [2 * MMH_MS, '#4fc3f7'], [5 * MMH_MS, '#43a047'], [10 * MMH_MS, '#fdd835'], [25 * MMH_MS, '#c2185b']],
-  temperature: [[253.15, '#0d2673'], [263.15, '#3359b2'], [268.15, '#73a6e6'], [273.15, '#b2d9f2'], [278.15, '#66d9e6'], [288.15, '#66cc66'], [293.15, '#f2eb4c'], [298.15, '#faa626'], [303.15, '#f2591a'], [308.15, '#cc261a'], [313.15, '#800d0d']],
-  sst: [[271.15, '#4c1a80'], [275.15, '#1a4cbf'], [281.15, '#4ca6d9'], [287.15, '#4cbfa6'], [291.15, '#8cd966'], [295.15, '#f2eb4c'], [299.15, '#faa626'], [303.15, '#f24c1a'], [305.15, '#a61a1a']],
-  tide: [[-3, '#543005'], [-2, '#8c510a'], [-1, '#d8b365'], [-0.25, '#f6e8c3'], [0, '#f5f5f5'], [0.25, '#c7eae5'], [1, '#5ab4ac'], [2, '#01665e'], [3, '#003c30']],
-  sea_state: [[0, '#313695'], [9.375, '#3d5da8'], [18.75, '#5083bb'], [28.125, '#6ea6cd'], [37.5, '#90c3dd'], [46.875, '#b2dceb'], [56.25, '#d3ecf4'], [65.625, '#ecf7e1'], [75, '#fefebe'], [84.375, '#feeca2'], [93.75, '#fdd484'], [103.125, '#fdb467'], [112.5, '#f88e52'], [121.875, '#f0653f'], [131.25, '#de3f2e'], [140.625, '#c41e26'], [150, '#a50026']],
-};
+// The colour stops of a legend (`GET /api/legends`, SI), or null until
+// they are loaded: the page keeps no copy of the ramps.
 function _legendStops(key) {
-  const L = (typeof _LEGENDS !== 'undefined' && _LEGENDS && _LEGENDS[key]) ? _LEGENDS[key] : null;
-  return (L && Array.isArray(L.stops) && L.stops.length >= 2) ? L.stops : _FALLBACK_STOPS[key];
+  const L = _LEGENDS && _LEGENDS[key] ? _LEGENDS[key] : null;
+  return (L && Array.isArray(L.stops) && L.stops.length >= 2) ? L.stops : null;
+}
+// CSS colour of a value on a legend ramp (the heatmap LUT); transparent until the legends are loaded.
+function _stopsColor(stops, v) {
+  if (!stops) return 'rgba(0,0,0,0)';
+  const { v0, v1, lut } = _rampLut(stops);
+  const i = Math.max(0, Math.min(255, Math.round((v - v0) / ((v1 - v0) || 1) * 255)));
+  return 'rgb(' + lut[i * 3] + ',' + lut[i * 3 + 1] + ',' + lut[i * 3 + 2] + ')';
 }
 function _cssToRgb(c) {
   c = String(c).trim();
@@ -680,8 +752,8 @@ function _gridSampler(grid, rows) {
   };
 }
 // Draw a grid into a data URL. spec: { field, legend, alpha, maskLand,
-// alphaField (multiplies alpha, e.g. sea-state `signal`), fadeBelow
-// (alpha ramps 0→1 across [0, fadeBelow], precip) }.
+// alphaField (multiplies alpha, e.g. sea-state `signal`) }; the legend's
+// `fade_below` (precip) ramps alpha 0→1 across [0, fade_below].
 // Canvas size for a heatmap of the current view (also the land-mask size).
 function _heatmapCanvasSize() {
   const size = map.getSize() || [800, 600];
@@ -695,7 +767,7 @@ const _landMaskCache = new Map();
 function fetchLandMask(bbox, W, H) {
   const key = bbox.join(',') + '|' + W + 'x' + H;
   if (_landMaskCache.has(key)) return _landMaskCache.get(key);
-  const url = ROUTER + '/land-mask?bbox=' + bbox.join(',') + '&w=' + W + '&h=' + H;
+  const url = API + '/land-mask?bbox=' + bbox.join(',') + '&w=' + W + '&h=' + H;
   const p = authFetch(url, {}, 'land-mask-' + key)
     .then(r => r.ok ? r.arrayBuffer() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(buf => {
@@ -740,7 +812,7 @@ function fetchField(layer, channel) {
   const bbox = _viewBBox();
   const ext3857 = map.getView().calculateExtent(map.getSize());
   const res = _fieldRes(bbox);
-  const url = ROUTER + '/field?layer=' + layer + '&bbox=' + _bboxParam(bbox) + '&time=' + encodeURIComponent(_overlayTimeIso()) + '&res=' + res;
+  const url = API + '/field?layer=' + layer + '&bbox=' + _bboxParam(bbox) + '&time=' + encodeURIComponent(_overlayTimeIso()) + '&res=' + res;
   return authFetch(url, {}, channel).then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(g => { if (g && typeof g === 'object') g._ext3857 = ext3857; return g; });
 }
@@ -760,7 +832,7 @@ function _overlayHourIso() {
   return new Date(Math.round(t / 3600e3) * 3600e3).toISOString();
 }
 function _tileUrl(layer, z, x, y, hourIso) {
-  return ROUTER + '/tile/' + layer + '/' + z + '/' + x + '/' + y + (hourIso ? '?time=' + encodeURIComponent(hourIso) : '');
+  return API + '/tile/' + layer + '/' + z + '/' + x + '/' + y + (hourIso ? '?time=' + encodeURIComponent(hourIso) : '');
 }
 // Tile fetch: the same auth breaker as authFetch but not its rate
 // limiter — OpenLayers already caps concurrent tile loads, and saved
@@ -801,7 +873,11 @@ function _landTile(z, x, y) {
 function _paintTile(grid, spec, mask, ext, gx0, gy0) {
   const N = OVERLAY_TILE_PX;
   const data = new Uint8ClampedArray(N * N * 4);
-  const { v0, v1, lut } = _rampLut(spec.stops || _legendStops(spec.legend));
+  const stops = spec.stops || _legendStops(spec.legend);
+  if (!stops) return data; // legends not loaded: nothing to paint with (the loader waits for them)
+  const { v0, v1, lut } = _rampLut(stops);
+  const legend = _LEGENDS ? _LEGENDS[spec.legend] : null;
+  const fadeBelow = legend && legend.fade_below ? legend.fade_below : 0;
   const sample = _gridSampler(grid, grid.fields[spec.field]);
   const sampleLand = spec.maskLand && !mask ? _gridSampler(grid, grid.land) : null;
   const sampleAlpha = spec.alphaField ? _gridSampler(grid, grid.fields[spec.alphaField]) : null;
@@ -829,7 +905,7 @@ function _paintTile(grid, spec, mask, ext, gx0, gy0) {
       if (sampleLand) { const l = sampleLand(lon, lat); if (l != null && l > 0.5) continue; }
       let a = baseA;
       if (sampleAlpha) { const sg = sampleAlpha(lon, lat); a *= sg == null ? 0 : Math.max(0, Math.min(1, sg)); }
-      if (spec.fadeBelow) a *= Math.max(0, Math.min(1, v / spec.fadeBelow));
+      if (fadeBelow) a *= Math.max(0, Math.min(1, v / fadeBelow));
       if (a <= 0.002) continue;
       const idx = Math.max(0, Math.min(255, Math.round((v - v0) / span * 255)));
       const o = (y * N + x) * 4;
@@ -863,7 +939,7 @@ function _noteTileScale(layer, spec, grid) {
   const baseMax = Math.max(...base.map(s => Math.abs(s[0]))) || 1;
   spec.stops = base.map(([v, c]) => [+(v * S / baseMax).toFixed(4), c]);
   _autoScaleStops[spec.legend] = spec.stops;
-  if (typeof updateLegends === 'function') updateLegends();
+  updateLegends();
   if (!first) {
     clearTimeout(spec._redraw);
     spec._redraw = setTimeout(() => { if (layer.getSource()) layer.setSource(_colourTileSource(layer, spec, spec._hour)); }, 250);
@@ -911,7 +987,9 @@ function _colourTileSource(layer, spec, hourIso) {
 function _heatmapLoader(layer, toggleId, fieldLayer, spec) {
   spec.toggleId = toggleId;
   spec.tileLayer = fieldLayer;
-  return function () {
+  return function load() {
+    // The ramps come from GET /api/legends; paint only once they are here.
+    if (!_LEGENDS) { _loadLegends().then(() => { if (_LEGENDS) load(); }); return; }
     const hour = _overlayHourIso();
     const cur = layer.getSource();
     if (cur && cur._hour === hour) return;
@@ -921,100 +999,59 @@ function _heatmapLoader(layer, toggleId, fieldLayer, spec) {
   };
 }
 
+// A colour tile layer and its debounced loader (300 ms after the last
+// view change; nothing when the layer is off). `zIndex` orders the
+// layers; the per-layer notes are at each layer below.
+function _heatmapLayer(zIndex, toggleId, fieldLayer, spec) {
+  const layer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex, visible: false });
+  const doLoad = _heatmapLoader(layer, toggleId, fieldLayer, spec);
+  let debounce = null;
+  const load = () => {
+    if (!layer.getVisible()) return;
+    if (debounce) clearTimeout(debounce);
+    debounce = setTimeout(doLoad, 300);
+  };
+  return { layer, load };
+}
+
 // ─────────── Wind-speed heatmap ───────────
 // Same ramp as the barbs (0–50 kt, 8 stops), alpha 0.55, not land
-// masked (wind is a real field over land, as on the routing server).
-const windHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
-let _windHeatmapDebounce = null;
-const _doLoadWindHeatmap = _heatmapLoader(windHeatmapLayer, 'windCombinedToggle', 'wind', { field: 'speed_ms', legend: 'wind', maskLand: false });
-function loadWindHeatmap() {
-  if (!windHeatmapLayer.getVisible()) return;
-  if (_windHeatmapDebounce) clearTimeout(_windHeatmapDebounce);
-  _windHeatmapDebounce = setTimeout(_doLoadWindHeatmap, 300);
-}
+// masked (wind is a real field over land).
+const { layer: windHeatmapLayer, load: loadWindHeatmap } = _heatmapLayer(6, 'windCombinedToggle', 'wind', { field: 'speed_ms', legend: 'wind', maskLand: false });
 
 // ─────────── Current-speed heatmap ───────────
 // Land masked so the coasts stay sharp.
-const currentHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
-let _currentHeatmapDebounce = null;
-const _doLoadCurrentHeatmap = _heatmapLoader(currentHeatmapLayer, 'currentHeatmapToggle', 'current', { field: 'speed_ms', legend: 'current', maskLand: true, hatchNoData: true, attributions: CURRENT_ATTRIBUTION });
-function loadCurrentHeatmap() {
-  if (!currentHeatmapLayer.getVisible()) return;
-  if (_currentHeatmapDebounce) clearTimeout(_currentHeatmapDebounce);
-  _currentHeatmapDebounce = setTimeout(_doLoadCurrentHeatmap, 300);
-}
+const { layer: currentHeatmapLayer, load: loadCurrentHeatmap } = _heatmapLayer(6, 'currentHeatmapToggle', 'current', { field: 'speed_ms', legend: 'current', maskLand: true, hatchNoData: true, attributions: CURRENT_ATTRIBUTION });
 
 // ─────────── Sea-state / roughness heatmap ───────────
 // Combined wind + swell + current index, painted blue→red (RdYlBu_r,
 // 0–150). Alpha is 0.55 × the grid's `signal` (0..1 fade from calm),
 // 0 over land.
-const roughnessLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
-let _roughnessDebounce = null;
-const _doLoadRoughness = _heatmapLoader(roughnessLayer, 'roughnessToggle', 'sea_state', { field: 'index', legend: 'sea_state', maskLand: true, alphaField: 'signal', attributions: CURRENT_ATTRIBUTION });
-function loadRoughness() {
-  if (!roughnessLayer.getVisible()) return;
-  if (_roughnessDebounce) clearTimeout(_roughnessDebounce);
-  _roughnessDebounce = setTimeout(_doLoadRoughness, 300);
-}
+const { layer: roughnessLayer, load: loadRoughness } = _heatmapLayer(6, 'roughnessToggle', 'sea_state', { field: 'index', legend: 'sea_state', maskLand: true, alphaField: 'signal', attributions: CURRENT_ATTRIBUTION });
 
 // ─────────── Wave height heatmap (0–6 m, 7 stops, land masked) ───────────
-const waveHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
-let _waveHeatmapDebounce = null;
-const _doLoadWaveHeatmap = _heatmapLoader(waveHeatmapLayer, 'wavesCombinedToggle', 'waves', { field: 'swh', legend: 'waves', maskLand: true });
-function loadWaveHeatmap() {
-  if (!waveHeatmapLayer.getVisible()) return;
-  if (_waveHeatmapDebounce) clearTimeout(_waveHeatmapDebounce);
-  _waveHeatmapDebounce = setTimeout(_doLoadWaveHeatmap, 300);
-}
+const { layer: waveHeatmapLayer, load: loadWaveHeatmap } = _heatmapLayer(6, 'wavesCombinedToggle', 'waves', { field: 'swh', legend: 'waves', maskLand: true });
 
 // ─────────── Precipitation rate heatmap ────
 // Alpha fades to 0 below 0.5 mm/h (linear ramp across [0, 0.5 mm/h])
 // so the broad zero-precip background does not wash out the basemap;
-// land masked like the routing server's PNG.
-const precipHeatmapLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 6, visible: false });
-let _precipHeatmapDebounce = null;
-const _doLoadPrecipHeatmap = _heatmapLoader(precipHeatmapLayer, 'precipToggle', 'precip', { field: 'rate', legend: 'precip', maskLand: true, fadeBelow: 0.5 * MMH_MS });
-function loadPrecipHeatmap() {
-  if (!precipHeatmapLayer.getVisible()) return;
-  if (_precipHeatmapDebounce) clearTimeout(_precipHeatmapDebounce);
-  _precipHeatmapDebounce = setTimeout(_doLoadPrecipHeatmap, 300);
-}
+// land masked.
+const { layer: precipHeatmapLayer, load: loadPrecipHeatmap } = _heatmapLayer(6, 'precipToggle', 'precip', { field: 'rate', legend: 'precip', maskLand: true });
 
 // ─────────── 2-m air temperature heatmap ─────────────
 // Constant alpha, no land mask: air temp is meaningful everywhere and a
 // sailor at anchor still cares about the shore-side temp.
-const temperatureLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 5, visible: false });
-let _temperatureDebounce = null;
-const _doLoadTemperature = _heatmapLoader(temperatureLayer, 'temperatureToggle', 'temperature', { field: 't2m', legend: 'temperature', maskLand: false });
-function loadTemperature() {
-  if (!temperatureLayer.getVisible()) return;
-  if (_temperatureDebounce) clearTimeout(_temperatureDebounce);
-  _temperatureDebounce = setTimeout(_doLoadTemperature, 300);
-}
+const { layer: temperatureLayer, load: loadTemperature } = _heatmapLayer(5, 'temperatureToggle', 'temperature', { field: 't2m', legend: 'temperature', maskLand: false });
 
 // ─────────── Sea-surface (skin) temperature heatmap ──
 // Land masked: over land `skt` is the land-surface temperature, not SST.
-const sstLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 5, visible: false });
-let _sstDebounce = null;
-const _doLoadSst = _heatmapLoader(sstLayer, 'sstToggle', 'sst', { field: 'skt', legend: 'sst', maskLand: true });
-function loadSst() {
-  if (!sstLayer.getVisible()) return;
-  if (_sstDebounce) clearTimeout(_sstDebounce);
-  _sstDebounce = setTimeout(_doLoadSst, 300);
-}
+const { layer: sstLayer, load: loadSst } = _heatmapLayer(5, 'sstToggle', 'sst', { field: 'skt', legend: 'sst', maskLand: true });
 
 // ─────────── Tide height heatmap (Copernicus Marine, −3..+3 m around mean sea level) ──
 // Land masked at the true coastline; the plugin extends the 1/12° field
 // up to 2 cells towards the coast for display. Hourly: reloads with the
 // overlay time like the other layers.
-const tideLayer = new ol.layer.Tile({ preload: 0, source: null, opacity: 1.0, zIndex: 5, visible: false });
-let _tideDebounce = null;
-const _doLoadTide = _heatmapLoader(tideLayer, 'tideToggle', 'tide', { field: 'tide_m', legend: 'tide', maskLand: true, hatchNoData: true, autoScaleSym: true, minScale: 0.5, attributions: TIDE_ATTRIBUTION });
-function loadTide() {
-  if (!tideLayer.getVisible()) return;
-  if (_tideDebounce) clearTimeout(_tideDebounce);
-  _tideDebounce = setTimeout(_doLoadTide, 300);
-}
+const { layer: tideLayer, load: loadTide } = _heatmapLayer(5, 'tideToggle', 'tide', { field: 'tide_m', legend: 'tide', maskLand: true, hatchNoData: true, autoScaleSym: true, minScale: 0.5, attributions: TIDE_ATTRIBUTION });
 
 // ─────────── MSL pressure synoptic chart (vector GeoJSON) ─────────
 // Plugin returns isobars + hPa labels along each contour + H/L glyphs
@@ -1090,7 +1127,7 @@ function loadPressure() {
 function _doLoadPressure() {
   const bbox = _viewBBox();
   const timeStr = _overlayTimeIso();
-  const url = ROUTER + '/pressure?bbox=' + _bboxParam(bbox) +
+  const url = API + '/pressure?bbox=' + _bboxParam(bbox) +
               '&time=' + encodeURIComponent(timeStr) + '&interval=4';
   authFetch(url, {}, 'pressure')
     .then(r => {
@@ -1112,322 +1149,161 @@ function _doLoadPressure() {
     .catch(err => { if (err.name !== 'AbortError') { console.log('Pressure overlay error: ' + err); _noteOverlay('pressureToggle', err.message); } });
 }
 
-// ─────────── Wave streamlines (animated canvas overlay) ───────────
-// Fetches the wave grid (`/api/field?layer=waves`) for the current
-// viewport, spawns particles anywhere swh is finite, advects them in the
-// mwd propagation direction, and fades a trail. Color matches the
-// wave-height heatmap ramp so the two layers reinforce each other.
-const waveStreamlines = {
-  canvas: null,
-  ctx: null,
-  enabled: false,
-  particles: [],
-  vectorField: null,
-  rafId: null,
-  fetching: false,
-  _onMoveEnd: null,
+// ─────────── Streamlines (animated canvas overlay) ───────────
+// One animated particle layer per vector field (waves, wind): fetches the
+// field (`/api/field?layer=…`) for the current viewport, spawns particles
+// where the magnitude is finite and the cell is water, advects them in the
+// direction the field moves TO (the fields give the direction FROM), and
+// fades a trail. The colour is the field's legend ramp, so the layer
+// reinforces the matching heatmap. `spec`: { layer, channel, label,
+// magKey, dirKey, legend, stepDeg(mag) → degrees per frame }.
+function _streamlines(spec) {
+  return {
+    spec,
+    canvas: null,
+    ctx: null,
+    enabled: false,
+    particles: [],
+    vectorField: null,
+    rafId: null,
+    fetching: false,
+    _onMoveEnd: null,
 
-  _init() {
-    if (this.canvas) return;
-    this.canvas = document.createElement('canvas');
-    this.canvas.style.cssText =
-      'position:absolute;top:0;left:0;pointer-events:none;z-index:5;display:none;';
-    document.getElementById('map').appendChild(this.canvas);
-    this.ctx = this.canvas.getContext('2d');
-    this._resize();
-    window.addEventListener('resize', () => this._resize());
-    map.on('change:size', () => this._resize());
-  },
+    _init() {
+      if (this.canvas) return;
+      this.canvas = document.createElement('canvas');
+      this.canvas.style.cssText =
+        'position:absolute;top:0;left:0;pointer-events:none;z-index:5;display:none;';
+      document.getElementById('map').appendChild(this.canvas);
+      this.ctx = this.canvas.getContext('2d');
+      this._resize();
+      window.addEventListener('resize', () => this._resize());
+      map.on('change:size', () => this._resize());
+    },
 
-  _resize() {
-    const size = map.getSize();
-    if (!size) return;
-    this.canvas.width = size[0];
-    this.canvas.height = size[1];
-  },
+    _resize() {
+      const size = map.getSize();
+      if (!size) return;
+      this.canvas.width = size[0];
+      this.canvas.height = size[1];
+    },
 
-  setEnabled(on) {
-    this._init();
-    this.enabled = on;
-    this.canvas.style.display = on ? '' : 'none';
-    if (on) {
-      this._fetchField();
-      if (!this.rafId) this._loop();
-      this._onMoveEnd = () => this._fetchField();
-      map.on('moveend', this._onMoveEnd);
-    } else {
-      if (this.rafId) cancelAnimationFrame(this.rafId);
-      this.rafId = null;
-      this.particles = [];
-      this.vectorField = null;
-      if (this._onMoveEnd) { map.un('moveend', this._onMoveEnd); this._onMoveEnd = null; }
-      if (this.ctx) this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    }
-  },
-
-  _fetchField() {
-    if (!this.enabled || this.fetching || AuthGate.tripped) return;
-    this.fetching = true;
-    fetchField('waves', 'wave-vec').then(d => {
-      this.vectorField = d;
-      _attachLandMask(this, d);
-      // Respawn the whole particle population — old particles are at
-      // positions now out of the field's bounds.
-      const N = 1500;
-      this.particles = new Array(N);
-      for (let i = 0; i < N; i++) this.particles[i] = this._spawn();
-    }).catch(err => { if (err.name !== 'AbortError') console.log('wave field error:', err.message); })
-      .finally(() => { this.fetching = false; });
-  },
-
-  _spawn() {
-    const f = this.vectorField;
-    if (!f || !f.bbox) return null;
-    const [w, s, e, n] = f.bbox;
-    for (let i = 0; i < 20; i++) {
-      const lon = w + Math.random() * (e - w);
-      const lat = s + Math.random() * (n - s);
-      const sample = this._sample(lon, lat);
-      if (sample) {
-        return { lon, lat, age: 0, maxAge: 60 + Math.random() * 60 };
+    setEnabled(on) {
+      this._init();
+      this.enabled = on;
+      this.canvas.style.display = on ? '' : 'none';
+      if (on) {
+        this._fetchField();
+        if (!this.rafId) this._loop();
+        this._onMoveEnd = () => this._fetchField();
+        map.on('moveend', this._onMoveEnd);
+      } else {
+        if (this.rafId) cancelAnimationFrame(this.rafId);
+        this.rafId = null;
+        this.particles = [];
+        this.vectorField = null;
+        if (this._onMoveEnd) { map.un('moveend', this._onMoveEnd); this._onMoveEnd = null; }
+        if (this.ctx) this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
       }
-    }
-    return null;  // couldn't find a live cell
-  },
+    },
 
-  _sample(lon, lat) {
-    const f = this.vectorField;
-    if (!f || !f.res || !f.fields || !f.fields.swh) return null;
-    // Offset east of the field's first column in [0, 360) (fields can span > 180°).
-    let dx = ((lon - f.lons[0]) % 360 + 360) % 360;
-    if (dx > 360 - f.res / 2) dx -= 360;
-    const j = Math.round(dx / f.res);
-    const i = Math.round((lat - f.lats[0]) / f.res);
-    if (i < 0 || i >= f.lats.length || j < 0 || j >= f.lons.length) return null;
-    const ml = _maskIsLand(f, this.landMask, lon, lat);
-    if (ml === true) return null;
-    if (ml === null && f.land && f.land[i] && f.land[i][j]) return null;
-    const swh = f.fields.swh[i][j];
-    const mwd = f.fields.mwd[i][j];
-    if (swh == null || mwd == null) return null;
-    return { swh, mwd };
-  },
+    _fetchField() {
+      if (!this.enabled || this.fetching || AuthGate.tripped) return;
+      this.fetching = true;
+      fetchField(this.spec.layer, this.spec.channel).then(d => {
+        this.vectorField = d;
+        _attachLandMask(this, d);
+        // Respawn the whole particle population: old particles are at
+        // positions now out of the field's bounds.
+        const N = 1500;
+        this.particles = new Array(N);
+        for (let i = 0; i < N; i++) this.particles[i] = this._spawn();
+      }).catch(err => { if (err.name !== 'AbortError') console.log(this.spec.label + ':', err.message); })
+        .finally(() => { this.fetching = false; });
+    },
 
-  _loop() {
-    if (!this.enabled) { this.rafId = null; return; }
-    const ctx = this.ctx;
-    // Fade the previous frame to leave trails.
-    ctx.globalCompositeOperation = 'destination-in';
-    ctx.fillStyle = 'rgba(0,0,0,0.92)';
-    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    ctx.globalCompositeOperation = 'source-over';
-
-    for (let k = 0; k < this.particles.length; k++) {
-      let p = this.particles[k];
-      if (!p) { this.particles[k] = this._spawn(); continue; }
-      const sample = this._sample(p.lon, p.lat);
-      if (!sample) { this.particles[k] = this._spawn(); continue; }
-      // ECMWF mwd is direction FROM; velocity TO is mwd + 180°.
-      const dirTo = (sample.mwd + 180) % 360;
-      const rad = dirTo * Math.PI / 180;
-      const speed = 0.0008 + 0.00025 * sample.swh;   // deg per frame
-      const coslat = Math.max(0.1, Math.cos(p.lat * Math.PI / 180));
-      p.lat += Math.cos(rad) * speed;
-      p.lon += Math.sin(rad) * speed / coslat;
-      p.age++;
-      if (p.age > p.maxAge) { this.particles[k] = this._spawn(); continue; }
-      const pix = map.getPixelFromCoordinate(ol.proj.fromLonLat([p.lon, p.lat]));
-      if (!pix) continue;
-      ctx.fillStyle = this._color(sample.swh);
-      ctx.fillRect(pix[0], pix[1], 2, 2);
-    }
-    this.rafId = requestAnimationFrame(() => this._loop());
-  },
-
-  // Same stops as the waves legend (0..6 m).
-  _color(swh) {
-    const stops = [
-      [0.0, [179, 229, 252]],
-      [1.0, [79, 195, 247]],
-      [2.0, [67, 160, 71]],
-      [3.0, [253, 216, 53]],
-      [4.0, [251, 140, 0]],
-      [5.0, [230, 74, 25]],
-      [6.0, [198, 40, 40]],
-    ];
-    const t = Math.max(0, Math.min(6, swh));
-    for (let i = 0; i < stops.length - 1; i++) {
-      const a = stops[i], b = stops[i + 1];
-      if (t <= b[0]) {
-        const f = (t - a[0]) / (b[0] - a[0]);
-        const r = Math.round(a[1][0] + f * (b[1][0] - a[1][0]));
-        const g = Math.round(a[1][1] + f * (b[1][1] - a[1][1]));
-        const bl = Math.round(a[1][2] + f * (b[1][2] - a[1][2]));
-        return `rgb(${r},${g},${bl})`;
+    _spawn() {
+      const f = this.vectorField;
+      if (!f || !f.bbox) return null;
+      const [w, s, e, n] = f.bbox;
+      for (let i = 0; i < 20; i++) {
+        const lon = w + Math.random() * (e - w);
+        const lat = s + Math.random() * (n - s);
+        const sample = this._sample(lon, lat);
+        if (sample) {
+          return { lon, lat, age: 0, maxAge: 60 + Math.random() * 60 };
+        }
       }
-    }
-    return 'rgb(198,40,40)';
-  },
-};
+      return null;  // couldn't find a live cell
+    },
 
-// ─────────── Wind streamlines (animated canvas overlay) ───────────
-// Parallel to waveStreamlines. Fetches the wind grid, advects particles
-// in the (dir_from + 180) direction, colors by wind speed in knots using
-// the same 8-stop ramp as the wind heatmap.
-const windStreamlines = {
-  canvas: null,
-  ctx: null,
-  enabled: false,
-  particles: [],
-  vectorField: null,
-  rafId: null,
-  fetching: false,
-  _onMoveEnd: null,
+    // { mag, dirFrom } at a position, or null over land / outside the field / without data.
+    _sample(lon, lat) {
+      const f = this.vectorField;
+      if (!f || !f.res || !f.fields || !f.fields[this.spec.magKey]) return null;
+      // Offset east of the field's first column in [0, 360) (fields can span > 180°).
+      let dx = ((lon - f.lons[0]) % 360 + 360) % 360;
+      if (dx > 360 - f.res / 2) dx -= 360;
+      const j = Math.round(dx / f.res);
+      const i = Math.round((lat - f.lats[0]) / f.res);
+      if (i < 0 || i >= f.lats.length || j < 0 || j >= f.lons.length) return null;
+      // Land cells are skipped so particles don't drift over the shore.
+      const ml = _maskIsLand(f, this.landMask, lon, lat);
+      if (ml === true) return null;
+      if (ml === null && f.land && f.land[i] && f.land[i][j]) return null;
+      const mag = f.fields[this.spec.magKey][i][j];
+      const dirFrom = f.fields[this.spec.dirKey][i][j];
+      if (mag == null || dirFrom == null) return null;
+      return { mag, dirFrom };
+    },
 
-  _init() {
-    if (this.canvas) return;
-    this.canvas = document.createElement('canvas');
-    this.canvas.style.cssText =
-      'position:absolute;top:0;left:0;pointer-events:none;z-index:5;display:none;';
-    document.getElementById('map').appendChild(this.canvas);
-    this.ctx = this.canvas.getContext('2d');
-    this._resize();
-    window.addEventListener('resize', () => this._resize());
-    map.on('change:size', () => this._resize());
-  },
+    _loop() {
+      if (!this.enabled) { this.rafId = null; return; }
+      const ctx = this.ctx;
+      // Fade the previous frame to leave trails.
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.fillStyle = 'rgba(0,0,0,0.92)';
+      ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+      ctx.globalCompositeOperation = 'source-over';
 
-  _resize() {
-    const size = map.getSize();
-    if (!size) return;
-    this.canvas.width = size[0];
-    this.canvas.height = size[1];
-  },
-
-  setEnabled(on) {
-    this._init();
-    this.enabled = on;
-    this.canvas.style.display = on ? '' : 'none';
-    if (on) {
-      this._fetchField();
-      if (!this.rafId) this._loop();
-      this._onMoveEnd = () => this._fetchField();
-      map.on('moveend', this._onMoveEnd);
-    } else {
-      if (this.rafId) cancelAnimationFrame(this.rafId);
-      this.rafId = null;
-      this.particles = [];
-      this.vectorField = null;
-      if (this._onMoveEnd) { map.un('moveend', this._onMoveEnd); this._onMoveEnd = null; }
-      if (this.ctx) this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    }
-  },
-
-  _fetchField() {
-    if (!this.enabled || this.fetching || AuthGate.tripped) return;
-    this.fetching = true;
-    fetchField('wind', 'wind-vec').then(d => {
-      this.vectorField = d;
-      _attachLandMask(this, d);
-      const N = 1500;
-      this.particles = new Array(N);
-      for (let i = 0; i < N; i++) this.particles[i] = this._spawn();
-    }).catch(err => { if (err.name !== 'AbortError') console.log('wind field error:', err.message); })
-      .finally(() => { this.fetching = false; });
-  },
-
-  _spawn() {
-    const f = this.vectorField;
-    if (!f || !f.bbox) return null;
-    const [w, s, e, n] = f.bbox;
-    for (let i = 0; i < 20; i++) {
-      const lon = w + Math.random() * (e - w);
-      const lat = s + Math.random() * (n - s);
-      const sample = this._sample(lon, lat);
-      if (sample) {
-        return { lon, lat, age: 0, maxAge: 60 + Math.random() * 60 };
+      for (let k = 0; k < this.particles.length; k++) {
+        let p = this.particles[k];
+        if (!p) { this.particles[k] = this._spawn(); continue; }
+        const sample = this._sample(p.lon, p.lat);
+        if (!sample) { this.particles[k] = this._spawn(); continue; }
+        // Meteorological direction FROM; velocity TO is +180°.
+        const dirTo = (sample.dirFrom + 180) % 360;
+        const rad = dirTo * Math.PI / 180;
+        const speed = this.spec.stepDeg(sample.mag);   // deg per frame
+        const coslat = Math.max(0.1, Math.cos(p.lat * Math.PI / 180));
+        p.lat += Math.cos(rad) * speed;
+        p.lon += Math.sin(rad) * speed / coslat;
+        p.age++;
+        if (p.age > p.maxAge) { this.particles[k] = this._spawn(); continue; }
+        const pix = map.getPixelFromCoordinate(ol.proj.fromLonLat([p.lon, p.lat]));
+        if (!pix) continue;
+        ctx.fillStyle = this._color(sample.mag);
+        ctx.fillRect(pix[0], pix[1], 2, 2);
       }
-    }
-    return null;
-  },
+      this.rafId = requestAnimationFrame(() => this._loop());
+    },
 
-  _sample(lon, lat) {
-    const f = this.vectorField;
-    if (!f || !f.res || !f.fields || !f.fields.speed_ms) return null;
-    // Offset east of the field's first column in [0, 360) (fields can span > 180°).
-    let dx = ((lon - f.lons[0]) % 360 + 360) % 360;
-    if (dx > 360 - f.res / 2) dx -= 360;
-    const j = Math.round(dx / f.res);
-    const i = Math.round((lat - f.lats[0]) / f.res);
-    if (i < 0 || i >= f.lats.length || j < 0 || j >= f.lons.length) return null;
-    // Land cells are skipped so particles don't drift over the shore
-    // (the routing server nulled them in its wind-vector field).
-    const ml = _maskIsLand(f, this.landMask, lon, lat);
-    if (ml === true) return null;
-    if (ml === null && f.land && f.land[i] && f.land[i][j]) return null;
-    const spd = f.fields.speed_ms[i][j];
-    const dir = f.fields.dir_from[i][j];
-    if (spd == null || dir == null) return null;
-    return { speed_ms: spd, dir_from: dir };
-  },
-
-  _loop() {
-    if (!this.enabled) { this.rafId = null; return; }
-    const ctx = this.ctx;
-    ctx.globalCompositeOperation = 'destination-in';
-    ctx.fillStyle = 'rgba(0,0,0,0.92)';
-    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-    ctx.globalCompositeOperation = 'source-over';
-
-    for (let k = 0; k < this.particles.length; k++) {
-      let p = this.particles[k];
-      if (!p) { this.particles[k] = this._spawn(); continue; }
-      const sample = this._sample(p.lon, p.lat);
-      if (!sample) { this.particles[k] = this._spawn(); continue; }
-      // meteorological dir_from → velocity TO is +180°
-      const dirTo = (sample.dir_from + 180) % 360;
-      const rad = dirTo * Math.PI / 180;
-      // Wind visual step: scale with speed (m/s). Tuned so 20 kt ≈ quick drift.
-      const speed = 0.001 + 0.00012 * sample.speed_ms;
-      const coslat = Math.max(0.1, Math.cos(p.lat * Math.PI / 180));
-      p.lat += Math.cos(rad) * speed;
-      p.lon += Math.sin(rad) * speed / coslat;
-      p.age++;
-      if (p.age > p.maxAge) { this.particles[k] = this._spawn(); continue; }
-      const pix = map.getPixelFromCoordinate(ol.proj.fromLonLat([p.lon, p.lat]));
-      if (!pix) continue;
-      ctx.fillStyle = this._color(sample.speed_ms);
-      ctx.fillRect(pix[0], pix[1], 2, 2);
-    }
-    this.rafId = requestAnimationFrame(() => this._loop());
-  },
-
-  // Match the wind legend ramp (units = knots).
-  _color(speed_ms) {
-    const kts = speed_ms * 1.94384;
-    const stops = [
-      [0.0,  [144, 202, 249]],  // #90CAF9
-      [5.0,  [ 79, 195, 247]],  // #4FC3F7
-      [10.0, [  0, 137, 123]],  // #00897B
-      [15.0, [ 67, 160,  71]],  // #43A047
-      [20.0, [249, 168,  37]],  // #F9A825
-      [25.0, [230,  74,  25]],  // #E64A19
-      [30.0, [198,  40,  40]],  // #C62828
-      [50.0, [138,   0,   0]],
-    ];
-    const t = Math.max(0, Math.min(50, kts));
-    for (let i = 0; i < stops.length - 1; i++) {
-      const a = stops[i], b = stops[i + 1];
-      if (t <= b[0]) {
-        const f = (t - a[0]) / (b[0] - a[0]);
-        const r = Math.round(a[1][0] + f * (b[1][0] - a[1][0]));
-        const g = Math.round(a[1][1] + f * (b[1][1] - a[1][1]));
-        const bl = Math.round(a[1][2] + f * (b[1][2] - a[1][2]));
-        return `rgb(${r},${g},${bl})`;
-      }
-    }
-    return 'rgb(138,0,0)';
-  },
-};
+    // The field's legend ramp (GET /api/legends).
+    _color(mag) {
+      return _stopsColor(_legendStops(this.spec.legend), mag);
+    },
+  };
+}
+// Waves: direction mwd (FROM), coloured by significant wave height.
+const waveStreamlines = _streamlines({
+  layer: 'waves', channel: 'wave-vec', label: 'wave field error', magKey: 'swh', dirKey: 'mwd', legend: 'waves',
+  stepDeg: swh => 0.0008 + 0.00025 * swh,
+});
+// Wind: direction dir_from, coloured by speed; the step is tuned so 20 kt is a quick drift.
+const windStreamlines = _streamlines({
+  layer: 'wind', channel: 'wind-vec', label: 'wind field error', magKey: 'speed_ms', dirKey: 'dir_from', legend: 'wind',
+  stepDeg: v => 0.001 + 0.00012 * v,
+});
 
 // --- Map ---
 const _DEFAULT_LONLAT = [-71.7, 41.25];
@@ -1438,9 +1314,9 @@ try {
       && Math.abs(v.lon) <= 180 && Math.abs(v.lat) <= 85) _SAVED_VIEW = v;
 } catch (_) {}
 
-const map = new ol.Map({
+export const map = new ol.Map({
   target: 'map',
-  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, markerLayer, condMarkerLayer],
+  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, frontLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, markerLayer, condMarkerLayer],
   view: new ol.View({
     // Last view this browser had (saved on every move), else Block
     // Island Sound at zoom 11. On a first visit the geolocation block
@@ -1494,11 +1370,21 @@ if (!_SAVED_VIEW && typeof navigator !== 'undefined' && navigator.geolocation) {
     v.animate({ center: ol.proj.fromLonLat([pos.coords.longitude, pos.coords.latitude]), zoom: 11, duration: 400 });
   }, () => { _geoPending = false; }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 });
 }
+// First visit with no saved view: the first Signal K fix opens the map on the boat (rp-plan.js Live mode).
+export function centreOnVesselOnce(coord) {
+  if (!_autoCentreOnVessel) return;
+  _autoCentreOnVessel = false;
+  _geoPending = false;
+  map.getView().animate({ center: coord, zoom: 11, duration: 400 });
+}
 
-// Reload overlays when map view changes (each loader debounces itself).
-map.on('moveend', function() {
-  if (AuthGate.tripped) return;
-  loadCurrentOverlay();
+// Every overlay keyed by the view and the overlay time (each loader
+// debounces itself and does nothing when its layer is off). `currents`:
+// the current arrows too (they do not follow the departure change);
+// `streamlines`: refetch the wave / wind streamline fields (they attach
+// their own moveend listener in setEnabled, so the view change skips them).
+export function reloadOverlays({ currents = true, streamlines = false } = {}) {
+  if (currents) loadCurrentOverlay();
   loadWindOverlay();
   loadWindHeatmap();
   loadCurrentHeatmap();
@@ -1509,33 +1395,167 @@ map.on('moveend', function() {
   loadSst();
   loadTide();
   loadPressure();
-  // wave/wind streamlines each attach their own moveend listener in setEnabled
+  if (streamlines) {
+    if (waveStreamlines.enabled) waveStreamlines._fetchField();
+    if (windStreamlines.enabled) windStreamlines._fetchField();
+  }
+}
+// Reload overlays when map view changes.
+map.on('moveend', function() {
+  if (AuthGate.tripped) return;
+  reloadOverlays({ currents: true, streamlines: false });
 });
 
-// --- Drag interaction ---
-const modify = new ol.interaction.Modify({
-  source: markerSource,
-  style: null,
-  pixelTolerance: 20
-});
-modify.on('modifyend', function(e) {
-  e.features.forEach(function(f) {
-    const coords = ol.proj.toLonLat(f.getGeometry().getCoordinates());
-    const name = f.get('name');
-    if (name === 'start') {
-      startCoord = coords;
-      updateCoordDisplay('start', coords);
-    } else if (name === 'waypoint') {
-      const idx = f.get('waypoint_index');
-      waypointCoords[idx] = coords;
-      _updateWaypointListUI();
-    } else {
-      endCoord = coords;
-      updateCoordDisplay('end', coords);
-    }
-    markRouteStale();
-    updateButton();
+// ─────────── Legends ───────────
+// One row per active water/weather overlay, drawn from the same
+// colour stops the heatmaps use (`GET /api/legends`, SI values) plus the
+// barb/arrow class tables. Values shown in display units.
+let _LEGENDS = null, _legendsReq = null;
+// Resolves when the legends are loaded (or the request failed); the
+// heatmaps wait for it, there is no fallback copy of the ramps.
+function _loadLegends() {
+  if (_LEGENDS) return Promise.resolve();
+  if (_legendsReq) return _legendsReq;
+  _legendsReq = authFetch(API + '/legends', {}, null)
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { if (d) { _LEGENDS = d; updateLegends(); } })
+    .catch(() => {})
+    .finally(() => { _legendsReq = null; });
+  return _legendsReq;
+}
+_loadLegends();
+
+function _legendUnit(quantity) {
+  if (quantity === 'speed') { const d = unitDesc('speed'); d.p = 0; return d; }
+  if (quantity === 'wave_height') { const d = unitDesc('wave_height'); d.p = Math.min(d.p, 1); return d; }
+  if (quantity === 'temperature') { const d = unitDesc('temperature'); d.p = 0; return d; }
+  // Precip stops are a water-depth rate in m/s, as is the precip unit.
+  if (quantity === 'precip_depth_rate') return unitDesc('precip');
+  // Sea-level heights (tide) follow the user's depth unit.
+  if (quantity === 'sea_level') { const d = unitDesc('depth'); d.p = Math.min(d.p, 1); return d; }
+  return { fn: v => v, u: '', p: 0 };
+}
+function _legendVal(v, u) {
+  if (u.missing) return UNIT_MISSING;
+  const x = u.fn(v);
+  const s = x.toFixed(u.p);
+  return s === '-0' ? '0' : s;
+}
+function _gradientRow(L) {
+  const u = _legendUnit(L.quantity);
+  const v0 = L.stops[0][0], v1 = L.stops[L.stops.length - 1][0], span = (v1 - v0) || 1;
+  const pct = v => ((v - v0) / span * 100).toFixed(1);
+  const grad = 'linear-gradient(to right, ' + L.stops.map(([v, c]) => c + ' ' + pct(v) + '%').join(', ') + ')';
+  // At most ~6 tick labels: first, last, and evenly chosen stops between.
+  const n = L.stops.length, every = Math.max(1, Math.ceil((n - 2) / 4));
+  const ticks = L.stops.map(([v], i) => ({ v, i })).filter(t => t.i === 0 || t.i === n - 1 || ((t.i % every) === 0));
+  const tickHtml = ticks.map(t => '<span class="' + (t.i === 0 ? 'first' : t.i === n - 1 ? 'last' : '') + '" style="left:' + pct(t.v) + '%;">' + _legendVal(t.v, u) + (t.i === n - 1 ? '+' : '') + '</span>').join('');
+  return '<div class="lg-row"><div class="lg-title">' + L.title + ' <span>(' + u.u + ')</span></div>'
+    + '<div class="lg-bar" style="background:' + grad + ';"></div><div class="lg-ticks">' + tickHtml + '</div></div>';
+}
+function _bandsRow(L) {
+  const cells = L.bands.map(([lo, name], i) => {
+    const hi = i + 1 < L.bands.length ? L.bands[i + 1][0] : L.stops[L.stops.length - 1][0];
+    const mid = (lo + hi) / 2;
+    let best = L.stops[0][1], bd = Infinity;
+    for (const [v, c] of L.stops) { const d = Math.abs(v - mid); if (d < bd) { bd = d; best = c; } }
+    return '<div><i style="background:' + best + ';"></i>' + name + '</div>';
+  }).join('');
+  return '<div class="lg-row"><div class="lg-title">' + L.title + '</div><div class="lg-classes">' + cells + '</div></div>';
+}
+// Class bounds are in knots (the symbols are knot-based); shown in the
+// preset's speed unit.
+function _classesRow(title, classes, glyph) {
+  const u = unitDesc('speed'); u.p = 1;
+  const cv = kt => { if (u.missing) return UNIT_MISSING; const t = u.fn(kt * KT_MS).toFixed(u.p); return t.replace(/\.0$/, ''); };
+  const cells = classes.map(([lo, color], i) => {
+    const hi = i + 1 < classes.length ? classes[i + 1][0] : null;
+    const label = hi == null ? '≥' + cv(lo) : (i === 0 ? '&lt;' + cv(hi) : cv(lo) + '–' + cv(hi));
+    const g = glyph ? '<span class="lg-glyph">' + glyph(lo, color) + '</span>' : '';
+    return '<div>' + g + '<i style="background:' + color + ';"></i>' + label + '</div>';
+  }).join('');
+  return '<div class="lg-row"><div class="lg-title">' + title + ' <span>(' + u.u + ')</span></div><div class="lg-classes">' + cells + '</div></div>';
+}
+function _on(id) { const el = document.getElementById(id); return !!(el && el.checked); }
+function _noteRow(id) {
+  const m = _overlayNotes[id];
+  return m ? '<div class="lg-note" style="color:var(--danger);">unavailable: ' + m + '</div>' : '';
+}
+function updateLegends() {
+  const box = document.getElementById('legendBox');
+  if (!box) return;
+  if (_LEGENDS == null) _loadLegends();
+  const rows = [];
+  const G = _LEGENDS || {};
+  // Barb glyph per class: the class's lower bound drawn as the map draws
+  // it (calm circle, half feather, full feathers) in the class colour.
+  if (_on('windToggle')) rows.push(_classesRow('Wind barbs', WIND_BARB_CLASSES, (lo, c) => _windBarbSvg(lo, c)) + _noteRow('windToggle'));
+  if (_on('windCombinedToggle') && G.wind) rows.push(_gradientRow(G.wind) + _noteRow('windCombinedToggle'));
+  if (_on('currentToggle')) rows.push(_classesRow('Tidal current', CURRENT_ARROW_CLASSES) + _noteRow('currentToggle'));
+  if (_on('currentHeatmapToggle') && G.current) rows.push(_gradientRow(G.current) + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (~9 km)</div>' + _noteRow('currentHeatmapToggle'));
+  if (_on('wavesCombinedToggle') && G.waves) rows.push(_gradientRow(G.waves) + _noteRow('wavesCombinedToggle'));
+  if (_on('roughnessToggle') && G.sea_state) rows.push(_bandsRow(G.sea_state) + _noteRow('roughnessToggle'));
+  if (_on('precipToggle') && G.precip) rows.push(_gradientRow(G.precip) + _noteRow('precipToggle'));
+  if (_on('temperatureToggle') && G.temperature) rows.push(_gradientRow(G.temperature) + _noteRow('temperatureToggle'));
+  if (_on('sstToggle') && G.sst) rows.push(_gradientRow(G.sst) + _noteRow('sstToggle'));
+  if (_on('tideToggle') && G.tide) {
+    // The map stretches the tide scale to the tiles loaded (rp-layers _noteTileScale); show the stops actually drawn.
+    const scaled = _autoScaleStops.tide ? Object.assign({}, G.tide, { stops: _autoScaleStops.tide }) : G.tide;
+    rows.push(_gradientRow(scaled) + '<div class="lg-note">scaled to the largest tide in the tiles loaded · relative to mean sea level, not chart datum · Copernicus Marine</div>' + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (~9 km)</div>' + _noteRow('tideToggle'));
+  }
+  if (_on('pressureToggle')) rows.push('<div class="lg-row"><div class="lg-title">Pressure <span>(' + unitDesc('pressure').u + ')</span></div><div class="lg-note">isobars every ' + fmtPressure(400) + ' · bold every ' + fmtPressure(2000) + ' · <b style="color:#1565C0">H</b> / <b style="color:#C62828">L</b> centres</div>' + _noteRow('pressureToggle') + '</div>');
+  box.innerHTML = rows.join('');
+}
+// Any layer toggle change (user click, or the saved-state restore that
+// dispatches bubbling change events) refreshes the box.
+const _layersSec = document.getElementById('layersSection');
+if (_layersSec) _layersSec.addEventListener('change', updateLegends);
+window.addEventListener('load', updateLegends);
+
+// The auth gate stops the map from loading more data; repaint once so the frozen state shows.
+AuthGate.onStop(() => map.render());
+window.addEventListener('rp:units', updateLegends);
+
+// ─────────── Layer toggles ───────────
+// One row per checkbox in the Layers tab: the layer it shows, how to
+// load it when switched on, how to drop its data when switched off, and
+// the flow lines that follow it. Each checkbox's state is kept in
+// localStorage and restored here (the restore fires `change`, so the
+// legends box and the exclusive heatmap group follow).
+const LAYER_TOGGLES = [
+  ['osmToggle', osmLayer],
+  ['seamarkToggle', seamarkLayer],
+  ['vesselToggle', vesselMarkerLayer],
+  ['frontToggle', frontLayer, null, null, null, false],
+  ['windToggle', windLayer, loadWindOverlay, () => windSource.clear()],
+  ['windCombinedToggle', windHeatmapLayer, loadWindHeatmap, () => windHeatmapLayer.setSource(null), windStreamlines],
+  ['precipToggle', precipHeatmapLayer, loadPrecipHeatmap, () => precipHeatmapLayer.setSource(null)],
+  ['temperatureToggle', temperatureLayer, loadTemperature, () => temperatureLayer.setSource(null)],
+  ['sstToggle', sstLayer, loadSst, () => sstLayer.setSource(null)],
+  ['pressureToggle', pressureLayer, loadPressure, () => pressureSource.clear()],
+  ['currentToggle', currentLayer, loadCurrentOverlay, () => currentSource.clear()],
+  ['currentHeatmapToggle', currentHeatmapLayer, loadCurrentHeatmap, () => currentHeatmapLayer.setSource(null)],
+  ['wavesCombinedToggle', waveHeatmapLayer, loadWaveHeatmap, () => waveHeatmapLayer.setSource(null), waveStreamlines],
+  ['roughnessToggle', roughnessLayer, loadRoughness, () => roughnessLayer.setSource(null)],
+  ['tideToggle', tideLayer, loadTide, () => tideLayer.setSource(null)],
+];
+for (const [id, layer, load, clear, streamlines, persist = true] of LAYER_TOGGLES) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  const KEY = 'layer:' + id;
+  el.addEventListener('change', () => {
+    layer.setVisible(el.checked);
+    if (el.checked) { if (load) load(); } else if (clear) clear();
+    if (streamlines) streamlines.setEnabled(el.checked);
+    if (persist) { try { localStorage.setItem(KEY, el.checked ? 'true' : 'false'); } catch (_) {} }
   });
-});
-map.addInteraction(modify);
-
+  if (!persist) continue;
+  let saved = null;
+  try { saved = localStorage.getItem(KEY); } catch (_) {}
+  if (saved !== 'true' && saved !== 'false') continue;
+  const want = saved === 'true';
+  if (el.checked !== want) {
+    el.checked = want;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}

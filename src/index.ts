@@ -13,21 +13,27 @@
  * none of it: forecast reads happen in the workers.
  */
 
+import { NM_M, HOUR_S, MINUTE_MS } from './geo/units';
 import * as path from 'node:path';
-import { Worker } from 'node:worker_threads';
 import type { IRouter } from 'express';
 import { CONFIG_SCHEMA, resolveConfig, type LegacyPluginConfig, type PluginConfig, type ResolvedConfig } from './plugin/config';
 import { mergeSettings, reloadsFor, settingsSchema, SettingsStore, SettingsValidationError } from './plugin/settings';
 import { checkDecodeResources } from './plugin/memguard';
 import { JobManager, type Job } from './plugin/jobs';
 import { registerApi } from './plugin/api';
-import { TileService, TileStore, type TileGroup, type TileLayer } from './plugin/tiles';
+import { NotStartedError } from './plugin/errors';
+import { TileService, TileStore, type TileGroup } from './plugin/tiles';
 import { TilePrebuilder } from './plugin/prebuild';
 import { runLastMs, type ArcoRun } from './data/arco';
-import { ensureGshhg, gshhgInstalled, unreadableCoastlines } from './geo/gshhg';
+import { gshhgInstalled, unreadableCoastlines } from './geo/gshhg';
+import { Coastline } from './plugin/coastline';
+import { ChartsProvider } from './plugin/charts';
+import { makePlotterExtension } from './plugin/plotterext';
+import { refreshPublicFileDates } from './plugin/webfiles';
+import { WorkerPool, type MainRole } from './plugin/workerpool';
 import { BUNDLED_DEFAULT_POLAR, BUNDLED_POLARS_DIR } from './plugin/polars';
 import { openApiDocument } from './plugin/openapi';
-import { makeWeatherProvider, startMsOf, type WeatherData } from './plugin/weather';
+import { registerWeatherProvider } from './plugin/weather';
 import type {
   DataStatus,
   ForecastMemory,
@@ -35,9 +41,7 @@ import type {
   MainToWorker,
   QueryArgs,
   QueryKind,
-  TideSeriesResult,
   VesselPosition,
-  WorkerRole,
   WorkerToMain,
 } from './plugin/protocol';
 import type { SerializedSmoc } from './currents/smoc';
@@ -56,6 +60,15 @@ interface SkApp {
   getSelfPath?: (path: string) => unknown;
   handleMessage?: (id: string, delta: unknown) => void;
   registerWeatherProvider?: (provider: unknown) => void;
+  registerResourceProvider?: (provider: {
+    type: string;
+    methods: {
+      listResources: (query?: unknown) => Promise<Record<string, unknown>>;
+      getResource: (id: string) => Promise<unknown>;
+      setResource: (id: string, value: unknown) => Promise<void>;
+      deleteResource: (id: string) => Promise<void>;
+    };
+  }) => void;
   resourcesApi?: {
     setResource: (type: string, id: string, data: Record<string, unknown>, providerId?: string) => Promise<void>;
   };
@@ -72,22 +85,8 @@ interface SignalKPlugin {
   getOpenApi?: () => Record<string, unknown>;
 }
 
-/** Roles of the two workers this file runs (tiles workers: prebuild.ts). */
-type MainRole = Exclude<WorkerRole, 'tiles'>;
-
-interface WorkerHandle {
-  role: MainRole;
-  worker: Worker | null;
-  ready: boolean;
-}
-
 export = function plugin(app: SkApp): SignalKPlugin {
   let config: ResolvedConfig | null = null;
-  const workers: Record<MainRole, WorkerHandle> = {
-    data: { role: 'data', worker: null, ready: false },
-    route: { role: 'route', worker: null, ready: false },
-  };
-  let cancelFlag: Int32Array | null = null;
   let jobs: JobManager | null = null;
   /** The decoded run in use (where it is on disk and its index), relayed to the route worker. */
   let forecastRun: ForecastRunInfo | null = null;
@@ -103,6 +102,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
   /** Current sources last reported by the data worker (name list + RTOFS run), to tell the route worker to reload. */
   let currentsKey = '';
   let forecastError: string | null = null;
+  /** Routes since the plugin was loaded whose corridor search failed and ran on the coarse skeleton (decision E). */
+  let corridorFallbacks = 0;
   let dataStatus: DataStatus | null = null;
   /** The route worker's own current sources (its SMOC on-demand areas and memory). */
   let routeCurrents: DataStatus['currents'] | null = null;
@@ -111,11 +112,6 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let weatherRegistered = false;
   let stopped = true;
   let pendingRefresh: { force: boolean } | null = null;
-  let queryId = 0;
-  const pendingQueries = new Map<
-    number,
-    { resolve: (v: { result: unknown; complete: boolean }) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
-  >();
   /** Map overlay tiles on disk (null before start). */
   let tiles: TileService | null = null;
   /** Bumped by settings changes that reload forecast, currents or tides (tile generations). */
@@ -124,24 +120,20 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let prebuilder: TilePrebuilder | null = null;
   /** The data worker's tide run (relayed to the tiles workers). */
   let tidesRun: ArcoRun | null = null;
-  /** Downloaded GSHHG coastline, used when the plugin config names none (geo/gshhg.ts). */
-  let autoCoastline: string | null = null;
   /** Bumped by every start/stop, so a start still downloading the coastline does not carry on after a stop. */
   let startGen = 0;
-  /** Cancels the coastline download (and its retry wait) on stop. */
-  let coastlineCtrl: AbortController | null = null;
   /** A route started before the first forecast was ready: sent to the route worker when it is (see startServices). */
   let waitingForForecast: Job | null = null;
 
   /** Why the services are not up yet, for API answers and the status (`starting`). */
   function notStartedReason(): string {
     if (stopped) return 'plugin not started';
-    if (coastline.downloading) {
-      const m = (coastline.message ?? '').replace(/^coastline:\s*/, '');
+    if (coast.state.downloading) {
+      const m = (coast.state.message ?? '').replace(/^coastline:\s*/, '');
       return `starting: downloading the coastline${m ? ` (${m})` : ' (GSHHG, 149 MB, once)'}`;
     }
-    if (coastline.error)
-      return `starting: the coastline download failed (${coastline.error}); it is tried again every 10 minutes, or press Download coastline in the plugin configuration`;
+    if (coast.state.error)
+      return `starting: the coastline download failed (${coast.state.error}); it is tried again every 10 minutes, or press Download coastline in the plugin configuration`;
     return 'starting';
   }
 
@@ -153,132 +145,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
     // It may have failed meanwhile (route worker crash/exit: failRunning).
     if (!jobs || jobs.runningId !== job.id || jobs.get(job.id)?.status !== 'running') return;
     jobs.onProgress(job.id, 0, 0, note);
-    post('route', { type: 'route', id: job.id, request: job.request });
-  }
-
-  /** Downloaded-coastline state (status `coastline`, config panel). */
-  const coastline: {
-    downloading: boolean;
-    message: string | null;
-    error: string | null;
-    path: string | null;
-    startedAt: string | null;
-    finishedAt: string | null;
-  } = { downloading: false, message: null, error: null, path: null, startedAt: null, finishedAt: null };
-  /** The download running, if any (one at a time), with the signal that cancels it. */
-  let coastlineRun: { promise: Promise<string | null>; signal: AbortSignal } | null = null;
-  /** Wakes a start waiting to retry the download. */
-  let coastlineWake: (() => void) | null = null;
-  /** Cancels a download started from the config panel, on stop. */
-  let coastlineManualCtrl: AbortController | null = null;
-  /** A failed coastline download is tried again after this long. */
-  const COASTLINE_RETRY_MS = 10 * 60_000;
-
-  /**
-   * No coastline configured: download GSHHG (geo/gshhg.ts), trying again
-   * every 10 minutes after a failure, until it is in place or the plugin
-   * stops. True when the coastline is ready and this start is still current.
-   */
-  async function downloadCoastline(gen: number, dataDir: string): Promise<boolean> {
-    const ctrl = new AbortController();
-    coastlineCtrl = ctrl;
-    const current = (): boolean => gen === startGen && !stopped && !ctrl.signal.aborted;
-    app.setPluginStatus('no coastline configured: downloading GSHHG (149 MB, once)');
-    for (;;) {
-      const shp = await fetchCoastline(dataDir, ctrl.signal, m => {
-        if (current()) app.setPluginStatus(m);
-      });
-      if (!current()) return false; // stopped
-      if (shp) {
-        autoCoastline = shp;
-        return true;
-      }
-      const at = new Date(Date.now() + COASTLINE_RETRY_MS).toISOString().slice(11, 16);
-      app.setPluginError(
-        `coastline download failed: ${coastline.error}; trying again at ${at} UTC (or press Download coastline in the plugin config, or set a coastline shapefile)`
-      );
-      // Wait for the retry time, a Download press (wakes it) or a stop.
-      const ok = await new Promise<boolean>(resolve => {
-        const timer = setTimeout(() => done(true), COASTLINE_RETRY_MS);
-        const done = (v: boolean): void => {
-          clearTimeout(timer);
-          coastlineWake = null;
-          resolve(v);
-        };
-        coastlineWake = () => done(true);
-        ctrl.signal.addEventListener('abort', () => done(false));
-      });
-      if (!ok || !current()) return false;
-    }
-  }
-
-  /**
-   * One GSHHG download (geo/gshhg.ts) with its state for the status and
-   * the config panel. Resolves the .shp, or null on failure (the error is
-   * in `coastline.error`); a download already running is joined.
-   */
-  function fetchCoastline(dataDir: string, signal: AbortSignal, onProgress: (m: string) => void = () => undefined): Promise<string | null> {
-    // An aborted run (stopped) is not joined: a new start downloads afresh.
-    if (coastlineRun && !coastlineRun.signal.aborted) return coastlineRun.promise;
-    // This run's token: a stale run's late callbacks must not touch a newer run's state.
-    const run: { promise: Promise<string | null>; signal: AbortSignal } = { promise: Promise.resolve(null), signal };
-    const isCurrent = (): boolean => coastlineRun === run;
-    coastlineRun = run;
-    coastline.downloading = true;
-    coastline.error = null;
-    coastline.path = null;
-    coastline.startedAt = new Date().toISOString();
-    run.promise = ensureGshhg(
-      dataDir,
-      m => {
-        log(m);
-        if (isCurrent()) coastline.message = m;
-        onProgress(m);
-      },
-      { signal }
-    )
-      .then(
-        shp => {
-          if (isCurrent()) {
-            coastline.path = shp;
-            coastline.message = `ready: ${shp}`;
-          }
-          return shp;
-        },
-        (err: Error) => {
-          if (isCurrent()) coastline.error = err.message;
-          return null;
-        }
-      )
-      .finally(() => {
-        if (!isCurrent()) return;
-        coastline.downloading = false;
-        coastline.finishedAt = new Date().toISOString();
-        coastlineRun = null;
-      });
-    return run.promise;
-  }
-
-  /**
-   * Download pressed in the config panel: wake a start waiting to retry,
-   * or download now (also while a coastline is configured: the panel then
-   * offers to switch to it).
-   */
-  function requestCoastlineDownload(): void {
-    if (coastlineRun && !coastlineRun.signal.aborted) return;
-    if (coastlineWake) {
-      coastlineWake();
-      return;
-    }
-    const ctrl = new AbortController();
-    coastlineManualCtrl = ctrl;
-    void fetchCoastline(app.getDataDirPath(), ctrl.signal);
+    pool.post('route', { type: 'route', id: job.id, request: job.request });
   }
 
   /** The resolved config, with the downloaded coastline when none is configured. */
   function resolve(options: PluginConfig | undefined, values: SettingsStore['values']): ResolvedConfig {
     const c = resolveConfig(options, values);
-    if (c.landShapefiles.length === 0 && autoCoastline) c.landShapefiles = [autoCoastline];
+    if (c.landShapefiles.length === 0 && coast.autoPath) c.landShapefiles = [coast.autoPath];
     // Polars: the bundled library and default polar unless configured. With the
     // bundled library, user polars live in the data directory (an update of the
     // package replaces its own files, never these).
@@ -291,62 +164,85 @@ export = function plugin(app: SkApp): SignalKPlugin {
   }
 
   const log = (msg: string): void => app.debug(msg);
+  const publicDir = path.join(__dirname, '..', 'public');
+  const isTs = __filename.endsWith('.ts');
+  const workerPath = path.join(__dirname, 'plugin', isTs ? 'worker.ts' : 'worker.js');
+  const execArgv = isTs ? ['--import', 'tsx'] : [];
 
-  function rejectPendingQueries(reason: string): void {
-    for (const [id, p] of pendingQueries) {
-      clearTimeout(p.timer);
-      p.reject(new Error(reason));
-      pendingQueries.delete(id);
-    }
-  }
+  const coast = new Coastline(app, log);
+  const pool = new WorkerPool({
+    workerPath,
+    execArgv,
+    queryTimeoutMs: QUERY_TIMEOUT_MS,
+    onMessage: (role, msg) => onWorkerMessage(role, msg),
+    onError: (role, err, current) => {
+      app.error(`${role} worker error: ${err.message}${current ? '' : ' (worker already replaced)'}`);
+      if (current && role === 'route') jobs?.failRunning(`worker crashed: ${err.message}`);
+    },
+    onExit: (role, code) => {
+      if (stopped) return;
+      app.error(`${role} worker exited with code ${code}; restarting in 5 s`);
+      if (role === 'route') jobs?.failRunning(`worker exited with code ${code}`);
+      // Only for the start this exit belongs to: after a stop and a new start
+      // (whose services may still be waiting for the coastline download) the
+      // new start brings up its own workers.
+      const gen = startGen;
+      setTimeout(() => {
+        if (!stopped && gen === startGen && config && !pool.has(role)) {
+          pool.start(role);
+          pool.post(role, { type: 'init', role, config, cacheDir: app.getDataDirPath() });
+          if (role === 'data') requestRefresh(false);
+          else for (const m of sharedDataMessages()) pool.post('route', m);
+        }
+      }, 5000);
+    },
+  });
+  const charts = new ChartsProvider({
+    app,
+    pluginId: PLUGIN_ID,
+    basePath: BASE_PATH,
+    dataDir: () => app.getDataDirPath(),
+    isStopped: () => stopped,
+    forecastRun: () => forecastRun,
+    tidesRun: () => tidesRun,
+    tidesEnabled: () => !!config?.tides.enabled,
+    dataStatus: () => dataStatus,
+    log,
+    error: m => app.error(m),
+  });
+  const plotterExt = makePlotterExtension({
+    app,
+    pluginId: PLUGIN_ID,
+    publicDir,
+    packageDir: path.join(__dirname, '..'),
+    isStopped: () => stopped,
+    log,
+    error: m => app.error(m),
+  });
 
-  function post(role: MainRole, msg: MainToWorker): void {
-    workers[role].worker?.postMessage(msg);
-  }
-
-  /**
-   * A data-worker query. `signal`: when it aborts before the worker has
-   * started the query, the query is dropped (it then rejects with
-   * "cancelled"); one already running completes. `complete` is false when
-   * an on-demand current / tide load was late or failed.
-   */
-  function queryFull<K extends QueryKind>(
-    kind: K,
-    args: QueryArgs[K],
-    signal?: AbortSignal
-  ): Promise<{ result: unknown; complete: boolean }> {
-    const h = workers.data;
-    if (!h.worker || !h.ready) return Promise.reject(new Error('data worker not ready'));
-    if (signal?.aborted) return Promise.reject(new Error('cancelled'));
-    const id = ++queryId;
-    return new Promise((resolve, reject) => {
-      const onAbort = (): void => {
-        if (pendingQueries.has(id)) post('data', { type: 'query-cancel', id });
-      };
-      const done = (): void => signal?.removeEventListener('abort', onAbort);
-      const timer = setTimeout(() => {
-        pendingQueries.delete(id);
-        done();
-        reject(new Error('query timed out'));
-      }, QUERY_TIMEOUT_MS);
-      pendingQueries.set(id, {
-        resolve: v => {
-          done();
-          resolve(v);
-        },
-        reject: e => {
-          done();
-          reject(e);
-        },
-        timer,
-      });
-      signal?.addEventListener('abort', onAbort, { once: true });
-      post('data', { type: 'query', id, kind, args });
-    });
+  /** The data worker's shared data a (re)started route or tiles worker must learn: the decoded run, SMOC memory, harmonic blocks. */
+  function sharedDataMessages(): MainToWorker[] {
+    const m: MainToWorker[] = [];
+    if (forecastRun) m.push({ type: 'forecast', run: forecastRun });
+    if (smocShared) m.push({ type: 'smoc', smoc: smocShared });
+    if (harmonicShared) m.push({ type: 'harmonic', sources: harmonicShared });
+    return m;
   }
 
   function query<K extends QueryKind>(kind: K, args: QueryArgs[K], signal?: AbortSignal): Promise<unknown> {
-    return queryFull(kind, args, signal).then(r => r.result);
+    return pool.queryFull(kind, args, signal).then(r => r.result);
+  }
+
+  function registerWeather(): void {
+    if (weatherRegistered || !config?.weatherProvider.enabled) return;
+    weatherRegistered = registerWeatherProvider(app, {
+      pluginId: PLUGIN_ID,
+      tidesEnabled: () => !!config?.tides.enabled,
+      hasForecast: () => !!forecastRun,
+      pointQuery,
+      log,
+      error: m => app.error(m),
+    });
   }
 
   /** A point query through the shared store (tiles.ts TileService.point). */
@@ -395,11 +291,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
   }
 
   function requestRefresh(force: boolean): void {
-    if (!workers.data.ready) {
+    if (!pool.ready('data')) {
       pendingRefresh = { force: (pendingRefresh?.force ?? false) || force };
       return;
     }
-    post('data', { type: 'refresh', force, position: vesselPosition() });
+    pool.post('data', { type: 'refresh', force, position: vesselPosition() });
   }
 
   function jobsSummary(): string {
@@ -444,7 +340,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
   }
 
   async function publish(id: string): Promise<string> {
-    if (!jobs) throw new Error('plugin not started');
+    if (!jobs) throw new NotStartedError();
     const job = jobs.get(id);
     if (!job || !job.skRoute) throw new Error('job has no route');
     if (!app.resourcesApi?.setResource) throw new Error('this Signal K server has no Resources API');
@@ -465,18 +361,16 @@ export = function plugin(app: SkApp): SignalKPlugin {
   function onWorkerMessage(role: MainRole, msg: WorkerToMain): void {
     switch (msg.type) {
       case 'ready':
-        workers[role].ready = true;
+        pool.setReady(role);
         log(`${role} worker ready`);
         // A (re)started route worker learns where the decoded run is.
-        if (role === 'route' && forecastRun) post('route', { type: 'forecast', run: forecastRun });
-        if (role === 'route' && smocShared) post('route', { type: 'smoc', smoc: smocShared });
-        if (role === 'route' && harmonicShared) post('route', { type: 'harmonic', sources: harmonicShared });
+        if (role === 'route') for (const m of sharedDataMessages()) pool.post('route', m);
         if (role === 'data' && pendingRefresh) {
           const f = pendingRefresh.force;
           pendingRefresh = null;
           requestRefresh(f);
         }
-        if (role === 'route') post('route', { type: 'refresh', force: false });
+        if (role === 'route') pool.post('route', { type: 'refresh', force: false });
         return;
       case 'log':
         if (msg.level === 'error') app.error(msg.message);
@@ -485,6 +379,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'forecast':
         if (role !== 'data') return;
         forecastRun = msg.run;
+        void charts.publishGroups();
         updateTileGenerations();
         forecastError = null;
         if (failedRefreshTimer) {
@@ -493,7 +388,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         }
         registerWeather();
         // The route and tiles workers read from the same run on disk.
-        post('route', { type: 'forecast', run: msg.run });
+        pool.post('route', { type: 'forecast', run: msg.run });
         prebuilder?.broadcast({ type: 'forecast', run: msg.run });
         releaseWaitingJob('first forecast ready');
         log(
@@ -516,7 +411,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           failedRefreshTimer = setTimeout(() => {
             failedRefreshTimer = null;
             if (!stopped) requestRefresh(false);
-          }, 10 * 60_000);
+          }, 10 * MINUTE_MS);
         }
         updateStatus();
         return;
@@ -531,7 +426,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
             currentsKey = key;
             updateTileGenerations();
             if (!first || msg.rtofsRun) {
-              post('route', { type: 'refresh', force: false });
+              pool.post('route', { type: 'refresh', force: false });
               prebuilder?.broadcast({ type: 'refresh', force: false });
             }
           }
@@ -541,7 +436,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (role === 'data') {
           // Shared constituent blocks: the route worker adopts the same memory.
           harmonicShared = msg.sources;
-          post('route', { type: 'harmonic', sources: msg.sources });
+          pool.post('route', { type: 'harmonic', sources: msg.sources });
           prebuilder?.broadcast({ type: 'harmonic', sources: msg.sources });
         }
         return;
@@ -549,7 +444,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (role === 'data') {
           // SharedArrayBuffer views: the route worker gets the same memory.
           smocShared = msg.smoc;
-          post('route', { type: 'smoc', smoc: msg.smoc });
+          pool.post('route', { type: 'smoc', smoc: msg.smoc });
           prebuilder?.broadcast({ type: 'smoc', smoc: msg.smoc });
           updateTileGenerations();
         }
@@ -558,6 +453,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (role === 'data') {
           tidesRun = msg.run;
           prebuilder?.broadcast({ type: 'tides-run', run: msg.run });
+          // The tide group depends on a tide run; rewritten only when the group key changes.
+          void charts.publishGroups();
         }
         return;
       case 'data-status':
@@ -565,19 +462,28 @@ export = function plugin(app: SkApp): SignalKPlugin {
           dataStatus = msg.status;
           updateTileGenerations();
           updateStatus();
+          // The current and sea-state groups depend on the data status.
+          void charts.publishGroups();
         }
         return;
       case 'progress':
         jobs?.onProgress(msg.id, msg.stage, msg.total, msg.message);
         return;
+      case 'frontier':
+        jobs?.onFrontier(msg.id, { leg: msg.leg, stage: msg.stage, total: msg.total, points: msg.points, best: msg.best });
+        return;
       case 'done': {
-        jobs?.onDone(msg.id, msg.geojson, msg.skRoute, msg.summary, msg.skeleton);
+        jobs?.onDone(msg.id, msg.geojson, msg.skRoute, msg.summary, msg.skeleton, msg.fronts ?? null);
+        if (msg.summary.corridor_fallback) {
+          corridorFallbacks++;
+          log(`route ${msg.id}: corridor search failed, coarse-skeleton fallback used (${corridorFallbacks} since load)`);
+        }
         const job = jobs?.get(msg.id);
         if (job) {
           notify(
             job,
             'normal',
-            `route ready: ${(msg.summary.total_distance_m / 1852).toFixed(1)} nm, ${(msg.summary.total_time_s / 3600).toFixed(1)} h`
+            `route ready: ${(msg.summary.total_distance_m / NM_M).toFixed(1)} nm, ${(msg.summary.total_time_s / HOUR_S).toFixed(1)} h`
           );
           const wantPublish = job.request.publish ?? config?.publish.toResources ?? false;
           if (wantPublish) publish(job.id).catch(err => app.error((err as Error).message));
@@ -592,101 +498,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
         updateStatus();
         return;
       }
-      case 'query-result': {
-        const p = pendingQueries.get(msg.id);
-        if (p) {
-          clearTimeout(p.timer);
-          pendingQueries.delete(msg.id);
-          p.resolve({ result: msg.result, complete: msg.complete });
-        }
+      case 'query-result':
+        pool.resolveQuery(msg.id, msg.result, msg.complete);
         return;
-      }
-      case 'query-error': {
-        const p = pendingQueries.get(msg.id);
-        if (p) {
-          clearTimeout(p.timer);
-          pendingQueries.delete(msg.id);
-          p.reject(new Error(msg.message));
-        }
+      case 'query-error':
+        pool.rejectQuery(msg.id, msg.message);
         return;
-      }
-    }
-  }
-
-  function startWorker(role: MainRole): void {
-    if (!cancelFlag) cancelFlag = new Int32Array(new SharedArrayBuffer(4));
-    const isTs = __filename.endsWith('.ts');
-    const workerPath = path.join(__dirname, 'plugin', isTs ? 'worker.ts' : 'worker.js');
-    const worker = new Worker(workerPath, {
-      workerData: { cancelFlag: cancelFlag.buffer, role },
-      execArgv: isTs ? ['--import', 'tsx'] : [],
-    });
-    workers[role] = { role, worker, ready: false };
-    // After a restart (stop() then start()) the old worker is still shutting
-    // down; its late events must not touch the new worker's slot, queries
-    // or jobs. Only the worker currently in workers[role] is acted on.
-    const isCurrent = (): boolean => workers[role].worker === worker;
-    worker.on('message', (m: WorkerToMain) => {
-      if (isCurrent()) onWorkerMessage(role, m);
-    });
-    worker.on('error', err => {
-      app.error(`${role} worker error: ${err.message}${isCurrent() ? '' : ' (worker already replaced)'}`);
-      if (isCurrent() && role === 'route') jobs?.failRunning(`worker crashed: ${err.message}`);
-    });
-    worker.on('exit', code => {
-      if (!isCurrent()) return;
-      workers[role] = { role, worker: null, ready: false };
-      if (role === 'data') rejectPendingQueries('data worker exited');
-      if (!stopped) {
-        app.error(`${role} worker exited with code ${code}; restarting in 5 s`);
-        if (role === 'route') jobs?.failRunning(`worker exited with code ${code}`);
-        setTimeout(() => {
-          if (!stopped && config && !workers[role].worker) {
-            startWorker(role);
-            post(role, { type: 'init', role, config, cacheDir: app.getDataDirPath() });
-            if (role === 'data') requestRefresh(false);
-            else {
-              if (forecastRun) post('route', { type: 'forecast', run: forecastRun });
-              if (smocShared) post('route', { type: 'smoc', smoc: smocShared });
-              if (harmonicShared) post('route', { type: 'harmonic', sources: harmonicShared });
-            }
-          }
-        }, 5000);
-      }
-    });
-  }
-
-  function registerWeather(): void {
-    if (weatherRegistered || !config?.weatherProvider.enabled) return;
-    if (typeof app.registerWeatherProvider !== 'function') {
-      log('Weather API not available on this server; provider not registered');
-      return;
-    }
-    try {
-      // Water level for point forecasts comes from the data worker's tide point series (on demand).
-      const tideSeries = async (lat: number, lon: number, fromMs: number, hours: number): Promise<TideSeriesResult | null> => {
-        if (!config?.tides.enabled) return null;
-        return (await pointQuery('tide_series', { lat, lon, fromMs, hours })) as TideSeriesResult;
-      };
-      // Point forecasts are read by the data worker from the decoded run (this thread holds no forecast).
-      const points = async (
-        position: { latitude: number; longitude: number },
-        options?: { startDate?: string; maxCount?: number }
-      ): Promise<WeatherData[]> => {
-        if (!forecastRun) throw new Error('no forecast loaded yet');
-        return (await pointQuery('weather_point', {
-          lat: position.latitude,
-          lon: position.longitude,
-          // No start given: from the start of this hour (not this millisecond), so the answer can be kept for the hour.
-          startMs: startMsOf(options) ?? Math.floor(Date.now() / 3600_000) * 3600_000,
-          maxCount: options?.maxCount ?? null,
-        })) as WeatherData[];
-      };
-      app.registerWeatherProvider(makeWeatherProvider(points, PLUGIN_ID, tideSeries, m => log(m)));
-      weatherRegistered = true;
-      log('registered as a Weather API provider');
-    } catch (err) {
-      app.error(`Weather API registration failed: ${(err as Error).message}`);
     }
   }
 
@@ -718,17 +535,17 @@ export = function plugin(app: SkApp): SignalKPlugin {
       dataSettingsRev++;
       updateTileGenerations();
     }
-    post('data', {
+    pool.post('data', {
       type: 'config',
       config,
       reload: { forecast: out.forecast, currents: out.currents, tides: out.tides },
       position: vesselPosition(),
     });
-    post('route', { type: 'config', config, reload: { forecast: false, currents: out.currents } });
+    pool.post('route', { type: 'config', config, reload: { forecast: false, currents: out.currents } });
     prebuilder?.broadcast({ type: 'config', config, reload: { forecast: false, currents: out.currents, tides: out.tides } });
     if (out.refresh_timer) {
       if (refreshTimer) clearInterval(refreshTimer);
-      refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshMinutes * 60_000);
+      refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshIntervalS * 1000);
     }
     if (out.jobs) jobs?.setKeepJobs(config.routing.keepJobs);
     log(
@@ -738,21 +555,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
     return out;
   }
 
-  /** Forecast parameters each prebuilt layer needs. */
-  const LAYER_NEEDS: Partial<Record<TileLayer, string[]>> = {
-    wind: ['10u', '10v'],
-    barbs: ['10u', '10v'],
-    waves: ['swh', 'mwp', 'mwd'],
-    sea_state: ['10u', '10v', 'swh', 'mwp', 'mwd'],
-    precip: ['tprate', 'ptype'],
-    temperature: ['2t'],
-    sst: ['skt'],
-    msl: ['msl'],
-  };
-
   function startPrebuilder(dataDir: string): void {
     if (!config || !tiles) return;
-    const isTs = __filename.endsWith('.ts');
     const oc = config.overlayCache;
     const store = tiles.store;
     prebuilder = new TilePrebuilder(
@@ -767,16 +571,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
       {
         store,
         dataDir,
-        workerPath: path.join(__dirname, 'plugin', isTs ? 'worker.ts' : 'worker.js'),
-        execArgv: isTs ? ['--import', 'tsx'] : [],
+        workerPath,
+        execArgv,
         // Its own flag: route cancellation must not reach the tiles workers.
         cancelFlag: new SharedArrayBuffer(4),
         initMessage: () => ({ type: 'init', role: 'tiles', config: config as ResolvedConfig, cacheDir: dataDir }),
         replayMessages: () => {
-          const m: MainToWorker[] = [];
-          if (forecastRun) m.push({ type: 'forecast', run: forecastRun });
-          if (smocShared) m.push({ type: 'smoc', smoc: smocShared });
-          if (harmonicShared) m.push({ type: 'harmonic', sources: harmonicShared });
+          const m = sharedDataMessages();
           m.push({ type: 'tides-run', run: tidesRun });
           m.push({ type: 'refresh', force: false });
           return m;
@@ -787,15 +588,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
           if (!forecastRun) return null;
           return forecastRun.index.steps[forecastRun.index.steps.length - 1].validMs;
         },
-        layerAvailable: layer => {
-          if (!forecastRun) return false;
-          if (layer === 'tide') return !!config?.tides.enabled && !!tidesRun;
-          if (layer === 'current' || layer === 'arrows') return (dataStatus?.currents.length ?? 0) > 0;
-          if ((layer === 'waves' || layer === 'sea_state') && dataStatus?.forecast && !dataStatus.forecast.hasWaves) return false;
-          const params = forecastRun.index.request.params;
-          return (LAYER_NEEDS[layer] ?? []).every(p => params.includes(p));
-        },
-        busy: () => !!jobs?.runningId || pendingQueries.size > 0,
+        layerAvailable: layer => charts.layerAvailable(layer),
+        busy: () => !!jobs?.runningId || pool.pendingCount > 0,
         log,
         error: m => app.error(m),
       }
@@ -806,6 +600,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
   async function start(options: PluginConfig): Promise<void> {
     stopped = false;
     pluginOptions = options;
+    refreshPublicFileDates(publicDir, app.getDataDirPath(), log, m => app.error(m));
+    plotterExt.register();
+    charts.register();
     try {
       settings = new SettingsStore(app.getDataDirPath());
       // First start with settings.json absent: migrate the old plugin-config keys.
@@ -835,11 +632,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
       return;
     }
     // None configured: download GSHHG (minutes), then start. Not awaited, so the server's start-up is not held up.
-    void downloadCoastline(gen, dataDir).then(ok => {
-      if (!ok || !settings || gen !== startGen || stopped) return;
-      config = resolve(options, settings.values);
-      startServices(dataDir);
-    });
+    void coast
+      .download(dataDir, () => gen === startGen && !stopped)
+      .then(ok => {
+        if (!ok || !settings || gen !== startGen || stopped) return;
+        config = resolve(options, settings.values);
+        startServices(dataDir);
+      });
   }
 
   /** Workers, jobs, tiles and timers, once the coastline is known. */
@@ -847,7 +646,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     if (!config) return;
     tiles = new TileService(
       new TileStore({ root: path.join(dataDir, 'overlay-tiles'), capBytes: config.overlayCache.diskCapBytes, log }),
-      queryFull
+      (kind, args, signal) => pool.queryFull(kind, args, signal)
     );
     updateTileGenerations();
     startPrebuilder(dataDir);
@@ -861,15 +660,15 @@ export = function plugin(app: SkApp): SignalKPlugin {
         updateStatus();
         return;
       }
-      post('route', { type: 'route', id: job.id, request: job.request });
+      pool.post('route', { type: 'route', id: job.id, request: job.request });
       updateStatus();
     });
     for (const role of ['data', 'route'] as MainRole[]) {
-      startWorker(role);
-      post(role, { type: 'init', role, config, cacheDir: dataDir });
+      pool.start(role);
+      pool.post(role, { type: 'init', role, config, cacheDir: dataDir });
     }
     requestRefresh(false);
-    refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshMinutes * 60_000);
+    refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshIntervalS * 1000);
     updateStatus();
     log(`${PLUGIN_ID} started; data dir ${dataDir}`);
   }
@@ -877,23 +676,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
   function stop(): void {
     stopped = true;
     startGen++;
-    coastlineCtrl?.abort();
-    coastlineCtrl = null;
-    coastlineManualCtrl?.abort();
-    coastlineManualCtrl = null;
+    coast.abort();
     if (refreshTimer) clearInterval(refreshTimer);
     if (failedRefreshTimer) clearTimeout(failedRefreshTimer);
     refreshTimer = failedRefreshTimer = null;
-    for (const role of ['data', 'route'] as MainRole[]) {
-      const h = workers[role];
-      if (h.worker) {
-        post(role, { type: 'shutdown' });
-        const w = h.worker;
-        setTimeout(() => void w.terminate(), 2000);
-      }
-      workers[role] = { role, worker: null, ready: false };
-    }
-    rejectPendingQueries('plugin stopped');
+    pool.stopAll();
+    pool.rejectPending('plugin stopped');
     jobs?.failRunning('plugin stopped');
     waitingForForecast = null;
     jobs = null;
@@ -917,14 +705,14 @@ export = function plugin(app: SkApp): SignalKPlugin {
       pluginId: PLUGIN_ID,
       basePath: BASE_PATH,
       get jobs(): JobManager {
-        if (!jobs) throw new Error(notStartedReason());
+        if (!jobs) throw new NotStartedError(notStartedReason());
         return jobs;
       },
       notReady: notStartedReason,
       status: () => ({
         plugin: PLUGIN_ID,
         started: !stopped,
-        workers: { data: workers.data.ready, route: workers.route.ready },
+        workers: { data: pool.ready('data'), route: pool.ready('route') },
         forecast: forecastRun
           ? {
               cycle: new Date(forecastRun.index.cycleTimeMs).toISOString(),
@@ -963,6 +751,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         forecast_error: forecastError,
         currents: dataStatus?.currents ?? [],
         currents_route_worker: routeCurrents ?? [],
+        corridor_fallbacks: corridorFallbacks,
         rtofs_run: dataStatus?.rtofsRun ?? null,
         tides: config?.tides.enabled ? (dataStatus?.tides ?? null) : null,
         tides_enabled: config?.tides.enabled ?? null,
@@ -975,7 +764,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           configured: pluginOptions?.landShapefiles?.trim() ? pluginOptions.landShapefiles : null,
           in_use: config?.landShapefiles ?? null,
           downloaded: gshhgInstalled(app.getDataDirPath()),
-          ...coastline,
+          ...coast.state,
         },
         weather_provider_registered: weatherRegistered,
         jobs: jobs ? { running: jobs.runningId, queued: jobs.queueLength, total: jobs.list(500).length } : null,
@@ -1007,28 +796,28 @@ export = function plugin(app: SkApp): SignalKPlugin {
           jobs?.onError(id, 'cancelled', true);
           return;
         }
-        if (cancelFlag) Atomics.store(cancelFlag, 0, 1);
+        Atomics.store(pool.cancelFlag, 0, 1);
       },
       publish,
       query,
       tiles: () => tiles,
-      downloadCoastline: requestCoastlineDownload,
+      downloadCoastline: () => coast.requestDownload(),
       noteTileRequest: (z, x, y) => prebuilder?.noteRequest(z, x, y),
-      publicDir: path.join(__dirname, '..', 'public'),
+      publicDir,
       polarLibrary: () => (config ? { polarFile: config.polarFile, polarsDir: config.polarsDir, userDir: config.polarUserDir } : null),
       getSettings: () => {
-        if (!settings || stopped) throw new Error('plugin not started');
+        if (!settings || stopped) throw new NotStartedError();
         return { values: settings.values, schema: settingsSchema() };
       },
       updateSettings: (partial: unknown) => {
-        if (!settings || stopped) throw new Error('plugin not started');
+        if (!settings || stopped) throw new NotStartedError();
         // Resource guard: refuse a forecast change the device cannot do
         // (memory for one decode step, disk for the decoded run), before
         // saving, so the running forecast and settings stay as they are.
         const prospective = mergeSettings(settings.values, partial);
         if (prospective.changed.some(k => k === 'forecast.horizon' || k === 'forecast.extraFields' || k === 'forecast.memoryHeadroom')) {
           const f = prospective.values.forecast;
-          const mem = checkDecodeResources(f.horizon / 3600, f.extraFields, f.memoryHeadroom, app.getDataDirPath());
+          const mem = checkDecodeResources(f.horizon, f.extraFields, f.memoryHeadroom, app.getDataDirPath());
           if (!mem.ok) {
             const key = prospective.changed.find(k => k.startsWith('forecast.')) ?? 'forecast.horizon';
             throw new SettingsValidationError({ [key]: mem.message });

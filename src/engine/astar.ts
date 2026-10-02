@@ -15,8 +15,10 @@
  * isochrone heading sweep, so timing here is nominal motor timing.
  */
 
-import { R_EARTH_M, haversineBearing, haversineDistanceM, DEG } from '../geo/geodesy';
+import { R_EARTH_M, haversineDistanceM, DEG } from '../geo/geodesy';
 import type { NavigabilityGrid } from '../geo/grid';
+import { MinHeap } from './heap';
+import { AstarError } from './errors';
 
 export interface SkeletonPoint {
   lon: number;
@@ -29,14 +31,7 @@ export interface AstarResult {
   distanceM: number;
 }
 
-export class AstarError extends Error {
-  partialPath: SkeletonPoint[];
-  constructor(message: string, partialPath: SkeletonPoint[] = []) {
-    super(message);
-    this.name = 'AstarError';
-    this.partialPath = partialPath;
-  }
-}
+export { AstarError };
 
 const NEIGHBORS_16: ReadonlyArray<readonly [number, number]> = [
   [-1, 0],
@@ -194,68 +189,6 @@ export function computeShoreCost(grid: NavigabilityGrid): Float32Array {
   return cost;
 }
 
-// ---------------------------------------------------------------------
-// Growable binary min-heap of (cost, cell index).
-
-class MinHeap {
-  private cost: Float64Array;
-  private cell: Int32Array;
-  size = 0;
-  constructor(capacity = 1 << 16) {
-    this.cost = new Float64Array(capacity);
-    this.cell = new Int32Array(capacity);
-  }
-  push(c: number, idx: number): void {
-    if (this.size === this.cost.length) {
-      const nc = new Float64Array(this.cost.length * 2);
-      nc.set(this.cost);
-      this.cost = nc;
-      const ni = new Int32Array(this.cell.length * 2);
-      ni.set(this.cell);
-      this.cell = ni;
-    }
-    let pos = this.size++;
-    this.cost[pos] = c;
-    this.cell[pos] = idx;
-    while (pos > 0) {
-      const parent = (pos - 1) >> 1;
-      if (this.cost[parent] > this.cost[pos]) {
-        this.swap(parent, pos);
-        pos = parent;
-      } else break;
-    }
-  }
-  pop(): [number, number] {
-    const c = this.cost[0];
-    const idx = this.cell[0];
-    this.size--;
-    if (this.size > 0) {
-      this.cost[0] = this.cost[this.size];
-      this.cell[0] = this.cell[this.size];
-      let pos = 0;
-      for (;;) {
-        const l = 2 * pos + 1;
-        const r = l + 1;
-        let s = pos;
-        if (l < this.size && this.cost[l] < this.cost[s]) s = l;
-        if (r < this.size && this.cost[r] < this.cost[s]) s = r;
-        if (s === pos) break;
-        this.swap(s, pos);
-        pos = s;
-      }
-    }
-    return [c, idx];
-  }
-  private swap(a: number, b: number): void {
-    const tc = this.cost[a];
-    this.cost[a] = this.cost[b];
-    this.cost[b] = tc;
-    const ti = this.cell[a];
-    this.cell[a] = this.cell[b];
-    this.cell[b] = ti;
-  }
-}
-
 /**
  * Find a motor path from start to end on the grid. Throws AstarError
  * (with the partial path to the closest reached cell) when no path exists.
@@ -283,7 +216,7 @@ export function astarRoute(
   const dist = new Float64Array(nx * ny).fill(Infinity);
   const cameFrom = new Int32Array(nx * ny).fill(-1);
   const visited = new Uint8Array(nx * ny);
-  const heap = new MinHeap();
+  const heap = new MinHeap(1 << 16);
 
   const endLon = endLonLat[0];
   const endLat = endLonLat[1];
@@ -303,7 +236,7 @@ export function astarRoute(
   let reached = false;
 
   while (heap.size > 0) {
-    const [, cur] = heap.pop();
+    const cur = heap.pop();
     if (visited[cur]) continue;
     visited[cur] = 1;
     cellsVisited++;
@@ -390,6 +323,3 @@ export function astarRoute(
   }
   return { path, cellsVisited, distanceM };
 }
-
-/** Initial bearing helper re-exported for callers that only import this module. */
-export const bearingDeg = haversineBearing;

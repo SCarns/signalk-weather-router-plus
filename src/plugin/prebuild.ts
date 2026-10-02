@@ -22,6 +22,7 @@
  */
 
 import * as fs from 'node:fs';
+import { DEG, M_PER_DEG, HOUR_MS } from '../geo/units';
 import * as path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { MainToWorker, VesselPosition, WorkerToMain } from './protocol';
@@ -322,13 +323,13 @@ export class TilePrebuilder {
     let lat = 0;
     for (const r of at) {
       const b = tileBBox(r.z, r.x, r.y);
-      const lon = ((b.west + b.east) / 2) * (Math.PI / 180);
+      const lon = ((b.west + b.east) / 2) * DEG;
       sx += Math.cos(lon);
       sy += Math.sin(lon);
       lat += (b.north + b.south) / 2;
     }
     // Round the centre to a quarter of the radius at its zoom so small pans do not restart the walk.
-    const step = pyramidRadius(this.settings.radiusM, z) / 4 / 111_320;
+    const step = pyramidRadius(this.settings.radiusM, z) / 4 / M_PER_DEG;
     const cLat = lat / at.length;
     const cLon = (Math.atan2(sy, sx) * 180) / Math.PI;
     this.lastView = { kind: 'view', lat: Math.round(cLat / step) * step, lon: Math.round(cLon / step) * step, z };
@@ -341,7 +342,7 @@ export class TilePrebuilder {
     const pos = this.deps.vesselPosition();
     // A move of more than a kilometre moves the boat's area (and is remembered across restarts).
     const movedM = (a: VesselPosition, b: VesselPosition): number =>
-      Math.hypot(a.lat - b.lat, (a.lon - b.lon) * Math.cos((a.lat * Math.PI) / 180)) * 111_320;
+      Math.hypot(a.lat - b.lat, (a.lon - b.lon) * Math.cos((a.lat * Math.PI) / 180)) * M_PER_DEG;
     if (pos && (!this.boat || movedM(pos, this.boat) > 1000)) {
       this.boat = pos;
       this.saveBoat(pos);
@@ -352,7 +353,7 @@ export class TilePrebuilder {
     if (this.boat) areas.push({ kind: 'boat', lat: this.boat.lat, lon: this.boat.lon });
     this.areas = areas;
     const gens = (['wx', 'cur', 'tide', 'land'] as const).map(g => this.deps.store.generation(g)).join(',');
-    const hour = Math.floor(now / 3600_000);
+    const hour = Math.floor(now / HOUR_MS);
     return JSON.stringify({ gens, hour, areas: areas.map(a => [a.kind, a.lat.toFixed(4), a.lon.toFixed(4)]), s: this.settings });
   }
 
@@ -367,7 +368,7 @@ export class TilePrebuilder {
       const tileLayers = layers.filter(l => l !== 'msl');
       // Isobars read the pressure grid at one zoom (tilejoin.ts joinPressure), whatever the map zoom.
       const pressure = layers.includes('msl') ? pyramidTiles(area.lat, area.lon, this.settings.radiusM, PRESSURE_TILE_ZOOM) : [];
-      for (let h = fromMs; h <= lastMs; h += 3600_000) {
+      for (let h = fromMs; h <= lastMs; h += HOUR_MS) {
         if (h <= (ends.get('msl') ?? -Infinity))
           for (const { x, y } of pressure) yield { t: { layer: 'msl', z: PRESSURE_TILE_ZOOM, x, y, hourMs: h }, area };
         for (const { z, tiles } of byZ)
@@ -379,7 +380,7 @@ export class TilePrebuilder {
 
   private restartWalk(key: string): void {
     const now = Date.now();
-    const fromMs = Math.floor(now / 3600_000) * 3600_000;
+    const fromMs = Math.floor(now / HOUR_MS) * HOUR_MS;
     const layers = PREBUILD_LAYERS.filter(l => this.deps.layerAvailable(l));
     const lasts = layers.map(l => this.deps.lastHourMs(l)).filter((v): v is number => v !== null);
     const windowEnd = this.settings.windowS === null ? Infinity : fromMs + this.settings.windowS * 1000;

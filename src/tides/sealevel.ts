@@ -56,6 +56,8 @@
  */
 
 import type { BBox } from '../geo/geodesy';
+import { lonOffset } from '../geo/angles';
+import { MINUTE_MS, HOUR_MS, HOUR_S } from '../geo/units';
 import {
   alignedSteps,
   ArcoAreaSet,
@@ -111,7 +113,6 @@ export const POINT_CACHE_ENTRIES = 8;
 export const TIDE_MARGIN_CELLS = FILL_RADIUS_CELLS + 1;
 /** The resident window starts on a multiple of this (it is rebuilt when the start moves). */
 export const RESIDENT_ALIGN_HOURS = 6;
-const HOUR_MS = 3600_000;
 
 export type SeaLevelClientOptions = Omit<ArcoClientOptions, 'urls' | 'vars' | 'tag'> & { urls?: Partial<typeof SL_URLS> };
 
@@ -165,7 +166,7 @@ export function pointBlock(run: ArcoRun, lat: number, lon: number): { region: Re
   const g = run.levels.time.grid;
   const y = (lat - g.lat0) / g.dLat;
   if (!(y >= 0 && y <= g.nLat - 1)) return null;
-  const x = mod(lon - g.lon0, 360) / g.dLon;
+  const x = lonOffset(lon, g.lon0) / g.dLon;
   const R = FILL_RADIUS_CELLS;
   const fy = Math.min(Math.floor(y), g.nLat - 2);
   const row0 = Math.max(0, fy - R);
@@ -279,7 +280,8 @@ export function seriesFromBlock(
 
 export interface TideSettings {
   halfWidthDeg: number;
-  horizonHours: number;
+  /** Seconds ahead of now the resident window covers. */
+  horizonS: number;
   budgetBytes: number;
 }
 
@@ -387,7 +389,7 @@ export class TideSource {
   windowSteps(nowMs: number): number[] {
     const a = RESIDENT_ALIGN_HOURS * HOUR_MS;
     const start = Math.floor(nowMs / a) * a;
-    return alignedSteps(this.run, start, start + (this.settings.horizonHours + RESIDENT_ALIGN_HOURS) * HOUR_MS, 1);
+    return alignedSteps(this.run, start, start + this.settings.horizonS * 1000 + RESIDENT_ALIGN_HOURS * HOUR_MS, 1);
   }
 
   /** Hourly steps bracketing one instant (map queries). */
@@ -528,7 +530,7 @@ export class TideSource {
       stac_updated: this.run.stacUpdated,
       settled: this.run.settled,
       half_width_deg: this.settings.halfWidthDeg,
-      horizon_hours: this.settings.horizonHours,
+      horizon_hours: this.settings.horizonS / HOUR_S,
       resident: parts.resident,
       on_demand: parts.on_demand,
       point_cache: { entries: this.points.length, bytes: this.pointBytes(), queries: this.queries, hits: this.hits },
@@ -643,7 +645,7 @@ export function tideSummary(s: TidePointSeries, fromMs: number, toMs: number): T
   const ext = findExtrema(sub);
   const wl = asRegular(s, 'waterLevel');
   const out = (e: { timeMs: number; height: number }): TideExtremumOut => ({
-    time: new Date(Math.round(e.timeMs / 60_000) * 60_000).toISOString(),
+    time: new Date(Math.round(e.timeMs / MINUTE_MS) * MINUTE_MS).toISOString(),
     height_m: r4(e.height) as number,
     water_level_m: r4(sampleSeries(wl, e.timeMs)),
   });

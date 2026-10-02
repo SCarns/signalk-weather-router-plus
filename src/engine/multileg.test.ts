@@ -284,7 +284,7 @@ test('approximate: when no branch passes every circle, the run is routed leg by 
     departureTime: T0,
     precision: 'approximate',
     arrivalRadiusM: 500,
-    onProgress: m => messages.push(m),
+    onProgress: (_s, _t, m) => messages.push(m),
     runLeg: (leg, start, dep) => {
       if (leg.vias.length) throw new ViasNotCrossedError('no branch crossed all 2 via(s)');
       starts.push(start);
