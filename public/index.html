@@ -763,8 +763,14 @@
   <div class="section-body">
     <div class="subtab-row" id="layersSubTabs"><button type="button" data-group="base">Base</button><button type="button" data-group="weather">Weather</button><button type="button" data-group="water">Water</button></div>
     <div class="layer-group" data-group="base">
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="osmToggle" style="width:auto;margin-right:4px;" checked onchange="osmLayer.setVisible(this.checked);">OpenStreetMap</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="seamarkToggle" style="width:auto;margin-right:4px;" checked onchange="seamarkLayer.setVisible(this.checked);">OpenSeaMap seamarks (buoys, lights)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="osmToggle" style="width:auto;margin-right:4px;" checked onchange="osmLayer.setVisible(this.checked); saveBaseMapChoices();">OpenStreetMap</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="seamarkToggle" style="width:auto;margin-right:4px;" checked onchange="seamarkLayer.setVisible(this.checked); saveBaseMapChoices();">OpenSeaMap seamarks (buoys, lights)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="localChartsToggle" style="width:auto;margin-right:4px;" disabled onchange="updateLocalCharts();">Signal K charts</label>
+    <div style="margin:4px 0 8px 18px;">
+      <select id="localChartPicker" aria-label="Signal K chart" style="width:100%;font-size:11px;" disabled onchange="updateLocalCharts();"><option>Loading Signal K charts…</option></select>
+      <button id="localChartsRefresh" type="button" style="margin-top:4px;font-size:11px;" onclick="loadLocalCharts();">Refresh charts</button>
+      <div id="localChartsNote" style="font-size:11px;margin-top:4px;"></div>
+    </div>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="vesselToggle" style="width:auto;margin-right:4px;" checked onchange="vesselMarkerLayer.setVisible(this.checked);">Own vessel (Signal K position)</label>
     </div>
     <div class="layer-group" data-group="weather">
@@ -883,6 +889,7 @@
 </div>
 
 <script src="rp-core.js"></script>
+<script src="rp-charts.js"></script>
 <script src="rp-layers.js"></script>
 <script src="rp-plan.js"></script>
 <script src="rp-settings.js"></script>
