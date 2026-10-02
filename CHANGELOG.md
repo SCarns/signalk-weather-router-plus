@@ -24,6 +24,11 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Review of PR #12: the web files' hash leaves out only the version tags
+  the plugin writes, not any `?v=` in the code; the tagged page and
+  modules are written beside the file and renamed over it; a change of the
+  precision selector or the radius slider marks a route with waypoints as
+  stale (a loaded route setting the selector does not).
 - **Waypoint pins stay where you put them, and approximate waypoints show
   their circle.** After a route ran in Approximate mode the web app moved
   each via pin to the point where the route entered its circle, which is

@@ -16,6 +16,7 @@ let waypointCoords = [];  // [[lon, lat], ...] — intermediate stops in order
 // on every mutation and wire drag-to-move through the Modify interaction.
 let waypointFeatures = [];  // one ol.Feature per waypoint, aligned with waypointCoords
 let waypointRadii = [];     // per waypoint: arrival radius (m) from a loaded route, or null = the slider's value
+let _settingPrecisionFromRoute = false;  // true while a loaded route sets the precision selector
 let routeActive = false;      // a route is displayed for the current markers
 let _routeStale = false;      // markers changed since that route was computed
 let _routeComputing = false;  // a route job is running
@@ -123,8 +124,11 @@ function _placeRoutePins(pts, snapProps) {
     waypointRadii = stops.map(s => (Number.isFinite(s.radius_m) ? s.radius_m : null));
     const precEl = document.getElementById('precision');
     if (precEl && (snapProps.precision === 'precise' || snapProps.precision === 'approximate') && precEl.value !== snapProps.precision) {
+      // The loaded route's own precision: not a change by the user, so the
+      // route is not stale (the change listener below checks the flag).
       precEl.value = snapProps.precision;
-      precEl.dispatchEvent(new Event('change', { bubbles: true }));
+      _settingPrecisionFromRoute = true;
+      try { precEl.dispatchEvent(new Event('change', { bubbles: true })); } finally { _settingPrecisionFromRoute = false; }
     }
     _rebuildWaypointFeatures();
   } else {
@@ -723,9 +727,18 @@ function _rebuildRings() {
 {
   const precEl = document.getElementById('precision');
   const slider = document.getElementById('arrivalRadiusM');
-  if (precEl) precEl.addEventListener('change', _rebuildRings);
+  // Both change what a route with waypoints would be: a user's change makes
+  // the shown route stale (a loaded route setting the selector does not).
+  if (precEl) precEl.addEventListener('change', () => {
+    _rebuildRings();
+    if (!_settingPrecisionFromRoute && waypointCoords.length) markRouteStale();
+  });
   // A moved slider is the user's new radius for every waypoint.
-  if (slider) slider.addEventListener('input', () => { waypointRadii = []; _rebuildRings(); });
+  if (slider) slider.addEventListener('input', () => {
+    waypointRadii = [];
+    _rebuildRings();
+    if (precEl && precEl.value === 'approximate' && waypointCoords.length) markRouteStale();
+  });
 }
 
 function _updateWaypointListUI() {

@@ -28,6 +28,14 @@ test('the files on disk carry the version tag, re-tagging replaces it, and tags 
   assert.match(html, /src="rp-plan\.js\?v=abc12345"/);
   assert.match(fs.readFileSync(path.join(pub, 'rp-plan.js'), 'utf8'), /from '\.\/rp-core\.js\?v=abc12345'/);
   assert.equal(filesHash(pub), h0, 'the tag is not part of the hash');
+  // A `?v=` that is content, not an asset tag, is part of the hash.
+  fs.writeFileSync(path.join(pub, 'rp-core.js'), "export const a = 1;\nexport const url = '/api/thing?v=1';\n");
+  const h1 = filesHash(pub);
+  assert.notEqual(h1, h0);
+  fs.writeFileSync(path.join(pub, 'rp-core.js'), "export const a = 1;\nexport const url = '/api/thing?v=2';\n");
+  assert.notEqual(filesHash(pub), h1, 'a changed query in the code changes the hash');
+  assert.equal(tagPublicFiles(pub, 'abc12345'), 0, 'already tagged with this tag: nothing rewritten');
+  assert.equal(fs.readdirSync(pub).filter(f => f.includes('.tmp-')).length, 0, 'no temporary files left behind');
   assert.equal(tagPublicFiles(pub, 'def67890'), 2);
   assert.match(fs.readFileSync(path.join(pub, 'index.html'), 'utf8'), /rp-plan\.js\?v=def67890"/);
   assert.doesNotMatch(fs.readFileSync(path.join(pub, 'index.html'), 'utf8'), /abc12345/);

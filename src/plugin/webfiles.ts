@@ -9,13 +9,23 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-/** The version tag the page's references carry (`?v=<tag>`). */
-const V_TAG = /\?v=[0-9a-z]+/g;
+/**
+ * The version tags tagPublicFiles writes, and nothing else: an asset
+ * reference (`ol.js?v=…`, `rp-plan.js?v=…`, `ol.css?v=…`) and a module
+ * import specifier (`'./rp-core.js?v=…'`). Any other `?v=` in a file is
+ * content, and a change to it must change the hash.
+ */
+const ASSET_TAG = /((?:^|[/"'])(?:ol|rp-[a-z]+)\.(?:js|css))\?v=[0-9a-z]+/g;
+
+/** The file's text with the tags tagPublicFiles writes removed (what the hash is taken over). */
+export function untagged(text: string): string {
+  return text.replace(ASSET_TAG, '$1');
+}
 
 /**
  * A short hash of the files under a directory (name and content), or
- * 'nofiles'. Version tags inside .html, .js and .css files are left out
- * of the hash, so tagging the files (tagPublicFiles) does not change it.
+ * 'nofiles'. The version tags tagPublicFiles writes into .html and .js
+ * files are left out of the hash, so tagging the files does not change it.
  */
 export function filesHash(dir: string, exclude: string[] = []): string {
   const h = createHash('sha1');
@@ -25,7 +35,7 @@ export function filesHash(dir: string, exclude: string[] = []): string {
       const rel = path.relative(dir, p);
       if (exclude.includes(rel)) continue;
       if (fs.statSync(p).isDirectory()) walk(p);
-      else if (/\.(?:html|js|css)$/.test(f)) h.update(rel).update(fs.readFileSync(p, 'utf8').replace(V_TAG, ''));
+      else if (/\.(?:html|js)$/.test(f)) h.update(rel).update(untagged(fs.readFileSync(p, 'utf8')));
       else h.update(rel).update(fs.readFileSync(p));
     }
   };
@@ -62,9 +72,18 @@ export function tagPublicFiles(publicDir: string, tag: string): number {
       return;
     }
     const out = text.replace(from, to);
-    if (out !== text) {
-      fs.writeFileSync(file, out);
+    if (out === text) return;
+    // Written beside the file and renamed over it: a failed write leaves
+    // the page or module as it was, and a request served meanwhile never
+    // sees a partial file.
+    const tmp = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+    try {
+      fs.writeFileSync(tmp, out);
+      fs.renameSync(tmp, file);
       n++;
+    } catch (err) {
+      fs.rmSync(tmp, { force: true });
+      throw err;
     }
   };
   rewrite(
