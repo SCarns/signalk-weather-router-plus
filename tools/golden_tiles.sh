@@ -74,20 +74,22 @@ print(t.strftime("%Y-%m-%dT%H:00:00Z"))')
 }
 
 compare() {
-  local a=$OUT/$1 b=$OUT/$2 same=0 diff=0 missing=0
-  if ! cmp -s "$a/time" "$b/time"; then echo "times differ: $(cat "$a/time") vs $(cat "$b/time")"; fi
+  local a=$OUT/$1 b=$OUT/$2 same=0 diff=0 missing=0 metadata_diff=0
+  # A pair taken at different times or forecast cycles compares data, not
+  # code: it counts as a failure even when every tile matches.
+  if ! cmp -s "$a/time" "$b/time"; then echo "times differ: $(cat "$a/time") vs $(cat "$b/time")"; metadata_diff=1; fi
   local ga gb
   ga=$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["forecast"]["cycle"])' "$a/status.json")
   gb=$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d["forecast"]["cycle"])' "$b/status.json")
-  [ "$ga" = "$gb" ] || echo "FORECAST CYCLES DIFFER ($ga vs $gb): differences below may be data, not code"
+  if [ "$ga" != "$gb" ]; then echo "FORECAST CYCLES DIFFER ($ga vs $gb): differences below may be data, not code"; metadata_diff=1; fi
   for f in "$a"/*.png "$a"/*.raw; do
     local base; base=$(basename "$f")
     if [ ! -f "$b/$base" ]; then missing=$((missing+1)); echo "missing in $2: $base"; continue; fi
     if cmp -s "$f" "$b/$base"; then same=$((same+1)); else diff=$((diff+1)); echo "DIFFERS: $base ($(stat -c%s "$f") vs $(stat -c%s "$b/$base") bytes)"; fi
   done
   echo "$same identical, $diff differ, $missing missing"
-  # Nonzero when anything differs or is missing, so the script can gate a check.
-  [ "$diff" -eq 0 ] && [ "$missing" -eq 0 ]
+  # Nonzero when anything differs or is missing, or the pair is not comparable, so the script can gate a check.
+  [ "$diff" -eq 0 ] && [ "$missing" -eq 0 ] && [ "$metadata_diff" -eq 0 ]
 }
 
 case ${1:-} in
