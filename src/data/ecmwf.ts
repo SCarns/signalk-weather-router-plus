@@ -219,14 +219,12 @@ export class EcmwfClient {
     for (let ageH = 0; ageH <= maxAge; ageH += 6) {
       const c = cycleFor(new Date(start.getTime() - ageH * HOUR_MS));
       if (opts.mainCyclesOnly && c.maxStep !== MAIN_MAX_STEP) continue;
-      const atmSteps = availableSteps(c, horizonHours);
-      const waveSteps = availableSteps(c, horizonHours);
-      const lastAtm = atmSteps[atmSteps.length - 1];
-      const lastWave = waveSteps[waveSteps.length - 1];
-      if (lastAtm < horizonHours && c.maxStep < horizonHours) continue; // 06z/18z cannot cover the horizon
-      const [a, w] = await Promise.all([this.stepPublished(c, c.atmStream, lastAtm), this.stepPublished(c, c.waveStream, lastWave)]);
+      const steps = availableSteps(c, horizonHours);
+      const last = steps[steps.length - 1];
+      if (last < horizonHours && c.maxStep < horizonHours) continue; // 06z/18z cannot cover the horizon
+      const [a, w] = await Promise.all([this.stepPublished(c, c.atmStream, last), this.stepPublished(c, c.waveStream, last)]);
       if (a && w) {
-        this.log(`latest complete cycle: ${c.yyyymmdd} ${c.hh}z (${c.atmStream}/${c.waveStream}) to +${lastAtm} h`);
+        this.log(`latest complete cycle: ${c.yyyymmdd} ${c.hh}z (${c.atmStream}/${c.waveStream}) to +${last} h`);
         return c;
       }
     }

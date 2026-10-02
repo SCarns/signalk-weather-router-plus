@@ -4,7 +4,7 @@ import { scoreCandidatesFromParent, simulateLegTime, type SimOptions } from './l
 import type { CurrentSource, WindSource } from './environment';
 import { makeVessel } from '../vessel/vessel';
 import { PolarDiagram } from '../vessel/polar';
-import { OceanPropagator, ViasNotCrossedError } from './propagator';
+import { OceanPropagator, RouteError, ViasNotCrossedError } from './propagator';
 import { LandMask } from '../geo/landmask';
 
 /** Uniform wind and waves everywhere. */
@@ -103,7 +103,7 @@ test('a search boxed in by the wind limit fails with a message that counts the l
       forecastEndMs,
     });
   assert.throws(run, (err: Error) => {
-    assert.match(err.message, /boxed in/);
+    assert.ok(err instanceof RouteError && err.code === 'boxed_in', `${err.name}: ${err.message}`);
     assert.match(err.message, /\d+ over the wind\/wave limit/);
     assert.doesNotMatch(err.message, /forecast ends/);
     return true;
@@ -112,7 +112,7 @@ test('a search boxed in by the wind limit fails with a message that counts the l
   assert.throws(
     () => run(t0.getTime() + 3600_000),
     (err: Error) => {
-      assert.match(err.message, /boxed in/);
+      assert.ok(err instanceof RouteError && err.code === 'boxed_in', `${err.name}: ${err.message}`);
       assert.match(err.message, /The forecast ends 2026-10-01 01:00 UTC and the search is \d+ h past it/);
       return true;
     }

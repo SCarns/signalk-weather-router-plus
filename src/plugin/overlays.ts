@@ -1,8 +1,8 @@
 /**
  * Data behind the overlay and conditions endpoints. Everything is SI
  * and the browser renders it (heatmaps from JSON grids, arrows, barbs,
- * isobars). Mirrors the routing server's field/vector/conditions
- * endpoints in content, not in transport.
+ * isobars) from the forecast store, the current stack and the tide
+ * store.
  */
 
 import type { ForecastStore } from '../data/forecast';
@@ -26,8 +26,8 @@ import {
   seaStateIndex,
   windChillK,
   roughnessIndex,
-} from '../engine/conditions';
-import { buildIsobarFeatures, type IsobarFeature } from '../engine/isobars';
+} from './conditions';
+import { buildIsobarFeatures, type IsobarFeature } from './isobars';
 import { tideRowAt, tideSummary, SL_NAME, type TidePointSeries, type TideRowFields, type TideSummary } from '../tides/sealevel';
 
 export type { FieldLayer } from './layers';
@@ -47,7 +47,7 @@ export interface FieldGridResponse {
   units: Record<string, string>;
 }
 
-/** Lattice covering the bbox at `res`, snapped to the global grid (like the server's global_grid_lonlats). */
+/** Lattice covering the bbox at `res`, snapped to the global grid so neighbouring requests share cells. */
 function lattice(bbox: BBox, res: number, maxCells: number): { lons: number[]; lats: number[]; res: number } {
   let r = res;
   const width = bboxWidth(bbox);
@@ -360,10 +360,8 @@ export interface ConditionsRow {
 }
 
 /**
- * One sample row at a position and time. Field names follow the routing
- * server except where its units were not Signal K's: `precip_rate_ms`
- * (m/s, the server sends `tprate_kg_m2_s`) and `rh` (ratio 0..1, the
- * server sends `rh_pct`). Everything is SI or dimensionless.
+ * One sample row at a position and time. Everything is SI or
+ * dimensionless: `precip_rate_ms` in m/s, `rh` a ratio 0..1.
  */
 export function sampleConditions(src: OverlaySources, lon: number, lat: number, time: Date): ConditionsRow {
   const f = src.forecast;

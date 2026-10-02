@@ -21,7 +21,8 @@ import { NoCurrent } from '../../engine/environment';
 import { RouteCancelled } from '../../engine/propagator';
 import { nearestExactWater, waterAround } from '../../engine/corridor';
 import { DEFAULT_PRECISION, legLabel, type LegPlan, routeMultiLeg, type Stop } from '../../engine/multileg';
-import { type Route, routeToGeoJSON, routeToSignalKRoute, skeletonToGeoJSON, type StageFront, type StopSnap } from '../../engine/route';
+import type { Route, StageFront, StopSnap } from '../../engine/route';
+import { routeToGeoJSON, routeToSignalKRoute, skeletonToGeoJSON } from '../routeformat';
 import { PolarDiagram } from '../../vessel/polar';
 import { loadPolarCached, resolvePolarPath } from '../polars';
 
@@ -287,7 +288,7 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
       precision: request.precision,
       arrivalRadiusM: request.arrival_radius_m,
       runLeg: legOne,
-      onProgress: m => progress(0, 0, m),
+      onProgress: progress,
     });
     if (cycleLabel) result.forecastCycle = cycleLabel;
     if (snaps.length) result.snaps = snaps;
@@ -315,6 +316,10 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
     if (multi) {
       summary.legs = stops.length - 1;
       summary.precision = request.precision ?? DEFAULT_PRECISION;
+    }
+    if (result.corridorFallback) {
+      summary.corridor_fallback = true;
+      st.log('info', 'WARNING: corridor search failed on at least one leg; the route ran on the coarse per-route skeleton');
     }
     st.log(
       'info',

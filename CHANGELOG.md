@@ -107,6 +107,24 @@ uses [Semantic Versioning](https://semver.org/).
   and the forecast parameters each reads are one table. index.html is no
   longer rewritten on disk at start: the served page carries the version
   tag, as it already did.
+- **Smaller things** (phase 5): dead code removed (unused helpers, an
+  unused land-sampling step option, an always-null message field, a
+  job event nobody listened to, the page's `ROUTER` alias and a stub);
+  one error hierarchy for the engine (`EngineError` with a code and a
+  fatal flag; cancellation is one class, never a message match) and the
+  API maps HTTP status by error class; one progress-callback shape;
+  tests moved next to what they test; the web app's scripts are linted
+  (four assignments-in-conditions fixed); comments that described the
+  code by reference to the former server say what the code does; the
+  GeoJSON / Signal K route formats, the conditions derivations and the
+  isobar tracer moved from the engine to the plugin layer.
+
+### Added
+
+- `/api/status` reports `corridor_fallbacks`: how many routes since the
+  plugin loaded ran on the coarse per-route skeleton because the
+  water-grid corridor search failed; such a route's summary carries
+  `corridor_fallback: true` and the server log says so.
 
 ## [0.1.0-beta.5] - 2026-09-30
 

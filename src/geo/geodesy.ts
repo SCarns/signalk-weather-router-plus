@@ -77,11 +77,6 @@ export function perpendicularOffsetM(sLon: number, sLat: number, eLon: number, e
 }
 
 /**
- * Does the great-circle segment (lon1,lat1)→(lon2,lat2) come within `rM`
- * of (vLon, vLat)? Segment test, not endpoint test: cross-track plus
- * along-track, with the endpoints checked first.
- */
-/**
  * Along-track distance from (lon1, lat1), on the great circle towards
  * (lon2, lat2), of the point closest to (pLon, pLat), metres (Aviation
  * Formulary; negative when the point is behind the start).
@@ -96,6 +91,11 @@ export function alongTrackDistanceM(lon1: number, lat1: number, lon2: number, la
   return Math.cos(dBrg) < 0 ? -at : at;
 }
 
+/**
+ * Does the great-circle segment (lon1,lat1)→(lon2,lat2) come within `rM`
+ * of (vLon, vLat)? Segment test, not endpoint test: cross-track plus
+ * along-track, with the endpoints checked first.
+ */
 export function segmentWithinDisc(lon1: number, lat1: number, lon2: number, lat2: number, vLon: number, vLat: number, rM: number): boolean {
   const d1 = haversineDistanceM(lon1, lat1, vLon, vLat);
   if (d1 <= rM) return true;

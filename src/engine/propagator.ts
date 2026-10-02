@@ -79,7 +79,6 @@ export class OceanPropagator {
   readonly deltaC: number;
   readonly skeletonResolutionDeg: number;
   readonly skeletonPaddingDeg: number;
-  readonly landStepM: number;
 
   constructor(
     readonly landMask: LandMask,
@@ -91,7 +90,6 @@ export class OceanPropagator {
     this.deltaC = opts.headingIncrementDeg ?? 1.0;
     this.skeletonResolutionDeg = opts.skeletonResolutionDeg ?? 0.005;
     this.skeletonPaddingDeg = opts.skeletonPaddingDeg ?? 1.0;
-    this.landStepM = opts.landStepM ?? 200;
   }
 
   /**

@@ -1,8 +1,7 @@
 /**
- * Colour ramps and legend metadata, in SI, matching the routing
- * server's `/legends` response (routers/legends.py and the per-layer
- * ramps in wind.py, waves.py, currents.py, precip.py, temperature.py,
- * sst.py, roughness.py). The browser draws every heatmap from these.
+ * Colour ramps and legend metadata, in SI, answered by `/api/legends`.
+ * The browser draws every heatmap from these and the PNG tile renderer
+ * uses the same stops, so a layer has one ramp.
  */
 
 import { KTS_TO_MS, MMH_TO_MS } from '../geo/units';
@@ -91,7 +90,7 @@ export const SST_STOPS: [number, string][] = [
   [303.15, '#f24c1a'],
   [305.15, '#a61a1a'],
 ];
-/** matplotlib RdYlBu_r sampled at 17 points over 0..150 (the server's legend samples). */
+/** matplotlib RdYlBu_r sampled at 17 points over 0..150. */
 export const SEA_STATE_STOPS: [number, string][] = [
   [0, '#313695'],
   [9.375, '#3d5da8'],

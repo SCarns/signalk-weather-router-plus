@@ -64,8 +64,7 @@ export function beatToWindward(
   wind: WindSource,
   current: CurrentSource,
   simOpts: SimOptions,
-  modePolicy: ModePolicy,
-  landStepM: number
+  modePolicy: ModePolicy
 ): { tack: Candidate; final: Candidate; d1: number; d2: number } | null {
   if (!polar || modePolicy === 'motor') return null;
   const [ws, wd] = wind.at(from.lon, from.lat, new Date(from.timeMs));
@@ -95,8 +94,7 @@ export function beatToWindward(
       Float64Array.of(from.lon, tLon),
       Float64Array.of(from.lat, tLat),
       Float64Array.of(tLon, gLon),
-      Float64Array.of(tLat, gLat),
-      landStepM
+      Float64Array.of(tLat, gLat)
     );
     if (cross[0] || cross[1]) continue;
     const s1 = simulateLegTime(from.lon, from.lat, new Date(from.timeMs), tLon, tLat, vessel, polar, wind, current, simOpts);
@@ -111,23 +109,7 @@ export function beatToWindward(
 }
 
 export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages: Candidate[][]): Terminal {
-  const {
-    args,
-    wind,
-    current,
-    polar,
-    vessel,
-    modePolicy,
-    simOpts,
-    progress,
-    checkCancel,
-    eLon,
-    eLat,
-    snapToExact,
-    nVias,
-    landStepM,
-    limitNote,
-  } = ctx;
+  const { args, wind, current, polar, vessel, modePolicy, simOpts, progress, checkCancel, eLon, eLat, snapToExact, nVias, limitNote } = ctx;
   const { kEff } = guide;
   const terminals = stages[stages.length - 1];
   if (terminals.length === 0) throw new RouteError('front went empty before reaching the destination; no path found');
@@ -144,8 +126,7 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
     Float64Array.from(pool.map(c => c.lon)),
     Float64Array.from(pool.map(c => c.lat)),
     new Float64Array(pool.length).fill(eLon),
-    new Float64Array(pool.length).fill(eLat),
-    landStepM
+    new Float64Array(pool.length).fill(eLat)
   );
   const clearPool = pool.filter((_c, i) => !poolHop[i]);
   const choose = clearPool.length ? clearPool : pool;
@@ -184,12 +165,11 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
         Float64Array.of(c.lon),
         Float64Array.of(c.lat),
         Float64Array.of(hopEnd[0]),
-        Float64Array.of(hopEnd[1]),
-        landStepM
+        Float64Array.of(hopEnd[1])
       );
       if (cross[0]) return null;
     }
-    const beat = beatToWindward(ctx, c, hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts, modePolicy, landStepM);
+    const beat = beatToWindward(ctx, c, hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts, modePolicy);
     if (beat) return { hopEnd, beat, sim: null, arrivalS: beat.final.elapsedS };
     const sim = simulateLegTime(c.lon, c.lat, new Date(c.timeMs), hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts);
     if (!Number.isFinite(sim.seconds) || sim.seconds <= 0) return null;
@@ -239,8 +219,7 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
       Float64Array.of(bestC.lon),
       Float64Array.of(bestC.lat),
       Float64Array.of(hLon),
-      Float64Array.of(hLat),
-      landStepM
+      Float64Array.of(hLat)
     );
     if (finalCross[0]) {
       throw new RouteError(
@@ -251,9 +230,7 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
     // beat to it on two close-hauled legs meeting at a tack point (the
     // laylines), in whichever order is faster and clear of land. Only a hop
     // that cannot be sailed at all is beaten; everything else stays straight.
-    const beat = bestPlan
-      ? bestPlan.beat
-      : beatToWindward(ctx, bestC, hLon, hLat, vessel, polar, wind, current, simOpts, modePolicy, landStepM);
+    const beat = bestPlan ? bestPlan.beat : beatToWindward(ctx, bestC, hLon, hLat, vessel, polar, wind, current, simOpts, modePolicy);
     if (beat) {
       tackCand = beat.tack;
       finalCand = beat.final;
@@ -272,7 +249,8 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
         // never going to work: the search ran its budget out boxed in.
         if (bestDist > 2 * guide.stepFor(bestC.lon, bestC.lat).step) {
           throw new RouteError(
-            `the search ran out of stages ${(bestDist / 1000).toFixed(0)} km from the destination, boxed in; ${tryNote(ctx)}; the straight final leg from there is stuck under ${modePolicy}${limitNote}.${forecastNote(ctx)}`
+            `the search ran out of stages ${(bestDist / 1000).toFixed(0)} km from the destination, boxed in; ${tryNote(ctx)}; the straight final leg from there is stuck under ${modePolicy}${limitNote}.${forecastNote(ctx)}`,
+            'boxed_in'
           );
         }
         throw new RouteError(

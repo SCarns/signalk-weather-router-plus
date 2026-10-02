@@ -34,23 +34,7 @@ function traceBack(stages: Candidate[][], stageIdx: number, cand: Candidate): [n
 
 /** Run the stages from the start; returns every stage's retained candidates (stage 0 = the start). */
 export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[][] {
-  const {
-    args,
-    progress,
-    checkCancel,
-    sLon,
-    sLat,
-    eLon,
-    eLat,
-    goals,
-    nVias,
-    startViaCount,
-    cruise,
-    landStepM,
-    fronts,
-    lastTry,
-    limitNote,
-  } = ctx;
+  const { args, progress, checkCancel, sLon, sLat, eLon, eLat, goals, nVias, startViaCount, cruise, fronts, lastTry, limitNote } = ctx;
   const { deltaD, candStepM } = ctx.budget;
   const { kEff, maxStages } = guide;
   const announced = new Set<number>();
@@ -276,7 +260,8 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
           ? ' The front reached the destination but no final leg to it was clear of land: the point is too close to the shore for the land raster.'
           : '';
       throw new RouteError(
-        `the search is boxed in: for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(1)} km to the destination; ${tryNote(ctx)}.${atGoal}${forecastNote(ctx)}`
+        `the search is boxed in: for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(1)} km to the destination; ${tryNote(ctx)}.${atGoal}${forecastNote(ctx)}`,
+        'boxed_in'
       );
     }
     for (const c of retained) {
@@ -308,8 +293,7 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
           Float64Array.from(near.map(c => c.lon)),
           Float64Array.from(near.map(c => c.lat)),
           new Float64Array(near.length).fill(eLon),
-          new Float64Array(near.length).fill(eLat),
-          landStepM
+          new Float64Array(near.length).fill(eLat)
         );
         const clear = near.filter((_c, i) => !hop[i]);
         if (clear.length) {

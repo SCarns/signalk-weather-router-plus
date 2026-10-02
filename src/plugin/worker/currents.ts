@@ -69,7 +69,6 @@ export function sendCurrents(st: WorkerState): void {
     type: 'currents',
     status: currentsStatus(st),
     rtofsRun: st.rtofs ? new Date(st.rtofs.runMs).toISOString().slice(0, 10) : null,
-    rtofs: null,
   });
 }
 

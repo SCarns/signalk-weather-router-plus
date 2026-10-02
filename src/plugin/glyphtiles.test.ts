@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { decodePng } from './png';
 import { renderArrowsPng, renderBarbsPng, renderIsobarsPng } from './glyphtiles';
 import { tileBBox } from './tiles';
-import type { IsobarFeature } from '../engine/isobars';
+import type { IsobarFeature } from './isobars';
 
 const Z = 3;
 const X = 2;

@@ -7,7 +7,17 @@ import { LandMask } from '../geo/landmask';
 import { WaterGrid } from '../geo/watergrid';
 import { buildWaterGrid } from '../geo/watergrid_build';
 import { gridAstar, GridAstarError, smoothGridPath, gridLineOfSight } from './gridastar';
-import { planCorridor, verifyCorridor, mergeVias, widthProfile, CorridorError, type AutoVia } from './corridor';
+import {
+  planCorridor,
+  verifyCorridor,
+  mergeVias,
+  widthProfile,
+  nearestExactWater,
+  waterAround,
+  CorridorError,
+  type AutoVia,
+} from './corridor';
+import type { ShapePolygon } from '../geo/shapefile';
 import { OceanPropagator } from './propagator';
 import { makeVessel } from '../vessel/vessel';
 
@@ -296,7 +306,7 @@ test('corridor: a passage closed on the raster even at the finest patch is block
     ],
     {
       stages: 20,
-      onProgress: m => messages.push(m),
+      onProgress: (_s, _t, m) => messages.push(m),
       landFor: b => LandMask.fromShapefiles([SHP2], b, { resolutionDeg: 0.002 }),
     }
   );
@@ -397,7 +407,11 @@ test('propagator: automatic vias pull the route through the passage but are not 
   );
   assert.equal(route.autoVias?.length, 1);
   assert.equal(route.autoVias?.[0].name, 'Test Channel');
-  assert.ok(msgs.some(m => /auto via at Test Channel, width 2\.2 km/.test(m)));
+  assert.equal(route.autoVias?.[0].widthM, 2200);
+  assert.ok(
+    msgs.some(m => /auto via at Test Channel/.test(m)),
+    'the search announces the auto via'
+  );
   assert.equal(route.warnings, undefined, 'no leg crosses land');
   // With a user via at the same place the waypoint is marked.
   const r2 = prop.computeRoute({
@@ -432,4 +446,32 @@ test('corridor: verify does not wrap across band edges into the next row', () =>
   assert.equal(verifyCorridor(mask(false), 1, path, start, end, 2).ok, false);
   // Control: open (91, 8) and the fill gets through via column 8.
   assert.equal(verifyCorridor(mask(true), 1, path, start, end, 2).ok, true);
+});
+
+test('nearestExactWater with a clearance lands the point that far from the shore', () => {
+  // A square island 0.02° across (about 2.2 km) in open water.
+  const c = [0, 0, 0.02, 0, 0.02, 0.02, 0, 0.02, 0, 0];
+  const island: ShapePolygon = {
+    recordNumber: 1,
+    minLon: 0,
+    minLat: 0,
+    maxLon: 0.02,
+    maxLat: 0.02,
+    rings: [{ coords: Float64Array.from(c), minLon: 0, minLat: 0, maxLon: 0.02, maxLat: 0.02 }],
+  };
+  const lm = LandMask.fromPolygons([island], { west: -0.1, south: -0.1, east: 0.12, north: 0.12 }, 0.0005);
+  // A point 30 m inside the island's southern edge.
+  const lon = 0.01,
+    lat = 0.00027;
+  assert.ok(lm.isLandExact(lon, lat));
+  const plain = nearestExactWater(lm, lon, lat, 1000);
+  assert.ok(plain, 'water found without clearance');
+  assert.ok(!waterAround(lm, plain![0], plain![1], 150), 'the plain anchor is within 150 m of the shore');
+  const clear = nearestExactWater(lm, lon, lat, 1000, 150);
+  assert.ok(clear, 'water found with clearance');
+  assert.ok(waterAround(lm, clear![0], clear![1], 150));
+  // South of the edge (lat < 0) by at least 150 m: 150 m is 0.00135°.
+  assert.ok(clear![1] <= -0.00135 + 1e-9, `anchor latitude ${clear![1]}`);
+  // A point already in open water is left alone.
+  assert.ok(waterAround(lm, 0.01, -0.01, 150));
 });

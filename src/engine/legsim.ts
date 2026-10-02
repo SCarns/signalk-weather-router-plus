@@ -27,7 +27,6 @@ export interface LegSimResult {
   /** Infinity when stuck. */
   seconds: number;
   dominantMode: 'sailing' | 'motoring' | 'stuck';
-  sampleCount: number;
   sailingSeconds: number;
   motoringSeconds: number;
 }
@@ -105,7 +104,7 @@ export function simulateLegTime(
 ): LegSimResult {
   const totalDistM = haversineDistanceM(aLon, aLat, cLon, cLat);
   if (totalDistM <= 0) {
-    return { seconds: 0, dominantMode: 'motoring', sampleCount: 0, sailingSeconds: 0, motoringSeconds: 0 };
+    return { seconds: 0, dominantMode: 'motoring', sailingSeconds: 0, motoringSeconds: 0 };
   }
   const bearingDeg = haversineBearing(aLon, aLat, cLon, cLat);
   const sc = scoreCandidatesFromParent(
@@ -120,14 +119,12 @@ export function simulateLegTime(
     current,
     opts
   );
-  const nSteps = Math.max(1, Math.ceil(totalDistM / opts.simStepM));
   if (!Number.isFinite(sc.seconds[0]) || sc.seconds[0] <= 0) {
-    return { seconds: Infinity, dominantMode: 'stuck', sampleCount: nSteps, sailingSeconds: 0, motoringSeconds: 0 };
+    return { seconds: Infinity, dominantMode: 'stuck', sailingSeconds: 0, motoringSeconds: 0 };
   }
   return {
     seconds: sc.seconds[0],
     dominantMode: sc.dominant[0] === 1 ? 'sailing' : 'motoring',
-    sampleCount: nSteps,
     sailingSeconds: sc.sailing[0],
     motoringSeconds: sc.motoring[0],
   };

@@ -31,7 +31,8 @@ import { defaultSettings } from './plugin/settings';
 import { routeMultiLeg, validateLegOptions, type LegPlan, type Precision, type Stop } from './engine/multileg';
 import { WaterGrid } from './geo/watergrid';
 import { chooseWaterGrid } from './geo/watergrid_store';
-import { routeToGeoJSON, type Route } from './engine/route';
+import type { Route } from './engine/route';
+import { routeToGeoJSON } from './plugin/routeformat';
 import type { ModePolicy } from './engine/legsim';
 import { PolarDiagram } from './vessel/polar';
 import { makeVessel } from './vessel/vessel';
@@ -169,7 +170,14 @@ async function main(): Promise<void> {
   const runLeg = (plan: LegPlan, legStart: [number, number], legDeparture: Date): Promise<Route> =>
     runLegPipeline(pipeline, plan, legCounter++, legStart, legDeparture);
   const routeT0 = Date.now();
-  const route = await routeMultiLeg({ stops, departureTime: departure, precision, arrivalRadiusM, runLeg, onProgress: log });
+  const route = await routeMultiLeg({
+    stops,
+    departureTime: departure,
+    precision,
+    arrivalRadiusM,
+    runLeg,
+    onProgress: (_s, _t, m) => log(m),
+  });
   if (cycleLabel) route.forecastCycle = cycleLabel;
   log(
     `route: ${route.waypoints.length} waypoints, ${(route.totalDistanceM / NM_M).toFixed(1)} nm, ${(route.totalTimeS / HOUR_S).toFixed(1)} h (sail ${(route.sailingTimeS / HOUR_S).toFixed(1)} h, motor ${(route.motoringTimeS / HOUR_S).toFixed(1)} h), warnings ${route.warnings?.length ?? 0}, ${Date.now() - routeT0} ms`

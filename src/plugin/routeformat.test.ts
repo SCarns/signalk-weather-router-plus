@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { routeToGeoJSON, routeToSignalKRoute, type Route, type Waypoint } from './route';
+import type { Route, Waypoint } from '../engine/route';
+import { routeToGeoJSON, routeToSignalKRoute } from './routeformat';
 
 function wp(lon: number, lat: number, h: number, role?: 'via'): Waypoint {
   const w: Waypoint = { lon, lat, time: new Date(Date.UTC(2026, 9, 1, h)), sogMs: 3, cogDeg: 90, mode: 'sailing' };
@@ -60,34 +61,4 @@ test('a route without snaps carries none of the snap fields', () => {
   assert.equal(line.snaps, undefined);
   assert.equal(line.stop_count, undefined);
   assert.equal(line.start_snap_distance_m, undefined);
-});
-
-test('nearestExactWater with a clearance lands the point that far from the shore', async () => {
-  const { LandMask } = await import('../geo/landmask');
-  const { nearestExactWater, waterAround } = await import('./corridor');
-  // A square island 0.02° across (about 2.2 km) in open water.
-  const c = [0, 0, 0.02, 0, 0.02, 0.02, 0, 0.02, 0, 0];
-  const island: import('../geo/shapefile').ShapePolygon = {
-    recordNumber: 1,
-    minLon: 0,
-    minLat: 0,
-    maxLon: 0.02,
-    maxLat: 0.02,
-    rings: [{ coords: Float64Array.from(c), minLon: 0, minLat: 0, maxLon: 0.02, maxLat: 0.02 }],
-  };
-  const lm = LandMask.fromPolygons([island], { west: -0.1, south: -0.1, east: 0.12, north: 0.12 }, 0.0005);
-  // A point 30 m inside the island's southern edge.
-  const lon = 0.01,
-    lat = 0.00027;
-  assert.ok(lm.isLandExact(lon, lat));
-  const plain = nearestExactWater(lm, lon, lat, 1000);
-  assert.ok(plain, 'water found without clearance');
-  assert.ok(!waterAround(lm, plain![0], plain![1], 150), 'the plain anchor is within 150 m of the shore');
-  const clear = nearestExactWater(lm, lon, lat, 1000, 150);
-  assert.ok(clear, 'water found with clearance');
-  assert.ok(waterAround(lm, clear![0], clear![1], 150));
-  // South of the edge (lat < 0) by at least 150 m: 150 m is 0.00135°.
-  assert.ok(clear![1] <= -0.00135 + 1e-9, `anchor latitude ${clear![1]}`);
-  // A point already in open water is left alone.
-  assert.ok(waterAround(lm, 0.01, -0.01, 150));
 });

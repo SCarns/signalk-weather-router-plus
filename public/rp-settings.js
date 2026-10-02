@@ -1,6 +1,6 @@
 // Weather Router Plus — Settings tab (server-side settings).
 // Loaded after rp-core.js / rp-layers.js / rp-plan.js; uses UI_UNITS,
-// ROUTER and loadPluginStatus from rp-core.js. Everything lives in this
+// API and loadPluginStatus from rp-core.js. Everything lives in this
 // IIFE so no top-level name can collide with the other files.
 //
 // GET  /api/settings → {values, schema}: values are SI (m, m/s, s, deg);
@@ -199,7 +199,7 @@
     try {
       // Plain fetch (not authFetch): a 401 here should be reported in the
       // tab, not trip the page-wide sign-in redirect.
-      const r = await fetch(ROUTER + '/settings', { credentials: 'same-origin', cache: 'no-store' });
+      const r = await fetch(API + '/settings', { credentials: 'same-origin', cache: 'no-store' });
       const am = authMessage(r.status, 'view');
       if (am) { form.innerHTML = ''; setStatus(am); return; }
       const body = await r.json().catch(() => null);
@@ -231,7 +231,7 @@
     refreshDirty();
     setStatus('Saving…');
     try {
-      const r = await fetch(ROUTER + '/settings', {
+      const r = await fetch(API + '/settings', {
         method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(partial),
       });
       const am = authMessage(r.status, 'change');

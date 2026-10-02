@@ -18,7 +18,7 @@
 
 import { PolarDiagram } from './polar';
 import { DEG, RAD, KTS_TO_MS } from '../geo/units';
-import { pyFixed, UnsupportedHull, type BoatSpecs, type VPP } from './vpp';
+import { pyFixed, UnsupportedHull, type BoatSpecs } from './vpp';
 
 // ── Physical constants ──────────────────────────────────────────────
 const RHO_AIR = 1.225; // kg/m³
@@ -169,12 +169,6 @@ export function computePolarTable(specs: BoatSpecs, twsMs: readonly number[] = P
 export function computePolar(specs: BoatSpecs): PolarDiagram {
   const t = computePolarTable(specs);
   return new PolarDiagram(t.twa_deg, t.tws_ms, t.speeds_ms.flat());
-}
-
-export class EmpiricalVPP implements VPP {
-  computePolar(specs: BoatSpecs): PolarDiagram {
-    return computePolar(specs);
-  }
 }
 
 /**

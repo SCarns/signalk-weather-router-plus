@@ -13,6 +13,7 @@ import type { ModePolicy, SimOptions } from '../legsim';
 import type { Route, StageFront } from '../route';
 import type { PolarDiagram } from '../../vessel/polar';
 import type { VesselParams } from '../../vessel/vessel';
+import type { ProgressFn } from '../progress';
 
 export interface PropagatorOptions {
   /** Number of isochrone stages spanning the great-circle distance. */
@@ -27,8 +28,6 @@ export interface PropagatorOptions {
   skeletonResolutionDeg?: number;
   /** Padding around the leg's bbox for the skeleton grid, degrees. */
   skeletonPaddingDeg?: number;
-  /** Along-leg land sampling step, metres. */
-  landStepM?: number;
 }
 
 export interface Via {
@@ -97,32 +96,12 @@ export interface ComputeRouteArgs {
   /** Called after every stage with its front and the best path so far (display only). */
   onFrontier?: (front: StageFront) => void;
   /** Progress callback; messages are short human-readable lines. */
-  onProgress?: (stage: number, totalStages: number, message: string) => void;
+  onProgress?: ProgressFn;
   /** Return true to abort; a RouteCancelled error is thrown. */
   shouldCancel?: () => boolean;
 }
 
-export class RouteError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'RouteError';
-  }
-}
-
-/** No branch went through every via (thrown so callers can retry without automatic vias). */
-export class ViasNotCrossedError extends RouteError {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ViasNotCrossedError';
-  }
-}
-
-export class RouteCancelled extends Error {
-  constructor() {
-    super('route computation cancelled');
-    this.name = 'RouteCancelled';
-  }
-}
+export { RouteCancelled, RouteError, ViasNotCrossedError } from '../errors';
 
 export interface Candidate {
   lon: number;
@@ -148,7 +127,6 @@ export interface PropagatorParams {
   readonly deltaC: number;
   readonly skeletonResolutionDeg: number;
   readonly skeletonPaddingDeg: number;
-  readonly landStepM: number;
 }
 
 /** Stage sizing: re-sized once to the skeleton's length when that is longer than the straight line. */
@@ -199,8 +177,6 @@ export interface SearchContext extends PropagatorParams {
   totalDistM: number;
   cruise: number;
   budget: Budget;
-  /** Along-leg land sampling step, metres (finer when the raster has fine patches). */
-  landStepM: number;
   fronts: StageFront[];
   /** Set when start and end coincide: the one-waypoint route to return. */
   degenerateRoute?: Route;

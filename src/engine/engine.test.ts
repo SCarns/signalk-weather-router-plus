@@ -145,7 +145,7 @@ test('propagator finds a land-free route around an island under motor', () => {
   for (let i = 1; i < route.waypoints.length; i++) {
     const a = route.waypoints[i - 1];
     const b = route.waypoints[i];
-    assert.equal(lm.legCrossesLandExact(a.lon, a.lat, b.lon, b.lat, 50), false);
+    assert.equal(lm.legCrossesLandExact(a.lon, a.lat, b.lon, b.lat), false);
     assert.ok(b.time > a.time);
   }
 });

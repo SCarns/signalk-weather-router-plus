@@ -31,7 +31,9 @@ import { DEG, haversineBearing, haversineDistanceM, wrapLon } from '../geo/geode
 import type { LandMask } from '../geo/landmask';
 import { describePassage } from '../geo/straits';
 import type { WaterGrid } from '../geo/watergrid';
-import { GridAstarError, gridAstar, smoothGridPath, type GridNode, type GridSource } from './gridastar';
+import { gridAstar, smoothGridPath, type GridNode, type GridSource } from './gridastar';
+import { CorridorError, GridAstarError } from './errors';
+import type { ProgressFn } from './progress';
 import { distanceTransformCells } from './astar';
 import { MinHeap } from './heap';
 import { stringPull } from './pathutil';
@@ -92,8 +94,6 @@ export interface Corridor {
   land: LandMask;
   /** Automatic vias, in route order, with the chain segment they belong to. */
   autoVias: AutoVia[];
-  /** Raw grid path (for diagnostics). */
-  cells: GridNode[];
   stats: {
     astarMs: number;
     expanded: number;
@@ -105,22 +105,14 @@ export interface Corridor {
   };
 }
 
-export class CorridorError extends Error {
-  /** A fallback (the old per-route skeleton) cannot help either: e.g. a route point on land. */
-  readonly fatal: boolean;
-  constructor(message: string, fatal = false) {
-    super(message);
-    this.name = 'CorridorError';
-    this.fatal = fatal;
-  }
-}
+export { CorridorError };
 
 export interface CorridorOptions {
   /** Route raster for a box (cached by the caller). Must carry polygons (for refine). */
   landFor: (bbox: BBox) => LandMask;
   /** Stages the propagator will use (for the via width threshold). */
   stages: number;
-  onProgress?: (message: string) => void;
+  onProgress?: ProgressFn;
   shouldCancel?: () => boolean;
   /** Largest A* window, cells (7 bytes each). */
   maxWindowCells?: number;
@@ -305,8 +297,7 @@ function legAstar(
       expanded += res.expanded;
       return { path: unwrapPath(grid, res.path), expanded, windowCells: cells };
     } catch (err) {
-      if (!(err instanceof GridAstarError)) throw err;
-      if (err.message === 'cancelled') throw err;
+      if (!(err instanceof GridAstarError)) throw err; // RouteCancelled among them
       expanded += err.expanded;
       lastErr = err;
       if (cells >= maxWindowCells || (c1 - c0 + 1 >= grid.nx && r0 === 0 && r1 === grid.ny - 1)) break;
@@ -648,7 +639,7 @@ function densify(pts: { lon: number; lat: number }[], spacingM: number): { lon: 
  * as [lon, lat]. Throws CorridorError when no water path exists.
  */
 export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: CorridorOptions): Corridor {
-  const progress = opts.onProgress ?? (() => undefined);
+  const progress = (m: string): void => opts.onProgress?.(0, 0, m);
   const maxWindowCells = opts.maxWindowCells ?? 12_000_000;
   const blocked = new Set<number>();
   const stats = { astarMs: 0, expanded: 0, windowCells: 0, reroutes: 0, refines: 0, blockedCells: 0, verifyMs: 0 };
@@ -812,7 +803,7 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
   // 5. Automatic vias.
   const stepM = lengthM / Math.max(1, opts.stages);
   const autoVias = findAutoVias(grid, path, segStart, chain, stepM, land);
-  return { skeleton, widthM, lengthM, bbox: landBox, land, autoVias, cells: path, stats };
+  return { skeleton, widthM, lengthM, bbox: landBox, land, autoVias, stats };
 }
 
 /**

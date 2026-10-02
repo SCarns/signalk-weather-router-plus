@@ -132,7 +132,7 @@ export function assembleRoute(ctx: SearchContext, guide: SkeletonGuide, stages: 
   for (let i = 0; i + 1 < wps.length; i++) {
     const a = wps[i];
     const b = wps[i + 1];
-    if (ctx.landMask.legCrossesLandExact(a.lon, a.lat, b.lon, b.lat, 100)) {
+    if (ctx.landMask.legCrossesLandExact(a.lon, a.lat, b.lon, b.lat)) {
       warns.push({ leg_index: i, violation: 'leg_crosses_land', from: [a.lon, a.lat], to: [b.lon, b.lat], repaired: false });
     }
   }

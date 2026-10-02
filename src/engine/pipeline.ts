@@ -23,6 +23,7 @@ import { NoWind, type CurrentSource, type WindSource } from './environment';
 import type { ModePolicy } from './legsim';
 import { legLabel, type LegPlan } from './multileg';
 import { enrichWaypoints, OceanPropagator, RouteCancelled, ViasNotCrossedError, type PropagatorOptions } from './propagator';
+import type { ProgressFn } from './progress';
 import { recomputePerWaypointMetadata, type Route, type StageFront } from './route';
 import { rdpSimplify, recomputeTotals, revalidateLand, shortcutSmoother } from './smoother';
 
@@ -53,7 +54,7 @@ export interface LegPipelineInputs {
   /** The current source for the leg (after loadAreas), with the names of the stacked sources, or null when there are none. */
   currents: () => { source: CurrentSource; names: string[] | null };
   multi: boolean;
-  progress: (stage: number, total: number, message: string) => void;
+  progress: ProgressFn;
   shouldCancel: () => boolean;
   /** Each stage's front, for display. */
   onFrontier?: (legIndex: number, front: StageFront) => void;
@@ -76,6 +77,7 @@ export async function runLegPipeline(
   // Corridor from the global water grid: its box (not the endpoints') sets
   // the land raster, SMOC area and forecast crop.
   let corridor: Corridor | null = null;
+  let corridorFallback = false;
   if (inp.waterGrid) {
     inp.waterGrid.setCanalsAllowed(inp.allowCanals);
     progress(0, 0, `${tag}corridor: searching the global 0.02° water grid (canals ${inp.allowCanals ? 'allowed' : 'blocked'})`);
@@ -83,7 +85,7 @@ export async function runLegPipeline(
       corridor = planCorridor(inp.waterGrid, chain, {
         landFor: inp.landFor,
         stages,
-        onProgress: m => progress(0, 0, `${tag}corridor: ${m}`),
+        onProgress: (_s, _t, m) => progress(0, 0, `${tag}corridor: ${m}`),
         shouldCancel,
       });
       const cst = corridor.stats;
@@ -102,6 +104,7 @@ export async function runLegPipeline(
         `WARNING: ${tag}corridor search failed (${err.message}); using the per-route skeleton inside the box around ${multi ? "the leg's ends" : 'start and end'}`
       );
       corridor = null;
+      corridorFallback = true;
     }
   }
   let bbox: BBox;
@@ -217,6 +220,7 @@ export async function runLegPipeline(
     }
   }
   if (currentNames) r.currentSources = currentNames;
+  if (corridorFallback) r.corridorFallback = true;
   if (multi)
     inp.log?.(
       `${tag}${r.waypoints.length} waypoints, ${(r.totalDistanceM / NM_M).toFixed(1)} nm, ${(r.totalTimeS / HOUR_S).toFixed(1)} h, ${Date.now() - t} ms`

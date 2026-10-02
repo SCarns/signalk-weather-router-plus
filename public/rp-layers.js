@@ -1,7 +1,7 @@
 // Weather Router Plus — route planner UI, part 2 of 3 (map layers).
 // Markers, route styling, weather/water overlays (JSON grids drawn on
-// canvas in place of the routing server's PNG tiles), streamlines,
-// pressure, and the map itself.
+// canvas, or the plugin's PNG tiles), streamlines, pressure, and the
+// map itself.
 
 const markerSource = new ol.source.Vector({
   features: [startFeature, endFeature]
@@ -71,7 +71,6 @@ const routeLayer = new ol.layer.Vector({
           }),
         ];
       }
-      const mode = feature.get('mode');
       const cog = feature.get('cog_deg');
       const outCog = feature.get('outgoing_cog');
       const windDir = feature.get('wind_dir_deg');
@@ -656,10 +655,9 @@ document.getElementById('departure').addEventListener('change', () => reloadOver
 
 
 // ─────────── Heatmap engine (JSON grid → canvas → ImageStatic) ───────────
-// The routing server rendered translucent PNGs (matplotlib bilinear
-// imshow, alpha 0.55, land masked). The plugin instead serves the grid
-// as JSON (`GET /api/field`): lons/lats ascending, `fields` row-major
-// from the south, `land` per cell. We draw the same picture here: a
+// The plugin serves the grid as JSON (`GET /api/field`): lons/lats
+// ascending, `fields` row-major from the south, `land` per cell. We
+// draw a translucent picture (bilinear, alpha 0.55, land masked): a
 // viewport-sized canvas, bilinear interpolation between grid points,
 // the legend's SI colour stops, alpha 0.55, land masked, and hand it to
 // OpenLayers as an EPSG:4326 ImageStatic exactly where the PNG used to go.
@@ -754,7 +752,7 @@ const _landMaskCache = new Map();
 function fetchLandMask(bbox, W, H) {
   const key = bbox.join(',') + '|' + W + 'x' + H;
   if (_landMaskCache.has(key)) return _landMaskCache.get(key);
-  const url = ROUTER + '/land-mask?bbox=' + bbox.join(',') + '&w=' + W + '&h=' + H;
+  const url = API + '/land-mask?bbox=' + bbox.join(',') + '&w=' + W + '&h=' + H;
   const p = authFetch(url, {}, 'land-mask-' + key)
     .then(r => r.ok ? r.arrayBuffer() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(buf => {
@@ -799,7 +797,7 @@ function fetchField(layer, channel) {
   const bbox = _viewBBox();
   const ext3857 = map.getView().calculateExtent(map.getSize());
   const res = _fieldRes(bbox);
-  const url = ROUTER + '/field?layer=' + layer + '&bbox=' + _bboxParam(bbox) + '&time=' + encodeURIComponent(_overlayTimeIso()) + '&res=' + res;
+  const url = API + '/field?layer=' + layer + '&bbox=' + _bboxParam(bbox) + '&time=' + encodeURIComponent(_overlayTimeIso()) + '&res=' + res;
   return authFetch(url, {}, channel).then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(g => { if (g && typeof g === 'object') g._ext3857 = ext3857; return g; });
 }
@@ -819,7 +817,7 @@ function _overlayHourIso() {
   return new Date(Math.round(t / 3600e3) * 3600e3).toISOString();
 }
 function _tileUrl(layer, z, x, y, hourIso) {
-  return ROUTER + '/tile/' + layer + '/' + z + '/' + x + '/' + y + (hourIso ? '?time=' + encodeURIComponent(hourIso) : '');
+  return API + '/tile/' + layer + '/' + z + '/' + x + '/' + y + (hourIso ? '?time=' + encodeURIComponent(hourIso) : '');
 }
 // Tile fetch: the same auth breaker as authFetch but not its rate
 // limiter — OpenLayers already caps concurrent tile loads, and saved
@@ -1003,7 +1001,7 @@ function _heatmapLayer(zIndex, toggleId, fieldLayer, spec) {
 
 // ─────────── Wind-speed heatmap ───────────
 // Same ramp as the barbs (0–50 kt, 8 stops), alpha 0.55, not land
-// masked (wind is a real field over land, as on the routing server).
+// masked (wind is a real field over land).
 const { layer: windHeatmapLayer, load: loadWindHeatmap } = _heatmapLayer(6, 'windCombinedToggle', 'wind', { field: 'speed_ms', legend: 'wind', maskLand: false });
 
 // ─────────── Current-speed heatmap ───────────
@@ -1022,7 +1020,7 @@ const { layer: waveHeatmapLayer, load: loadWaveHeatmap } = _heatmapLayer(6, 'wav
 // ─────────── Precipitation rate heatmap ────
 // Alpha fades to 0 below 0.5 mm/h (linear ramp across [0, 0.5 mm/h])
 // so the broad zero-precip background does not wash out the basemap;
-// land masked like the routing server's PNG.
+// land masked.
 const { layer: precipHeatmapLayer, load: loadPrecipHeatmap } = _heatmapLayer(6, 'precipToggle', 'precip', { field: 'rate', legend: 'precip', maskLand: true });
 
 // ─────────── 2-m air temperature heatmap ─────────────
@@ -1114,7 +1112,7 @@ function loadPressure() {
 function _doLoadPressure() {
   const bbox = _viewBBox();
   const timeStr = _overlayTimeIso();
-  const url = ROUTER + '/pressure?bbox=' + _bboxParam(bbox) +
+  const url = API + '/pressure?bbox=' + _bboxParam(bbox) +
               '&time=' + encodeURIComponent(timeStr) + '&interval=4';
   authFetch(url, {}, 'pressure')
     .then(r => {

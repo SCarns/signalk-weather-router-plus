@@ -8,7 +8,7 @@
  */
 
 import { haversineDistanceM } from '../../geo/geodesy';
-import { HOUR_MS, M_PER_DEG } from '../../geo/units';
+import { HOUR_MS } from '../../geo/units';
 import { NoCurrent, NoWind } from '../environment';
 import type { Waypoint } from '../route';
 import {
@@ -134,13 +134,6 @@ export function buildContext(prop: PropagatorParams, args: ComputeRouteArgs): Se
   }
   const totalDistM = Math.max(chainDist, haversineDistanceM(sLon, sLat, eLon, eLat));
 
-  // Land sampling step: finer when the raster has fine local patches.
-  let landStepM = prop.landStepM;
-  if (prop.landMask.patches.length) {
-    const finest = Math.min(...prop.landMask.patches.map(p => p.resolutionDeg));
-    landStepM = Math.min(landStepM, Math.max(20, 1.5 * finest * M_PER_DEG));
-  }
-
   const ctx: SearchContext = {
     landMask: prop.landMask,
     K: prop.K,
@@ -149,7 +142,6 @@ export function buildContext(prop: PropagatorParams, args: ComputeRouteArgs): Se
     deltaC: prop.deltaC,
     skeletonResolutionDeg: prop.skeletonResolutionDeg,
     skeletonPaddingDeg: prop.skeletonPaddingDeg,
-    landStepM,
     args,
     wind,
     current,

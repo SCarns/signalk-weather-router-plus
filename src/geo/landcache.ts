@@ -56,7 +56,6 @@ export interface OnDemandLandOptions {
 export const OVERLAY_LAND_RESOLUTIONS = [0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25];
 
 interface Entry {
-  key: string;
   bbox: BBox;
   res: number;
   mask: LandMask;
@@ -267,7 +266,6 @@ export class OnDemandLand implements OverlayLand {
     if (fromDisk) {
       this.diskHits++;
       this.entries.push({
-        key: `${res}|${snapped.west},${snapped.south},${snapped.east},${snapped.north}`,
         bbox: snapped,
         res,
         mask: fromDisk,
@@ -289,7 +287,7 @@ export class OnDemandLand implements OverlayLand {
     this.log(
       `overlay land raster ${snapped.west}..${snapped.east} × ${snapped.south}..${snapped.north} at ${res}°: ${mask.nx}x${mask.ny}, ${polygons} polygons, ${this.lastBuildMs} ms`
     );
-    this.entries.push({ key: `${res}|${snapped.west},${snapped.south},${snapped.east},${snapped.north}`, bbox: snapped, res, mask });
+    this.entries.push({ bbox: snapped, res, mask });
     while (this.entries.length > this.maxEntries) this.entries.shift();
     this.writeDisk(res, snapped, mask);
     return mask;

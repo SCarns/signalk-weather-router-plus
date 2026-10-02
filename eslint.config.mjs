@@ -8,7 +8,8 @@ import prettierRecommended from 'eslint-plugin-prettier/recommended';
 
 export default [
   {
-    ignores: ['dist/', 'node_modules/', 'coverage/', 'public/', 'test-data/', 'data/'],
+    // public/ol.js and public/remoteEntry.js are vendored / built, not ours.
+    ignores: ['dist/', 'node_modules/', 'coverage/', 'public/ol.js', 'public/remoteEntry.js', 'test-data/', 'data/'],
   },
   js.configs.recommended,
   {
@@ -44,5 +45,25 @@ export default [
       'no-console': 'warn',
     },
   },
+  {
+    // The CLI prints by design; tests print timings the runner would otherwise hide.
+    // The warning stays for plugin code, where the Signal K log is the right place.
+    files: ['src/cli.ts', 'src/**/*.test.ts'],
+    rules: { 'no-console': 'off' },
+  },
   prettierRecommended,
+  {
+    // The web app: classic scripts sharing one global scope (rp-core.js
+    // defines what the others use), so `no-undef` cannot judge them.
+    // Not formatted by Prettier.
+    files: ['public/*.js'],
+    languageOptions: { ecmaVersion: 2022, sourceType: 'script' },
+    rules: {
+      'no-undef': 'off',
+      // Top-level names are the shared scope (used from other files and index.html): only locals are checked.
+      'no-unused-vars': ['warn', { vars: 'local', args: 'none', caughtErrors: 'none' }],
+      'no-empty': ['error', { allowEmptyCatch: true }],
+      'prettier/prettier': 'off',
+    },
+  },
 ];

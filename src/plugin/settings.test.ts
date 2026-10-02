@@ -375,3 +375,18 @@ test('allow canals: routing setting, off by default, applies to the next route',
   assert.equal(resolveConfig({ landShapefiles: '/x.shp' }, r.values).routing.allowCanals, true);
   assert.deepEqual([...reloadsFor(['routing.allowCanals'])], ['next_job']);
 });
+
+test('settings: Tides group reloads tides only', () => {
+  const d = defaultSettings();
+  assert.deepEqual(d.tides, { enabled: true, halfWidth: 15, horizon: 24 * 3600 });
+  const c = resolveConfig({}, d);
+  assert.deepEqual(c.tides, { enabled: true, halfWidthDeg: 15, horizonS: 24 * HOUR_S });
+  const r = mergeSettings(d, { tides: { enabled: false, halfWidth: 8, horizon: 48 * 3600 } });
+  assert.deepEqual(r.changed.sort(), ['tides.enabled', 'tides.halfWidth', 'tides.horizon']);
+  assert.deepEqual([...reloadsFor(r.changed)], ['tides']);
+  assert.throws(() => mergeSettings(d, { tides: { halfWidth: 40 } }), /\[1, 30\]/);
+  assert.deepEqual(
+    SETTINGS_SPEC.filter(s => s.group === 'tides').map(s => s.key),
+    ['tides.enabled', 'tides.halfWidth', 'tides.horizon']
+  );
+});

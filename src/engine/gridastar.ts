@@ -23,6 +23,7 @@ import { DEG, haversineDistanceM } from '../geo/geodesy';
 import { M_PER_DEG } from '../geo/units';
 import type { WaterGrid } from '../geo/watergrid';
 import { MinHeap } from './heap';
+import { GridAstarError, RouteCancelled } from './errors';
 import { stringPull } from './pathutil';
 
 export interface GridNode {
@@ -54,16 +55,7 @@ export interface GridAstarResult {
   windowCells: number;
 }
 
-export class GridAstarError extends Error {
-  constructor(
-    message: string,
-    readonly exhausted: boolean,
-    readonly expanded: number
-  ) {
-    super(message);
-    this.name = 'GridAstarError';
-  }
-}
+export { GridAstarError };
 
 const COAST_RADIUS = 4;
 const COAST_MAX_PENALTY = 0.4;
@@ -191,7 +183,7 @@ export function gridAstar(
       break;
     }
     if (++expanded > maxExp) throw new GridAstarError(`search stopped after ${maxExp} expansions`, false, expanded);
-    if ((expanded & 0xffff) === 0 && opts.shouldCancel?.()) throw new GridAstarError('cancelled', false, expanded);
+    if ((expanded & 0xffff) === 0 && opts.shouldCancel?.()) throw new RouteCancelled();
     const r = win.r0 + Math.floor(l / W);
     const c = win.c0 + (l % W);
     const gk = getG(k);
@@ -313,15 +305,4 @@ export function smoothGridPath(grid: WaterGrid, path: GridNode[], maxCells = 150
       Math.max(Math.abs(path[j].r - path[i].r), Math.abs(path[j].c - path[i].c)) <= maxCells &&
       gridLineOfSight(grid, path[i], path[j], blocked)
   );
-}
-
-/** Length of a node path (cell centres), metres. */
-export function gridPathLengthM(grid: WaterGrid, path: GridNode[]): number {
-  let d = 0;
-  for (let i = 1; i < path.length; i++) {
-    const [lo1, la1] = grid.cellCentre(path[i - 1].r, path[i - 1].c);
-    const [lo2, la2] = grid.cellCentre(path[i].r, path[i].c);
-    d += haversineDistanceM(lo1, la1, lo2, la2);
-  }
-  return d;
 }

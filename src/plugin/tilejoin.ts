@@ -19,7 +19,7 @@
 import { bboxWidth, type BBox } from '../geo/geodesy';
 import { clampMercLat, tileXFrac, tileYFrac } from '../geo/mercator';
 import { wrapLon, lonOffset } from '../geo/angles';
-import { buildIsobarFeatures, type IsobarFeature } from '../engine/isobars';
+import { buildIsobarFeatures, type IsobarFeature } from './isobars';
 import type { FieldGridResponse, FieldLayer } from './overlays';
 import { ARROWS_PER_TILE, BARBS_PER_TILE, FIELD_SAMPLES_PER_TILE, LAND_TILE_PX, TILE_MAX_ZOOM, tileAt, type TileId } from './tiles';
 

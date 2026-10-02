@@ -136,26 +136,6 @@ function _updateWaypointListUI() {
   });
 }
 
-// Insert position for a new via: the segment of the current chain
-// (start → vias → end) the click is nearest to, so the route order
-// stays sensible wherever the user clicks.
-function _viaInsertIndex(lonlat) {
-  const chain = [startCoord, ...waypointCoords, endCoord];
-  const k = Math.cos(lonlat[1] * Math.PI / 180);
-  const P = [lonlat[0] * k, lonlat[1]];
-  let best = 0, bestD = Infinity;
-  for (let i = 0; i < chain.length - 1; i++) {
-    const A = [chain[i][0] * k, chain[i][1]], B = [chain[i + 1][0] * k, chain[i + 1][1]];
-    const dx = B[0] - A[0], dy = B[1] - A[1];
-    const l2 = dx * dx + dy * dy;
-    const t = l2 ? Math.max(0, Math.min(1, ((P[0] - A[0]) * dx + (P[1] - A[1]) * dy) / l2)) : 0;
-    const qx = A[0] + t * dx - P[0], qy = A[1] + t * dy - P[1];
-    const d = qx * qx + qy * qy;
-    if (d < bestD) { bestD = d; best = i; }
-  }
-  return best;
-}
-
 // Map gestures on open water:
 //   click       → small menu: set/move start, set/move destination,
 //                 add waypoint, conditions here
@@ -370,7 +350,7 @@ let _LEGENDS = null, _legendsReq = null;
 function _loadLegends() {
   if (_LEGENDS) return Promise.resolve();
   if (_legendsReq) return _legendsReq;
-  _legendsReq = authFetch(ROUTER + '/legends', {}, null)
+  _legendsReq = authFetch(API + '/legends', {}, null)
     .then(r => r.ok ? r.json() : null)
     .then(d => { if (d) { _LEGENDS = d; updateLegends(); } })
     .catch(() => {})
@@ -530,20 +510,25 @@ const RouteProgress = (function () {
       if (!st || st.finished || st.failed || !p) return;
       const t = String(p.message || '').trim();
       const stage = Number(p.stage) || 0, total = Number(p.total) || 0;
-      let m;
       if (total > 0 && stage >= total) {
         st.phase = Math.max(st.phase, 3);
-        if (/^WARNING/.test(t)) st.sub = ((m = /(\d+) leg/.exec(t)) ? m[1] + ' leg(s) cross land' : 'warnings');
-        else if (/^done:/.test(t)) st.sub = t.replace(/^done:\s*/, '');
+        if (/^WARNING/.test(t)) {
+          const legs = /(\d+) leg/.exec(t);
+          st.sub = legs ? legs[1] + ' leg(s) cross land' : 'warnings';
+        } else if (/^done:/.test(t)) st.sub = t.replace(/^done:\s*/, '');
         else st.sub = 'validating';
       } else if (total > 0 && stage >= 1) {
         st.phase = Math.max(st.phase, 2);
-        st.sub = 'stage ' + stage + '/' + total + ((m = /(\d+) retained/.exec(t)) ? ' · ' + m[1] + ' retained' : '')
-          + ((m = /best remaining ([\d.]+ km)/.exec(t)) ? ' · ' + m[1] + ' to go' : '');
+        const retained = /(\d+) retained/.exec(t);
+        const remaining = /best remaining ([\d.]+ km)/.exec(t);
+        st.sub = 'stage ' + stage + '/' + total + (retained ? ' · ' + retained[1] + ' retained' : '')
+          + (remaining ? ' · ' + remaining[1] + ' to go' : '');
       } else if (total > 0 && /^K=/.test(t)) {
         st.phase = Math.max(st.phase, 2); st.sub = 'stage 0/' + total;
       } else if (/^skeleton/.test(t)) {
-        st.phase = Math.max(st.phase, 1); st.sub = (m = /A\* ([\d.]+ s)/.exec(t)) ? 'A* ' + m[1] : (/failed|unavailable/.test(t) ? 'no skeleton' : '');
+        st.phase = Math.max(st.phase, 1);
+        const astar = /A\* ([\d.]+ s)/.exec(t);
+        st.sub = astar ? 'A* ' + astar[1] : (/failed|unavailable/.test(t) ? 'no skeleton' : '');
       } else {
         st.phase = Math.max(st.phase, 0); st.sub = t.length > 48 ? t.slice(0, 46) + '…' : t;
       }
@@ -602,8 +587,7 @@ function renderResultStrip(p, navWarns) {
       if (typeof w !== 'object' || w === null) return '<div>' + String(w) + '</div>';
       const kind = String(w.violation || 'warning').replace(/_/g, ' ');
       const where = Array.isArray(w.to) ? ' at ' + w.to[1].toFixed(4) + ', ' + w.to[0].toFixed(4) : '';
-      // The plugin names the leg `leg_index`; the routing server named it `leg`.
-      const li = w.leg_index != null ? w.leg_index : w.leg;
+      const li = w.leg_index;
       const leg = li != null ? ' (leg ' + (li + 1) + ')' : '';
       const fixed = w.repaired ? ' · repaired' : '';
       return '<div class="' + (w.violation === 'leg_crosses_land' ? 'land' : '') + '">' + kind + leg + where + fixed + '</div>';
@@ -636,12 +620,6 @@ function renderResultStrip(p, navWarns) {
   new MutationObserver(copy).observe(src, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
   copy();
 })();
-
-// Stub kept for backward-compat with any existing caller.
-function switchModalTab(tab) {
-  if (tab === 'log') showTab('logSection');
-  else if (tab === 'itinerary') showTab('itinerarySection');
-}
 
 // Called when route computation starts: clear the stale log and
 // itinerary, start the phase progress, show Cancel. The user's tab is
@@ -765,7 +743,7 @@ function _annotateIfPending(jobId) {
   _pendingAnnotate = null;
   const feats = _itineraryFeatures;
   const resourceId = pending.resourceId;
-  authFetch(ROUTER + '/routes/' + encodeURIComponent(jobId) + '/signalk', { cache: 'no-store' }, null)
+  authFetch(API + '/routes/' + encodeURIComponent(jobId) + '/signalk', { cache: 'no-store' }, null)
     .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
     .then(route => {
       const meta = route && route.feature && route.feature.properties && route.feature.properties.coordinatesMeta;
@@ -1089,7 +1067,7 @@ window.addEventListener('rp:units', _initLimitInputs);
 
 // The finished job's stage fronts (faint) replace the live ones.
 function _loadFronts(id) {
-  authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/fronts', { cache: 'no-store' }, 'fronts-load')
+  authFetch(API + '/routes/' + encodeURIComponent(id) + '/fronts', { cache: 'no-store' }, 'fronts-load')
     .then(r => r.ok ? r.json() : null)
     .then(fronts => { if (fronts) drawFronts(fronts); })
     .catch(() => {});
@@ -1133,7 +1111,7 @@ function attachToJob(id, jobRow) {
     // Backfill from the status row; the SSE replay adds the rest.
     for (const p of jobRow.progress) RouteProgress.feed(p);
   }
-  const es = _activeJobES = new EventSource(ROUTER + '/routes/' + encodeURIComponent(id) + '/events', { withCredentials: true });
+  const es = _activeJobES = new EventSource(API + '/routes/' + encodeURIComponent(id) + '/events', { withCredentials: true });
   // What the handlers share: the stream (to tell a stale one from the
   // current), timing, the line count, and the last front seen.
   const job = { id, es, statusEl, t0: Date.now(), lineCount: 0, lastFrontLeg: -1, lastFrontStage: 0 };
@@ -1206,7 +1184,7 @@ function _jobOnDone(job, d) {
   routeActive = true;
   _computeUiIdle();
   // Fetch the route GeoJSON separately (SSE is not for large payloads).
-  authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, 'route-load')
+  authFetch(API + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, 'route-load')
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(geojson => {
       displayRoute(geojson);
@@ -1249,7 +1227,7 @@ function _jobOnError(job, ev) {
   // server answered 404/401) — check the job's status once.
   if (es.readyState === EventSource.CLOSED) {
     _closeJobStream();
-    authFetch(ROUTER + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
+    authFetch(API + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
       .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
       .then(j => {
         if (j.status === 'done') { appendLog('stream closed; job finished — loading result', 'done'); _computeUiIdle(); RouteProgress.hide(); _loadRouteJob(id); }
@@ -1274,7 +1252,7 @@ document.getElementById('findRoute').addEventListener('click', function() {
   _routeComputing = true;
 
   const body = buildRoutePayload();
-  authFetch(ROUTER + '/routes', {
+  authFetch(API + '/routes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
@@ -1297,7 +1275,7 @@ document.getElementById('findRoute').addEventListener('click', function() {
 
 cancelBtn.addEventListener('click', () => {
   if (!_activeJobId) return;
-  authFetch(ROUTER + '/routes/' + encodeURIComponent(_activeJobId) + '/cancel', { method: 'POST' }, null)
+  authFetch(API + '/routes/' + encodeURIComponent(_activeJobId) + '/cancel', { method: 'POST' }, null)
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(() => { appendLog('Cancel requested…', 'error'); modalStatus.textContent = 'Cancelling'; })
     .catch(e => appendLog('Cancel failed: ' + e.message, 'error'));
@@ -2073,7 +2051,7 @@ function openConditionsAt(coordinate, pixel) {
   const _at = coordinate;
   map.getView().animate({ center: _at, duration: 250 }, () => popup.setPosition(_at));
   const mine = _cond;
-  authFetch(ROUTER + '/conditions?lon=' + lon.toFixed(5) + '&lat=' + lat.toFixed(5)
+  authFetch(API + '/conditions?lon=' + lon.toFixed(5) + '&lat=' + lat.toFixed(5)
             + '&from=' + encodeURIComponent(hourIso) + '&hours=72&step_h=1', {}, 'conditions')
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(d => {
@@ -2155,7 +2133,7 @@ popup.on('change:position', () => {
     return Number.isFinite(t) ? t / 1000 : null;
   }
 
-  // One snapshot in the shape the sister app's /api/v1/vessel returned:
+  // One snapshot of the vessel from the Signal K REST API:
   // {lat, lon, sog_ms, cog_deg, heading_deg, twa_deg, tws_ms, updated_at}.
   // `channel`: a newer request on the same channel cancels the older one,
   // so a caller that must not be cancelled by the poll uses its own.
@@ -2420,14 +2398,14 @@ popup.on('change:position', () => {
     showTab('logSection');
 
     let jobId = null;
-    authFetch(ROUTER + '/routes', {
+    authFetch(API + '/routes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }, null)
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(job => { jobId = job.id; return streamJobUntilDone(job.id); })
-    .then(id => authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, null))
+    .then(id => authFetch(API + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, null))
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(geojson => { renderProposal(geojson, reason); banner.dataset.jobId = jobId; loadRouteHistory(); })
     .catch(err => {
@@ -2442,7 +2420,7 @@ popup.on('change:position', () => {
   // resolve on `done` / reject on `error`.
   function streamJobUntilDone(jobId) {
     return new Promise((resolve, reject) => {
-      const url = ROUTER + '/routes/' + encodeURIComponent(jobId) + '/events';
+      const url = API + '/routes/' + encodeURIComponent(jobId) + '/events';
       const es = _activeReplanES = new EventSource(url, { withCredentials: true });
       const deadline = Date.now() + 600000;
       let settled = false;

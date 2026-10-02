@@ -261,7 +261,6 @@ export class JobManager extends EventEmitter {
   private finish(job: Job): void {
     if (this.running === job.id) this.running = null;
     this.persist(job);
-    this.emit('finish', job);
     this.trim();
     this.pump();
   }

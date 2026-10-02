@@ -27,7 +27,7 @@ export function propose(
   sweepDc: number,
   stepFactor: number
 ): Candidate[] {
-  const { wind, current, polar, vessel, simOpts, goals, nVias, landStepM, lastTry } = ctx;
+  const { wind, current, polar, vessel, simOpts, goals, nVias, lastTry } = ctx;
   const nH = 2 * sweepM + 1;
   const nP = parents.length;
   // Per parent: the heading sweep, plus one hop into the next user
@@ -86,7 +86,7 @@ export function propose(
     if (hopDist[p] > 0) push(p, hopBrg[p], hopDist[p]);
     pCount[p] = nH + (hopDist[p] > 0 ? 1 : 0);
   }
-  const crosses = ctx.landMask.legsCrossLandBulk(pLon, pLat, cLon, cLat, landStepM);
+  const crosses = ctx.landMask.legsCrossLandBulk(pLon, pLat, cLon, cLat);
   const out: Candidate[] = [];
   lastTry.tried += total;
   for (let i = 0; i < total; i++) if (crosses[i]) lastTry.land++;

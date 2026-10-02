@@ -35,6 +35,7 @@
 
 import { haversineDistanceM } from '../geo/geodesy';
 import { ViasNotCrossedError } from './propagator';
+import type { ProgressFn } from './progress';
 import { recomputePerWaypointMetadata, type Route, type RouteWarning } from './route';
 
 export type Precision = 'precise' | 'approximate';
@@ -186,6 +187,7 @@ export function stitchLegs(legs: Route[]): Route {
   let validTo = legs[0].forecastValidToMs;
   let limitsBeyond = legs[0].limitsBeyondForecast ?? false;
   let drops = legs[0].smootherDrops ?? 0;
+  let fallback = legs[0].corridorFallback ?? false;
   for (let li = 1; li < legs.length; li++) {
     const leg = legs[li];
     // The previous leg's end is this waypoint's junction.
@@ -215,6 +217,7 @@ export function stitchLegs(legs: Route[]): Route {
     if (leg.forecastValidToMs !== undefined)
       validTo = validTo === undefined ? leg.forecastValidToMs : Math.min(validTo, leg.forecastValidToMs);
     limitsBeyond = limitsBeyond || (leg.limitsBeyondForecast ?? false);
+    fallback = fallback || (leg.corridorFallback ?? false);
     drops += leg.smootherDrops ?? 0;
   }
   const route: Route = {
@@ -233,6 +236,7 @@ export function stitchLegs(legs: Route[]): Route {
   if (validTo !== undefined) route.forecastValidToMs = validTo;
   if (limitsBeyond) route.limitsBeyondForecast = true;
   if (drops) route.smootherDrops = drops;
+  if (fallback) route.corridorFallback = true;
   recomputePerWaypointMetadata(route);
   return route;
 }
@@ -247,8 +251,8 @@ export interface MultiLegArgs {
    * ended) departing at `departure`.
    */
   runLeg: (leg: LegPlan, start: [number, number], departure: Date) => Promise<Route> | Route;
-  /** Progress lines ("leg 2/4: …"). */
-  onProgress?: (message: string) => void;
+  /** Progress lines ("leg 2/4: …"); stage and total are 0 (the legs report their own). */
+  onProgress?: ProgressFn;
 }
 
 /**
@@ -261,7 +265,7 @@ export interface MultiLegArgs {
 export async function routeMultiLeg(args: MultiLegArgs): Promise<Route> {
   const single = planLegs(args.stops, args.precision ?? DEFAULT_PRECISION, args.arrivalRadiusM ?? DEFAULT_ARRIVAL_RADIUS_M);
   const plans = collapseRuns(single);
-  const progress = args.onProgress ?? (() => undefined);
+  const progress = (m: string): void => args.onProgress?.(0, 0, m);
   const multi = single.length > 1;
   const legs: Route[] = [];
   let start: [number, number] = [args.stops[0].lon, args.stops[0].lat];

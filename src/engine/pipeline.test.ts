@@ -102,7 +102,7 @@ test('pipeline: simplification keeps the route land-free and reports it; the cur
   for (let i = 1; i < r.waypoints.length; i++) {
     const a = r.waypoints[i - 1];
     const b = r.waypoints[i];
-    assert.equal(land.legCrossesLandExact(a.lon, a.lat, b.lon, b.lat, 50), false);
+    assert.equal(land.legCrossesLandExact(a.lon, a.lat, b.lon, b.lat), false);
     assert.ok(b.time > a.time);
   }
   assert.deepEqual(r.currentSources, ['test-source']);

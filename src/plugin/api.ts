@@ -36,6 +36,7 @@
 
 import * as fs from 'node:fs';
 import { validateRouteRequest } from './request_schema';
+import { NotStartedError } from './errors';
 import { FIELD_LAYERS, isFieldLayer } from './layers';
 import { HOUR_MS } from '../geo/units';
 import * as path from 'node:path';
@@ -143,9 +144,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     }
     void fn(jobs, job);
   };
+  /** Answer an error: the status comes from its class (503 not started, 404 no such polar), else `code`. */
   const fail = (res: Response, err: unknown, code = 400): void => {
     if (res.headersSent || res.destroyed) return; // client gone (cancelled query)
-    json(res, err instanceof PolarNotFoundError ? 404 : code, { error: (err as Error).message });
+    const status = err instanceof NotStartedError ? 503 : err instanceof PolarNotFoundError ? 404 : code;
+    json(res, status, { error: (err as Error).message });
   };
 
   // The page's own scripts and styles are referenced with ?v=<tag>, where
@@ -206,7 +209,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       res.setHeader('Cache-Control', 'no-store');
       json(res, 200, deps.getSettings());
     } catch (err) {
-      fail(res, err, 503);
+      fail(res, err);
     }
   });
 
@@ -217,7 +220,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       json(res, 200, deps.updateSettings(req.body));
     } catch (err) {
       if (err instanceof SettingsValidationError) json(res, 400, { error: err.message, errors: err.errors });
-      else fail(res, err, /not started/.test((err as Error).message) ? 503 : 500);
+      else fail(res, err, 500);
     }
   });
 
@@ -248,7 +251,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
 
   const polarLib = (): { polarFile: string | null; polarsDir: string | null; userDir?: string | null } => {
     const lib = deps.polarLibrary();
-    if (!lib) throw new Error('plugin not started');
+    if (!lib) throw new NotStartedError();
     return lib;
   };
   ro.get('/api/polars', (_req: Request, res: Response) => {

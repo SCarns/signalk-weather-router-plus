@@ -136,7 +136,6 @@ async function decodeSteps(
   const cycle = opts.cycle ?? (await resolveCycle(client, opts.horizonS, { includeWaves, extraAtmParams: opts.extraAtmParams, log })).cycle;
   const horizonHours = opts.horizonS / HOUR_S;
   const steps = availableSteps(cycle, horizonHours);
-  const waveSteps = new Set(availableSteps(cycle, horizonHours));
   // One set of decode buffers for every field (~12 MB for 0.25° global)
   // instead of fresh ones per field: a 72 h load decodes ~275 fields.
   const scratch: DecodeScratch = {};
@@ -163,7 +162,7 @@ async function decodeSteps(
       }
       named.push({ param: p, message: parseGrib2Message(msg) });
     }
-    if (includeWaves && waveSteps.has(step)) {
+    if (includeWaves) {
       let waveIndex: IndexRecord[] | undefined;
       for (const p of WAVE_PARAMS) {
         if (!client.hasCached(cycle, cycle.waveStream, step, p)) {

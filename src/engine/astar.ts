@@ -15,9 +15,10 @@
  * isochrone heading sweep, so timing here is nominal motor timing.
  */
 
-import { R_EARTH_M, haversineBearing, haversineDistanceM, DEG } from '../geo/geodesy';
+import { R_EARTH_M, haversineDistanceM, DEG } from '../geo/geodesy';
 import type { NavigabilityGrid } from '../geo/grid';
 import { MinHeap } from './heap';
+import { AstarError } from './errors';
 
 export interface SkeletonPoint {
   lon: number;
@@ -30,14 +31,7 @@ export interface AstarResult {
   distanceM: number;
 }
 
-export class AstarError extends Error {
-  partialPath: SkeletonPoint[];
-  constructor(message: string, partialPath: SkeletonPoint[] = []) {
-    super(message);
-    this.name = 'AstarError';
-    this.partialPath = partialPath;
-  }
-}
+export { AstarError };
 
 const NEIGHBORS_16: ReadonlyArray<readonly [number, number]> = [
   [-1, 0],
@@ -329,6 +323,3 @@ export function astarRoute(
   }
   return { path, cellsVisited, distanceM };
 }
-
-/** Initial bearing helper re-exported for callers that only import this module. */
-export const bearingDeg = haversineBearing;

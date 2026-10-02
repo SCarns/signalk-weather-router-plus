@@ -21,6 +21,7 @@ import { mergeSettings, reloadsFor, settingsSchema, SettingsStore, SettingsValid
 import { checkDecodeResources } from './plugin/memguard';
 import { JobManager, type Job } from './plugin/jobs';
 import { registerApi } from './plugin/api';
+import { NotStartedError } from './plugin/errors';
 import { TileService, TileStore, type TileGroup } from './plugin/tiles';
 import { TilePrebuilder } from './plugin/prebuild';
 import { runLastMs, type ArcoRun } from './data/arco';
@@ -101,6 +102,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
   /** Current sources last reported by the data worker (name list + RTOFS run), to tell the route worker to reload. */
   let currentsKey = '';
   let forecastError: string | null = null;
+  /** Routes since the plugin was loaded whose corridor search failed and ran on the coarse skeleton (decision E). */
+  let corridorFallbacks = 0;
   let dataStatus: DataStatus | null = null;
   /** The route worker's own current sources (its SMOC on-demand areas and memory). */
   let routeCurrents: DataStatus['currents'] | null = null;
@@ -333,7 +336,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
   }
 
   async function publish(id: string): Promise<string> {
-    if (!jobs) throw new Error('plugin not started');
+    if (!jobs) throw new NotStartedError();
     const job = jobs.get(id);
     if (!job || !job.skRoute) throw new Error('job has no route');
     if (!app.resourcesApi?.setResource) throw new Error('this Signal K server has no Resources API');
@@ -463,6 +466,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
         return;
       case 'done': {
         jobs?.onDone(msg.id, msg.geojson, msg.skRoute, msg.summary, msg.skeleton, msg.fronts ?? null);
+        if (msg.summary.corridor_fallback) {
+          corridorFallbacks++;
+          log(`route ${msg.id}: corridor search failed, coarse-skeleton fallback used (${corridorFallbacks} since load)`);
+        }
         const job = jobs?.get(msg.id);
         if (job) {
           notify(
@@ -690,7 +697,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       pluginId: PLUGIN_ID,
       basePath: BASE_PATH,
       get jobs(): JobManager {
-        if (!jobs) throw new Error(notStartedReason());
+        if (!jobs) throw new NotStartedError(notStartedReason());
         return jobs;
       },
       notReady: notStartedReason,
@@ -736,6 +743,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         forecast_error: forecastError,
         currents: dataStatus?.currents ?? [],
         currents_route_worker: routeCurrents ?? [],
+        corridor_fallbacks: corridorFallbacks,
         rtofs_run: dataStatus?.rtofsRun ?? null,
         tides: config?.tides.enabled ? (dataStatus?.tides ?? null) : null,
         tides_enabled: config?.tides.enabled ?? null,
@@ -790,11 +798,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
       publicDir,
       polarLibrary: () => (config ? { polarFile: config.polarFile, polarsDir: config.polarsDir, userDir: config.polarUserDir } : null),
       getSettings: () => {
-        if (!settings || stopped) throw new Error('plugin not started');
+        if (!settings || stopped) throw new NotStartedError();
         return { values: settings.values, schema: settingsSchema() };
       },
       updateSettings: (partial: unknown) => {
-        if (!settings || stopped) throw new Error('plugin not started');
+        if (!settings || stopped) throw new NotStartedError();
         // Resource guard: refuse a forecast change the device cannot do
         // (memory for one decode step, disk for the decoded run), before
         // saving, so the running forecast and settings stay as they are.

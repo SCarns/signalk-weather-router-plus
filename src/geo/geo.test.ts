@@ -111,8 +111,7 @@ test('land mask rasterises polygons with holes and tests legs', () => {
     Float64Array.of(-0.5, -0.5),
     Float64Array.of(0.5, -0.5),
     Float64Array.of(1.5, 1.5),
-    Float64Array.of(0.5, -0.5),
-    500
+    Float64Array.of(0.5, -0.5)
   );
   assert.equal(cross[0], 1);
   assert.equal(cross[1], 0);
@@ -166,13 +165,13 @@ test('land checks find a spit narrower than the old 200 m sampling gap (Point Ju
   const la = new Float64Array(n);
   slerpSamples(a[0], a[1], b[0], b[1], n, lo, la, 0);
   assert.ok(![...lo].some((x, i) => lm.isLand(x, la[i])), 'the 200 m samples miss the spit (the old failure)');
-  assert.equal(lm.legsCrossLandBulk([a[0]], [a[1]], [b[0]], [b[1]], 200)[0], 1, 'cell walk finds it');
+  assert.equal(lm.legsCrossLandBulk([a[0]], [a[1]], [b[0]], [b[1]])[0], 1, 'cell walk finds it');
   assert.equal(lm.legCrossesLandExact(a[0], a[1], b[0], b[1]), true, 'exact check finds it');
   // A leg that passes 150 m north of the spit's end is clear in the exact check.
   assert.equal(lm.legCrossesLandExact(-71.492, 41.3714, -71.468, 41.3714), false);
   // Inside a finer patch the walk uses the patch's cells.
   lm.refine({ west: -71.485, south: 41.355, east: -71.475, north: 41.365 }, 0.0001);
-  assert.equal(lm.legsCrossLandBulk([a[0]], [a[1]], [b[0]], [b[1]], 200)[0], 1, 'found through the patch');
+  assert.equal(lm.legsCrossLandBulk([a[0]], [a[1]], [b[0]], [b[1]])[0], 1, 'found through the patch');
   // walkGrid visits every cell of a diagonal, including both sides of an exact corner.
   const seen: string[] = [];
   walkGrid(0.5, 0.5, 2.5, 2.5, (i, j) => (seen.push(`${i},${j}`), false));

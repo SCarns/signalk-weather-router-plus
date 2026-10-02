@@ -18,7 +18,6 @@ import type { ResolvedConfig } from './config';
 import type { ModePolicy } from '../engine/legsim';
 import type { BBox } from '../geo/geodesy';
 import type { DecodedIndex } from '../data/decoded';
-import type { SerializedRtofs } from '../currents/rtofs';
 import type { SerializedSmoc, SmocStatus } from '../currents/smoc';
 import type { SerializedHarmonic } from '../currents/harmonic';
 import type { TideStatus } from '../tides/sealevel';
@@ -100,6 +99,8 @@ export interface RouteSummary {
   /** Routes with waypoints: number of legs and the waypoint precision used. */
   legs?: number;
   precision?: 'precise' | 'approximate';
+  /** A leg's corridor search failed and ran on the coarse per-route skeleton (counted in /api/status corridor_fallbacks). */
+  corridor_fallback?: true;
 }
 
 export type QueryKind =
@@ -248,7 +249,7 @@ export type WorkerToMain =
   /** route worker: forecast memory it holds (the corridor store while a route runs). */
   | { type: 'forecast-memory'; memory: ForecastMemory }
   | { type: 'refresh-error'; message: string }
-  | { type: 'currents'; status: DataStatus['currents']; rtofsRun: string | null; rtofs: SerializedRtofs | null }
+  | { type: 'currents'; status: DataStatus['currents']; rtofsRun: string | null }
   | { type: 'data-status'; status: DataStatus }
   /** data worker: SMOC run / resident area changed (SharedArrayBuffer views: relaying shares, not copies). */
   | { type: 'smoc'; smoc: SerializedSmoc | null }

@@ -28,7 +28,7 @@
 import type { ForecastStore } from '../data/forecast';
 import { HOUR_MS } from '../geo/units';
 import type { QueryArgs, TideSeriesResult } from './protocol';
-import { relativeHumidity } from '../engine/conditions';
+import { relativeHumidity } from './conditions';
 import { sampleSeries, signalKTendency, slopeAt, type RegularSeries } from '../tides/tidecalc';
 
 export interface SkPosition {

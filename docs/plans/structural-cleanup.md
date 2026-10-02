@@ -235,10 +235,58 @@ isobars special case in charts.ts became a table row. Cache busting:
 only the serve-time `?v=` rewrite remains (its tag computed once per
 process); webfiles.ts no longer rewrites index.html on disk (the
 re-dating stays). `withJob` replaces the nine copies of the 503 / 404
-job lookup in api.ts. `request_schema.test.ts` added; 238 tests pass. Every step is a
+job lookup in api.ts. `request_schema.test.ts` added; 238 tests pass.
+**Phase 4 verified on brain 2026-10-01** (server restarted 19:30 EDT,
+same cycle): tiles 161/161 identical; the served page carries `?v=` on
+all six scripts/styles with index.html clean on disk; `/api/field`
+with a bad layer lists the table; job 404s unchanged; the OpenAPI
+request keys in the documented order; the new 400s answer as intended
+(stages 3, lat 95, publish "yes", null lat, tolerance 0.9); the two
+reference routes with the page's payload are identical to the Phase 3
+build to the millisecond (7876 s / 14:11:16.013Z; 36124.2 s /
+22:02:04.235Z); no console errors. Every step is a
 behaviour-preserving refactor: same routes, same tiles, same API, same
 page. Lint hygiene is already clean (0 TODO/HACK markers, 0
 eslint-disable, 2 `any`); this plan is about shape.
+
+**Phase 5 built 2026-10-01**, verified on brain the same evening (server
+restarted 20:21 EDT, same cycle): tiles 161/161 identical (`pre-phase5`
+/ `post-phase5`); the two reference routes identical to the Phase 4
+build to the millisecond (7876 s / 14:11:16.013Z; 36124.2 s /
+22:02:04.235Z), neither needed the fallback; `/api/status` carries
+`corridor_fallbacks: 0`; the API answers 400 (invalid setting, with the
+per-key errors), 404 (missing polar, missing job) as before; no console
+errors on the page. Lint is clean after this phase (the eight
+`no-console` warnings were the CLI and test timings; the rule is off
+for those files). 5.1:
+every listed deletion made except three that are used (`shapefile
+containing/readRecords` by landcache.test, `TileStore.setCap` by
+tiles.test, `AstarResult.cellsVisited` in the failure message); the
+`landStepM` option and its plumbing through the search went with the
+unused `stepM` parameters (the land checks walk cells since Phase 3).
+5.2: `src/engine/errors.ts` (`EngineError` with `code` and `fatal`;
+`RouteCancelled`, `RouteError` (+`'boxed_in'`), `ViasNotCrossedError`,
+`AstarError`, `GridAstarError`, `CorridorError`); gridastar throws
+`RouteCancelled`; one `ProgressFn` (`src/engine/progress.ts`) for the
+search, corridor and multi-leg driver; `src/plugin/errors.ts
+NotStartedError` → `fail()` maps 503 by class. 5.3 (decision E):
+`Route.corridorFallback` → `RouteSummary.corridor_fallback` → counted
+in `/api/status corridor_fallbacks` and logged. 5.4: legends and
+settings tests to `plugin/legends.test.ts` / `settings.test.ts`,
+isobars to `plugin/isobars.test.ts`, `nearestExactWater` to
+`corridor.test.ts`, the route serialisers' tests to
+`plugin/routeformat.test.ts`; `boxed in` asserts use the error code,
+the auto-via width assert uses `autoVias[0].widthM` (beat.test:133
+keeps its message assert: the "earliest branch" choice has no field).
+5.5: `public/*.js` under eslint (classic scripts: `no-undef` off,
+unused locals warn, Prettier off); it found four assignments in
+conditions and five dead names, all fixed; `npm run lint` covers the
+page. 5.6: comments reworded; the orphaned geodesy doc moved to
+`segmentWithinDisc`; `protocol.ts:145` and `index.ts:823-831` were
+already in place. 5.7: `plugin/routeformat.ts` (GeoJSON + Signal K
+route), `plugin/conditions.ts`, `plugin/isobars.ts`; `engine/route.ts`
+keeps the types and `recomputePerWaypointMetadata`. Mac: typecheck,
+lint (0 errors), 235 tests pass (4 skipped, no fixtures), build clean.
 
 User request (2026-10-01), in priority order: (3) units and geometry
 constants scattered, (1) god functions and files, (2) the same algorithm

@@ -18,7 +18,7 @@ import { PngCache, TILE_PX } from './pngtiles';
 import { tileBBox, tileGroup, type TileId, type TileService } from './tiles';
 import { joinPressure, type TileGetter } from './tilejoin';
 import type { CurrentPoint, WindPoint } from './overlays';
-import type { IsobarFeature } from '../engine/isobars';
+import type { IsobarFeature } from './isobars';
 
 export const GLYPH_LAYERS = ['barbs', 'arrows', 'isobars'] as const;
 export type GlyphLayer = (typeof GLYPH_LAYERS)[number];

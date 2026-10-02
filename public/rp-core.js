@@ -224,7 +224,6 @@ function fmtDepth(m)         { return _fmt(m, 'depth'); }
 function fmtSwh(m)           { return _fmt(m, 'wave_height'); }
 function fmtWavePeriod(s)    { return _fmt(s, 'wave_period'); }
 function fmtTime(s)          { return _fmt(s, 'time'); }
-function fmtShortDist(m)     { return _fmt(m, 'short_distance'); }
 function fmtTemp(k)          { return _fmt(k, 'temperature'); }
 function fmtPressure(pa)     { return _fmt(pa, 'pressure'); }
 function fmtPrecip(rate)     { return _fmt(rate, 'precip'); }
@@ -345,7 +344,6 @@ const BASE = (function () {
   return m ? m[1] : '/plugins/signalk-weather-router-plus';
 })();
 const API = BASE + '/api';
-const ROUTER = API;   // name kept from the sister app: every app fetch is ROUTER + '/…'
 
 // Server and page are SI throughout; a number is converted only when it
 // is formatted through UI_UNITS (the Signal K user's preferences). Knots
@@ -795,7 +793,7 @@ function _renderPolarOptions(filterText) {
 function loadPolarList() {
   const sel = document.getElementById('polarSelect');
   const stored = (() => { try { return localStorage.getItem('polarPath') || ''; } catch (_) { return ''; } })();
-  return authFetch(ROUTER + '/polars', {}, null)
+  return authFetch(API + '/polars', {}, null)
     .then(r => r.json())
     .then(items => {
       if (!Array.isArray(items) || items.length === 0) {
@@ -823,7 +821,7 @@ function loadPolarList() {
 let _polarAngles = null;   // { tws_ms:[], beat_deg:[], run_deg:[] }
 function loadPolarAngles(polarPath) {
   if (!polarPath) { _polarAngles = null; drawPolarDiagram(); return; }
-  authFetch(ROUTER + '/polar-angles?path=' + encodeURIComponent(polarPath), {}, 'polar-angles')
+  authFetch(API + '/polar-angles?path=' + encodeURIComponent(polarPath), {}, 'polar-angles')
     .then(r => r.ok ? r.json() : null)
     .then(d => { _polarAngles = d; drawPolarDiagram(); })
     .catch(() => { _polarAngles = null; });
@@ -836,7 +834,7 @@ function loadPolarAngles(polarPath) {
 let _polarTable = null;    // { twa_deg:[], tws_ms:[], speeds_ms:[][] } rows = twa
 function loadPolarTable(polarPath) {
   if (!polarPath) { _polarTable = null; drawPolarDiagram(); return; }
-  authFetch(ROUTER + '/polars/table?path=' + encodeURIComponent(polarPath), {}, 'polar-table')
+  authFetch(API + '/polars/table?path=' + encodeURIComponent(polarPath), {}, 'polar-table')
     .then(r => r.ok ? r.json() : r.json().then(d => Promise.reject(new Error(d.error || ('HTTP ' + r.status)))))
     .then(d => { _polarTable = d; drawPolarDiagram(); })
     .catch(err => {
@@ -1062,8 +1060,7 @@ loadPolarList();
 // ─────────── Vessel/polar specs form (VPP generator) ───────────
 // POST /api/polar-from-specs runs the plugin's polar calculator on the specs
 // and writes <polarsDir>/user/<slug>.csv; the new polar is then selected
-// in the picker. The sister app's sailboatdata search (Algolia + a public
-// CORS proxy for the boat page) is not carried over: a Signal K server
+// in the picker. There is no online boat-specs search: a Signal K server
 // on a boat is often offline and the plugin makes no third-party calls
 // from the browser. The plain sailboatdata.com link stays.
 (function() {
@@ -1100,7 +1097,7 @@ loadPolarList();
   });
 
   function post(body) {
-    return authFetch(ROUTER + '/polar-from-specs', {
+    return authFetch(API + '/polar-from-specs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1203,12 +1200,9 @@ loadPolarList();
   });
 })();
 
-// ─────────── Plugin status (header line + Forecast data section) ───────────
-let _pluginStatus = null;
-/** Text for innerHTML: escapes &, <, >, " and '. */
 // A job's skeleton (coarse A* / corridor) drawn in blue, when it has one.
 function loadSkeleton(id) {
-  authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/skeleton', { cache: 'no-store' }, 'skeleton-load')
+  authFetch(API + '/routes/' + encodeURIComponent(id) + '/skeleton', { cache: 'no-store' }, 'skeleton-load')
     .then(r => r.ok ? r.json() : null)
     .then(geojson => {
       skeletonSource.clear();
@@ -1225,6 +1219,7 @@ function fmtWhen(iso) {
   return d && !isNaN(d) ? d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
 }
 
+/** Text for innerHTML: escapes &, <, >, " and '. */
 function escapeHtml(v) {
   return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -1241,13 +1236,13 @@ function _statusLine(s) {
     + (s.forecast_error ? '<br><span class="warn">' + escapeHtml(s.forecast_error) + '</span>' : '');
 }
 let _statusSoon = null;
+// ─────────── Plugin status (header line + Forecast data section) ───────────
 function loadPluginStatus() {
   const el = document.getElementById('dataStatus');
   const fi = document.getElementById('forecastInfo');
-  return authFetch(ROUTER + '/status', { cache: 'no-store' }, 'status')
+  return authFetch(API + '/status', { cache: 'no-store' }, 'status')
     .then(r => r.json())
     .then(s => {
-      _pluginStatus = s;
       if (el) el.innerHTML = _statusLine(s);
       // First start (coastline, first forecast): check again soon, not in 30 s.
       clearTimeout(_statusSoon);
@@ -1272,7 +1267,7 @@ setInterval(loadPluginStatus, 30000);
 document.getElementById('refreshForecast').addEventListener('click', function() {
   const st = document.getElementById('refreshForecastStatus');
   st.textContent = 'requesting…';
-  authFetch(ROUTER + '/forecast/refresh', { method: 'POST' }, null)
+  authFetch(API + '/forecast/refresh', { method: 'POST' }, null)
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(() => { st.textContent = 'refresh requested — status updates in a moment'; setTimeout(loadPluginStatus, 4000); setTimeout(loadPluginStatus, 15000); })
     .catch(e => { st.textContent = 'refresh failed: ' + e.message; });
@@ -1315,7 +1310,7 @@ function _loadRouteJob(id) {
   }
   _currentRouteJobId = id;
   _currentRouteName = job && job.request ? (job.request.name || '') : '';
-  authFetch(ROUTER + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, 'route-load')
+  authFetch(API + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, 'route-load')
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(geojson => {
       displayRoute(geojson);
@@ -1362,7 +1357,7 @@ function _clearDisplayedRoute() {
 function _deleteRouteJob(id, labelForConfirm) {
   if (!id) return;
   if (!confirm(`Delete "${labelForConfirm || id}"?`)) return;
-  authFetch(ROUTER + '/routes/' + encodeURIComponent(id), { method: 'DELETE', cache: 'no-store' }, null)
+  authFetch(API + '/routes/' + encodeURIComponent(id), { method: 'DELETE', cache: 'no-store' }, null)
     .then(r => { if (!r.ok && r.status !== 204) return _apiErrorText(r).then(t => Promise.reject(new Error(t))); })
     .then(() => {
       // If the deleted route is the one on the map, clear it.
@@ -1373,7 +1368,7 @@ function _deleteRouteJob(id, labelForConfirm) {
 }
 
 function loadRouteHistory() {
-  return authFetch(ROUTER + '/routes?limit=50', { cache: 'no-store' }, 'route-history')
+  return authFetch(API + '/routes?limit=50', { cache: 'no-store' }, 'route-history')
     .then(r => r.json())
     .then(items => {
       routeHistoryItems = Array.isArray(items) ? items : [];
@@ -1520,7 +1515,7 @@ applyVesselType(getVesselType());
     pubBtn.addEventListener('click', () => {
       if (!_currentRouteJobId) { status.textContent = '(no route loaded)'; return; }
       status.textContent = '…';
-      authFetch(ROUTER + '/routes/' + encodeURIComponent(_currentRouteJobId) + '/publish', { method: 'POST' }, null)
+      authFetch(API + '/routes/' + encodeURIComponent(_currentRouteJobId) + '/publish', { method: 'POST' }, null)
         .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
         .then(d => {
           status.textContent = '✓';
