@@ -1,9 +1,18 @@
-// Weather Router Plus — route planner UI, part 2 of 3 (map layers).
-// Markers, route styling, weather/water overlays (JSON grids drawn on
-// canvas, or the plugin's PNG tiles), streamlines, pressure, and the
-// map itself.
+// Weather Router Plus — route planner UI: map module (imports rp-core.js).
+// The map, markers and route styling, weather/water overlays (JSON grids
+// drawn on canvas, or the plugin's PNG tiles), streamlines, pressure, the
+// layer toggles and the legends box. rp-plan.js imports what it uses.
 
-const markerSource = new ol.source.Vector({
+import { _apiErrorText, API, authFetch, AuthGate, fmtPressure, fmtWhen, KT_MS, TACK_COLOR, tackSide, UNIT_MISSING, unitDesc } from './rp-core.js';
+
+// --- Marker features and route sources (drawn by the layers below, placed by rp-plan.js) ---
+// --- Marker features ---
+export const startFeature = new ol.Feature({ name: 'start' });
+export const endFeature = new ol.Feature({ name: 'end' });
+export const routeSource = new ol.source.Vector();
+export const skeletonSource = new ol.source.Vector();
+
+export const markerSource = new ol.source.Vector({
   features: [startFeature, endFeature]
 });
 
@@ -34,14 +43,17 @@ const markerStyle = function(feature) {
   });
 };
 
-const markerLayer = new ol.layer.Vector({
+export const markerLayer = new ol.layer.Vector({
   source: markerSource,
   style: markerStyle,
   zIndex: 20
 });
 
 // --- Route layer ---
-const routeLayer = new ol.layer.Vector({
+let _selectedRouteFeature = null;  // the route point whose popup is open: drawn highlighted
+export function setSelectedRouteFeature(f) { _selectedRouteFeature = f; }
+export function selectedRouteFeature() { return _selectedRouteFeature; }
+export const routeLayer = new ol.layer.Vector({
   source: routeSource,
   style: function(feature) {
     const geomType = feature.getGeometry().getType();
@@ -52,7 +64,7 @@ const routeLayer = new ol.layer.Vector({
       // Where the forecast runs out along the route (displayRoute): an amber
       // diamond with a label; the legs after it are drawn dashed.
       if (feature.get('kind') === 'forecast_end') {
-        const when = feature.get('valid_to') && typeof _whenText === 'function' ? _whenText(feature.get('valid_to')) : '';
+        const when = feature.get('valid_to') ? fmtWhen(feature.get('valid_to')) : '';
         return [
           new ol.style.Style({
             image: new ol.style.RegularShape({
@@ -177,7 +189,7 @@ const routeLayer = new ol.layer.Vector({
 // front (the candidates kept after pruning, sorted across the track,
 // coloured cool → warm by stage) and the best path so far (dashed). Live
 // from the job's `frontier` events, then the finished job's /fronts.
-const frontSource = new ol.source.Vector();
+export const frontSource = new ol.source.Vector();
 function _frontColor(frac, alpha) {
   // blue (early) → amber (late)
   const r = Math.round(40 + 215 * frac), g = Math.round(90 + 70 * frac), b = Math.round(220 - 200 * frac);
@@ -197,7 +209,7 @@ const frontLayer = new ol.layer.Vector({
 // track within each viaCount; best [[lon, lat], …]. `reset` clears earlier
 // stages (a new job); `resetLeg` clears only that leg's stages (a re-run of
 // one leg's search), keeping the other legs' fronts.
-function drawFront(front, opts) {
+export function drawFront(front, opts) {
   const o = opts || {};
   if (o.reset) frontSource.clear();
   else if (o.resetLeg != null) {
@@ -223,7 +235,7 @@ function drawFront(front, opts) {
     frontSource.addFeature(new ol.Feature({ geometry: new ol.geom.LineString(front.best.map(p => ol.proj.fromLonLat([p[0], p[1]]))), kind: 'best' }));
   }
 }
-function drawFronts(fronts) {
+export function drawFronts(fronts) {
   frontSource.clear();
   for (const fr of fronts || []) drawFront(fr, { final: true });
 }
@@ -239,7 +251,7 @@ const skeletonLayer = new ol.layer.Vector({
 
 // --- Proposed-route layer (Live mode re-plan preview, dashed purple) ---
 // Drawn alongside the active route while the user decides Accept/Dismiss.
-const proposedRouteSource = new ol.source.Vector();
+export const proposedRouteSource = new ol.source.Vector();
 const proposedRouteLayer = new ol.layer.Vector({
   source: proposedRouteSource,
   style: function(feature) {
@@ -259,7 +271,7 @@ const proposedRouteLayer = new ol.layer.Vector({
 // Rotated to headingTrue when available, else COG. Rendered on top of
 // route/skeleton but below the start/end pin markers so dragging pins
 // stays unambiguous.
-const vesselMarkerSource = new ol.source.Vector();
+export const vesselMarkerSource = new ol.source.Vector();
 const vesselMarkerLayer = new ol.layer.Vector({
   source: vesselMarkerSource,
   style: function(feature) {
@@ -287,7 +299,7 @@ const vesselMarkerLayer = new ol.layer.Vector({
 // Target ring at the spot the conditions popup describes (shift-click
 // or "Conditions here"). Set in openConditionsAt; cleared by the
 // popup position listener there whenever the popup closes or moves.
-const condMarkerFeature = new ol.Feature();
+export const condMarkerFeature = new ol.Feature();
 const condMarkerSource = new ol.source.Vector({ features: [condMarkerFeature] });
 const condMarkerLayer = new ol.layer.Vector({
   source: condMarkerSource,
@@ -347,7 +359,10 @@ const seamarkLayer = new ol.layer.Tile({
 // The time every overlay is drawn for: a clicked waypoint / conditions
 // hour when set, else the departure input.
 let _currentTimeOverride = null;  // set when clicking a waypoint or a conditions hour
-function _overlayTimeIso() {
+/** The hour the timed overlays show instead of the departure (ISO), or null; set by rp-plan.js. */
+export function setTimeOverride(iso) { _currentTimeOverride = iso; }
+export function timeOverride() { return _currentTimeOverride; }
+export function _overlayTimeIso() {
   if (_currentTimeOverride) return _currentTimeOverride;
   const depEl = document.getElementById('departure');
   return depEl.value ? new Date(depEl.value).toISOString() : new Date().toISOString();
@@ -370,7 +385,7 @@ function _viewBBox() {
 const _overlayNotes = {};
 function _noteOverlay(key, msg) {
   if (msg) _overlayNotes[key] = msg; else delete _overlayNotes[key];
-  if (typeof updateLegends === 'function') updateLegends();
+  updateLegends();
 }
 function _bboxParam(b) { return b.map(v => +v.toFixed(5)).join(','); }
 
@@ -664,7 +679,7 @@ document.getElementById('departure').addEventListener('change', () => reloadOver
 // The colour stops of a legend (`GET /api/legends`, SI), or null until
 // they are loaded: the page keeps no copy of the ramps.
 function _legendStops(key) {
-  const L = (typeof _LEGENDS !== 'undefined' && _LEGENDS && _LEGENDS[key]) ? _LEGENDS[key] : null;
+  const L = _LEGENDS && _LEGENDS[key] ? _LEGENDS[key] : null;
   return (L && Array.isArray(L.stops) && L.stops.length >= 2) ? L.stops : null;
 }
 // CSS colour of a value on a legend ramp (the heatmap LUT); transparent until the legends are loaded.
@@ -861,7 +876,7 @@ function _paintTile(grid, spec, mask, ext, gx0, gy0) {
   const stops = spec.stops || _legendStops(spec.legend);
   if (!stops) return data; // legends not loaded: nothing to paint with (the loader waits for them)
   const { v0, v1, lut } = _rampLut(stops);
-  const legend = (typeof _LEGENDS !== 'undefined' && _LEGENDS) ? _LEGENDS[spec.legend] : null;
+  const legend = _LEGENDS ? _LEGENDS[spec.legend] : null;
   const fadeBelow = legend && legend.fade_below ? legend.fade_below : 0;
   const sample = _gridSampler(grid, grid.fields[spec.field]);
   const sampleLand = spec.maskLand && !mask ? _gridSampler(grid, grid.land) : null;
@@ -924,7 +939,7 @@ function _noteTileScale(layer, spec, grid) {
   const baseMax = Math.max(...base.map(s => Math.abs(s[0]))) || 1;
   spec.stops = base.map(([v, c]) => [+(v * S / baseMax).toFixed(4), c]);
   _autoScaleStops[spec.legend] = spec.stops;
-  if (typeof updateLegends === 'function') updateLegends();
+  updateLegends();
   if (!first) {
     clearTimeout(spec._redraw);
     spec._redraw = setTimeout(() => { if (layer.getSource()) layer.setSource(_colourTileSource(layer, spec, spec._hour)); }, 250);
@@ -974,7 +989,7 @@ function _heatmapLoader(layer, toggleId, fieldLayer, spec) {
   spec.tileLayer = fieldLayer;
   return function load() {
     // The ramps come from GET /api/legends; paint only once they are here.
-    if (typeof _LEGENDS === 'undefined' || !_LEGENDS) { _loadLegends().then(() => { if (_LEGENDS) load(); }); return; }
+    if (!_LEGENDS) { _loadLegends().then(() => { if (_LEGENDS) load(); }); return; }
     const hour = _overlayHourIso();
     const cur = layer.getSource();
     if (cur && cur._hour === hour) return;
@@ -1299,7 +1314,7 @@ try {
       && Math.abs(v.lon) <= 180 && Math.abs(v.lat) <= 85) _SAVED_VIEW = v;
 } catch (_) {}
 
-const map = new ol.Map({
+export const map = new ol.Map({
   target: 'map',
   layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, frontLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, markerLayer, condMarkerLayer],
   view: new ol.View({
@@ -1355,13 +1370,20 @@ if (!_SAVED_VIEW && typeof navigator !== 'undefined' && navigator.geolocation) {
     v.animate({ center: ol.proj.fromLonLat([pos.coords.longitude, pos.coords.latitude]), zoom: 11, duration: 400 });
   }, () => { _geoPending = false; }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 });
 }
+// First visit with no saved view: the first Signal K fix opens the map on the boat (rp-plan.js Live mode).
+export function centreOnVesselOnce(coord) {
+  if (!_autoCentreOnVessel) return;
+  _autoCentreOnVessel = false;
+  _geoPending = false;
+  map.getView().animate({ center: coord, zoom: 11, duration: 400 });
+}
 
 // Every overlay keyed by the view and the overlay time (each loader
 // debounces itself and does nothing when its layer is off). `currents`:
 // the current arrows too (they do not follow the departure change);
 // `streamlines`: refetch the wave / wind streamline fields (they attach
 // their own moveend listener in setEnabled, so the view change skips them).
-function reloadOverlays({ currents = true, streamlines = false } = {}) {
+export function reloadOverlays({ currents = true, streamlines = false } = {}) {
   if (currents) loadCurrentOverlay();
   loadWindOverlay();
   loadWindHeatmap();
@@ -1384,30 +1406,156 @@ map.on('moveend', function() {
   reloadOverlays({ currents: true, streamlines: false });
 });
 
-// --- Drag interaction ---
-const modify = new ol.interaction.Modify({
-  source: markerSource,
-  style: null,
-  pixelTolerance: 20
-});
-modify.on('modifyend', function(e) {
-  e.features.forEach(function(f) {
-    const coords = ol.proj.toLonLat(f.getGeometry().getCoordinates());
-    const name = f.get('name');
-    if (name === 'start') {
-      startCoord = coords;
-      updateCoordDisplay('start', coords);
-    } else if (name === 'waypoint') {
-      const idx = f.get('waypoint_index');
-      waypointCoords[idx] = coords;
-      _updateWaypointListUI();
-    } else {
-      endCoord = coords;
-      updateCoordDisplay('end', coords);
-    }
-    markRouteStale();
-    updateButton();
-  });
-});
-map.addInteraction(modify);
+// ─────────── Legends ───────────
+// One row per active water/weather overlay, drawn from the same
+// colour stops the heatmaps use (`GET /api/legends`, SI values) plus the
+// barb/arrow class tables. Values shown in display units.
+let _LEGENDS = null, _legendsReq = null;
+// Resolves when the legends are loaded (or the request failed); the
+// heatmaps wait for it, there is no fallback copy of the ramps.
+function _loadLegends() {
+  if (_LEGENDS) return Promise.resolve();
+  if (_legendsReq) return _legendsReq;
+  _legendsReq = authFetch(API + '/legends', {}, null)
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { if (d) { _LEGENDS = d; updateLegends(); } })
+    .catch(() => {})
+    .finally(() => { _legendsReq = null; });
+  return _legendsReq;
+}
+_loadLegends();
 
+function _legendUnit(quantity) {
+  if (quantity === 'speed') { const d = unitDesc('speed'); d.p = 0; return d; }
+  if (quantity === 'wave_height') { const d = unitDesc('wave_height'); d.p = Math.min(d.p, 1); return d; }
+  if (quantity === 'temperature') { const d = unitDesc('temperature'); d.p = 0; return d; }
+  // Precip stops are a water-depth rate in m/s, as is the precip unit.
+  if (quantity === 'precip_depth_rate') return unitDesc('precip');
+  // Sea-level heights (tide) follow the user's depth unit.
+  if (quantity === 'sea_level') { const d = unitDesc('depth'); d.p = Math.min(d.p, 1); return d; }
+  return { fn: v => v, u: '', p: 0 };
+}
+function _legendVal(v, u) {
+  if (u.missing) return UNIT_MISSING;
+  const x = u.fn(v);
+  const s = x.toFixed(u.p);
+  return s === '-0' ? '0' : s;
+}
+function _gradientRow(L) {
+  const u = _legendUnit(L.quantity);
+  const v0 = L.stops[0][0], v1 = L.stops[L.stops.length - 1][0], span = (v1 - v0) || 1;
+  const pct = v => ((v - v0) / span * 100).toFixed(1);
+  const grad = 'linear-gradient(to right, ' + L.stops.map(([v, c]) => c + ' ' + pct(v) + '%').join(', ') + ')';
+  // At most ~6 tick labels: first, last, and evenly chosen stops between.
+  const n = L.stops.length, every = Math.max(1, Math.ceil((n - 2) / 4));
+  const ticks = L.stops.map(([v], i) => ({ v, i })).filter(t => t.i === 0 || t.i === n - 1 || ((t.i % every) === 0));
+  const tickHtml = ticks.map(t => '<span class="' + (t.i === 0 ? 'first' : t.i === n - 1 ? 'last' : '') + '" style="left:' + pct(t.v) + '%;">' + _legendVal(t.v, u) + (t.i === n - 1 ? '+' : '') + '</span>').join('');
+  return '<div class="lg-row"><div class="lg-title">' + L.title + ' <span>(' + u.u + ')</span></div>'
+    + '<div class="lg-bar" style="background:' + grad + ';"></div><div class="lg-ticks">' + tickHtml + '</div></div>';
+}
+function _bandsRow(L) {
+  const cells = L.bands.map(([lo, name], i) => {
+    const hi = i + 1 < L.bands.length ? L.bands[i + 1][0] : L.stops[L.stops.length - 1][0];
+    const mid = (lo + hi) / 2;
+    let best = L.stops[0][1], bd = Infinity;
+    for (const [v, c] of L.stops) { const d = Math.abs(v - mid); if (d < bd) { bd = d; best = c; } }
+    return '<div><i style="background:' + best + ';"></i>' + name + '</div>';
+  }).join('');
+  return '<div class="lg-row"><div class="lg-title">' + L.title + '</div><div class="lg-classes">' + cells + '</div></div>';
+}
+// Class bounds are in knots (the symbols are knot-based); shown in the
+// preset's speed unit.
+function _classesRow(title, classes, glyph) {
+  const u = unitDesc('speed'); u.p = 1;
+  const cv = kt => { if (u.missing) return UNIT_MISSING; const t = u.fn(kt * KT_MS).toFixed(u.p); return t.replace(/\.0$/, ''); };
+  const cells = classes.map(([lo, color], i) => {
+    const hi = i + 1 < classes.length ? classes[i + 1][0] : null;
+    const label = hi == null ? '≥' + cv(lo) : (i === 0 ? '&lt;' + cv(hi) : cv(lo) + '–' + cv(hi));
+    const g = glyph ? '<span class="lg-glyph">' + glyph(lo, color) + '</span>' : '';
+    return '<div>' + g + '<i style="background:' + color + ';"></i>' + label + '</div>';
+  }).join('');
+  return '<div class="lg-row"><div class="lg-title">' + title + ' <span>(' + u.u + ')</span></div><div class="lg-classes">' + cells + '</div></div>';
+}
+function _on(id) { const el = document.getElementById(id); return !!(el && el.checked); }
+function _noteRow(id) {
+  const m = _overlayNotes[id];
+  return m ? '<div class="lg-note" style="color:var(--danger);">unavailable: ' + m + '</div>' : '';
+}
+function updateLegends() {
+  const box = document.getElementById('legendBox');
+  if (!box) return;
+  if (_LEGENDS == null) _loadLegends();
+  const rows = [];
+  const G = _LEGENDS || {};
+  // Barb glyph per class: the class's lower bound drawn as the map draws
+  // it (calm circle, half feather, full feathers) in the class colour.
+  if (_on('windToggle')) rows.push(_classesRow('Wind barbs', WIND_BARB_CLASSES, (lo, c) => _windBarbSvg(lo, c)) + _noteRow('windToggle'));
+  if (_on('windCombinedToggle') && G.wind) rows.push(_gradientRow(G.wind) + _noteRow('windCombinedToggle'));
+  if (_on('currentToggle')) rows.push(_classesRow('Tidal current', CURRENT_ARROW_CLASSES) + _noteRow('currentToggle'));
+  if (_on('currentHeatmapToggle') && G.current) rows.push(_gradientRow(G.current) + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (~9 km)</div>' + _noteRow('currentHeatmapToggle'));
+  if (_on('wavesCombinedToggle') && G.waves) rows.push(_gradientRow(G.waves) + _noteRow('wavesCombinedToggle'));
+  if (_on('roughnessToggle') && G.sea_state) rows.push(_bandsRow(G.sea_state) + _noteRow('roughnessToggle'));
+  if (_on('precipToggle') && G.precip) rows.push(_gradientRow(G.precip) + _noteRow('precipToggle'));
+  if (_on('temperatureToggle') && G.temperature) rows.push(_gradientRow(G.temperature) + _noteRow('temperatureToggle'));
+  if (_on('sstToggle') && G.sst) rows.push(_gradientRow(G.sst) + _noteRow('sstToggle'));
+  if (_on('tideToggle') && G.tide) {
+    // The map stretches the tide scale to the tiles loaded (rp-layers _noteTileScale); show the stops actually drawn.
+    const scaled = _autoScaleStops.tide ? Object.assign({}, G.tide, { stops: _autoScaleStops.tide }) : G.tide;
+    rows.push(_gradientRow(scaled) + '<div class="lg-note">scaled to the largest tide in the tiles loaded · relative to mean sea level, not chart datum · Copernicus Marine</div>' + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (~9 km)</div>' + _noteRow('tideToggle'));
+  }
+  if (_on('pressureToggle')) rows.push('<div class="lg-row"><div class="lg-title">Pressure <span>(' + unitDesc('pressure').u + ')</span></div><div class="lg-note">isobars every ' + fmtPressure(400) + ' · bold every ' + fmtPressure(2000) + ' · <b style="color:#1565C0">H</b> / <b style="color:#C62828">L</b> centres</div>' + _noteRow('pressureToggle') + '</div>');
+  box.innerHTML = rows.join('');
+}
+// Any layer toggle change (user click, or the saved-state restore that
+// dispatches bubbling change events) refreshes the box.
+const _layersSec = document.getElementById('layersSection');
+if (_layersSec) _layersSec.addEventListener('change', updateLegends);
+window.addEventListener('load', updateLegends);
+
+// The auth gate stops the map from loading more data; repaint once so the frozen state shows.
+AuthGate.onStop(() => map.render());
+window.addEventListener('rp:units', updateLegends);
+
+// ─────────── Layer toggles ───────────
+// One row per checkbox in the Layers tab: the layer it shows, how to
+// load it when switched on, how to drop its data when switched off, and
+// the flow lines that follow it. Each checkbox's state is kept in
+// localStorage and restored here (the restore fires `change`, so the
+// legends box and the exclusive heatmap group follow).
+const LAYER_TOGGLES = [
+  ['osmToggle', osmLayer],
+  ['seamarkToggle', seamarkLayer],
+  ['vesselToggle', vesselMarkerLayer],
+  ['frontToggle', frontLayer, null, null, null, false],
+  ['windToggle', windLayer, loadWindOverlay, () => windSource.clear()],
+  ['windCombinedToggle', windHeatmapLayer, loadWindHeatmap, () => windHeatmapLayer.setSource(null), windStreamlines],
+  ['precipToggle', precipHeatmapLayer, loadPrecipHeatmap, () => precipHeatmapLayer.setSource(null)],
+  ['temperatureToggle', temperatureLayer, loadTemperature, () => temperatureLayer.setSource(null)],
+  ['sstToggle', sstLayer, loadSst, () => sstLayer.setSource(null)],
+  ['pressureToggle', pressureLayer, loadPressure, () => pressureSource.clear()],
+  ['currentToggle', currentLayer, loadCurrentOverlay, () => currentSource.clear()],
+  ['currentHeatmapToggle', currentHeatmapLayer, loadCurrentHeatmap, () => currentHeatmapLayer.setSource(null)],
+  ['wavesCombinedToggle', waveHeatmapLayer, loadWaveHeatmap, () => waveHeatmapLayer.setSource(null), waveStreamlines],
+  ['roughnessToggle', roughnessLayer, loadRoughness, () => roughnessLayer.setSource(null)],
+  ['tideToggle', tideLayer, loadTide, () => tideLayer.setSource(null)],
+];
+for (const [id, layer, load, clear, streamlines, persist = true] of LAYER_TOGGLES) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  const KEY = 'layer:' + id;
+  el.addEventListener('change', () => {
+    layer.setVisible(el.checked);
+    if (el.checked) { if (load) load(); } else if (clear) clear();
+    if (streamlines) streamlines.setEnabled(el.checked);
+    if (persist) { try { localStorage.setItem(KEY, el.checked ? 'true' : 'false'); } catch (_) {} }
+  });
+  if (!persist) continue;
+  let saved = null;
+  try { saved = localStorage.getItem(KEY); } catch (_) {}
+  if (saved !== 'true' && saved !== 'false') continue;
+  const want = saved === 'true';
+  if (el.checked !== want) {
+    el.checked = want;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}

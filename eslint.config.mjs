@@ -53,15 +53,26 @@ export default [
   },
   prettierRecommended,
   {
-    // The web app: classic scripts sharing one global scope (rp-core.js
-    // defines what the others use), so `no-undef` cannot judge them.
-    // Not formatted by Prettier.
+    // The web app: ES modules (rp-plan.js and rp-settings.js are the
+    // entries; rp-layers.js and rp-core.js below them). Only the browser
+    // and the vendored OpenLayers (`ol`) are globals. Not formatted by
+    // Prettier.
     files: ['public/*.js'],
-    languageOptions: { ecmaVersion: 2022, sourceType: 'script' },
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: Object.fromEntries(
+        [
+          'window', 'document', 'console', 'navigator', 'localStorage', 'fetch', 'alert', 'confirm',
+          'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame',
+          'encodeURIComponent', 'AbortController', 'CustomEvent', 'DOMException', 'Event', 'EventSource', 'ImageData',
+          'MutationObserver', 'ResizeObserver', 'Uint8Array', 'Uint8ClampedArray', 'ol',
+        ].map(g => [g, 'readonly'])
+      ),
+    },
     rules: {
-      'no-undef': 'off',
-      // Top-level names are the shared scope (used from other files and index.html): only locals are checked.
-      'no-unused-vars': ['warn', { vars: 'local', args: 'none', caughtErrors: 'none' }],
+      'no-undef': 'error',
+      'no-unused-vars': ['error', { args: 'none', caughtErrors: 'none' }],
       'no-empty': ['error', { allowEmptyCatch: true }],
       'prettier/prettier': 'off',
     },

@@ -773,26 +773,26 @@
   <div class="section-body">
     <div class="subtab-row" id="layersSubTabs"><button type="button" data-group="base">Base</button><button type="button" data-group="weather">Weather</button><button type="button" data-group="water">Water</button></div>
     <div class="layer-group" data-group="base">
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="osmToggle" style="width:auto;margin-right:4px;" checked onchange="osmLayer.setVisible(this.checked);">OpenStreetMap</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="seamarkToggle" style="width:auto;margin-right:4px;" checked onchange="seamarkLayer.setVisible(this.checked);">OpenSeaMap seamarks (buoys, lights)</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="vesselToggle" style="width:auto;margin-right:4px;" checked onchange="vesselMarkerLayer.setVisible(this.checked);">Own vessel (Signal K position)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="osmToggle" style="width:auto;margin-right:4px;" checked>OpenStreetMap</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="seamarkToggle" style="width:auto;margin-right:4px;" checked>OpenSeaMap seamarks (buoys, lights)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="vesselToggle" style="width:auto;margin-right:4px;" checked>Own vessel (Signal K position)</label>
     </div>
     <div class="layer-group" data-group="weather">
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="windToggle" style="width:auto;margin-right:4px;" onchange="windLayer.setVisible(this.checked); if(this.checked) loadWindOverlay(); else windSource.clear();">Wind barbs</label>
-    <label style="display:block;font-size:11px;cursor:pointer;" title="The router's search: the front of each stage (the candidates it kept, each with its own arrival time; not isochrones) and the best path so far, live while a route runs."><input type="checkbox" id="frontToggle" checked style="width:auto;margin-right:4px;" onchange="frontLayer.setVisible(this.checked);">Stage fronts (the search)</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="windCombinedToggle" style="width:auto;margin-right:4px;" onchange="windHeatmapLayer.setVisible(this.checked); if(this.checked) loadWindHeatmap(); else windHeatmapLayer.setSource(null); windStreamlines.setEnabled(this.checked);">Wind speed (colour) + flow lines</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="precipToggle" style="width:auto;margin-right:4px;" onchange="precipHeatmapLayer.setVisible(this.checked); if(this.checked) loadPrecipHeatmap(); else precipHeatmapLayer.setSource(null);">Precipitation rate</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="temperatureToggle" style="width:auto;margin-right:4px;" onchange="temperatureLayer.setVisible(this.checked); if(this.checked) loadTemperature(); else temperatureLayer.setSource(null);">Air temperature (2 m)</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="sstToggle" style="width:auto;margin-right:4px;" onchange="sstLayer.setVisible(this.checked); if(this.checked) loadSst(); else sstLayer.setSource(null);">Sea-surface temp (skin)</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="pressureToggle" style="width:auto;margin-right:4px;" onchange="pressureLayer.setVisible(this.checked); if(this.checked) loadPressure(); else pressureSource.clear();">Pressure (isobars, H/L)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="windToggle" style="width:auto;margin-right:4px;">Wind barbs</label>
+    <label style="display:block;font-size:11px;cursor:pointer;" title="The router's search: the front of each stage (the candidates it kept, each with its own arrival time; not isochrones) and the best path so far, live while a route runs."><input type="checkbox" id="frontToggle" checked style="width:auto;margin-right:4px;">Stage fronts (the search)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="windCombinedToggle" style="width:auto;margin-right:4px;">Wind speed (colour) + flow lines</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="precipToggle" style="width:auto;margin-right:4px;">Precipitation rate</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="temperatureToggle" style="width:auto;margin-right:4px;">Air temperature (2 m)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="sstToggle" style="width:auto;margin-right:4px;">Sea-surface temp (skin)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="pressureToggle" style="width:auto;margin-right:4px;">Pressure (isobars, H/L)</label>
     <div class="ctl-hint" style="margin-top:var(--s-1);">Shift-click anywhere on the map (or use the click menu) for the 72-hour conditions forecast at that spot.</div>
     </div>
     <div class="layer-group" data-group="water">
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="currentToggle" style="width:auto;margin-right:4px;" checked onchange="currentLayer.setVisible(this.checked); if(this.checked) loadCurrentOverlay(); else currentSource.clear();">Current direction (arrows)</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="currentHeatmapToggle" style="width:auto;margin-right:4px;" onchange="currentHeatmapLayer.setVisible(this.checked); if(this.checked) loadCurrentHeatmap(); else currentHeatmapLayer.setSource(null);">Current speed (colour)</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="wavesCombinedToggle" style="width:auto;margin-right:4px;" onchange="waveHeatmapLayer.setVisible(this.checked); if(this.checked) loadWaveHeatmap(); else waveHeatmapLayer.setSource(null); waveStreamlines.setEnabled(this.checked);">Wave height (colour) + direction lines</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="roughnessToggle" style="width:auto;margin-right:4px;" onchange="roughnessLayer.setVisible(this.checked); if(this.checked) loadRoughness(); else roughnessLayer.setSource(null);">Sea state (wind + swell + current)</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="tideToggle" style="width:auto;margin-right:4px;" onchange="tideLayer.setVisible(this.checked); if(this.checked) loadTide(); else tideLayer.setSource(null);">Tide height (colour)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="currentToggle" style="width:auto;margin-right:4px;" checked>Current direction (arrows)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="currentHeatmapToggle" style="width:auto;margin-right:4px;">Current speed (colour)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="wavesCombinedToggle" style="width:auto;margin-right:4px;">Wave height (colour) + direction lines</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="roughnessToggle" style="width:auto;margin-right:4px;">Sea state (wind + swell + current)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="tideToggle" style="width:auto;margin-right:4px;">Tide height (colour)</label>
     <div class="ctl-hint" style="margin-top:var(--s-1);">Tide height is relative to mean sea level, not chart datum (Copernicus Marine, 1/12°). Not for under-keel clearance.</div>
     </div>
   </div>
@@ -893,9 +893,8 @@
   </div>
 </div>
 
-<script src="rp-core.js"></script>
-<script src="rp-layers.js"></script>
-<script src="rp-plan.js"></script>
-<script src="rp-settings.js"></script>
+<!-- ES modules: rp-plan.js imports rp-layers.js and rp-core.js; rp-settings.js imports rp-core.js. -->
+<script type="module" src="rp-plan.js"></script>
+<script type="module" src="rp-settings.js"></script>
 </body>
 </html>

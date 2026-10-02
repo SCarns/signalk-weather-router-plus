@@ -1,7 +1,5 @@
-// Weather Router Plus — Settings tab (server-side settings).
-// Loaded after rp-core.js / rp-layers.js / rp-plan.js; uses UI_UNITS,
-// API and loadPluginStatus from rp-core.js. Everything lives in this
-// IIFE so no top-level name can collide with the other files.
+// Weather Router Plus — Settings tab (server-side settings): entry module,
+// imports UI_UNITS, API, escapeHtml and loadPluginStatus from rp-core.js.
 //
 // GET  /api/settings → {values, schema}: values are SI (m, m/s, s, deg);
 //      schema.settings[] gives key, group, label, type, unit, quantity,
@@ -10,6 +8,8 @@
 //      {values, changed, reloaded} or 400 {error, errors: {key: msg}}.
 // Inputs show values in the Signal K user's unit preferences;
 // conversion happens here, the server only ever sees SI.
+
+import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING } from './rp-core.js';
 (function () {
   const form = document.getElementById('srvSettingsForm');
   const saveBtn = document.getElementById('srvSettingsSave');
@@ -256,7 +256,8 @@
       if (rl.jobs) notes.push('Finished-route limit applied.');
       const other = (body.changed || []).length && !rl.forecast && !rl.currents ? 'Applies from the next route.' : '';
       setStatus('<span class="ok">Saved</span> ' + (body.changed || []).length + ' setting(s). ' + (notes.join(' ') + ' ' + other).trim());
-      if (typeof loadPluginStatus === 'function') { setTimeout(loadPluginStatus, 1500); if (rl.forecast) setTimeout(loadPluginStatus, 20000); }
+      setTimeout(loadPluginStatus, 1500);
+      if (rl.forecast) setTimeout(loadPluginStatus, 20000);
     } catch (e) {
       setStatus('<span class="err">Save failed:</span> ' + esc(e.message));
     } finally {

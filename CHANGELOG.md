@@ -121,6 +121,19 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The web app is ES modules** (decision C of the structural cleanup):
+  `rp-plan.js` and `rp-settings.js` are the entries, `rp-layers.js` and
+  `rp-core.js` below them, each importing what it uses by name (25 names
+  from the core, 21 from the map module). The route display and route
+  library code moved from the core file to the planning file, the marker
+  sources and the legends box to the map file, so no file reaches back
+  to one loaded after it; shared state that another file changes goes
+  through a setter. The fifteen layer checkboxes are wired from one
+  table in the map file instead of inline `onchange` attributes, which
+  also holds their saved state. The plugin gives module import
+  specifiers the same `?v=` tag as the script tags, so a browser loads
+  one copy of each file and a new install never runs a stale one. The
+  page scripts are linted as modules with `no-undef` on.
 - `/api/status` reports `corridor_fallbacks`: how many routes since the
   plugin loaded ran on the coarse per-route skeleton because the
   water-grid corridor search failed; such a route's summary carries

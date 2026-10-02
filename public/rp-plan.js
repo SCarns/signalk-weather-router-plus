@@ -1,7 +1,582 @@
-// Weather Router Plus — route planner UI, part 3 of 3 (planning).
-// Map gestures, tabs, legends, progress, result strip, itinerary, the
-// route job ladder (POST /api/routes → SSE → result), waypoint popups,
-// the conditions popup and Live mode with the Signal K vessel.
+// Weather Router Plus — route planner UI: planning module (entry; imports
+// rp-core.js and rp-layers.js). Markers and map gestures, tabs, progress,
+// the route job ladder (POST /api/routes → SSE → result), route display,
+// result strip, itinerary, route library, waypoint and conditions popups,
+// Live mode with the Signal K vessel.
+
+import { _apiErrorText, _fmt, _polarAngles, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc } from './rp-core.js';
+import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, proposedRouteSource, reloadOverlays, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, vesselMarkerSource } from './rp-layers.js';
+
+// ─────────── Route state (markers, replan stream, route history) ───────────
+let startCoord = null;  // [lon, lat]
+let endCoord = null;
+let waypointCoords = [];  // [[lon, lat], ...] — intermediate stops in order
+
+// Waypoint features live in a parallel list so we can rebuild the set
+// on every mutation and wire drag-to-move through the Modify interaction.
+let waypointFeatures = [];  // one ol.Feature per waypoint, aligned with waypointCoords
+let routeActive = false;      // a route is displayed for the current markers
+let _routeStale = false;      // markers changed since that route was computed
+let _routeComputing = false;  // a route job is running
+
+let _activeReplanES = null;
+function closeReplanStream() { if (_activeReplanES) { try { _activeReplanES.close(); } catch (_) {} _activeReplanES = null; } }
+
+
+// --- Route history (recent jobs on the plugin) ---
+let routeHistoryItems = [];  // JobPublic rows from GET /api/routes
+
+// ─────────── Route display on the map ───────────
+// Split one route segment at the antimeridian so OpenLayers draws
+// the short hop over ±180 instead of a straight Mercator line across
+// the whole map. a/b are [lon,lat]. Returns a list of [lon,lat]-pair
+// segments — one when the segment doesn't cross ±180, two when it does.
+function _segAtMeridian(a, b) {
+  const lonA = a[0], latA = a[1], lonB = b[0], latB = b[1];
+  if (Math.abs(lonB - lonA) <= 180) return [[a, b]];
+  const lonBu = lonB > lonA ? lonB - 360 : lonB + 360;
+  const bnd = lonBu < lonA ? -180 : 180;
+  const t = (bnd - lonA) / (lonBu - lonA);
+  const latX = latA + t * (latB - latA);
+  return [[a, [bnd, latX]], [[-bnd, latX], b]];
+}
+
+// Name of the route currently on the map (from the job request), shown
+// in the Itinerary name bar.
+let _currentRouteName = '';
+
+// Padding for fitting the map to a route: the side panel (desktop) or the
+// bottom sheet (mobile) covers part of the map, so the fit leaves it out.
+function _mapFitPadding() {
+  const pad = [60, 60, 60, 60];
+  const panel = document.getElementById('panel');
+  if (!panel) return pad;
+  const r = panel.getBoundingClientRect(), w = window.innerWidth, h = window.innerHeight;
+  if (r.width >= w * 0.9 && r.top > h * 0.3) pad[2] = Math.round(h - r.top) + 20;
+  else if (r.left > w * 0.3) pad[1] = Math.round(w - r.left) + 20;
+  return pad;
+}
+
+// Draw a route (GeoJSON from GET /api/routes/{id}/result): the pins, the
+// legs coloured by tack, where the forecast runs out, the snap connectors,
+// the result strip and the itinerary.
+function displayRoute(geojson) {
+  setSelectedRouteFeature(null);
+  routeSource.clear();
+  const features = new ol.format.GeoJSON().readFeatures(geojson, {
+    featureProjection: 'EPSG:3857'
+  });
+  routeSource.addFeatures(features);
+  // Snap metadata lives on the LineString's props; the pins and the
+  // dashed connectors both need it.
+  const lineFeat = features.find(f => f.getGeometry().getType() === 'LineString');
+  const snapProps = lineFeat ? lineFeat.getProperties() : {};
+  const pts = features.filter(f => f.getGeometry().getType() === 'Point');
+  if (pts.length > 0) _placeRoutePins(pts, snapProps);
+  _drawRouteLegs(pts);
+  _markForecastEnd(pts, snapProps);
+  if (lineFeat) {
+    const p = lineFeat.getProperties();
+    const navWarns = _drawSnapConnectors(p);
+    _routeWarnings = Array.isArray(p.warnings) ? p.warnings : [];
+    renderResultStrip(p, navWarns);
+    const nameInput = document.getElementById('routeNameInput');
+    if (nameInput) nameInput.value = p.name || _currentRouteName || '';
+    routeSource.removeFeature(lineFeat);
+  }
+  // Refresh the itinerary tab with this route's waypoints.
+  populateItinerary(features);
+}
+
+// Move the start/end pin markers to the route's first/last waypoint so a
+// history-loaded route shows the same green-start and red-end icons as a
+// freshly-computed one. When the server snapped an endpoint to a nearby
+// navigable cell, the visible pin stays at the original (user-intent)
+// point; the dashed connector bridges intent → anchor. Via points become
+// draggable orange pins again, so a re-run keeps them.
+function _placeRoutePins(pts, snapProps) {
+  const startLonLat = snapProps.start_original
+    ? snapProps.start_original
+    : ol.proj.toLonLat(pts[0].getGeometry().getCoordinates());
+  const endLonLat = snapProps.end_original
+    ? snapProps.end_original
+    : ol.proj.toLonLat(pts[pts.length - 1].getGeometry().getCoordinates());
+  const startMercator = ol.proj.fromLonLat(startLonLat);
+  const endMercator = ol.proj.fromLonLat(endLonLat);
+  startFeature.setGeometry(new ol.geom.Point(startMercator));
+  endFeature.setGeometry(new ol.geom.Point(endMercator));
+  // Keep the global [lon, lat] state in sync with the visible pins
+  // so the next "Find Route" POSTs the right endpoints.
+  startCoord = [startLonLat[0], startLonLat[1]];
+  endCoord = [endLonLat[0], endLonLat[1]];
+  updateCoordDisplay('start', startCoord);
+  updateCoordDisplay('end', endCoord);
+  // Via points the route was asked to pass through become draggable
+  // orange pins again, so a re-run keeps them.
+  const vias = pts.filter(f => f.get('role') === 'via').map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()));
+  if (vias.length) {
+    waypointCoords = vias.map(c => [c[0], c[1]]);
+    _rebuildWaypointFeatures();
+  }
+  refreshFindRouteEnabled();
+}
+
+// Leg colouring: each point learns its outgoing course and the next leg's
+// conditions; a sailing leg is coloured by tack (TACK_COLOR), a motoring
+// leg black, a leg past the forecast's last step dashed. Dateline legs
+// are split at ±180 so they render the short way.
+function _drawRouteLegs(pts) {
+  // Set outgoing_cog on each point
+  for (let k = 0; k < pts.length - 1; k++) {
+    const c1 = pts[k].getGeometry().getCoordinates();
+    const c2 = pts[k + 1].getGeometry().getCoordinates();
+    const dx = c2[0] - c1[0];
+    const dy = c2[1] - c1[1];
+    const bearing = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+    pts[k].set('outgoing_cog', bearing);
+  }
+  for (let k = 1; k < pts.length; k++) {
+    const prev = pts[k - 1];
+    const curr = pts[k];
+    const currMode = curr.get('mode');
+    const currCog = curr.get('cog_deg');
+    const currWind = curr.get('wind_dir_deg');
+    let segColor;
+    if (currMode !== 'sailing') {
+      segColor = '#000000';
+    } else {
+      // Leg departing prev is coloured by the arriving waypoint's cog
+      // and wind (forward-looking); starboard when either is missing.
+      segColor = TACK_COLOR[tackSide(currCog, currWind) || 'starboard'];
+    }
+    prev.set('next_mode', currMode);
+    prev.set('next_cog', currCog);
+    prev.set('next_wind', currWind);
+    prev.set('next_sog_ms', curr.get('sog_ms'));
+    prev.set('next_twa_deg', curr.get('twa_deg'));
+    prev.set('next_wind_ms', curr.get('wind_ms'));
+    prev.set('next_wind_dir_deg', curr.get('wind_dir_deg'));
+    prev.set('next_current_ms', curr.get('current_ms'));
+    prev.set('next_current_dir_deg', curr.get('current_dir_deg'));
+    prev.set('next_depth_m', curr.get('depth_m'));
+    prev.set('next_swh_m', curr.get('swh_m'));
+    prev.set('next_mwp_s', curr.get('mwp_s'));
+    prev.set('next_mwd_deg', curr.get('mwd_deg'));
+    // The leg ends after the forecast's last step: drawn dashed, the point
+    // flagged for the itinerary card and the saved description.
+    const beyond = !!curr.get('beyond_forecast');
+    prev.set('next_beyond_forecast', beyond);
+    const _ac = prev.getGeometry().getCoordinates();
+    const _bc = curr.getGeometry().getCoordinates();
+    const _aLL = ol.proj.toLonLat(_ac);
+    const _bLL = ol.proj.toLonLat(_bc);
+    let _segPairs;
+    if (Math.abs(_bLL[0] - _aLL[0]) <= 180) {
+      _segPairs = [[_ac, _bc]];
+    } else {
+      // Dateline-crossing: split at ±180 so it renders the short way.
+      _segPairs = _segAtMeridian(_aLL, _bLL).map(
+        sp => [ol.proj.fromLonLat(sp[0]), ol.proj.fromLonLat(sp[1])]);
+    }
+    for (const _sp of _segPairs) {
+      const segLine = new ol.Feature({
+        geometry: new ol.geom.LineString([_sp[0], _sp[1]])
+      });
+      segLine.setStyle(new ol.style.Style({
+        stroke: new ol.style.Stroke({ color: segColor, width: 3, lineDash: beyond ? [10, 7] : undefined })
+      }));
+      routeSource.addFeature(segLine);
+    }
+  }
+}
+
+// Where the forecast runs out along the route: a marker on the first leg
+// that ends after the last forecast step, placed by time along that leg.
+function _markForecastEnd(pts, snapProps) {
+  const _validTo = snapProps.forecast_valid_to ? Date.parse(snapProps.forecast_valid_to) : NaN;
+  const _firstBeyond = pts.findIndex(f => f.get('beyond_forecast'));
+  if (Number.isFinite(_validTo) && _firstBeyond > 0) {
+    const a = pts[_firstBeyond - 1], b = pts[_firstBeyond];
+    const ta = Date.parse(a.get('time')), tb = Date.parse(b.get('time'));
+    const frac = tb > ta ? Math.min(1, Math.max(0, (_validTo - ta) / (tb - ta))) : 0;
+    const aLL = ol.proj.toLonLat(a.getGeometry().getCoordinates()), bLL = ol.proj.toLonLat(b.getGeometry().getCoordinates());
+    let dLon = bLL[0] - aLL[0];
+    if (dLon > 180) dLon -= 360; else if (dLon < -180) dLon += 360;
+    const at = ol.proj.fromLonLat([aLL[0] + dLon * frac, aLL[1] + (bLL[1] - aLL[1]) * frac]);
+    routeSource.addFeature(new ol.Feature({ geometry: new ol.geom.Point(at), kind: 'forecast_end', valid_to: snapProps.forecast_valid_to }));
+  }
+}
+
+// Maroon dashed connectors from each drawn point that was on land to the
+// water it was moved to (start, end and waypoints), and the warning
+// lines for the result strip. Returns the warnings.
+function _drawSnapConnectors(p) {
+  // Maroon dashed connector(s): intent → anchor where the server
+  // snapped an unnavigable endpoint to the nearest navigable cell.
+  const _dashedStyle = new ol.style.Style({
+    stroke: new ol.style.Stroke({
+      color: '#7F0000', width: 2, lineDash: [6, 6]
+    })
+  });
+  if (p.start_original && p.start_anchor && p.start_snap_distance_m > 0) {
+    const f = new ol.Feature({
+      geometry: new ol.geom.LineString([
+        ol.proj.fromLonLat(p.start_original),
+        ol.proj.fromLonLat(p.start_anchor),
+      ])
+    });
+    f.setStyle(_dashedStyle);
+    routeSource.addFeature(f);
+  }
+  if (p.end_original && p.end_anchor && p.end_snap_distance_m > 0) {
+    const f = new ol.Feature({
+      geometry: new ol.geom.LineString([
+        ol.proj.fromLonLat(p.end_original),
+        ol.proj.fromLonLat(p.end_anchor),
+      ])
+    });
+    f.setStyle(_dashedStyle);
+    routeSource.addFeature(f);
+  }
+  // Drawn waypoints that were on land and were moved to the nearest water
+  // (`snaps`, every stop; the start and end are drawn above).
+  const _snaps = Array.isArray(p.snaps) ? p.snaps : [];
+  const _lastStop = p.stop_count > 0 ? p.stop_count - 1 : -1;
+  for (const s of _snaps) {
+    if (s.index === 0 || s.index === _lastStop || !s.original || !s.anchor) continue;
+    const f = new ol.Feature({ geometry: new ol.geom.LineString([ol.proj.fromLonLat(s.original), ol.proj.fromLonLat(s.anchor)]) });
+    f.setStyle(_dashedStyle);
+    routeSource.addFeature(f);
+  }
+
+  // Warning text for the info card — surfaces snaps and the
+  // forecast-horizon note to the user.
+  const _navWarns = [];
+  if (p.start_snap_distance_m > 0) {
+    _navWarns.push('Start not navigable — anchored '
+      + Math.round(p.start_snap_distance_m) + ' m away');
+  }
+  if (p.end_snap_distance_m > 0) {
+    _navWarns.push('End not navigable — anchored '
+      + Math.round(p.end_snap_distance_m) + ' m away');
+  }
+  for (const s of _snaps) {
+    if (s.index === 0 || s.index === _lastStop) continue;
+    _navWarns.push('Waypoint ' + s.index + ' was on land — anchored ' + Math.round(s.distance_m) + ' m away');
+  }
+  return _navWarns;
+}
+
+// A job's skeleton (coarse A* / corridor) drawn in blue, when it has one.
+function loadSkeleton(id) {
+  authFetch(API + '/routes/' + encodeURIComponent(id) + '/skeleton', { cache: 'no-store' }, 'skeleton-load')
+    .then(r => r.ok ? r.json() : null)
+    .then(geojson => {
+      skeletonSource.clear();
+      if (!geojson) return;
+      const features = new ol.format.GeoJSON().readFeatures(geojson, { featureProjection: 'EPSG:3857' });
+      skeletonSource.addFeatures(features);
+    })
+    .catch(() => skeletonSource.clear());
+}
+
+// ─────────── Route library: recent jobs (GET /api/routes) ───────────
+// Track the job id of the route currently displayed on the map. Used by
+// the Publish + Delete buttons and set from two places: the history
+// list, and the SSE `done` event after a fresh compute.
+let _currentRouteJobId = null;
+
+function _jobLabel(j) {
+  const rq = j.request || {};
+  if (rq.name) return rq.name;
+  const s = rq.start, e = rq.end;
+  if (s && e) return s.lat.toFixed(3) + ', ' + s.lon.toFixed(3) + ' → ' + e.lat.toFixed(3) + ', ' + e.lon.toFixed(3);
+  return j.id;
+}
+function _jobSub(j) {
+  const parts = [];
+  if (j.created_at) parts.push(new Date(j.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }));
+  if (j.summary) {
+    if (j.summary.total_distance_m != null) parts.push(fmtDist(j.summary.total_distance_m));
+    if (j.summary.total_time_s != null) parts.push(fmtTime(j.summary.total_time_s));
+    if (j.summary.warnings) parts.push(j.summary.warnings + ' warn');
+  }
+  if (j.request && j.request.mode) parts.push(j.request.mode);
+  if (j.resource_id) parts.push('published');
+  if (j.error && j.status !== 'done') parts.push(j.error);
+  return parts.join(' · ');
+}
+
+function _loadRouteJob(id) {
+  if (!id) return;
+  const job = routeHistoryItems.find(j => j.id === id);
+  if (job && (job.status === 'running' || job.status === 'queued')) {
+    // Re-attach to a job in progress: same SSE ladder as Find Route.
+    attachToJob(id, job);
+    return;
+  }
+  _currentRouteJobId = id;
+  _currentRouteName = job && job.request ? (job.request.name || '') : '';
+  authFetch(API + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, 'route-load')
+    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+    .then(geojson => {
+      displayRoute(geojson);
+      routeActive = true;
+      _routeStale = false;
+      updatePlanHint();
+      // Zoom to the loaded route's extent with padding so the map
+      // frames the entire track beside the panel (not under it).
+      const ext = routeSource.getExtent();
+      if (ext && ext.every(Number.isFinite)) {
+        map.getView().fit(ext, {
+          padding: _mapFitPadding(),
+          duration: 400,
+          maxZoom: 14,
+        });
+      }
+      showTab('itinerarySection');
+    })
+    .catch(err => {
+      console.error('Failed to load route:', err);
+      const st = document.getElementById('status');
+      if (st) st.textContent = 'Could not load route: ' + err.message;
+    });
+  loadSkeleton(id);
+  _loadFronts(id);
+}
+
+function _clearDisplayedRoute() {
+  _currentRouteJobId = null;
+  _currentRouteName = '';
+  routeSource.clear();
+  skeletonSource.clear();
+  frontSource.clear();
+  startFeature.setGeometry(null);
+  endFeature.setGeometry(null);
+  const routeInfo = document.getElementById('routeInfo');
+  if (routeInfo) routeInfo.innerHTML = '';
+  const modalItin = document.getElementById('modalItinerary');
+  if (modalItin) modalItin.innerHTML = '';
+  const nameInput = document.getElementById('routeNameInput');
+  if (nameInput) nameInput.value = '';
+}
+
+function _deleteRouteJob(id, labelForConfirm) {
+  if (!id) return;
+  if (!confirm(`Delete "${labelForConfirm || id}"?`)) return;
+  authFetch(API + '/routes/' + encodeURIComponent(id), { method: 'DELETE', cache: 'no-store' }, null)
+    .then(r => { if (!r.ok && r.status !== 204) return _apiErrorText(r).then(t => Promise.reject(new Error(t))); })
+    .then(() => {
+      // If the deleted route is the one on the map, clear it.
+      if (_currentRouteJobId === id) _clearDisplayedRoute();
+      loadRouteHistory();
+    })
+    .catch(err => alert('Delete failed: ' + err.message));
+}
+
+function loadRouteHistory() {
+  return authFetch(API + '/routes?limit=50', { cache: 'no-store' }, 'route-history')
+    .then(r => r.json())
+    .then(items => {
+      routeHistoryItems = Array.isArray(items) ? items : [];
+      const list = document.getElementById('routeHistoryList');
+      if (!list) return;
+      list.replaceChildren();
+      if (routeHistoryItems.length === 0) {
+        const empty = document.createElement('div');
+        empty.style.cssText = 'padding:8px;color:#888;font-size:11px;';
+        empty.textContent = 'No route jobs yet.';
+        list.appendChild(empty);
+        return;
+      }
+      routeHistoryItems.forEach((j, i) => {
+        const row = document.createElement('div');
+        row.className = 'rh-row';
+        if (j.id === _currentRouteJobId) row.style.background = '#1c1c3a';
+        const label = document.createElement('span');
+        label.className = 'rh-label';
+        label.textContent = (i + 1) + '. ' + _jobLabel(j);
+        const sub = document.createElement('span');
+        sub.className = 'rh-sub';
+        sub.textContent = _jobSub(j);
+        label.appendChild(sub);
+        label.onclick = () => _loadRouteJob(j.id);
+        row.appendChild(label);
+        const st = document.createElement('span');
+        st.className = 'rh-status ' + j.status;
+        st.textContent = j.status;
+        st.onclick = () => _loadRouteJob(j.id);
+        row.appendChild(st);
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'rh-del';
+        del.textContent = '×';
+        del.title = j.status === 'running' ? 'Cancel the running job first' : 'Delete';
+        del.disabled = j.status === 'running';
+        del.onclick = (e) => { e.stopPropagation(); _deleteRouteJob(j.id, _jobLabel(j)); };
+        row.appendChild(del);
+        list.appendChild(row);
+      });
+    })
+    .catch(() => {});
+}
+
+// Populate the list on first load.
+loadRouteHistory();
+document.getElementById('routeHistoryRefresh').addEventListener('click', () => loadRouteHistory());
+
+// ─────────── Vessel type (sail / power) ───────────
+// Toggle in Setup switches the UI between a sailing run (polar picker +
+// sail sliders, mode dropdown) and a motoring run. Power mode forces
+// `mode=motor` on the POST /api/routes payload and sends the boat's name
+// and cruise speed as a vessel override. Selection and the power-boat
+// fields persist in localStorage.
+function getVesselType() {
+  try { return localStorage.getItem('vesselType') === 'power' ? 'power' : 'sail'; }
+  catch (_) { return 'sail'; }
+}
+// The cruise speed is a display-unit input like the wind and wave limits
+// (rp-plan.js `_LIMITS`): typed in the user's unit, kept in SI.
+function readPowerBoat() {
+  return {
+    name: (document.getElementById('pb_name').value || '').trim(),
+    cruise_ms: _limitSI('pb_cruise'),
+  };
+}
+function validatePowerBoat() {
+  const pb = readPowerBoat();
+  const missing = [];
+  if (!pb.name) missing.push('name');
+  if (pb.cruise_ms == null || pb.cruise_ms <= 0) missing.push('cruise speed');
+  return missing;
+}
+function savePowerBoat() {
+  try {
+    localStorage.setItem('powerBoat', JSON.stringify({ name: readPowerBoat().name }));
+  } catch (_) {}
+}
+function loadPowerBoat() {
+  try {
+    const j = localStorage.getItem('powerBoat');
+    if (!j) return;
+    const pb = JSON.parse(j);
+    if (pb.name != null) document.getElementById('pb_name').value = pb.name;
+    // Until 2026-10 the cruise speed was stored here in knots; it lives in SI with the other limits now.
+    if (pb.cruise_kts != null && localStorage.getItem('routeVar:pb_cruise:si') === null)
+      localStorage.setItem('routeVar:pb_cruise:si', String(pb.cruise_kts * KT_MS));
+  } catch (_) {}
+}
+function refreshFindRouteEnabled() {
+  // Find Route stays disabled until start + end are set; power mode
+  // additionally requires the boat's name and cruise speed.
+  const btn = document.getElementById('findRoute');
+  const haveEndpoints = !!(startCoord && endCoord);
+  let blocked = !haveEndpoints;
+  const status = document.getElementById('pb_status');
+  if (getVesselType() === 'power') {
+    const missing = validatePowerBoat();
+    if (missing.length) {
+      blocked = true;
+      if (status) status.textContent = 'Fill in: ' + missing.join(', ');
+    } else if (status) {
+      status.textContent = '';
+    }
+  } else if (status) {
+    status.textContent = '';
+  }
+  if (_routeComputing) blocked = true;
+  btn.disabled = blocked;
+}
+function applyVesselType(vt) {
+  const panel = document.getElementById('panel');
+  const powerSection = document.getElementById('powerBoatSection');
+  panel.classList.toggle('power', vt === 'power');
+  powerSection.style.display = vt === 'power' ? 'block' : 'none';
+  document.querySelectorAll('#vesselTypeToggle .vt-btn').forEach(b => {
+    const active = b.dataset.val === vt;
+    b.classList.toggle('vt-active', active);
+    b.setAttribute('aria-pressed', String(active));
+  });
+  try { localStorage.setItem('vesselType', vt); } catch (_) {}
+  refreshFindRouteEnabled();
+}
+document.querySelectorAll('#vesselTypeToggle .vt-btn').forEach(b => {
+  b.addEventListener('click', () => applyVesselType(b.dataset.val));
+});
+['pb_name', 'pb_cruise'].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('input', () => { savePowerBoat(); refreshFindRouteEnabled(); });
+});
+loadPowerBoat();
+applyVesselType(getVesselType());
+
+// Itinerary name bar: Publish (POST /api/routes/{id}/publish) and
+// Delete (DELETE /api/routes/{id}) for the route on the map.
+(function() {
+  const status = document.getElementById('routeNameStatus');
+  const pubBtn = document.getElementById('routePublish');
+  const delBtn = document.getElementById('routeDelete');
+  const input = document.getElementById('routeNameInput');
+  if (pubBtn) {
+    pubBtn.addEventListener('click', () => {
+      if (!_currentRouteJobId) { status.textContent = '(no route loaded)'; return; }
+      status.textContent = '…';
+      authFetch(API + '/routes/' + encodeURIComponent(_currentRouteJobId) + '/publish', { method: 'POST' }, null)
+        .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+        .then(d => {
+          status.textContent = '✓';
+          status.title = 'Published as ' + d.resource_id;
+          appendLog('Published to Signal K resources: ' + d.href, 'done');
+          loadRouteHistory();
+          setTimeout(() => { status.textContent = ''; }, 2500);
+        })
+        .catch(err => { status.textContent = '✗'; status.title = err.message; appendLog('Publish failed: ' + err.message, 'error'); });
+    });
+  }
+  if (delBtn) {
+    delBtn.addEventListener('click', () => {
+      if (!_currentRouteJobId) { status.textContent = '(no route loaded)'; return; }
+      _deleteRouteJob(_currentRouteJobId, (input && input.value.trim()) || _currentRouteJobId);
+    });
+  }
+})();
+
+// Display units changed (rp-core.js applyDisplayUnits): re-render what this file draws.
+window.addEventListener('rp:units', () => {
+  if (_lastRouteProps) renderResultStrip(_lastRouteProps, _lastNavWarns);
+  if (_itineraryFeatures.length) populateItinerary(_itineraryFeatures);
+  if (_cond) _renderConditionsPopup();
+  loadRouteHistory();
+});
+AuthGate.onStop(closeReplanStream);
+
+// --- Drag interaction ---
+const modify = new ol.interaction.Modify({
+  source: markerSource,
+  style: null,
+  pixelTolerance: 20
+});
+modify.on('modifyend', function(e) {
+  e.features.forEach(function(f) {
+    const coords = ol.proj.toLonLat(f.getGeometry().getCoordinates());
+    const name = f.get('name');
+    if (name === 'start') {
+      startCoord = coords;
+      updateCoordDisplay('start', coords);
+    } else if (name === 'waypoint') {
+      const idx = f.get('waypoint_index');
+      waypointCoords[idx] = coords;
+      _updateWaypointListUI();
+    } else {
+      endCoord = coords;
+      updateCoordDisplay('end', coords);
+    }
+    markRouteStale();
+    updateButton();
+  });
+});
+map.addInteraction(modify);
 
 // A long press that just placed something is followed by a click
 // event on release; swallow that one so the menu does not open on top.
@@ -94,7 +669,6 @@ let _suppressClickUntil = 0;
 })();
 
 // --- Click to place markers ---
-let routeActive = false;
 
 function _rebuildWaypointFeatures() {
   // Drop old waypoint features and add fresh ones so indexes stay aligned.
@@ -235,8 +809,6 @@ function updatePlanHint() {
 // `_routeComputing` is true while a Find Route request is in flight
 // so marker changes during the first computation (routeActive still
 // false) still flag the result as stale when it lands.
-let _routeStale = false;
-let _routeComputing = false;
 function markRouteStale() {
   if ((!routeActive && !_routeComputing) || _routeStale) { updatePlanHint(); return; }
   _routeStale = true;
@@ -252,11 +824,7 @@ function updateCoordDisplay(which, coords) {
 
 function updateButton() {
   // Endpoint readiness is the baseline; power mode adds hull-def checks.
-  if (typeof refreshFindRouteEnabled === 'function') {
-    refreshFindRouteEnabled();
-  } else {
-    document.getElementById('findRoute').disabled = !(startCoord && endCoord);
-  }
+  refreshFindRouteEnabled();
   updatePlanHint();
 }
 
@@ -286,7 +854,7 @@ document.getElementById('resetBtn').addEventListener('click', function() {
   _currentRouteJobId = null;
   _currentRouteName = '';
   _lastRouteProps = null;
-  if (_currentTimeOverride) { _currentTimeOverride = null; _reloadTimedOverlays(); }
+  if (timeOverride()) { setTimeOverride(null); _reloadTimedOverlays(); }
   updateButton();
 });
 
@@ -312,8 +880,6 @@ document.getElementById('clearEnd').addEventListener('click', function() {
 const modalLog = document.getElementById('modalLog');
 const modalItinerary = document.getElementById('modalItinerary');
 const modalStatus = document.getElementById('modalStatus');
-const logSection = document.getElementById('logSection');
-const itinerarySection = document.getElementById('itinerarySection');
 const cancelBtn = document.getElementById('cancelRoute');
 const TAB_IDS = ['routeSection', 'settingsSection', 'layersSection', 'savedSection', 'logSection', 'itinerarySection', 'srvSettingsSection'];
 function showTab(id) {
@@ -328,7 +894,7 @@ function showTab(id) {
     b.setAttribute('aria-selected', String(on));
   });
   try { localStorage.setItem('rp:tab', id); } catch (_) {}
-  if (id === 'settingsSection' && typeof drawPolarDiagram === 'function') drawPolarDiagram();
+  if (id === 'settingsSection') drawPolarDiagram();
   window.dispatchEvent(new CustomEvent('rp:tab', { detail: id }));
 }
 document.querySelectorAll('#tabBar button').forEach(b => {
@@ -339,112 +905,6 @@ document.querySelectorAll('#tabBar button').forEach(b => {
   try { saved = localStorage.getItem('rp:tab'); } catch (_) {}
   showTab(TAB_IDS.includes(saved) ? saved : 'routeSection');
 })();
-
-// ─────────── Legends ───────────
-// One row per active water/weather overlay, drawn from the same
-// colour stops the heatmaps use (`GET /api/legends`, SI values) plus the
-// barb/arrow class tables. Values shown in display units.
-let _LEGENDS = null, _legendsReq = null;
-// Resolves when the legends are loaded (or the request failed); the
-// heatmaps wait for it, there is no fallback copy of the ramps.
-function _loadLegends() {
-  if (_LEGENDS) return Promise.resolve();
-  if (_legendsReq) return _legendsReq;
-  _legendsReq = authFetch(API + '/legends', {}, null)
-    .then(r => r.ok ? r.json() : null)
-    .then(d => { if (d) { _LEGENDS = d; updateLegends(); } })
-    .catch(() => {})
-    .finally(() => { _legendsReq = null; });
-  return _legendsReq;
-}
-_loadLegends();
-
-function _legendUnit(quantity) {
-  if (quantity === 'speed') { const d = unitDesc('speed'); d.p = 0; return d; }
-  if (quantity === 'wave_height') { const d = unitDesc('wave_height'); d.p = Math.min(d.p, 1); return d; }
-  if (quantity === 'temperature') { const d = unitDesc('temperature'); d.p = 0; return d; }
-  // Precip stops are a water-depth rate in m/s, as is the precip unit.
-  if (quantity === 'precip_depth_rate') return unitDesc('precip');
-  // Sea-level heights (tide) follow the user's depth unit.
-  if (quantity === 'sea_level') { const d = unitDesc('depth'); d.p = Math.min(d.p, 1); return d; }
-  return { fn: v => v, u: '', p: 0 };
-}
-function _legendVal(v, u) {
-  if (u.missing) return UNIT_MISSING;
-  const x = u.fn(v);
-  const s = x.toFixed(u.p);
-  return s === '-0' ? '0' : s;
-}
-function _gradientRow(L) {
-  const u = _legendUnit(L.quantity);
-  const v0 = L.stops[0][0], v1 = L.stops[L.stops.length - 1][0], span = (v1 - v0) || 1;
-  const pct = v => ((v - v0) / span * 100).toFixed(1);
-  const grad = 'linear-gradient(to right, ' + L.stops.map(([v, c]) => c + ' ' + pct(v) + '%').join(', ') + ')';
-  // At most ~6 tick labels: first, last, and evenly chosen stops between.
-  const n = L.stops.length, every = Math.max(1, Math.ceil((n - 2) / 4));
-  const ticks = L.stops.map(([v], i) => ({ v, i })).filter(t => t.i === 0 || t.i === n - 1 || ((t.i % every) === 0));
-  const tickHtml = ticks.map(t => '<span class="' + (t.i === 0 ? 'first' : t.i === n - 1 ? 'last' : '') + '" style="left:' + pct(t.v) + '%;">' + _legendVal(t.v, u) + (t.i === n - 1 ? '+' : '') + '</span>').join('');
-  return '<div class="lg-row"><div class="lg-title">' + L.title + ' <span>(' + u.u + ')</span></div>'
-    + '<div class="lg-bar" style="background:' + grad + ';"></div><div class="lg-ticks">' + tickHtml + '</div></div>';
-}
-function _bandsRow(L) {
-  const cells = L.bands.map(([lo, name], i) => {
-    const hi = i + 1 < L.bands.length ? L.bands[i + 1][0] : L.stops[L.stops.length - 1][0];
-    const mid = (lo + hi) / 2;
-    let best = L.stops[0][1], bd = Infinity;
-    for (const [v, c] of L.stops) { const d = Math.abs(v - mid); if (d < bd) { bd = d; best = c; } }
-    return '<div><i style="background:' + best + ';"></i>' + name + '</div>';
-  }).join('');
-  return '<div class="lg-row"><div class="lg-title">' + L.title + '</div><div class="lg-classes">' + cells + '</div></div>';
-}
-// Class bounds are in knots (the symbols are knot-based); shown in the
-// preset's speed unit.
-function _classesRow(title, classes, glyph) {
-  const u = unitDesc('speed'); u.p = 1;
-  const cv = kt => { if (u.missing) return UNIT_MISSING; const t = u.fn(kt * KT_MS).toFixed(u.p); return t.replace(/\.0$/, ''); };
-  const cells = classes.map(([lo, color], i) => {
-    const hi = i + 1 < classes.length ? classes[i + 1][0] : null;
-    const label = hi == null ? '≥' + cv(lo) : (i === 0 ? '&lt;' + cv(hi) : cv(lo) + '–' + cv(hi));
-    const g = glyph ? '<span class="lg-glyph">' + glyph(lo, color) + '</span>' : '';
-    return '<div>' + g + '<i style="background:' + color + ';"></i>' + label + '</div>';
-  }).join('');
-  return '<div class="lg-row"><div class="lg-title">' + title + ' <span>(' + u.u + ')</span></div><div class="lg-classes">' + cells + '</div></div>';
-}
-function _on(id) { const el = document.getElementById(id); return !!(el && el.checked); }
-function _noteRow(id) {
-  const m = _overlayNotes[id];
-  return m ? '<div class="lg-note" style="color:var(--danger);">unavailable: ' + m + '</div>' : '';
-}
-function updateLegends() {
-  const box = document.getElementById('legendBox');
-  if (!box) return;
-  if (_LEGENDS == null) _loadLegends();
-  const rows = [];
-  const G = _LEGENDS || {};
-  // Barb glyph per class: the class's lower bound drawn as the map draws
-  // it (calm circle, half feather, full feathers) in the class colour.
-  if (_on('windToggle')) rows.push(_classesRow('Wind barbs', WIND_BARB_CLASSES, (lo, c) => _windBarbSvg(lo, c)) + _noteRow('windToggle'));
-  if (_on('windCombinedToggle') && G.wind) rows.push(_gradientRow(G.wind) + _noteRow('windCombinedToggle'));
-  if (_on('currentToggle')) rows.push(_classesRow('Tidal current', CURRENT_ARROW_CLASSES) + _noteRow('currentToggle'));
-  if (_on('currentHeatmapToggle') && G.current) rows.push(_gradientRow(G.current) + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (~9 km)</div>' + _noteRow('currentHeatmapToggle'));
-  if (_on('wavesCombinedToggle') && G.waves) rows.push(_gradientRow(G.waves) + _noteRow('wavesCombinedToggle'));
-  if (_on('roughnessToggle') && G.sea_state) rows.push(_bandsRow(G.sea_state) + _noteRow('roughnessToggle'));
-  if (_on('precipToggle') && G.precip) rows.push(_gradientRow(G.precip) + _noteRow('precipToggle'));
-  if (_on('temperatureToggle') && G.temperature) rows.push(_gradientRow(G.temperature) + _noteRow('temperatureToggle'));
-  if (_on('sstToggle') && G.sst) rows.push(_gradientRow(G.sst) + _noteRow('sstToggle'));
-  if (_on('tideToggle') && G.tide) {
-    // The map stretches the tide scale to the tiles loaded (rp-layers _noteTileScale); show the stops actually drawn.
-    const scaled = (typeof _autoScaleStops !== 'undefined' && _autoScaleStops.tide) ? Object.assign({}, G.tide, { stops: _autoScaleStops.tide }) : G.tide;
-    rows.push(_gradientRow(scaled) + '<div class="lg-note">scaled to the largest tide in the tiles loaded · relative to mean sea level, not chart datum · Copernicus Marine</div>' + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (~9 km)</div>' + _noteRow('tideToggle'));
-  }
-  if (_on('pressureToggle')) rows.push('<div class="lg-row"><div class="lg-title">Pressure <span>(' + unitDesc('pressure').u + ')</span></div><div class="lg-note">isobars every ' + fmtPressure(400) + ' · bold every ' + fmtPressure(2000) + ' · <b style="color:#1565C0">H</b> / <b style="color:#C62828">L</b> centres</div>' + _noteRow('pressureToggle') + '</div>');
-  box.innerHTML = rows.join('');
-}
-// Any layer toggle change (user click, or the saved-state restore that
-// dispatches bubbling change events) refreshes the box.
-const _layersSec = document.getElementById('layersSection');
-if (_layersSec) _layersSec.addEventListener('change', updateLegends);
-window.addEventListener('load', updateLegends);
 
 // Layers sub-tabs: one group of toggles visible at a time.
 (function () {
@@ -1356,9 +1816,8 @@ function fairFoul(cog, currentDir) {
 // Render + position the selection for a single route-waypoint feature.
 // Shared by the map-click handler and the itinerary card-click
 // handler so both paths use the exact same feature.
-let _selectedRouteFeature = null;
 // Every overlay that is keyed by the overlay time. Called after
-// `_currentTimeOverride` changes (waypoint click, conditions row
+// the time override changes (waypoint click, conditions row
 // click, reset).
 function _reloadTimedOverlays() {
   reloadOverlays({ currents: true, streamlines: true });
@@ -1368,7 +1827,7 @@ function _showPopupForFeature(f) {
   const p = f.getProperties();
   if (!p.sog_ms && p.sog_ms !== 0) return;
 
-  _selectedRouteFeature = f;
+  setSelectedRouteFeature(f);
   routeLayer.changed();
 
   // Popup disabled — the itinerary cards carry the same info. We still
@@ -1382,7 +1841,7 @@ function _showPopupForFeature(f) {
     if (card && card.scrollIntoView) card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
   if (p.time) {
-    _currentTimeOverride = new Date(p.time).toISOString();
+    setTimeOverride(new Date(p.time).toISOString());
     _reloadTimedOverlays();
   }
 }
@@ -1402,14 +1861,14 @@ map.on('singleclick', function(e) {
     _showPopupForFeature(f);
   } else {
     popup.setPosition(undefined);
-    if (_selectedRouteFeature) {
-      _selectedRouteFeature = null;
+    if (selectedRouteFeature()) {
+      setSelectedRouteFeature(null);
       routeLayer.changed();
       modalItinerary.querySelectorAll('.leg-card.active').forEach(c => c.classList.remove('active'));
     }
     // Reset to departure time
-    if (_currentTimeOverride) {
-      _currentTimeOverride = null;
+    if (timeOverride()) {
+      setTimeOverride(null);
       _reloadTimedOverlays();
     }
   }
@@ -1543,8 +2002,9 @@ function _tabHasData(tab, series) {
 }
 
 function _condSetHour(iso) {
-  _currentTimeOverride = new Date(iso).toISOString();
-  if (_cond) _cond.hourIso = _currentTimeOverride.slice(0, 13) + ':00:00Z';
+  const over = new Date(iso).toISOString();
+  setTimeOverride(over);
+  if (_cond) _cond.hourIso = over.slice(0, 13) + ':00:00Z';
   _reloadTimedOverlays();
   _renderConditionsPopup();
 }
@@ -1757,7 +2217,7 @@ function _chartMarkers(g, tab, series, hourIso, instant, hoverIdx) {
     ctx.fillText(tab.zeroLine, x0 + 3, yOf(0) - 1);
   }
   // High / low water markers (tide tab): triangles at the refined time and height, labelled with the clock time.
-  if (tab.tideMarks && lines.length && typeof _cond !== 'undefined' && _cond && _cond.tides) {
+  if (tab.tideMarks && lines.length && _cond && _cond.tides) {
     const u = lines[0].u;
     const mark = (e, up) => {
       const t = new Date(e.time).getTime();
@@ -2250,12 +2710,7 @@ popup.on('change:position', () => {
       f.set('rotation_rad', rot_deg * Math.PI / 180);
       vesselMarkerSource.addFeature(f);
     }
-    // First visit with no saved view: open the map on the boat.
-    if (_autoCentreOnVessel) {
-      _autoCentreOnVessel = false;
-      _geoPending = false;
-      map.getView().animate({ center: coord, zoom: 11, duration: 400 });
-    }
+    centreOnVesselOnce(coord);  // first visit with no saved view: open the map on the boat
   }
 
   // ── trigger logic ────────────────────────────────────────────────
@@ -2535,17 +2990,15 @@ popup.on('change:position', () => {
 
   // User drags the start/end marker while Live is on → start is no
   // longer the vessel's current position; exit Live.
-  if (typeof modify !== 'undefined') {
-    modify.on('modifyend', (e) => {
-      if (!liveMode) return;
-      const touched = e.features.getArray
-        ? e.features.getArray() : e.features;
-      for (const f of touched) {
-        const n = f.get('name');
-        if (n === 'start' || n === 'end') { stopLive(); break; }
-      }
-    });
-  }
+  modify.on('modifyend', (e) => {
+    if (!liveMode) return;
+    const touched = e.features.getArray
+      ? e.features.getArray() : e.features;
+    for (const f of touched) {
+      const n = f.get('name');
+      if (n === 'start' || n === 'end') { stopLive(); break; }
+    }
+  });
   const origResetBtn = document.getElementById('resetBtn');
   if (origResetBtn) {
     origResetBtn.addEventListener('click', () => { if (liveMode) stopLive(); });

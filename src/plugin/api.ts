@@ -192,6 +192,19 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     }
     // Versioned requests (from the page) can be cached; bare ones revalidate.
     res.setHeader('Cache-Control', req.query.v ? 'public, max-age=31536000, immutable' : 'no-cache');
+    if (/^rp-[a-z]+\.js$/.test(rel)) {
+      // The page's ES modules import each other by bare relative path; give
+      // those specifiers the same ?v= tag as the script tags, so the browser
+      // sees one URL (one module instance) per file and caches it hard.
+      try {
+        const v = publicVersion();
+        const js = fs.readFileSync(file, 'utf8').replace(/^(\s*import\b[^'"\n]*['"]\.\/rp-[a-z]+\.js)(['"])/gm, `$1?v=${v}$2`);
+        res.type('application/javascript').send(js);
+      } catch {
+        res.status(404).send(`not found: ${req.path}`);
+      }
+      return;
+    }
     res.sendFile(file, (err?: Error) => {
       if (err && !res.headersSent) res.status(404).send(`not found: ${req.path}`);
     });

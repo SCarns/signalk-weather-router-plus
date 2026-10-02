@@ -13,7 +13,7 @@ and a test on brain comparing routes with and without it.
 
 ## Bearing correctness in the webapp
 
-`public/rp-core.js` ~line 597 sets each route point's `outgoing_cog`
+`public/rp-plan.js` (`_drawRouteLegs`) sets each route point's `outgoing_cog`
 with `atan2(dx, dy)` on OpenLayers map coordinates. That is a correct
 (rhumb-line) bearing only if those coordinates are Web Mercator
 (EPSG:3857, conformal). If they are lon/lat degrees, it is the

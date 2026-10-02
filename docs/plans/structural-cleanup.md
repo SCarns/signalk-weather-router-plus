@@ -288,6 +288,42 @@ route), `plugin/conditions.ts`, `plugin/isobars.ts`; `engine/route.ts`
 keeps the types and `recomputePerWaypointMetadata`. Mac: typecheck,
 lint (0 errors), 235 tests pass (4 skipped, no fixtures), build clean.
 
+**Decision C built 2026-10-01**, verified on brain the same evening (server
+restarted 21:26 EDT, same cycle): the served index.html carries
+`type="module"` tags with `?v=u5dmp1`, both import lines of rp-plan.js
+carry the same tag, the browser fetched each of the four modules once
+(and no name of theirs is a global any more); tiles 161/161 identical
+to the Phase 5 set; the two reference routes, run through the Saved
+list → Find Route button with the page's own payload, identical to the
+Phase 4 build to the millisecond (7876 s / 14:11:16.013Z; 36124.2 s /
+22:02:04.235Z); layer toggles, tabs, Reset, vessel type and the
+`rp:units` re-render raise no console error. Detail:
+Discovery first (eslint-scope over the four files): 323 top-level
+names, three load-order back-references (core → plan 21 names, core →
+layers 2, layers → plan 8), 31 cross-file assignments to `let`
+bindings, 15 inline `onchange` handlers in index.html reaching 32 map
+names. Steps, each with the page still loading as classic scripts and
+lint green: (1) the route display, route library and vessel-type code
+(540 lines) moved from rp-core.js to rp-plan.js, the marker sources to
+rp-layers.js, the legends box from rp-plan.js to rp-layers.js, the drag
+interaction the other way; `applyDisplayUnits` and `AuthGate.trip`
+reach the other files through the existing `rp:units` event and
+`onStop` hooks; (2) the six remaining cross-file writes became setters
+in rp-layers.js (`setTimeOverride`, `setSelectedRouteFeature`,
+`centreOnVesselOnce`); (3) the inline handlers became one
+`LAYER_TOGGLES` table that also holds the saved-state restore that
+rp-core.js had deferred to `load` for them; (4) exports and imports
+generated from the scope analysis (core exports 25, layers 21; plan
+imports 25 + 21, settings 5, layers 11), index.html loads rp-plan.js and
+rp-settings.js as `type="module"`, `servePublic` gives import specifiers
+the script tags' `?v=` (test: `plugin/webapp_serving.test.ts`), eslint
+runs the page as modules with `no-undef` and `no-unused-vars` as
+errors (it found two unused element constants). The one runtime
+problem the static load on the Mac found was a moved block reading a
+`let` declared further down (TDZ); the three route flags now sit in the
+state section at the top. Stale `typeof x === 'function'` guards (22)
+were removed; `_whenText` (never defined) became `fmtWhen`.
+
 User request (2026-10-01), in priority order: (3) units and geometry
 constants scattered, (1) god functions and files, (2) the same algorithm
 written several times, (4) the same rule or table in several places, then
