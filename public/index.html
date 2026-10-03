@@ -591,6 +591,11 @@
     <label style="margin-top:var(--s-2);" title="Perpendicular distance from the planned route that counts as off course; a re-plan follows when the boat stays further off for the off-course sustain time (Setup tab).">Off-course threshold: <span id="xteThresholdMLabel">500</span> <span class="unitOf" data-for="xteThresholdMLabel"></span></label>
     <input type="range" id="xteThresholdM" min="100" max="2000" step="50" value="500" aria-label="Off-course threshold">
     <div id="simControls" style="display:none;">
+      <div style="display:flex;gap:var(--s-1);margin-top:var(--s-2);">
+        <button type="button" id="simStartBtn" title="Sail the simulated boat from where it is.">Start</button>
+        <button type="button" id="simStopBtn" disabled title="Hold the simulated boat where it is; Start continues from there.">Stop</button>
+        <button type="button" id="simRewindBtn" title="Put the simulated boat back at the start of the route on the map. The track and earlier routes stay.">Rewind to start</button>
+      </div>
       <label title="How much faster than real time the simulated boat sails the route, at the speeds the route was computed with for the selected vessel.">Simulation speed: <span id="simFactorLabel">×600</span></label>
       <input type="range" id="simFactor" min="0" max="3.556" step="0.01" value="2.778" autocomplete="off" aria-label="Simulation speed, times real time">
       <label title="How far the simulated boat steers off the route's course while pushed: positive to starboard, negative to port. It drifts further off the longer it stays pushed; a change applies at once.">Push off course by: <span id="simPushDegLabel">20</span> <span class="unitOf" data-for="simPushDegLabel"></span></label>

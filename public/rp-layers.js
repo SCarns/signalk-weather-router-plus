@@ -297,6 +297,23 @@ const proposedRouteLayer = new ol.layer.Vector({
   zIndex: 17,
 });
 
+// --- Track and earlier routes (Live and Simulate) ---
+// The path the boat has sailed (solid) and the routes it followed before
+// each accepted re-plan (faint dashed, the line only). Kept after Live or
+// Simulate ends.
+export const trackSource = new ol.source.Vector();
+const trackLayer = new ol.layer.Vector({
+  source: trackSource,
+  style: new ol.style.Style({ stroke: new ol.style.Stroke({ color: 'rgba(0, 150, 170, 0.9)', width: 3 }) }),
+  zIndex: 16,
+});
+export const pastRouteSource = new ol.source.Vector();
+const pastRouteLayer = new ol.layer.Vector({
+  source: pastRouteSource,
+  style: new ol.style.Style({ stroke: new ol.style.Stroke({ color: 'rgba(120, 120, 120, 0.55)', width: 2, lineDash: [6, 6] }) }),
+  zIndex: 15,
+});
+
 // --- Vessel marker layer (own boat from Signal K) ---
 // Rotated to headingTrue when available, else COG. Rendered on top of
 // route/skeleton but below the start/end pin markers so dragging pins
@@ -1353,7 +1370,7 @@ try {
 
 export const map = new ol.Map({
   target: 'map',
-  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, frontLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, ringLayer, markerLayer, condMarkerLayer],
+  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, frontLayer, skeletonLayer, pastRouteLayer, trackLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, ringLayer, markerLayer, condMarkerLayer],
   view: new ol.View({
     // Last view this browser had (saved on every move), else Block
     // Island Sound at zoom 11. On a first visit the geolocation block

@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {
   createLiveTriggers,
   createRouteSimulator,
+  createTrackRecorder,
   haversineM,
   MIN_SOG_MS,
   REPLAN_COOLDOWN_MS,
@@ -338,5 +339,63 @@ test('simulator: pushed off course, the boat never stops moving (no repeated sto
         }
       }
     }
+  }
+});
+
+// The SIMULATE track (recorded and thinned in the page).
+test('track recorder: a straight run is one segment; a zigzag keeps its corners within the tolerance', () => {
+  const straight = createTrackRecorder(20);
+  for (let k = 0; k <= 100; k++) straight.add([-70 + k * 0.001, 41]);
+  assert.equal(straight.points().length, 2, 'start and the latest position');
+
+  // The long zigzag course sampled every 50 m.
+  const rec = createTrackRecorder(20);
+  const samples: LonLat[] = [];
+  for (let i = 0; i < LONG.length - 1; i++) {
+    const a = LONG[i].lonLat,
+      b = LONG[i + 1].lonLat;
+    const n = Math.ceil(haversineM(a, b) / 50);
+    for (let k = 0; k < n; k++) samples.push([a[0] + ((b[0] - a[0]) * k) / n, a[1] + ((b[1] - a[1]) * k) / n]);
+  }
+  samples.push(LONG[LONG.length - 1].lonLat);
+  for (const p of samples) rec.add(p);
+  const pts = rec.points();
+  // About one point per corner, not one per sample.
+  assert.ok(pts.length >= LONG.length - 2 && pts.length <= LONG.length + 2, `${pts.length} points for ${LONG.length} corners`);
+  // Every sample within the tolerance of the thinned line.
+  const line = pts.map(lonLat => ({ lonLat, via: false, time: 0 }));
+  for (const p of samples) assert.ok((xteM(line, p) as number) <= 20.5, `sample ${p} off the thinned line`);
+});
+
+test('simulator: Stop holds the boat and the simulated time (speed 0), Start continues, Rewind returns to the start', () => {
+  const sim = createRouteSimulator(LONG, 600, 0);
+  const moving = sim.at(10e3);
+  // Stop.
+  sim.setFactor(10e3, 0);
+  const stopped = sim.at(60e3);
+  assert.equal(stopped.route_time, moving.route_time);
+  assert.ok(haversineM([moving.lon, moving.lat], [stopped.lon, stopped.lat]) < 0.01);
+  assert.equal(stopped.sog_ms, 0);
+  // Start: on from there.
+  sim.setFactor(60e3, 600);
+  const on = sim.at(70e3);
+  assert.equal(on.route_time, moving.route_time + 10e3 * 600);
+  assert.ok(on.sog_ms > 0);
+  // Rewind: the route's start, and on from it.
+  sim.rewind(80e3);
+  const back = sim.at(80e3);
+  assert.equal(back.route_time, LONG[0].time);
+  assert.ok(haversineM([back.lon, back.lat], LONG[0].lonLat) < 1);
+  assert.equal(sim.at(81e3).route_time, LONG[0].time + 1e3 * 600);
+});
+
+test('simulator: holdAt keeps the boat at the start of the re-plan (the trigger snapshot), not one update further', () => {
+  const sim = createRouteSimulator(LONG, 3600, 0);
+  const fired = sim.at(5e3);
+  sim.holdAt(fired.route_time, 5e3);
+  for (const t of [6e3, 7e3, 30e3]) {
+    const s = sim.at(t);
+    assert.equal(s.route_time, fired.route_time);
+    assert.ok(haversineM([s.lon, s.lat], [fired.lon, fired.lat]) < 0.01);
   }
 });

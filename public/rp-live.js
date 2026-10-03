@@ -148,7 +148,9 @@ export function bearingDeg(a, b) {
 // waypoint passed since the previous snapshot is returned first, and so are
 // the moment the drift crosses `thresholdM` and the moment `sustainMs`
 // (route time) later, so the triggers see each at any factor.
-// setFactor(now, f) changes the factor without moving the boat.
+// setFactor(now, f) changes the factor without moving the boat (0 holds it:
+// Stop, or a pause for a re-plan; held, its speed reads 0); rewind(now)
+// puts it back at the route's start.
 export function createRouteSimulator(points, factor, t0) {
   const times = points.map(p => p.time);
   if (points.length < 2 || times.some(t => !Number.isFinite(t))) throw new Error('the route has no point times');
@@ -170,6 +172,10 @@ export function createRouteSimulator(points, factor, t0) {
     points,
     get factor() { return factor; },
     setFactor(now, f) { base = routeTime(now); wall0 = now; factor = f; },
+    rewind(now) { base = start; wall0 = now; shown = start; offsetM = 0; crossAt = null; },
+    // Hold at route time tau (a snapshot already returned): a re-plan starts
+    // from that position, so the boat must not sail on until it is decided.
+    holdAt(tau, now) { base = Math.min(end, Math.max(start, tau)); wall0 = now; factor = 0; },
     at(now, pushDeg = 0, { thresholdM = Infinity, sustainMs = 0 } = {}) {
       let tau = routeTime(now);
       const stops = [];
@@ -214,8 +220,8 @@ export function createRouteSimulator(points, factor, t0) {
       const heading = (((cog + pushDeg) % 360) + 360) % 360;
       return {
         lat, lon,
-        // The leg's speed on the route, not multiplied by the factor.
-        sog_ms: sog,
+        // The leg's speed on the route, not multiplied by the factor; 0 while held.
+        sog_ms: factor ? sog : 0,
         cog_deg: heading,
         heading_deg: heading,
         twa_deg: null, tws_ms: null,
@@ -223,5 +229,28 @@ export function createRouteSimulator(points, factor, t0) {
         route_time: tau,
       };
     },
+  };
+}
+
+// The sailed track, thinned as it is recorded: a point is kept where the
+// line from the last kept point to the boat would pass more than
+// `epsilonM` from a position in between (streaming Douglas-Peucker), so a
+// straight run is one segment and every turn keeps its corner. points()
+// is the kept points plus the boat's latest position.
+export function createTrackRecorder(epsilonM = 20, maxBuffer = 500) {
+  const kept = [];
+  let buf = [];     // positions since the last kept point
+  return {
+    add(lonLat) {
+      if (!kept.length) { kept.push(lonLat); return; }
+      const a = kept[kept.length - 1];
+      if (buf.length >= maxBuffer || buf.some(p => perpendicularM(p, a, lonLat) > epsilonM)) {
+        kept.push(buf[buf.length - 1]);
+        buf = [];
+      }
+      buf.push(lonLat);
+    },
+    points() { return buf.length ? kept.concat([buf[buf.length - 1]]) : kept.slice(); },
+    get keptCount() { return kept.length; },
   };
 }

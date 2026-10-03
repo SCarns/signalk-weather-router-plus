@@ -5,8 +5,8 @@
 // Live mode with the Signal K vessel.
 
 import { _apiErrorText, _fmt, _polarAngles, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
-import { createLiveTriggers, createRouteSimulator, VESSEL_STALE_MS } from './rp-live.js';
-import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
+import { createLiveTriggers, createRouteSimulator, createTrackRecorder, VESSEL_STALE_MS } from './rp-live.js';
+import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
 let startCoord = null;  // [lon, lat]
@@ -2746,7 +2746,15 @@ popup.on('change:position', () => {
   let simMode = false;
   let sim = null;             // the simulated boat (rp-live.js createRouteSimulator)
   let simPushed = false;      // "Push off course" is on
-  let simPaused = false;      // held while a re-plan runs or a proposal is open
+  let simPaused = false;      // held: stopped, or while a re-plan runs or a proposal is open
+  let simRunning = false;     // Start / Stop
+  // The sailed track (rp-layers.js trackSource): in LIVE the own vessel's
+  // track from the Signal K Tracks API since LIVE started (thinned by the
+  // server); in SIMULATE the simulated boat's, recorded and thinned here
+  // (the Tracks API does not take positions yet). Both stay on the map.
+  const TRACK_EPSILON_M = 20;
+  let simTrack = null, simTrackFeature = null;
+  let liveSince = null, liveTrackFeatures = [], liveTrackBusy = false;
 
   const btnPlanning = document.getElementById('modeBtnPlanning');
   const btnLive = document.getElementById('modeBtnLive');
@@ -2756,6 +2764,9 @@ popup.on('change:position', () => {
   const simFactorLabel = document.getElementById('simFactorLabel');
   const simPushBtn = document.getElementById('simPushBtn');
   const simControls = document.getElementById('simControls');
+  const simStartBtn = document.getElementById('simStartBtn');
+  const simStopBtn = document.getElementById('simStopBtn');
+  const simRewindBtn = document.getElementById('simRewindBtn');
   let simOverlayHour = null;  // the hour the weather layers show for the simulated time (ISO)
   let simOverlayAt = 0;       // when they were last redrawn for it (wall ms)
   const readoutBody = document.getElementById('liveReadoutBody');
@@ -2795,7 +2806,7 @@ popup.on('change:position', () => {
       }
       // The simulated clock waits while a re-plan runs or a proposal is open,
       // so no waypoint goes by unseen.
-      const hold = replanBusy || !!banner.dataset.geojson;
+      const hold = !simRunning || replanBusy || !!banner.dataset.geojson;
       if (hold !== simPaused) { simPaused = hold; sim.setFactor(now, hold ? 0 : simFactor()); }
       return Promise.resolve(sim.at(now, simPushed ? numOr('simPushDeg', 20) : 0, {
         thresholdM: numOr('xteThresholdM', 500),
@@ -2838,6 +2849,8 @@ popup.on('change:position', () => {
     }
     readoutPanel.style.display = liveMode ? '' : 'none';
     simControls.style.display = simMode ? '' : 'none';
+    simStartBtn.disabled = simRunning;
+    simStopBtn.disabled = !simRunning;
     simPushBtn.setAttribute('aria-pressed', String(simPushed));
     simPushBtn.textContent = simPushed ? 'Back on track' : 'Push off course';
   }
@@ -2898,6 +2911,15 @@ popup.on('change:position', () => {
     if (liveMode) stopLive();
     liveMode = true;
     simMode = simulate;
+    simRunning = false;   // SIMULATE waits for Start
+    if (simulate) {
+      simTrack = createTrackRecorder(TRACK_EPSILON_M);
+      simTrackFeature = new ol.Feature();
+      trackSource.addFeature(simTrackFeature);
+    } else {
+      liveSince = new Date().toISOString();
+      liveTrackFeatures = [];
+    }
     setVisual();
     readoutBody.textContent = 'connecting…';
     stopPolling();
@@ -2909,6 +2931,9 @@ popup.on('change:position', () => {
     simMode = false;
     sim = null;
     simPushed = false;
+    simRunning = false;
+    simTrack = null; simTrackFeature = null;   // the drawn tracks stay
+    liveSince = null; liveTrackFeatures = [];
     setVisual();
     lastSnap = null;
     replanGen++;
@@ -2920,6 +2945,33 @@ popup.on('change:position', () => {
   }
   AuthGate.onStop(() => { stopLive(); stopPolling(); });
   window.addEventListener('rp:units', () => { if (lastSnap && liveMode) renderReadout(lastSnap); });
+
+  // SIMULATE: add the boat's position to the recorded track while it sails.
+  function recordSimTrack(snap) {
+    if (!simTrack || simPaused || snap.lat == null) return;
+    simTrack.add([snap.lon, snap.lat]);
+    const pts = simTrack.points();
+    if (pts.length >= 2) simTrackFeature.setGeometry(new ol.geom.LineString(unwrapLonLats(pts).map(c => ol.proj.fromLonLat(c))));
+  }
+  // LIVE: the own vessel's track since LIVE started, from the Signal K
+  // Tracks API (simplified by the provider), redrawn each poll.
+  function loadLiveTrack() {
+    if (!liveSince || liveTrackBusy) return;
+    liveTrackBusy = true;
+    const since = liveSince;
+    authFetch('/signalk/v2/api/tracks?from=' + encodeURIComponent(since) + '&simplify=true&epsilon=' + TRACK_EPSILON_M, { cache: 'no-store' }, 'live-track')
+      .then(r => (r.ok ? r.json() : null))
+      .then(fc => {
+        if (!fc || since !== liveSince) return;
+        const feats = new ol.format.GeoJSON().readFeatures(fc, { featureProjection: 'EPSG:3857' })
+          .filter(f => f.get('isSelf') !== false);
+        for (const f of liveTrackFeatures) trackSource.removeFeature(f);
+        liveTrackFeatures = feats;
+        trackSource.addFeatures(feats);
+      })
+      .catch(() => {})
+      .finally(() => { liveTrackBusy = false; });
+  }
 
   let _pollFails = 0;
   function poll() {
@@ -2933,7 +2985,8 @@ popup.on('change:position', () => {
         if (simMode) {
           keepBoatInView([snap.lon, snap.lat]);
           showSimOverlayHour(snap.route_time);
-        }
+          recordSimTrack(snap);
+        } else if (liveMode) loadLiveTrack();
         evaluateTriggers(snap);
       })
       .catch(err => {
@@ -2948,7 +3001,7 @@ popup.on('change:position', () => {
     const stale = age * 1000 > VESSEL_STALE_MS;
     readoutStale.style.display = stale ? '' : 'none';
     readoutBody.innerHTML =
-      (simMode && sim ? '<b>SIMULATED ' + (simPaused ? 'paused for the re-plan' : '×' + sim.factor) + '</b> · ' + escapeHtml(fmtWhen(new Date(snap.route_time).toISOString())) + '<br>' : '') +
+      (simMode && sim ? '<b>SIMULATED ' + (!simPaused ? '×' + sim.factor : simRunning ? 'paused for the re-plan' : 'stopped') + '</b> · ' + escapeHtml(fmtWhen(new Date(snap.route_time).toISOString())) + '<br>' : '') +
       (snap.lat != null && snap.lon != null
         ? `${snap.lat.toFixed(4)}, ${snap.lon.toFixed(4)}`
         : '—') +
@@ -2997,11 +3050,19 @@ popup.on('change:position', () => {
   // ── re-plan flow (job API) ─────────────────────────────────
   // The trigger in words, distances in the user's length unit.
   function replanReason(kind, distM) {
+    if (kind === 'accepted') return 'Accepted: re-planning from the boat\'s position now';
     const d = _fmt(distM, 'short_distance');
     return kind === 'waypoint' ? `Within ${d} of next waypoint` : `Off course by ${d}`;
   }
 
-  function fireReplan({ kind, distM, start, vias, departureMs }) {
+  let lastReplanVias = [];    // the waypoints the last re-plan went through ([lon, lat]), for Accept in LIVE
+
+  // autoAccept: the re-plan LIVE runs at Accept, from the boat's position
+  // then; its route goes on the map without a second prompt.
+  function fireReplan({ kind, distM, start, vias, departureMs, autoAccept = false }) {
+    lastReplanVias = vias;
+    // SIMULATE: hold the boat where the re-plan starts from, now, not at the next update.
+    if (simMode && sim) { sim.holdAt(departureMs, Date.now()); simPaused = true; }
     const reason = replanReason(kind, distM);
     const payload = buildRoutePayload({
       start,
@@ -3036,7 +3097,13 @@ popup.on('change:position', () => {
     })
     .then(id => authFetch(API + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, null))
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
-    .then(geojson => { if (!current()) return; renderProposal(geojson, reason); banner.dataset.jobId = jobId; loadRouteHistory(); })
+    .then(geojson => {
+      if (!current()) return;
+      loadRouteHistory();
+      if (autoAccept) { applyRoute(geojson, jobId); dismissProposal(); return; }
+      renderProposal(geojson, reason);
+      banner.dataset.jobId = jobId;
+    })
     .catch(err => {
       if (!current()) return;
       summaryEl.innerHTML =
@@ -3160,21 +3227,37 @@ popup.on('change:position', () => {
   function acceptProposal() {
     const raw = banner.dataset.geojson;
     if (!raw) { dismissProposal(); return; }
+    // LIVE: the boat sailed on while the proposal was computed and waited;
+    // compute it again from where the boat is now and put that on the map.
+    if (liveMode && !simMode && lastSnap && lastSnap.lat != null && lastSnap.lon != null) {
+      proposedRouteSource.clear();
+      delete banner.dataset.geojson;
+      fireReplan({ kind: 'accepted', distM: 0, start: [lastSnap.lon, lastSnap.lat], vias: lastReplanVias, departureMs: Date.now(), autoAccept: true });
+      return;
+    }
     try {
-      const geojson = JSON.parse(raw);
-      if (banner.dataset.jobId) { _currentRouteJobId = banner.dataset.jobId; }
-      displayRoute(geojson);    // replaces active route wholesale
-      routeActive = true;
-      _routeStale = false;
-      updatePlanHint();
-      // SIMULATE: the new course starts with no push off course.
-      if (simMode) {
-        const push = document.getElementById('simPushDeg');
-        push.value = '0';
-        push.dispatchEvent(new Event('input'));   // its label
-      }
+      applyRoute(JSON.parse(raw), banner.dataset.jobId);
     } catch (e) { /* ignore */ }
     dismissProposal();
+  }
+
+  // Put an accepted re-plan on the map in place of the route being followed.
+  function applyRoute(geojson, jobId) {
+    if (jobId) { _currentRouteJobId = jobId; }
+    // The route being followed stays as a faint line (pastRouteSource).
+    if (_routePoints.length >= 2) {
+      pastRouteSource.addFeature(new ol.Feature(new ol.geom.LineString(unwrapLonLats(_routePoints.map(p => p.lonLat)).map(c => ol.proj.fromLonLat(c)))));
+    }
+    displayRoute(geojson);    // replaces active route wholesale
+    routeActive = true;
+    _routeStale = false;
+    updatePlanHint();
+    // SIMULATE: the new course starts with no push off course.
+    if (simMode) {
+      const push = document.getElementById('simPushDeg');
+      push.value = '0';
+      push.dispatchEvent(new Event('input'));   // its label
+    }
   }
 
   function dismissProposal() {
@@ -3192,6 +3275,21 @@ popup.on('change:position', () => {
   simFactorEl.addEventListener('input', () => {
     showSimFactor();
     if (sim && !simPaused) sim.setFactor(Date.now(), simFactor());
+  });
+  simStartBtn.addEventListener('click', () => { simRunning = true; setVisual(); poll(); });
+  simStopBtn.addEventListener('click', () => { simRunning = false; setVisual(); poll(); });
+  // Rewind: back to the start of the route on the map; its waypoints fire
+  // again, a pending re-plan is dropped. The track and earlier routes stay.
+  simRewindBtn.addEventListener('click', () => {
+    if (!sim) return;
+    if (replanBusy) cancelReplan(); else dismissProposal();
+    sim.rewind(Date.now());
+    triggers.reset();
+    // A new track line from the start (the one sailed so far stays).
+    simTrack = createTrackRecorder(TRACK_EPSILON_M);
+    simTrackFeature = new ol.Feature();
+    trackSource.addFeature(simTrackFeature);
+    poll();
   });
   simPushBtn.addEventListener('click', () => {
     simPushed = !simPushed;
