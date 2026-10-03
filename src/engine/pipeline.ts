@@ -12,7 +12,7 @@
  * phase 3.5); the progress messages are the worker's.
  */
 
-import { HOUR_MS, HOUR_S, NM_M } from '../geo/units';
+import { HOUR_S, NM_M } from '../geo/units';
 import { bboxFromLonLat, bboxHeight, bboxWidth, type BBox } from '../geo/geodesy';
 import type { LandMask } from '../geo/landmask';
 import type { WaterGrid } from '../geo/watergrid';
@@ -80,7 +80,11 @@ export async function runLegPipeline(
   let corridorFallback = false;
   if (inp.waterGrid) {
     inp.waterGrid.setCanalsAllowed(inp.allowCanals);
-    progress(0, 0, `${tag}corridor: searching the global 0.02° water grid (canals ${inp.allowCanals ? 'allowed' : 'blocked'})`);
+    progress(
+      0,
+      0,
+      `${tag}corridor: searching the global {angle:0.000349066} water grid (canals ${inp.allowCanals ? 'allowed' : 'blocked'})`
+    );
     try {
       corridor = planCorridor(inp.waterGrid, chain, {
         landFor: inp.landFor,
@@ -92,9 +96,9 @@ export async function runLegPipeline(
       progress(
         0,
         0,
-        `${tag}corridor: ${(corridor.lengthM / NM_M).toFixed(1)} nm, A* ${cst.astarMs} ms (${cst.expanded} cells), ${cst.refines} local refinement(s), ${cst.reroutes} re-route(s)`
+        `${tag}corridor: {distance:${corridor.lengthM.toFixed(0)}}, A* {time:${cst.astarMs / 1000}} (${cst.expanded} cells), ${cst.refines} local refinement(s), ${cst.reroutes} re-route(s)`
       );
-      for (const v of corridor.autoVias) progress(0, 0, `${tag}corridor: auto via at ${v.name}, width ${(v.widthM / 1000).toFixed(1)} km`);
+      for (const v of corridor.autoVias) progress(0, 0, `${tag}corridor: auto via at ${v.name}, width {distance:${v.widthM.toFixed(0)}}`);
     } catch (err) {
       if (shouldCancel()) throw new RouteCancelled();
       if (!(err instanceof CorridorError) || err.fatal) throw err;
@@ -200,7 +204,7 @@ export async function runLegPipeline(
     progress(
       0,
       0,
-      `${tag}simplified: ${nRdp} waypoint(s) within ${inp.simplifyM} m of a straight line, ${nSm} replaced by straight shortcuts; ${r.waypoints.length} left`
+      `${tag}simplified: ${nRdp} waypoint(s) within {length:${inp.simplifyM}} of a straight line, ${nSm} replaced by straight shortcuts; ${r.waypoints.length} left`
     );
   }
   if (legWind) {
@@ -215,7 +219,7 @@ export async function runLegPipeline(
       progress(
         0,
         0,
-        `WARNING: ${multi ? `${legLabel(plan)} ` : ''}arrival is ${((arrival - lastValid) / HOUR_MS).toFixed(1)} h after the last forecast step (${legWind.validRange[1].toISOString().slice(0, 16).replace('T', ' ')} UTC); the last ${beyond} leg${beyond === 1 ? '' : 's'} ran on conditions held at that step${limited ? ', and the wind/wave limit was checked against those held conditions' : ''}. A longer forecast horizon (Settings) covers more of the passage`
+        `WARNING: ${multi ? `${legLabel(plan)} ` : ''}arrival is {time:${((arrival - lastValid) / 1000).toFixed(0)}} after the last forecast step (${legWind.validRange[1].toISOString().slice(0, 16).replace('T', ' ')} UTC); the last ${beyond} leg${beyond === 1 ? '' : 's'} ran on conditions held at that step${limited ? ', and the wind/wave limit was checked against those held conditions' : ''}. A longer forecast horizon (Settings) covers more of the passage`
       );
     }
   }

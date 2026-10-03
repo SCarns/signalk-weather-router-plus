@@ -130,6 +130,16 @@ test('polarFromSpecs: 400 validation, 400 bad name, 422 multihull, 400 without p
   const bad = polarFromSpecs(cfg, { name: 'x', specs: { ...SPECS, lwl_m: 11.5 } });
   assert.equal(bad.status, 400);
   assert.equal(bad.body.error, 'LWL 11.5 > LOA 10.97 — swap?');
+  // The field and values in SI, for the web app to word in its user's units.
+  assert.equal(bad.body.field, 'lwl_m');
+  assert.equal(bad.body.value, 11.5);
+  assert.deepEqual(bad.body.longer_than, { field: 'loa_m', value: 10.97 });
+  const heavy = polarFromSpecs(cfg, { name: 'x', specs: { ...SPECS, displacement_kg: 600_000 } });
+  assert.equal(heavy.status, 400);
+  assert.equal(heavy.body.field, 'displacement_kg');
+  assert.equal(heavy.body.value, 600_000);
+  assert.equal(heavy.body.min, 50);
+  assert.equal(heavy.body.max, 500_000);
   assert.equal(polarFromSpecs(cfg, { name: '___', specs: SPECS }).status, 400);
   assert.equal(polarFromSpecs(cfg, { name: '', specs: SPECS }).status, 400);
   assert.equal(polarFromSpecs(cfg, { name: 'x'.repeat(61), specs: SPECS }).status, 400);

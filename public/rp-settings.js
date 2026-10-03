@@ -9,7 +9,7 @@
 // Inputs show values in the Signal K user's unit preferences;
 // conversion happens here, the server only ever sees SI.
 
-import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING } from './rp-core.js';
+import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml } from './rp-core.js';
 (function () {
   const form = document.getElementById('srvSettingsForm');
   const saveBtn = document.getElementById('srvSettingsSave');
@@ -37,11 +37,24 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING } from './rp-
       if (c && c.inv) return { unit: c.unit, fn: c.fn, inv: c.inv, prec: Math.max(1, c.precision) + 1 };
       return { unit: UNIT_MISSING, fn: () => NaN, inv: () => NaN, prec: 0, missing: true };
     }
-    if (q === 'hours') return lin('h', 1 / 3600, 0);
-    if (q === 'minutes') return lin('min', 1 / 60, 0);
-    if (q === 'seconds') return lin('s', 1, 0);
-    if (q === 'megabytes') return lin('MB', 1e-6, 0);
-    if (q === 'angle') return lin('°', 1, 2);
+    if (q === 'hours' || q === 'minutes' || q === 'seconds') {
+      // Durations in the user's time unit. A duration-format preference
+      // (e.g. "1d 2h") has no single unit to type a number in: no unit.
+      const c = UI_UNITS.time;
+      if (c && c.inv && !c.text) return { unit: c.unit, fn: c.fn, inv: c.inv, prec: Math.max(1, c.precision) + 1 };
+      return { unit: UNIT_MISSING, fn: () => NaN, inv: () => NaN, prec: 0, missing: true };
+    }
+    if (q === 'data_size') {
+      const c = UI_UNITS.data_size;
+      if (c && c.inv) return { unit: c.unit, fn: c.fn, inv: c.inv, prec: Math.max(1, c.precision) + 1 };
+      return { unit: UNIT_MISSING, fn: () => NaN, inv: () => NaN, prec: 0, missing: true };
+    }
+    if (q === 'angle') {
+      // Stored in degrees; the user's angle unit is over radians (the category's SI).
+      const c = UI_UNITS.angle, D = Math.PI / 180;
+      if (c && c.inv) return { unit: c.unit, fn: v => c.fn(v * D), inv: d => c.inv(d) / D, prec: Math.max(1, c.precision) + 1 };
+      return { unit: UNIT_MISSING, fn: () => NaN, inv: () => NaN, prec: 0, missing: true };
+    }
     return lin(spec.unit || '', 1, spec.type === 'integer' ? 0 : 3);
   }
   function fmtNum(v, prec) {
@@ -77,7 +90,7 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING } from './rp-
     let si = r.conv.inv(d);
     if (s.multipleOf) {
       const q = si / s.multipleOf;
-      if (Math.abs(q - Math.round(q)) > 1e-6) throw new Error('must be a whole number of ' + (r.conv.unit || s.unit));
+      if (Math.abs(q - Math.round(q)) > 1e-6) throw new Error('must be a whole multiple of ' + textFor(s, s.multipleOf, r.conv) + (r.conv.unit ? ' ' + r.conv.unit : ''));
       si = Math.round(q) * s.multipleOf;
     }
     if (s.type === 'integer' && !Number.isInteger(si)) throw new Error('must be a whole number');
@@ -102,12 +115,12 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING } from './rp-
       const specs = byGroup[g.id] || [];
       if (!specs.length) continue;
       html += '<details class="subsection" open><summary>' + esc(g.label) + '</summary><div class="subsection-body">';
-      if (g.help) html += '<div class="ctl-hint">' + esc(g.help) + '</div>';
+      if (g.help) html += '<div class="ctl-hint">' + unitTextHtml(g.help) + '</div>';
       for (const s of specs) {
         const id = 'st_' + s.key.replace(/\./g, '_');
         if (s.type === 'boolean') {
           html += '<div class="st-row st-bool" data-key="' + esc(s.key) + '"><label for="' + id + '"><input type="checkbox" id="' + id + '">' + esc(s.label) + '</label>'
-            + '<div class="ctl-hint">' + esc(s.help) + '</div><div class="st-err"></div></div>';
+            + '<div class="ctl-hint">' + unitTextHtml(s.help) + '</div><div class="st-err"></div></div>';
           continue;
         }
         html += '<div class="st-row" data-key="' + esc(s.key) + '"><label for="' + id + '"><span>' + esc(s.label) + '</span><span class="st-unit"></span></label>';
@@ -118,7 +131,7 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING } from './rp-
         } else {
           html += '<input type="text" inputmode="decimal" id="' + id + '"' + (s.nullable ? ' placeholder="none"' : '') + '>';
         }
-        html += '<div class="ctl-hint">' + esc(s.help) + '</div><div class="st-err"></div></div>';
+        html += '<div class="ctl-hint">' + unitTextHtml(s.help) + '</div><div class="st-err"></div></div>';
       }
       html += '</div></details>';
     }
@@ -155,7 +168,7 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING } from './rp-
       r.row.classList.remove('st-invalid');
       return true;
     } catch (e) {
-      r.errEl.textContent = e.message;
+      r.errEl.innerHTML = unitTextHtml(e.message);
       r.row.classList.add('st-invalid');
       return false;
     }
@@ -240,7 +253,7 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING } from './rp-
       if (r.status === 400 && body && body.errors) {
         for (const [key, msg] of Object.entries(body.errors)) {
           const row = rows.find((x) => x.spec.key === key);
-          if (row) { row.errEl.textContent = msg; row.row.classList.add('st-invalid'); }
+          if (row) { row.errEl.innerHTML = unitTextHtml(msg); row.row.classList.add('st-invalid'); }
         }
         setStatus('<span class="err">Not saved:</span> the server rejected ' + Object.keys(body.errors).length + ' value(s); nothing was changed.');
         return;

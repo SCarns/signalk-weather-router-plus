@@ -244,7 +244,10 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               description:
                 '{path: "user/<slug>.csv" (token for /api/polars and vessel.polar), label, warnings[], polar: {path, twa_deg[], tws_ms[], speeds_ms[][]}}',
             },
-            400: { description: 'Invalid specs or name' },
+            400: {
+              description:
+                'Invalid specs or name: {error}. For a spec out of range also {field (the specs key), value, min, max} in SI; for an LWL longer than the LOA {field: "lwl_m", value, longer_than: {field: "loa_m", value}}',
+            },
             409: { description: 'A polar with that name exists and overwrite is false' },
             422: { description: 'Hull type the polar calculator does not model (multihulls)' },
             500: { description: 'Calculator failed ("VPP failed: …")' },

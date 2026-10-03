@@ -89,7 +89,7 @@ export function decodeRegionalRun(src: RegionalSource, srcDir: string, dataDir: 
         }
       }
     }
-    if (written.size === 0) throw new Error(`${src.name}: no 10 m wind in run ${cycle}`);
+    if (written.size === 0) throw new Error(`${src.name}: no surface wind in run ${cycle}`);
     const stepHours = [...written].sort((a, b) => a - b);
     const index = writer.finish({
       cycleTimeMs: runMs,

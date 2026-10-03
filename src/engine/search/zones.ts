@@ -107,7 +107,7 @@ export function buildGuide(ctx: SearchContext, sk: SkeletonData): SkeletonGuide 
     progress(
       0,
       kEff,
-      `narrow passages: stages shortened down to ${(minStep / 1000).toFixed(1)} km there; ${kEff} stages planned (${zones.length} narrow stretch${zones.length === 1 ? '' : 'es'} binned across the passage)`
+      `narrow passages: stages shortened down to {distance:${minStep.toFixed(0)}} there; ${kEff} stages planned (${zones.length} narrow stretch${zones.length === 1 ? '' : 'es'} binned across the passage)`
     );
   }
 

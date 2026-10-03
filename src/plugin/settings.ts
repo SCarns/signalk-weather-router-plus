@@ -101,12 +101,13 @@ export type SettingsGroup = keyof AppSettings;
 export type ReloadKind = 'forecast' | 'currents' | 'tides' | 'refresh_timer' | 'jobs' | 'next_job' | 'cache';
 
 /**
- * Display quantity, for the page's unit conversion: speed / depth /
- * wave_height / short_distance follow the user's unit preset; hours,
- * minutes and seconds are fixed displays of a value stored in seconds.
+ * Display quantity, for the page's unit conversion: every one follows the
+ * Signal K user's unit preferences (hours / minutes / seconds: the time
+ * unit, data_size: the dataSize unit, angle: the angle unit; values stored
+ * in seconds, bytes and degrees).
  */
 export type Quantity =
-  'speed' | 'depth' | 'wave_height' | 'short_distance' | 'ratio' | 'megabytes' | 'hours' | 'minutes' | 'seconds' | 'angle' | 'count';
+  'speed' | 'depth' | 'wave_height' | 'short_distance' | 'ratio' | 'data_size' | 'hours' | 'minutes' | 'seconds' | 'angle' | 'count';
 
 export interface SettingSpec {
   key: string;
@@ -126,22 +127,27 @@ export interface SettingSpec {
   nullable?: boolean;
   enum?: readonly string[];
   maxLength?: number;
+  /**
+   * Shown under the setting. Quantities in it are tokens {<Signal K unit
+   * category>:<value in its base unit>}, e.g. {time:3600}, {angle:0.26},
+   * {dataSize:27e6}, for the client to convert.
+   */
   help: string;
   reload: ReloadKind;
 }
 
 export const SETTINGS_GROUPS: { id: SettingsGroup; label: string; help: string }[] = [
   { id: 'vessel', label: 'Vessel', help: "Defaults for every route. A route request's own vessel values take precedence." },
-  { id: 'forecast', label: 'Forecast', help: 'ECMWF open-data IFS 0.25°, held for the whole globe.' },
+  { id: 'forecast', label: 'Forecast', help: 'ECMWF open-data IFS on a {angle:0.00436332} grid, held for the whole globe.' },
   {
     id: 'currents',
     label: 'Currents',
-    help: 'Copernicus Marine SMOC (worldwide 1/12° surface currents including tides and Stokes drift; primary) and NOAA Global RTOFS (regional; backup). Tidal harmonics come from the directory set in the Signal K plugin config and take precedence where they cover.',
+    help: 'Copernicus Marine SMOC (worldwide surface currents on a {angle:0.00145444} grid, including tides and Stokes drift; primary) and NOAA Global RTOFS (regional; backup). Tidal harmonics come from the directory set in the Signal K plugin config and take precedence where they cover.',
   },
   {
     id: 'tides',
     label: 'Tides',
-    help: 'Copernicus Marine hourly sea level (worldwide 1/12°): tide height, total water level and surge in the conditions popup and the Weather API, and the tide-height map layer. Heights are relative to mean sea level, not chart datum; not for under-keel clearance. Generated using E.U. Copernicus Marine Service Information.',
+    help: 'Copernicus Marine hourly sea level (worldwide, on a {angle:0.00145444} grid): tide height, total water level and surge in the conditions popup and the Weather API, and the tide-height map layer. Heights are relative to mean sea level, not chart datum; not for under-keel clearance. Generated using E.U. Copernicus Marine Service Information.',
   },
   {
     id: 'routing',
@@ -200,7 +206,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     max: 360 * HOUR_S,
     multipleOf: HOUR_S,
     default: 72 * HOUR_S,
-    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to 360 h, 06z/18z runs to 144 h, so above 144 h only 00z/12z runs are used). Changing it decodes the forecast again; the decoded run on disk grows with it (about 1.1 GB for 72 h and 3.9 GB for 360 h with the extra fields), memory does not.',
+    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to {time:1296000}, 06z/18z runs to {time:518400}, so above {time:518400} only 00z/12z runs are used). Changing it decodes the forecast again; the decoded run on disk grows with it (about {dataSize:1.1e9} for {time:259200} and {dataSize:3.9e9} for {time:1296000} with the extra fields), memory does not.',
     reload: 'forecast',
   },
   {
@@ -243,7 +249,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     label: 'Memory kept free',
     type: 'number',
     unit: 'B',
-    quantity: 'megabytes',
+    quantity: 'data_size',
     min: 0,
     max: 64e9,
     multipleOf: 1e6,
@@ -258,7 +264,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'string',
     default: '',
     maxLength: 500,
-    help: 'Where the signalk-grib-downloader plugin keeps its runs (AROME, ARPEGE, ICON-EU, GFS). Empty: found by itself (the downloader’s own setting, else ~/.signalk/gribs). Optional: without it the router uses the ECMWF forecast alone. Each complete run’s 10 m wind is decoded and layered over ECMWF for routes where the regional model covers the point and time (ECMWF elsewhere; waves stay ECMWF). Its runs are listed in the status.',
+    help: 'Where the signalk-grib-downloader plugin keeps its runs (AROME, ARPEGE, ICON-EU, GFS). Empty: found by itself (the downloader’s own setting, else ~/.signalk/gribs). Optional: without it the router uses the ECMWF forecast alone. Each complete run’s surface wind is decoded and layered over ECMWF for routes where the regional model covers the point and time (ECMWF elsewhere; waves stay ECMWF). Its runs are listed in the status.',
     reload: 'next_job',
   },
 
@@ -297,7 +303,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     multipleOf: HOUR_S,
     oneOf: [1 * HOUR_S, 3 * HOUR_S],
     default: 3 * HOUR_S,
-    help: '1 h or 3 h. 1 h triples the download and memory.',
+    help: 'The shorter of the two steps triples the download and memory.',
     reload: 'currents',
   },
   {
@@ -310,7 +316,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     min: 2,
     max: 30,
     default: 15,
-    help: 'Half-width of the area kept in memory around the vessel position (about 27 MB at 15° with 3 h steps over 72 h; grows with the square of the half-width). Routes and map views elsewhere load their own area on demand.',
+    help: 'Half-width of the area kept in memory around the vessel position (about {dataSize:27e6} at {angle:0.261799} with {time:10800} steps over {time:259200}; grows with the square of the half-width). Routes and map views elsewhere load their own area on demand.',
     reload: 'currents',
   },
   {
@@ -367,7 +373,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     label: 'Use Copernicus Marine sea level',
     type: 'boolean',
     default: true,
-    help: 'Tide height, total water level and surge (relative to mean sea level) for the conditions popup, the Weather API (water.level) and the tide-height map layer, downloaded anonymously from Copernicus Marine. About 1–4 MB per new place for a point series.',
+    help: 'Tide height, total water level and surge (relative to mean sea level) for the conditions popup, the Weather API (water.level) and the tide-height map layer, downloaded anonymously from Copernicus Marine. About {dataSize:1e6} to {dataSize:4e6} per new place for a point series.',
     reload: 'tides',
   },
   {
@@ -380,7 +386,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     min: 1,
     max: 30,
     default: 15,
-    help: 'Half-width of the tide-height map area kept in memory around the vessel position (hourly steps; about 17 MB at 15° over 24 h, growing with the square of the half-width and with the horizon). Map views elsewhere load their own hour on demand.',
+    help: 'Half-width of the tide-height map area kept in memory around the vessel position (hourly steps; about {dataSize:17e6} at {angle:0.261799} over {time:86400}, growing with the square of the half-width and with the horizon). Map views elsewhere load their own hour on demand.',
     reload: 'tides',
   },
   {
@@ -394,7 +400,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     max: 240 * HOUR_S,
     multipleOf: HOUR_S,
     default: 24 * HOUR_S,
-    help: 'How far ahead the resident tide-height map area reaches (hourly steps; each hour of a 30° area downloads about 1–3 MB per new daily run). Map times beyond it load on demand. The conditions popup and Weather API are not limited by this.',
+    help: 'How far ahead the resident tide-height map area reaches (hourly steps; each hour of a {angle:0.523599} area downloads about {dataSize:1e6} to {dataSize:3e6} per new daily run). Map times beyond it load on demand. The conditions popup and Weather API are not limited by this.',
     reload: 'tides',
   },
 
@@ -467,7 +473,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     min: 0,
     max: 60,
     default: 30,
-    help: 'Polar rows closer to the wind than this are ignored. Many library polars carry small boat speeds at 5°–25° off the wind, where no boat sails; left in, a route goes dead upwind at a crawl instead of tacking (an Amel 55 from the library: 3 kn at 19° against a 5.8 kn VMG tacking at 40°). 0 = use the polar as written.',
+    help: `Polar rows closer to the wind than this are ignored. Many library polars carry small boat speeds at {angle:0.0872665} to {angle:0.436332} off the wind, where no boat sails; left in, a route goes dead upwind at a crawl instead of tacking (an Amel 55 from the library: {speed:${3 * KTS_TO_MS}} at {angle:0.331613} against a {speed:${5.8 * KTS_TO_MS}} VMG tacking at {angle:0.698132}). 0 = use the polar as written.`,
     reload: 'next_job',
   },
   {
@@ -636,6 +642,32 @@ function cloneSettings(s: AppSettings): AppSettings {
   return JSON.parse(JSON.stringify(s)) as AppSettings;
 }
 
+/** The Signal K unit category of each settings quantity (values in its base unit). */
+const QUANTITY_CATEGORY: Partial<Record<Quantity, string>> = {
+  speed: 'speed',
+  depth: 'depth',
+  wave_height: 'depth',
+  short_distance: 'length',
+  ratio: 'percentage',
+  data_size: 'dataSize',
+  hours: 'time',
+  minutes: 'time',
+  seconds: 'time',
+  angle: 'angle',
+};
+
+/**
+ * A value of this setting in a message: a unit token {<Signal K category>:
+ * <value in its base unit>} for the client to convert (angles: stored in
+ * degrees, sent in radians); a bare number for counts.
+ */
+function quantityToken(spec: SettingSpec, v: number | undefined): string {
+  if (v === undefined) return '';
+  const cat = spec.quantity ? QUANTITY_CATEGORY[spec.quantity] : undefined;
+  if (!cat) return String(v);
+  return `{${cat}:${cat === 'angle' ? (v * Math.PI) / 180 : v}}`;
+}
+
 /** Check one value against its spec; returns the normalised value or throws with a message. */
 export function validateValue(spec: SettingSpec, raw: unknown): number | boolean | string | null {
   switch (spec.type) {
@@ -662,17 +694,16 @@ export function validateValue(spec: SettingSpec, raw: unknown): number | boolean
       if (typeof raw !== 'number' || !Number.isFinite(raw)) throw new Error('must be a number');
       if (spec.type === 'integer' && !Number.isInteger(raw)) throw new Error('must be a whole number');
       if ((spec.min !== undefined && raw < spec.min - 1e-9) || (spec.max !== undefined && raw > spec.max + 1e-9)) {
-        throw new Error(`must be in [${spec.min}, ${spec.max}]${spec.unit ? ` ${spec.unit}` : ''}`);
+        throw new Error(`must be in [${quantityToken(spec, spec.min)}, ${quantityToken(spec, spec.max)}]`);
       }
       let out = raw;
       if (spec.multipleOf !== undefined) {
         const q = raw / spec.multipleOf;
-        if (Math.abs(q - Math.round(q)) > 1e-6)
-          throw new Error(`must be a whole multiple of ${spec.multipleOf}${spec.unit ? ` ${spec.unit}` : ''}`);
+        if (Math.abs(q - Math.round(q)) > 1e-6) throw new Error(`must be a whole multiple of ${quantityToken(spec, spec.multipleOf)}`);
         out = Math.round(q) * spec.multipleOf;
       }
       if (spec.oneOf && !spec.oneOf.some(x => Math.abs(x - out) < 1e-9))
-        throw new Error(`must be one of ${spec.oneOf.join(', ')}${spec.unit ? ` ${spec.unit}` : ''}`);
+        throw new Error(`must be one of ${spec.oneOf.map(x => quantityToken(spec, x)).join(', ')}`);
       return out;
     }
   }

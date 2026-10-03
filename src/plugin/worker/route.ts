@@ -100,11 +100,12 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
         // raster is coarse because only the polygons matter here.
         const land = LandMask.fromShapefiles(cfg.landShapefiles, bboxFromLonLat([s.lon], [s.lat], 0.02), { resolutionDeg: 0.05 });
         if (!land.hasPolygons || waterAround(land, s.lon, s.lat, SNAP_CLEAR_M)) continue;
-        const why = land.isLandExact(s.lon, s.lat) ? 'is on land' : `is within ${SNAP_CLEAR_M} m of the shore`;
+        // Quantities as unit tokens ({length:…}): the web app writes them in its user's units.
+        const why = land.isLandExact(s.lon, s.lat) ? 'is on land' : `is within {length:${SNAP_CLEAR_M}} of the shore`;
         const near = nearestExactWater(land, s.lon, s.lat, SNAP_MAX_M, SNAP_CLEAR_M);
         if (!near) {
           throw new Error(
-            `${label(i)}, at ${s.lat.toFixed(4)}, ${s.lon.toFixed(4)}, ${why} according to the coastline data, with no open water (${SNAP_CLEAR_M} m clear of the shore) within ${SNAP_MAX_M} m; move it into open water`
+            `${label(i)}, at ${s.lat.toFixed(4)}, ${s.lon.toFixed(4)}, ${why} according to the coastline data, with no open water ({length:${SNAP_CLEAR_M}} clear of the shore) within {length:${SNAP_MAX_M}}; move it into open water`
           );
         }
         const d = haversineDistanceM(s.lon, s.lat, near[0], near[1]);
@@ -113,7 +114,7 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
         progress(
           0,
           0,
-          `${label(i)} ${why} according to the coastline data; moved ${d.toFixed(0)} m to open water at ${near[1].toFixed(4)}, ${near[0].toFixed(4)} (route points keep ${SNAP_CLEAR_M} m of water around them)`
+          `${label(i)} ${why} according to the coastline data; moved {length:${d.toFixed(0)}} to open water at ${near[1].toFixed(4)}, ${near[0].toFixed(4)} (route points keep {length:${SNAP_CLEAR_M}} of water around them)`
         );
       }
       if (snaps.length) {
@@ -147,7 +148,11 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
       const floored = routePolar.withNoGoFloor(cfg.routing.noGoMinAngleDeg);
       if (floored !== routePolar) {
         routePolar = floored;
-        progress(0, 0, `polar: rows closer than ${cfg.routing.noGoMinAngleDeg}° to the wind ignored (tightest sailable angle, Settings)`);
+        progress(
+          0,
+          0,
+          `polar: rows closer than {angle:${cfg.routing.noGoMinAngleDeg * (Math.PI / 180)}} to the wind ignored (tightest sailable angle, Settings)`
+        );
       }
     }
     const departureMs = request.departure ? Date.parse(request.departure) : Date.now();
@@ -211,7 +216,7 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
         progress(
           0,
           0,
-          `regional wind: ${name} (run ${run.index.cycle}, ${g.dLon.toFixed(3)}°, +${steps[0].stepHours}…${steps[steps.length - 1].stepHours} h) for the ${what}: ${(store.bytes() / 1e6).toFixed(1)} MB in ${Date.now() - t0} ms; layered over ECMWF where it covers the point and time`
+          `regional wind: ${name} (run ${run.index.cycle}, grid {angle:${g.dLon * (Math.PI / 180)}}, {time:${steps[0].stepHours * 3600}} to {time:${steps[steps.length - 1].stepHours * 3600}} after the run) for the ${what}: {dataSize:${store.bytes()}} in {time:${(Date.now() - t0) / 1000}}; layered over ECMWF where it covers the point and time`
         );
       }
       return out;
@@ -239,7 +244,7 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
           progress(
             0,
             0,
-            `forecast: read the ${what} (${bboxWidth(area).toFixed(1)}° × ${bboxHeight(area).toFixed(1)}°, ${store.steps.length} steps, ${store.meta.params.join('/')}) from the decoded run: ${(store.bytes() / 1e6).toFixed(1)} MB in ${Date.now() - t0} ms`
+            `forecast: read the ${what} ({angle:${bboxWidth(area) * (Math.PI / 180)}} × {angle:${bboxHeight(area) * (Math.PI / 180)}}, ${store.steps.length} steps, ${store.meta.params.join('/')}) from the decoded run: {dataSize:${store.bytes()}} in {time:${(Date.now() - t0) / 1000}}`
           );
           wind = store;
         } else {
@@ -375,12 +380,12 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
         for (const [k, v] of Object.entries(t.answered)) answered.set(k, (answered.get(k) ?? 0) + v);
       }
       regionalWind = [...answered].map(([name, n]) => ({ name, run: regionalNames.get(name) ?? name, share: samples ? n / samples : 0 }));
-      const parts = regionalWind.map(r => `${r.run} ${(r.share * 100).toFixed(0)} %`);
+      const parts = regionalWind.map(r => `${r.run} {percentage:${r.share.toFixed(3)}}`);
       const rest = 1 - regionalWind.reduce((a2, r) => a2 + r.share, 0);
       progress(
         0,
         0,
-        `wind: ${parts.join(', ')}, ECMWF ${(rest * 100).toFixed(0)} % of the wind samples the search took (regional where it covers the point and time, blended at its border and over its last hours)`
+        `wind: ${parts.join(', ')}, ECMWF {percentage:${rest.toFixed(3)}} of the wind samples the search took (regional where it covers the point and time, blended at its border and over its last hours)`
       );
     }
     // What the route was asked for, so a client can keep its waypoint pins

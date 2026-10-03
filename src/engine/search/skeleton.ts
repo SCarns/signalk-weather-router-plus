@@ -76,7 +76,7 @@ export function buildSkeleton(ctx: SearchContext): SkeletonData {
     widths = args.corridor.widthM && args.corridor.widthM.length === skeleton.length ? args.corridor.widthM : null;
     skeletonCum = cumulativeM(skeleton);
     const skLen = skeletonCum[skeletonCum.length - 1];
-    progress(0, ctx.K, `skeleton: corridor from the global water grid, ${skeleton.length} points, ${(skLen / 1000).toFixed(1)} km`);
+    progress(0, ctx.K, `skeleton: corridor from the global water grid, ${skeleton.length} points, {distance:${skLen.toFixed(0)}}`);
     if (skLen > ctx.budget.budgetDistM) resizeBudget(ctx, skLen);
   } else
     try {
@@ -90,13 +90,13 @@ export function buildSkeleton(ctx: SearchContext): SkeletonData {
       progress(
         0,
         ctx.K,
-        `skeleton grid ${coarse.spec.nx}x${coarse.spec.ny} at ${ctx.skeletonResolutionDeg}° built in ${((Date.now() - t0) / 1000).toFixed(1)} s`
+        `skeleton grid ${coarse.spec.nx}x${coarse.spec.ny} at {angle:${ctx.skeletonResolutionDeg * (Math.PI / 180)}} built in {time:${(Date.now() - t0) / 1000}}`
       );
       checkCancel();
-      const t1 = Date.now();
       // The skeleton is guidance only, so endpoints that fall on a land
       // cell of the coarse raster (a harbour narrower than a cell) are
       // snapped to the nearest passable cell centre for the search.
+      const t1 = Date.now();
       const snapped = chainEndpoints.map(p => snapToPassable(coarse, p, 20));
       const chain: { lon: number; lat: number }[] = [];
       try {
@@ -118,7 +118,7 @@ export function buildSkeleton(ctx: SearchContext): SkeletonData {
       progress(
         0,
         ctx.K,
-        `skeleton: ${skeleton.length} points, ${(skeletonCum[skeletonCum.length - 1] / 1000).toFixed(1)} km, A* ${((Date.now() - t1) / 1000).toFixed(1)} s`
+        `skeleton: ${skeleton.length} points, {distance:${skeletonCum[skeletonCum.length - 1].toFixed(0)}}, A* {time:${(Date.now() - t1) / 1000}}`
       );
       const skLen = skeletonCum[skeletonCum.length - 1];
       if (skLen > ctx.budget.budgetDistM) resizeBudget(ctx, skLen);

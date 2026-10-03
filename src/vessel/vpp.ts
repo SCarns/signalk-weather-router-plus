@@ -38,10 +38,22 @@ export interface BoatSpecs {
 }
 
 /** A spec value the VPP cannot work with (Python: ValueError from validate()). */
+/** The spec a SpecsError is about, SI, so a client can word it in its user's units. */
+export interface SpecsErrorDetail {
+  field: string;
+  value: number;
+  min?: number;
+  max?: number;
+  /** LWL longer than LOA: the other field and its value. */
+  longer_than?: { field: string; value: number };
+}
+
 export class SpecsError extends Error {
-  constructor(message: string) {
+  readonly detail?: SpecsErrorDetail;
+  constructor(message: string, detail?: SpecsErrorDetail) {
     super(message);
     this.name = 'SpecsError';
+    this.detail = detail;
   }
 }
 
@@ -121,13 +133,25 @@ export function validateSpecs(specs: BoatSpecs, opts: { downwindDefault?: boolea
   const sa_up = specs.sail_area_upwind_m2;
   const sa_dn = specs.sail_area_downwind_m2 ?? 0;
 
-  if (!inRange(specs.loa_m, 3.0, 50.0)) throw new SpecsError(`LOA ${f(specs.loa_m)} m outside 3-50 m`);
-  if (!inRange(specs.lwl_m, 2.0, 50.0)) throw new SpecsError(`LWL ${f(specs.lwl_m)} m outside 2-50 m`);
-  if (specs.lwl_m > specs.loa_m + 0.01) throw new SpecsError(`LWL ${f(specs.lwl_m)} > LOA ${f(specs.loa_m)} — swap?`);
-  if (!inRange(specs.beam_m, 0.5, 15.0)) throw new SpecsError(`Beam ${f(specs.beam_m)} m outside 0.5-15 m`);
-  if (!inRange(specs.draft_m, 0.1, 8.0)) throw new SpecsError(`Draft ${f(specs.draft_m)} m outside 0.1-8 m`);
+  const range = (field: string, value: number, min: number, max: number): SpecsErrorDetail => ({ field, value, min, max });
+  if (!inRange(specs.loa_m, 3.0, 50.0)) throw new SpecsError(`LOA ${f(specs.loa_m)} m outside 3-50 m`, range('loa_m', specs.loa_m, 3, 50));
+  if (!inRange(specs.lwl_m, 2.0, 50.0)) throw new SpecsError(`LWL ${f(specs.lwl_m)} m outside 2-50 m`, range('lwl_m', specs.lwl_m, 2, 50));
+  if (specs.lwl_m > specs.loa_m + 0.01) {
+    throw new SpecsError(`LWL ${f(specs.lwl_m)} > LOA ${f(specs.loa_m)} — swap?`, {
+      field: 'lwl_m',
+      value: specs.lwl_m,
+      longer_than: { field: 'loa_m', value: specs.loa_m },
+    });
+  }
+  if (!inRange(specs.beam_m, 0.5, 15.0))
+    throw new SpecsError(`Beam ${f(specs.beam_m)} m outside 0.5-15 m`, range('beam_m', specs.beam_m, 0.5, 15));
+  if (!inRange(specs.draft_m, 0.1, 8.0))
+    throw new SpecsError(`Draft ${f(specs.draft_m)} m outside 0.1-8 m`, range('draft_m', specs.draft_m, 0.1, 8));
   if (!inRange(specs.displacement_kg, 50.0, 500_000.0)) {
-    throw new SpecsError(`Displacement ${f(specs.displacement_kg)} kg outside 50-500000 kg`);
+    throw new SpecsError(
+      `Displacement ${f(specs.displacement_kg)} kg outside 50-500000 kg`,
+      range('displacement_kg', specs.displacement_kg, 50, 500_000)
+    );
   }
   if (sa_up <= 0.0) throw new SpecsError('Upwind sail area must be > 0 for the VPP to do anything');
   if (downwindDefault && sa_dn <= 0.0) {

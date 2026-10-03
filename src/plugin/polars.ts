@@ -13,7 +13,16 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { PolarDiagram } from '../vessel/polar';
 import { KTS_TO_MS } from '../geo/geodesy';
-import { HULL_TYPES, KEEL_TYPES, RIG_TYPES, slugifyPolarName, UnsupportedHull, validateSpecs, type BoatSpecs } from '../vessel/vpp';
+import {
+  HULL_TYPES,
+  KEEL_TYPES,
+  RIG_TYPES,
+  slugifyPolarName,
+  SpecsError,
+  UnsupportedHull,
+  validateSpecs,
+  type BoatSpecs,
+} from '../vessel/vpp';
 import { polarCsv, type VppTable } from '../vessel/vpp_empirical';
 import { computePhysicsTable } from '../vessel/vpp_physics';
 
@@ -272,7 +281,9 @@ export function polarFromSpecs(cfg: PolarLibraryConfig, raw: unknown): PolarFrom
     warnings = validateSpecs(req.specs, { downwindDefault: false });
     if ((req.specs.sail_area_downwind_m2 ?? 0) > 0) warnings.push('Downwind sail area is not used: the calculator assumes no spinnaker.');
   } catch (err) {
-    return { status: 400, body: { error: (err as Error).message } };
+    // The message for API clients, plus the field and limits in SI (SpecsError.detail) for the web app to word in its user's units.
+    const detail = err instanceof SpecsError ? err.detail : undefined;
+    return { status: 400, body: { error: (err as Error).message, ...detail } };
   }
   const slug = slugifyPolarName(req.name);
   if (!slug) return { status: 400, body: { error: 'Name must contain at least one alphanumeric character' } };

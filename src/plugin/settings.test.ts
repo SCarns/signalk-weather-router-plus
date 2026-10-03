@@ -118,16 +118,16 @@ test('partial merge validates with the old ranges and enums, all-or-nothing', ()
   } catch (err) {
     assert.ok(err instanceof SettingsValidationError);
     const e = err.errors;
-    assert.match(e['vessel.motorSpeed'], /\[0.01, 50\] m\/s/);
+    assert.match(e['vessel.motorSpeed'], /\[\{speed:0.01\}, \{speed:50\}\]/, 'unit tokens, Signal K base units; the client converts');
     assert.match(e['vessel.name'], /string/);
     assert.match(e['vessel.draught'], /unknown setting/, 'removed settings are unknown');
-    assert.match(e['forecast.horizon'], /\[10800, 1296000\] s/);
-    assert.match(e['forecast.refreshInterval'], /multiple of 60/);
+    assert.match(e['forecast.horizon'], /\[\{time:10800\}, \{time:1296000\}\]/);
+    assert.match(e['forecast.refreshInterval'], /multiple of \{time:60\}/);
     assert.match(e['forecast.keepCycles'], /whole number/);
     assert.match(e['currents.rtofsRegion'], /one of west_atl, west_conus/);
-    assert.match(e['currents.rtofsStep'], /\[3600, 21600\]/);
-    assert.match(e['routing.headingIncrement'], /\[0.25, 10\]/);
-    assert.match(e['routing.sailThreshold'], /\[0, /);
+    assert.match(e['currents.rtofsStep'], /\[\{time:3600\}, \{time:21600\}\]/);
+    assert.match(e['routing.headingIncrement'], /\[\{angle:0\.004363323129985824\}, \{angle:0\.17453292519943295\}\]/);
+    assert.match(e['routing.sailThreshold'], /\[\{speed:0\}, /);
     assert.match(e['publish.toResources'], /true or false/);
     assert.match(e.nope, /unknown settings group/);
   }
@@ -276,7 +276,7 @@ test('GET/PUT /api/settings: schema + values, partial update, 400 with per-key e
   assert.equal(pb.reloaded.forecast, true);
   const bad = await call('PUT', '/api/settings', { vessel: { motorSpeed: -1 } });
   assert.equal(bad.status, 400);
-  assert.match((bad.body as { errors: Record<string, string> }).errors['vessel.motorSpeed'], /\[0.01, 50\]/);
+  assert.match((bad.body as { errors: Record<string, string> }).errors['vessel.motorSpeed'], /\[\{speed:0.01\}, \{speed:50\}\]/);
   assert.ok(Math.abs(store.values.vessel.motorSpeed - 6 * KTS_TO_MS) < 1e-12);
   assert.deepEqual(applied, [['forecast.horizon']]);
 });
@@ -351,9 +351,9 @@ test('CMEMS SMOC settings: defaults in SI, 1 h or 3 h step only, changes reload 
     assert.fail('should throw');
   } catch (err) {
     const e = (err as SettingsValidationError).errors;
-    assert.match(e['currents.smocStep'], /one of 3600, 10800/);
-    assert.match(e['currents.smocHalfWidth'], /\[2, 30\]/);
-    assert.match(e['currents.smocHorizon'], /\[21600, 864000\]/);
+    assert.match(e['currents.smocStep'], /one of \{time:3600\}, \{time:10800\}/);
+    assert.match(e['currents.smocHalfWidth'], /\[\{angle:0\.03490658503988659\}, \{angle:0\.5235987755982988\}\]/);
+    assert.match(e['currents.smocHorizon'], /\[\{time:21600\}, \{time:864000\}\]/);
   }
   const specs = settingsSchema().settings.filter(s => s.key.startsWith('currents.smoc'));
   assert.deepEqual(
@@ -384,7 +384,7 @@ test('settings: Tides group reloads tides only', () => {
   const r = mergeSettings(d, { tides: { enabled: false, halfWidth: 8, horizon: 48 * 3600 } });
   assert.deepEqual(r.changed.sort(), ['tides.enabled', 'tides.halfWidth', 'tides.horizon']);
   assert.deepEqual([...reloadsFor(r.changed)], ['tides']);
-  assert.throws(() => mergeSettings(d, { tides: { halfWidth: 40 } }), /\[1, 30\]/);
+  assert.throws(() => mergeSettings(d, { tides: { halfWidth: 40 } }), /\[\{angle:0\.017453292519943295\}, \{angle:0\.5235987755982988\}\]/);
   assert.deepEqual(
     SETTINGS_SPEC.filter(s => s.group === 'tides').map(s => s.key),
     ['tides.enabled', 'tides.halfWidth', 'tides.horizon']

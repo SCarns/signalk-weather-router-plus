@@ -274,10 +274,11 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   // ---- helpers ------------------------------------------------------------
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
-  function setStatus(text, kind) { var el = $('status'); el.textContent = text; el.className = 'status' + (kind ? ' ' + kind : ''); }
+  // Plugin text (status, errors) may carry unit tokens: written in the user's units.
+  function setStatus(text, kind) { var el = $('status'); el.textContent = tokenText(text); el.className = 'status' + (kind ? ' ' + kind : ''); }
   function get(url) {
     return fetch(url, { credentials: 'same-origin', cache: 'no-store' }).then(function (r) {
-      if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + (t ? ' ' + t.slice(0, 200) : '')); });
+      if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + (t ? ' ' + tokenText(t.slice(0, 200)) : '')); });
       return r.json();
     });
   }
@@ -287,7 +288,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         return r.text().then(function (t) {
           var j = null;
           try { j = t ? JSON.parse(t) : null; } catch (_) { j = null; }
-          if (!r.ok) throw new Error((j && (j.error || j.message)) || ('HTTP ' + r.status));
+          if (!r.ok) throw new Error((j && (j.error || j.message)) ? tokenText(j.error || j.message) : 'HTTP ' + r.status);
           return j;
         });
       });
@@ -299,15 +300,54 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var d = new Date(iso);
     return isNaN(d) ? '' : d.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' });
   }
-  function fmtDuration(s) {
-    var h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
-    return h ? h + ' h ' + (m ? m + ' min' : '') : m + ' min';
-  }
-  // Host unit vocabulary (Plotter Extensions API, `units.get`).
+  // ---- units ----------------------------------------------------------------
+  // The plugin sends Signal K base units (m, m/s, s, rad, B, ratio; angles
+  // in its route properties in degrees). Speed, distance and depth/length
+  // use the host's units (Plotter Extensions API, `units.get`) so the panel
+  // matches the rest of Freeboard; angle, time, dataSize and percentage,
+  // which the host has no setting for, use the Signal K user's unit
+  // preferences (../rp-units.js). No fallback: an unresolved unit shows as
+  // '—' (or the row is left out).
   var SPEED = { kn: [1.943844, 'kn'], 'm/s': [1, 'm/s'], 'km/h': [3.6, 'km/h'], mph: [2.236936, 'mph'] };
   var DISTANCE = { 'naut-mile': [1 / 1852, 'nm'], kilometer: [1 / 1000, 'km'] };
-  function fmtSpeed(ms) { var u = units && SPEED[units.speed]; return u ? (ms * u[0]).toFixed(1) + ' ' + u[1] : null; }
-  function fmtDistance(m) { var u = units && DISTANCE[units.distance]; return u ? (m * u[0]).toFixed(1) + ' ' + u[1] : null; }
+  var LENGTH = { m: [1, 'm'], foot: [3.28084, 'ft'] };
+  var HOST_TABLE = { speed: SPEED, distance: DISTANCE, length: LENGTH, depth: LENGTH };
+  var skUnits = {};   // Signal K category → {fn, unit, precision[, text]} from the user's preferences
+  var SK_CATEGORIES = ['angle', 'time', 'percentage'];
+  var SK_PRESET_CATEGORIES = ['dataSize'];
+  function unitOf(cat) {
+    var table = HOST_TABLE[cat];
+    if (table) {
+      var u = units && table[units[cat]];
+      return u ? { fn: function (v) { return v * u[0]; }, unit: u[1], precision: 1 } : null;
+    }
+    return skUnits[cat] || null;
+  }
+  // A base-unit value in the user's unit, or null when the unit is unresolved.
+  function fmtQ(cat, si, sig) {
+    var c = unitOf(cat);
+    if (!c || !fin(si)) return null;
+    if (c.text) return c.text(si);
+    var x = c.fn(si);
+    return (sig ? String(+x.toPrecision(sig)) : x.toFixed(c.precision)) + (c.unit ? ' ' + c.unit : '');
+  }
+  function fmtSpeed(ms) { return fmtQ('speed', ms); }
+  function fmtDistance(m) { return fmtQ('distance', m); }
+  function fmtDuration(s) { return fmtQ('time', s) || '—'; }
+  // Route properties give angles in degrees.
+  function fmtAngle(deg) { return fmtQ('angle', deg * Math.PI / 180) || '—'; }
+  // Plugin text carries quantities as tokens {<Signal K category>:<base-unit value>}.
+  function tokenText(text) {
+    return String(text).replace(/\{([A-Za-z]+):([-0-9.e+]+)\}/g, function (_, cat, v) { return fmtQ(cat, Number(v), 3) || '—'; });
+  }
+  function loadSkUnits() {
+    return import('../rp-units.js' + location.search).then(function (U) {
+      return Promise.all([Promise.all(SK_CATEGORIES.map(U.fetchDisplayUnits)), U.fetchPresetUnits(SK_PRESET_CATEGORIES)]).then(function (r) {
+        SK_CATEGORIES.forEach(function (c, i) { var u = U.unitFromDisplayUnits(r[0][i]); if (u) skUnits[c] = u; });
+        SK_PRESET_CATEGORIES.forEach(function (c) { var u = U.unitFromDisplayUnits(r[1][c]); if (u) skUnits[c] = u; });
+      });
+    }).catch(function (e) { console.warn('[units] Signal K unit preferences unavailable', e); });
+  }
   function num(id) { var v = parseFloat($(id).value); return isFinite(v) ? v : null; }
 
   // ---- state --------------------------------------------------------------
@@ -446,13 +486,13 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     });
     es.addEventListener('progress', function (ev) {
       var d = JSON.parse(ev.data);
-      $('progress').textContent = (d.total ? 'Stage ' + d.stage + '/' + d.total + ': ' : '') + (d.message || '');
+      $('progress').textContent = (d.total ? 'Stage ' + d.stage + '/' + d.total + ': ' : '') + tokenText(d.message || '');
     });
     es.addEventListener('error', function (ev) {
       if (!ev.data) return;   // a dropped connection, not a job error; EventSource reconnects
       var d = JSON.parse(ev.data);
       finishJob('Failed');
-      showFailure('Failed: ' + (d.message || d.status));
+      showFailure('Failed: ' + (d.message ? tokenText(d.message) : d.status));
     });
     es.addEventListener('done', function () {
       var onDone = job.onDone;
@@ -463,7 +503,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     if (job && job.es) job.es.close();
     job = null;
     $('cancel').hidden = true;
-    $('progress').textContent = message || '';
+    $('progress').textContent = tokenText(message || '');
     refreshRouteIt(); refreshFind();
   }
   function cancelJob() {
@@ -496,7 +536,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   }
 
   // ---- wind and wave limits: typed in the host's units, remembered in SI.
-  function lengthUnit() { return units && units.length === 'foot' ? [3.28084, 'ft'] : units && units.length === 'm' ? [1, 'm'] : null; }
+  function lengthUnit() { return (units && LENGTH[units.length]) || null; }
   function limitSI(id, u) { var v = num(id); return u && v !== null ? v / u[0] : null; }
   var limitDefaultsMs = { maxWind: null, maxSwh: null };
   function showLimits() {
@@ -587,8 +627,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var s = Math.pow(Math.sin(dLat / 2), 2) + Math.cos(a[1] * toR) * Math.cos(b[1] * toR) * Math.pow(Math.sin(dLon / 2), 2);
     return 2 * 6371008.8 * Math.asin(Math.sqrt(s));
   }
-  function fmtWaves(m) { return units && units.length === 'foot' ? (m * 3.28084).toFixed(1) + ' ft' : m.toFixed(1) + ' m'; }
-  function fmtHM(s) { var t = Math.round(s / 60); return Math.floor(t / 60) + ':' + ('0' + (t % 60)).slice(-2); }
+  function fmtWaves(m) { return fmtQ('length', m) || '—'; }
   function leg(feats, i) {
     var f = feats[i], p = f.properties;
     var last = i === feats.length - 1;
@@ -615,24 +654,24 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var rows = [];
     var v;
     if (fin(l.distM) && (v = fmtDistance(l.distM))) rows.push(['Distance', v]);
-    if (fin(l.timeS)) rows.push(['Time', fmtHM(l.timeS)]);
+    if (fin(l.timeS)) rows.push(['Time', fmtDuration(l.timeS)]);
     if (fin(l.sogMs) && (v = fmtSpeed(l.sogMs))) rows.push(['SOG', v]);
-    if (fin(l.cogDeg)) rows.push(['COG', cardinal(l.cogDeg) + ' ' + Math.round(l.cogDeg) + '°']);
+    if (fin(l.cogDeg)) rows.push(['COG', cardinal(l.cogDeg) + ' ' + fmtAngle(l.cogDeg)]);
     if (fin(l.windMs) && (v = fmtSpeed(l.windMs))) {
       var pos = l.last ? null : pointOfSail(l.twa);
-      rows.push(['Wind', v + (fin(l.windDir) ? ' from ' + cardinal(l.windDir) + ' (' + Math.round(l.windDir) + '°)' : '') + (pos ? ' · ' + pos : '')]);
+      rows.push(['Wind', v + (fin(l.windDir) ? ' from ' + cardinal(l.windDir) + ' (' + fmtAngle(l.windDir) + ')' : '') + (pos ? ' · ' + pos : '')]);
     }
-    if (!l.last && fin(l.twa)) rows.push(['TWA', Math.round(l.twa) + '°']);
+    if (!l.last && fin(l.twa)) rows.push(['TWA', fmtAngle(l.twa)]);
     if (l.tack) rows.push(['Tack', l.tack === 'port' ? 'Port' : 'Starboard']);
     if (fin(l.curMs) && l.curMs > 0.05 && (v = fmtSpeed(l.curMs))) {
       var from = fin(l.curDir) ? (l.curDir + 180) % 360 : null;
       var ff = l.last ? null : fairFoul(l.cogDeg, l.curDir);
-      rows.push(['Current', v + (from !== null ? ' from ' + cardinal(from) + ' (' + Math.round(from) + '°)' : '') + (ff ? ' · ' + ff : ''), ff]);
+      rows.push(['Current', v + (from !== null ? ' from ' + cardinal(from) + ' (' + fmtAngle(from) + ')' : '') + (ff ? ' · ' + ff : ''), ff]);
     }
     if (fin(l.swh)) {
       var wv = [fmtWaves(l.swh)];
-      if (fin(l.mwp)) wv.push(Math.round(l.mwp) + ' s');
-      if (fin(l.mwd)) wv.push('from ' + cardinal(l.mwd) + ' ' + Math.round(l.mwd) + '°');
+      if (fin(l.mwp)) wv.push(fmtDuration(l.mwp));
+      if (fin(l.mwd)) wv.push('from ' + cardinal(l.mwd) + ' ' + fmtAngle(l.mwd));
       rows.push(['Waves', wv.join(' · ')]);
     }
     return rows;
@@ -640,7 +679,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   // One line per point, for the chartplotter's point descriptions (Info and Points views).
   function legText(feats, i) {
     var l = leg(feats, i);
-    var head = fmtTime(l.time) + ' · ' + (l.mode || '—') + (l.tack ? ' (' + l.tack + ')' : '') + (l.beyond ? ' · beyond the forecast (conditions held at its last step)' : '') + (l.movedM ? ' · the drawn point was on land; moved ' + Math.round(l.movedM) + ' m into the water' : '');
+    var head = fmtTime(l.time) + ' · ' + (l.mode || '—') + (l.tack ? ' (' + l.tack + ')' : '') + (l.beyond ? ' · beyond the forecast (conditions held at its last step)' : '') + (l.movedM ? ' · the drawn point was on land; moved ' + (fmtQ('length', l.movedM) || '—') + ' into the water' : '');
     return [head].concat(legFields(l).map(function (r) { return r[0] + ' ' + r[1]; })).join(' · ');
   }
   // One line for the route's own description.
@@ -669,7 +708,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         return '<span class="k">' + esc(r[0]) + '</span><span class="v' + (r[2] ? ' ' + r[2] : '') + '">' + esc(r[1]) + '</span>';
       }).join('');
       card.innerHTML =
-        '<div class="leg-head"><span><b>' + (i + 1) + '.</b> ' + esc(fmtTime(l.time)) + ' <span class="muted">' + esc(points[i] ? points[i].name : '') + '</span>' + (l.beyond ? '<span class="chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '') + (l.movedM ? '<span class="chip" title="The drawn point was on land according to the coastline data; the route uses the nearest water">moved ' + Math.round(l.movedM) + ' m</span>' : '') + '</span>'
+        '<div class="leg-head"><span><b>' + (i + 1) + '.</b> ' + esc(fmtTime(l.time)) + ' <span class="muted">' + esc(points[i] ? points[i].name : '') + '</span>' + (l.beyond ? '<span class="chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '') + (l.movedM ? '<span class="chip" title="The drawn point was on land according to the coastline data; the route uses the nearest water">moved ' + esc(fmtQ('length', l.movedM) || '—') + '</span>' : '') + '</span>'
         + '<span class="leg-mode">' + esc(l.mode || '—') + (l.tack ? ' · ' + esc(l.tack) : '') + '</span></div>'
         + '<div class="leg-grid">' + (grid || '<span class="muted">—</span>') + '</div>'
         + '<div class="leg-foot">' + l.lat.toFixed(4) + ', ' + l.lon.toFixed(4) + (l.via ? ' · via' : '') + '</div>';
@@ -861,7 +900,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var snaps = Array.isArray(p.snaps) ? p.snaps : [];
     snaps.forEach(function (s) {
       var who = s.index === 0 ? 'The start point' : s.index === (p.stop_count || 0) - 1 ? 'The destination' : 'Your point ' + (s.index + 1) + ' of ' + p.stop_count;
-      html += '<div class="status warn">' + esc(who) + ' was on land according to the coastline data; the route uses the nearest water, ' + Math.round(s.distance_m) + ' m away.</div>';
+      html += '<div class="status warn">' + esc(who) + ' was on land according to the coastline data; the route uses the nearest water, ' + esc(fmtQ('length', s.distance_m) || '—') + ' away.</div>';
     });
     $('sumBody').innerHTML = html;
     $('result').hidden = false;
@@ -931,7 +970,10 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       setStatus('This chartplotter cannot show routes from extensions (no "routes" capability).', 'error');
       return;
     }
-    var unitsReady = host.has('units') ? host.call('units.get').then(function (r) { units = r.units || null; }).catch(function () {}) : Promise.resolve();
+    var unitsReady = Promise.all([
+      host.has('units') ? host.call('units.get').then(function (r) { units = r.units || null; }).catch(function () {}) : Promise.resolve(),
+      loadSkUnits(),
+    ]);
     unitsReady.then(loadSailThreshDefault);
     // The host's visible routes: seed from route.list, then follow the events.
     host.subscribe(['route.**'], function (name, ev) {

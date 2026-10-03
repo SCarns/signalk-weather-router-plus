@@ -13,12 +13,13 @@
  * none of it: forecast reads happen in the workers.
  */
 
-import { NM_M, HOUR_S, MINUTE_MS } from './geo/units';
+import { MINUTE_MS } from './geo/units';
 import * as path from 'node:path';
 import type { IRouter } from 'express';
 import { CONFIG_SCHEMA, resolveConfig, type LegacyPluginConfig, type PluginConfig, type ResolvedConfig } from './plugin/config';
 import { mergeSettings, reloadsFor, settingsSchema, SettingsStore, SettingsValidationError } from './plugin/settings';
 import { checkDecodeResources } from './plugin/memguard';
+import { siText } from './plugin/unittext';
 import { JobManager, type Job } from './plugin/jobs';
 import { registerApi } from './plugin/api';
 import { NotStartedError } from './plugin/errors';
@@ -131,7 +132,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     if (stopped) return 'plugin not started';
     if (coast.state.downloading) {
       const m = (coast.state.message ?? '').replace(/^coastline:\s*/, '');
-      return `starting: downloading the coastline${m ? ` (${m})` : ' (GSHHG, 149 MB, once)'}`;
+      return `starting: downloading the coastline${m ? ` (${m})` : ' (GSHHG, {dataSize:149000000}, once)'}`;
     }
     if (coast.state.error)
       return `starting: the coastline download failed (${coast.state.error}); it is tried again every 10 minutes, or press Download coastline in the plugin configuration`;
@@ -498,7 +499,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
           notify(
             job,
             'normal',
-            `route ready: ${(msg.summary.total_distance_m / NM_M).toFixed(1)} nm, ${(msg.summary.total_time_s / HOUR_S).toFixed(1)} h`
+            // SI: the client converts to its user's units.
+            `route ready: ${Math.round(msg.summary.total_distance_m)} m, ${Math.round(msg.summary.total_time_s)} s`
           );
           const wantPublish = job.request.publish ?? config?.publish.toResources ?? false;
           if (wantPublish) publish(job.id).catch(err => app.error((err as Error).message));
@@ -509,7 +511,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'error': {
         jobs?.onError(msg.id, msg.message, msg.cancelled);
         const job = jobs?.get(msg.id);
-        if (job && !msg.cancelled) notify(job, 'alert', `route failed: ${msg.message}`);
+        if (job && !msg.cancelled) notify(job, 'alert', `route failed: ${siText(msg.message)}`);
         updateStatus();
         return;
       }
