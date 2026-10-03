@@ -723,6 +723,7 @@
   <input type="range" id="stages" min="0" max="200" step="4" value="0" aria-label="Isochrone stages (0 = default)">
 
   <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="noCurrents">Ignore currents</label>
+  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;" title="Finer wind from the signalk-grib-downloader plugin (AROME, ARPEGE, ICON-EU) where it covers the route and time, ECMWF elsewhere. Unticked: ECMWF only. No effect without the downloader."><input type="checkbox" id="regionalWind" checked>Regional wind where available</label>
   <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="noForecast">Ignore forecast (route in calm wind)</label>
 
   <label for="publishSel">Publish to Signal K resources</label>

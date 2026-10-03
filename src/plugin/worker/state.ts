@@ -60,6 +60,8 @@ export interface WorkerState {
   reportedSmocRev: number;
   /** Plugin data directory (cache root). */
   cacheRoot: string;
+  /** Regional runs decoded from signalk-grib-downloader, per source (data worker). */
+  regional: Map<string, import('../protocol').RegionalDecodeState>;
   /** Copernicus Marine sea level (data worker only). */
   seaLevelClient: SeaLevelClient | null;
   tides: TideSource | null;
@@ -73,6 +75,8 @@ export interface WorkerState {
   gridBuilder: Worker | null;
   /** The running route's forecast area (released when the route ends). */
   routeWindow: ForecastStore | null;
+  /** The running route's regional wind areas (released with the route). */
+  routeRegional: ForecastStore[];
   /** Queries the main thread cancelled before they started (its client went away). */
   readonly cancelledQueries: Set<number>;
 }

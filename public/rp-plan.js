@@ -1554,6 +1554,8 @@ function buildRoutePayload(overrides) {
   const pub = document.getElementById('publishSel').value;
   if (pub === 'true') body.publish = true; else if (pub === 'false') body.publish = false;
   if (document.getElementById('noCurrents').checked) body.no_currents = true;
+  const rw = document.getElementById('regionalWind');
+  if (rw && !rw.checked) body.wind_model = 'ecmwf';
   if (document.getElementById('noForecast').checked) body.no_forecast = true;
   const vessel = {};
   // Vessel-type override. Power mode forces mode=motor, drops polar,

@@ -391,10 +391,12 @@ export function windowCovers(f: FieldGrid, w: FieldWindow, lon: number, lat: num
   if (!Number.isFinite(lon) || !Number.isFinite(lat)) return false;
   const y = (lat - f.lat0) / f.dLat;
   if (!(y >= w.r0 && y <= w.r0 + w.nr - 1)) return false;
-  if (w.nc >= f.nLon) return true;
+  // A window of every column covers every longitude only on a grid that
+  // wraps the globe (ECMWF); a regional grid ends at its edges.
+  if (f.wrapLon && w.nc >= f.nLon) return true;
   let x = lonOffset(lon, f.lon0) / f.dLon - w.c0;
-  if (x < 0) x += f.nLon;
-  return x <= w.nc - 1;
+  if (f.wrapLon && x < 0) x += f.nLon;
+  return x >= 0 && x <= w.nc - 1;
 }
 
 /** Nearest-cell sample (categorical fields). */

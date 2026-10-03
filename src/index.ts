@@ -30,6 +30,7 @@ import { Coastline } from './plugin/coastline';
 import { ChartsProvider } from './plugin/charts';
 import { makePlotterExtension } from './plugin/plotterext';
 import { refreshPublicFileDates } from './plugin/webfiles';
+import { scanRegional, type RegionalStatus } from './data/regional';
 import { WorkerPool, type MainRole } from './plugin/workerpool';
 import { BUNDLED_DEFAULT_POLAR, BUNDLED_POLARS_DIR } from './plugin/polars';
 import { openApiDocument } from './plugin/openapi';
@@ -301,6 +302,20 @@ export = function plugin(app: SkApp): SignalKPlugin {
   function jobsSummary(): string {
     if (!jobs) return 'no jobs';
     return `${jobs.runningId ? 1 : 0} running, ${jobs.queueLength} queued`;
+  }
+
+  // Regional GRIB runs of signalk-grib-downloader (discovery only, read-only):
+  // scanned at most once a minute, for the status.
+  let regionalCache: { at: number; value: RegionalStatus } | null = null;
+  function regionalStatus(): RegionalStatus {
+    const now = Date.now();
+    if (regionalCache && now - regionalCache.at < 15_000) return regionalCache.value;
+    const value = scanRegional(config?.forecast.regionalGribs ?? '', app.getDataDirPath());
+    // The data worker's decode state per source (decoded run, size, time, error).
+    const dec = new Map((dataStatus?.regional ?? []).map(d => [d.source, d]));
+    for (const s of value.sources) (s as typeof s & { decoded?: unknown }).decoded = dec.get(s.name) ?? null;
+    regionalCache = { at: now, value };
+    return value;
   }
 
   function updateStatus(): void {
@@ -767,6 +782,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           ...coast.state,
         },
         weather_provider_registered: weatherRegistered,
+        regional: regionalStatus(),
         jobs: jobs ? { running: jobs.runningId, queued: jobs.queueLength, total: jobs.list(500).length } : null,
         vessel: config?.vessel,
         polar: config?.polarFile,

@@ -8,11 +8,14 @@
 
 import { HOUR_S, NM_M } from '../../geo/units';
 import { validateRouteRequest } from '../request_schema';
-import { runLegPipeline, type LegPipelineInputs } from '../../engine/pipeline';
+import { runLegPipeline, type LegPipelineInputs, type LegWind } from '../../engine/pipeline';
 import * as path from 'node:path';
 import { ForecastStore } from '../../data/forecast';
 import { loadForecastForBBox, resolveCycle } from '../../data/loader';
-import { type WindowOptions } from '../../data/decoded';
+import { openDecodedRun, type WindowOptions } from '../../data/decoded';
+import { REGIONAL_DIR } from '../../data/regionaldecode';
+import { LayeredWind, type RegionalWind } from '../../engine/layeredwind';
+import * as fs from 'node:fs';
 import { checkRouteForecastMemory } from '../memguard';
 import { type BBox, bboxFromLonLat, bboxHeight, bboxWidth, haversineDistanceM } from '../../geo/geodesy';
 import { LandMask } from '../../geo/landmask';
@@ -152,9 +155,74 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
     if (request.mode !== 'motor' && request.no_forecast) progress(0, 0, 'no_forecast set: routing with calm wind');
     let wind: ForecastStore | null = null;
     let cycleLabel: string | undefined;
+    // Regional wind (signalk-grib-downloader runs decoded by the data
+    // worker), layered over ECMWF; counted for the log and the summary.
+    const layers: LayeredWind[] = [];
+    const regionalNames = new Map<string, string>();
+    const loadRegional = async (area: BBox, what: string): Promise<RegionalWind[]> => {
+      if (request.wind_model === 'ecmwf') return [];
+      const root = path.join(st.cacheRoot, REGIONAL_DIR);
+      let sources: string[];
+      try {
+        sources = fs.readdirSync(root).filter(n => !n.startsWith('.'));
+      } catch {
+        return [];
+      }
+      const out: RegionalWind[] = [];
+      for (const name of sources) {
+        let cycles: string[];
+        try {
+          cycles = fs
+            .readdirSync(path.join(root, name))
+            .filter(n => /^\d{10}$/.test(n))
+            .sort()
+            .reverse();
+        } catch {
+          continue;
+        }
+        // The newest decoded run of the source.
+        const { run } = cycles.length ? openDecodedRun(path.join(root, name, cycles[0])) : { run: null };
+        if (!run) continue;
+        const g = run.index.grid;
+        const steps = run.index.steps;
+        const firstMs = steps[0].validMs;
+        const lastMs = steps[steps.length - 1].validMs;
+        if (lastMs < departureMs) continue; // over before the route starts
+        // Does the route area meet the regional grid? (Longitudes compared
+        // the short way; regional grids are narrower than 180°.)
+        const gEast = g.lon0 + (g.nLon - 1) * g.dLon;
+        const gNorth = g.lat0 + (g.nLat - 1) * g.dLat;
+        const aw = g.lon0 + (((area.west - g.lon0 + 540) % 360) - 180);
+        const ae = aw + bboxWidth(area);
+        if (area.north < g.lat0 || area.south > gNorth || ae < g.lon0 || aw > gEast) continue;
+        const opts: WindowOptions = { bbox: area, params: ['10u', '10v'], marginCells: 1 };
+        const need = run.windowBytes(opts);
+        const mem = checkRouteForecastMemory(need, cfg.forecast.memoryHeadroomBytes);
+        if (!mem.ok) {
+          progress(0, 0, `WARNING: regional wind ${name} not used for the ${what}: ${mem.message}`);
+          continue;
+        }
+        const t0 = Date.now();
+        const store = await run.window(opts);
+        st.forecastMemory.heldBytes += store.bytes();
+        st.routeRegional.push(store);
+        regionalNames.set(name, `${name} run ${run.index.cycle.slice(0, 8)} ${run.index.cycle.slice(8)}Z`);
+        out.push({ name, wind: store, grid: g, firstMs, lastMs });
+        progress(
+          0,
+          0,
+          `regional wind: ${name} (run ${run.index.cycle}, ${g.dLon.toFixed(3)}°, +${steps[0].stepHours}…${steps[steps.length - 1].stepHours} h) for the ${what}: ${(store.bytes() / 1e6).toFixed(1)} MB in ${Date.now() - t0} ms; layered over ECMWF where it covers the point and time`
+        );
+      }
+      return out;
+    };
+    const releaseRegional = (): void => {
+      for (const s2 of st.routeRegional) releaseWindow(st, s2);
+      st.routeRegional = [];
+    };
 
     // Forecast area and SMOC area for a box, held until releaseAreas().
-    const loadAreas = async (bbox: BBox, what: string): Promise<ForecastStore | null> => {
+    const loadAreas = async (bbox: BBox, what: string): Promise<LegWind | null> => {
       if (useForecast) {
         // The route area of the forecast: the corridor box plus a margin, the
         // fields the engine reads, every step. Held only while this route runs.
@@ -217,13 +285,19 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
         }
       }
       if (shouldCancel()) throw new RouteCancelled();
-      return wind;
+      if (!wind) return null;
+      const regional = await loadRegional(expandBBox(bbox, ROUTE_FORECAST_MARGIN_DEG), what);
+      if (!regional.length) return wind;
+      const layered = new LayeredWind(wind, regional);
+      layers.push(layered);
+      return layered;
     };
     const releaseAreas = (): void => {
       if (st.routeWindow) {
         releaseWindow(st, st.routeWindow);
         st.routeWindow = null;
       }
+      releaseRegional();
       wind = null;
       if (st.smoc) st.smoc.trimOnDemand(0);
       rebuildStack(st);
@@ -290,6 +364,25 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
     });
     if (cycleLabel) result.forecastCycle = cycleLabel;
     if (snaps.length) result.snaps = snaps;
+    // Which model answered the wind, over every leg's samples.
+    let regionalWind: { name: string; run: string; share: number }[] | undefined;
+    if (layers.length) {
+      let samples = 0;
+      const answered = new Map<string, number>();
+      for (const l of layers) {
+        const t = l.tally();
+        samples += t.samples;
+        for (const [k, v] of Object.entries(t.answered)) answered.set(k, (answered.get(k) ?? 0) + v);
+      }
+      regionalWind = [...answered].map(([name, n]) => ({ name, run: regionalNames.get(name) ?? name, share: samples ? n / samples : 0 }));
+      const parts = regionalWind.map(r => `${r.run} ${(r.share * 100).toFixed(0)} %`);
+      const rest = 1 - regionalWind.reduce((a2, r) => a2 + r.share, 0);
+      progress(
+        0,
+        0,
+        `wind: ${parts.join(', ')}, ECMWF ${(rest * 100).toFixed(0)} % of the wind samples the search took (regional where it covers the point and time, blended at its border and over its last hours)`
+      );
+    }
     // What the route was asked for, so a client can keep its waypoint pins
     // where the user put them (the route's own via points are where it
     // entered each circle) and draw the circles.
@@ -318,6 +411,7 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
       departure: wps[0].time.toISOString(),
       arrival: wps[wps.length - 1].time.toISOString(),
       forecast_cycle: cycleLabel,
+      regional_wind: regionalWind,
       current_sources: result.currentSources,
       polar: polarLabel,
       polar_performance: routePolar ? vessel.polarPerformance : undefined,
@@ -353,6 +447,8 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
       releaseWindow(st, st.routeWindow);
       st.routeWindow = null;
     }
+    for (const s2 of st.routeRegional) releaseWindow(st, s2);
+    st.routeRegional = [];
     if (st.smoc) st.smoc.trimOnDemand(0);
     rebuildStack(st);
     releaseMemory();

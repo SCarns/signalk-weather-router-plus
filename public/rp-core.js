@@ -707,7 +707,7 @@ document.getElementById('polarSelect').addEventListener('change', function() {
     'mode', 'sailThresh', 'stages', 'arrivalRadiusM', 'precision',
     'publishSel', 'proximityRadiusM', 'xteThresholdM', 'xteSustainSec',
   ];
-  const CHECK_IDS = ['noCurrents', 'noForecast'];
+  const CHECK_IDS = ['noCurrents', 'noForecast', 'regionalWind'];
   // The sail-speed slider held knots until 2026-10; it holds m/s now under a new key.
   try {
     const old = localStorage.getItem('routeVar:sailThresh');
@@ -908,6 +908,20 @@ export function escapeHtml(v) {
   return String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Regional GRIB runs found from signalk-grib-downloader (discovery only so far).
+function _regionalLine(r) {
+  if (!r) return '';
+  const ok = (r.sources || []).filter(x => x.run && !x.problem);
+  if (!ok.length) return r.root ? '<br>regional: <span class="warn">' + escapeHtml(r.note || ((r.sources || [])[0] || {}).problem || 'no complete run') + '</span>' : '';
+  return '<br>regional: ' + ok.map(x => {
+    const d = x.decoded;
+    const state = d && d.error ? ' <span class="warn">' + escapeHtml(d.error) + '</span>'
+      : d && d.cycle && x.run.slice(0, 13).replace(/[-T]/g, '') === d.cycle ? ' (decoded)'
+      : ' (decoding)';
+    return escapeHtml(x.name) + ' ' + x.run.slice(0, 13) + 'Z +' + x.hours[0] + '…' + x.hours[x.hours.length - 1] + ' h' + state;
+  }).join(', ');
+}
+
 function _statusLine(s) {
   const f = s.forecast;
   if (s.starting) return '<span class="warn">' + escapeHtml(s.starting) + '</span>';
@@ -916,6 +930,7 @@ function _statusLine(s) {
   return '<span class="ok">forecast</span> ' + f.cycle.slice(0, 13) + 'Z · ' + f.steps + ' steps to ' + f.valid_to.slice(0, 13) + 'Z'
     + (f.has_waves ? ' · waves' : '') + '<br>currents: ' + cur
     + (s.jobs ? ' · jobs: ' + (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued' : '')
+    + _regionalLine(s.regional)
     // A refused reload (e.g. the memory guard) while the previous forecast keeps serving.
     + (s.forecast_error ? '<br><span class="warn">' + escapeHtml(s.forecast_error) + '</span>' : '');
 }

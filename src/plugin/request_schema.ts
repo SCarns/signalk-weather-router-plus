@@ -71,6 +71,13 @@ export const ROUTE_REQUEST_FIELDS: Record<string, RouteFieldSpec> = {
   stages: { type: 'number', ...settingRange('routing.stages'), description: 'Overrides the routing.stages setting' },
   no_forecast: { type: 'boolean', description: 'Route with calm wind' },
   no_currents: { type: 'boolean', description: 'Route without currents' },
+  wind_model: {
+    type: 'enum',
+    values: ['auto', 'ecmwf'],
+    default: 'auto',
+    description:
+      'auto: regional wind from signalk-grib-downloader (AROME, ARPEGE, ICON-EU) where it covers the point and time, ECMWF elsewhere; ecmwf: ECMWF only',
+  },
   publish: { type: 'boolean', description: 'Override the publish.toResources setting for this route' },
 };
 

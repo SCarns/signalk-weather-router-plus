@@ -6,6 +6,30 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Regional wind from signalk-grib-downloader, layered over ECMWF**
+  (docs/plans/grib-downloader-enhancement.md). Optional: with the
+  downloader installed, the plugin finds its folder (its own setting, else
+  `~/.signalk/gribs`; or the new Settings → Forecast → Regional GRIB
+  folder), lists its complete runs in `/api/status` (`regional`) and the
+  web app header, and decodes each new run's 10 m wind once into its own
+  folder (`<data>/regional/<source>/<run>/`, the same format as the ECMWF
+  runs; newest runs kept per Forecast → keep cycles). Routes then use the
+  regional wind where it covers the point and the time, ECMWF elsewhere:
+  its weight ramps from 0 at its grid's border to 1 five cells inside, and
+  back to 0 over its last 3 hours of forecast; wind vectors are blended,
+  never directions; several regional models apply coarse to fine. Waves
+  stay ECMWF. The job log and the route summary (`regional_wind`) give the
+  share of the search's wind samples each model answered. Request field
+  `wind_model` (`auto`, the default, or `ecmwf`); Plan tab checkbox
+  "Regional wind where available". Measured on the test box: an AROME
+  0.025° run (52 hourly steps) decodes in 20 s and takes 334 MB. The
+  GRIB reader now exposes a field's height, so only 10 m wind is read.
+- Reading a whole regional grid made it claim to cover the whole globe
+  (the coverage check assumed every grid wraps, as ECMWF's does); a
+  regional grid now ends at its edges.
+
 ### Fixed
 
 - **In open water the search can leave the direct line.** Each candidate

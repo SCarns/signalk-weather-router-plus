@@ -59,6 +59,8 @@ export interface RouteRequest {
   stages?: number;
   no_forecast?: boolean;
   no_currents?: boolean;
+  /** auto (default): regional wind layered over ECMWF where available; ecmwf: ECMWF only. */
+  wind_model?: 'auto' | 'ecmwf';
   publish?: boolean;
   vessel?: {
     name?: string;
@@ -101,6 +103,8 @@ export interface RouteSummary {
   precision?: 'precise' | 'approximate';
   /** A leg's corridor search failed and ran on the coarse per-route skeleton (counted in /api/status corridor_fallbacks). */
   corridor_fallback?: true;
+  /** Regional wind models used and the share of the search's wind samples each answered (0..1); absent when only ECMWF was used. */
+  regional_wind?: { name: string; run: string; share: number }[];
 }
 
 export type QueryKind =
@@ -211,6 +215,21 @@ export interface DataStatus {
   tides: TideStatus | null;
   /** Last tide source error (probe or load), null when fine. */
   tidesError: string | null;
+  /** Regional runs decoded from signalk-grib-downloader (data worker), per source. */
+  regional: RegionalDecodeState[];
+}
+
+/** One regional source's decode state. */
+export interface RegionalDecodeState {
+  source: string;
+  /** yyyymmddHH of the decoded run, or null. */
+  cycle: string | null;
+  dir: string | null;
+  steps: number;
+  bytes: number;
+  decodeMs: number;
+  decodedAt: string | null;
+  error: string | null;
 }
 
 export type MainToWorker =

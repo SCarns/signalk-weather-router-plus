@@ -596,6 +596,16 @@ Freeboard panel shows the same note. The **Forecast horizon** setting
 (Settings tab, Forecast group, 3 h to 360 h) decides how far the forecast
 reaches.
 
+**Regional wind (optional).** With the signalk-grib-downloader plugin
+installed (AROME, ARPEGE, ICON-EU, GFS), the plugin decodes each of its
+complete runs' 10 m wind and layers it over ECMWF: the regional model
+where it covers the point and the time, blended over five grid cells at
+its border and over its last 3 hours, ECMWF elsewhere; waves stay ECMWF.
+The job log and the summary's `regional_wind` say which model answered
+how much. `wind_model: "ecmwf"` (or unticking "Regional wind where
+available" in the Plan tab) routes on ECMWF alone. Install only the
+downloader; its companion signalk-grib-weather-provider is not needed.
+
 Where the corridor is open water, each candidate aims the centre of its
 heading sweep one step along the skeleton's direction from where it is,
 so branches can spread across the ocean to find a detour; in narrow

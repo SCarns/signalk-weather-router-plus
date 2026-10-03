@@ -54,6 +54,8 @@ export interface Grib2Product {
   parameterNumber: number;
   productDefinitionTemplate: number;
   typeOfFirstFixedSurface: number;
+  /** Value of the first fixed surface (e.g. 10 for 10 m above ground), NaN when missing. */
+  firstFixedSurfaceValue: number;
   /** Forecast step in hours from the reference time. */
   forecastHours: number;
 }
@@ -280,6 +282,11 @@ function parseMessage(m: Uint8Array, absOffset: number): Grib2Message {
   const timeUnit = u8(m, q + 18);
   const forecastTime = s32(m, q + 19);
   const typeOfFirstFixedSurface = u8(m, q + 23);
+  // Octet 24: scale factor, 25–28: scaled value (all ones = missing).
+  const surfScale = u8(m, q + 24);
+  const surfScaled = u32(m, q + 25);
+  const firstFixedSurfaceValue =
+    surfScale === 0xff || surfScaled === 0xffffffff ? NaN : surfScaled / 10 ** (surfScale > 127 ? -(surfScale & 0x7f) : surfScale);
   const forecastHours = forecastTime * timeUnitHours(timeUnit);
   const product: Grib2Product = {
     discipline,
@@ -287,6 +294,7 @@ function parseMessage(m: Uint8Array, absOffset: number): Grib2Message {
     parameterNumber,
     productDefinitionTemplate: pdt,
     typeOfFirstFixedSurface,
+    firstFixedSurfaceValue,
     forecastHours,
   };
 

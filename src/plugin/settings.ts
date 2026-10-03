@@ -35,6 +35,8 @@ export interface AppSettings {
     extraFields: boolean;
     /** Bytes that must stay free after the forecast loads (memory guard). */
     memoryHeadroom: number;
+    /** Folder of signalk-grib-downloader's runs; empty = find it (its config, else ~/.signalk/gribs). */
+    regionalGribs: string;
   };
   currents: {
     smocEnabled: boolean;
@@ -248,6 +250,16 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     default: 1e9,
     help: 'A forecast update (one step decoded at a time) or a route (its forecast area) only runs if at least this much memory stays free afterwards for Signal K, the OS and other plugins. If it does not fit, the plugin says what to change instead.',
     reload: 'forecast',
+  },
+  {
+    key: 'forecast.regionalGribs',
+    group: 'forecast',
+    label: 'Regional GRIB folder',
+    type: 'string',
+    default: '',
+    maxLength: 500,
+    help: 'Where the signalk-grib-downloader plugin keeps its runs (AROME, ARPEGE, ICON-EU, GFS). Empty: found by itself (the downloader’s own setting, else ~/.signalk/gribs). Optional: without it the router uses the ECMWF forecast alone. Its runs are listed in the status; using them for wind is the next step.',
+    reload: 'next_job',
   },
 
   {
