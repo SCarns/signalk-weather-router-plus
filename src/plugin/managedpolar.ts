@@ -51,7 +51,8 @@ export function adaptManagedPolar(resource: unknown, id: string, performanceFact
       throw new Error('Invalid polar axes: expected finite, strictly ascending values in range');
     return value as number[];
   };
-  const twa = axis(axes.twa, 0, Math.PI, 2).map(a => (a * 180) / Math.PI);
+  const angles = axis(axes.twa, 0, Math.PI, 2);
+  const twa = angles.map(a => (a * 180) / Math.PI);
   const tws = axis(axes.tws, 0, Infinity, 1);
   const matrix = object(doc.values).boatSpeedMatrix;
   if (
@@ -65,6 +66,34 @@ export function adaptManagedPolar(resource: unknown, id: string, performanceFact
   const factor = performanceFactor === undefined || performanceFactor === null ? 1 : performanceFactor;
   if (typeof factor !== 'number' || !Number.isFinite(factor) || factor < 0 || factor > 1)
     throw new Error('Invalid polars.performanceFactor: expected a ratio from 0 to 1');
+  const targets = derivedTargets(doc.derived, tws);
+  if (targets.size) {
+    const union = [
+      ...new Set([
+        ...angles,
+        ...[...targets.values()].flatMap(row => [row.beat?.twa, row.run?.twa].filter((a): a is number => a !== undefined)),
+      ]),
+    ].sort((a, b) => a - b);
+    const diagrams = tws.map((wind, k) => {
+      const points = new Map(angles.map((a, i) => [a, (matrix[k] as number[])[i]]));
+      const row = targets.get(k);
+      for (const target of [row?.beat, row?.run]) if (target) points.set(target.twa, target.tbs);
+      const ordered = [...points].sort((a, b) => a[0] - b[0]);
+      return new PolarDiagram(
+        ordered.map(([a]) => (a * 180) / Math.PI),
+        [wind],
+        ordered.map(([a, speed]) => (row?.beat && a < row.beat.twa ? 0 : speed))
+      );
+    });
+    const mergedTwa = union.map(a => (a * 180) / Math.PI);
+    return {
+      label: typeof doc.name === 'string' && doc.name ? doc.name : id,
+      twa: mergedTwa,
+      tws: [...tws],
+      speeds: mergedTwa.flatMap(a => diagrams.map((diagram, k) => diagram.boatSpeed(a, tws[k]))),
+      performanceFactor: factor,
+    };
+  }
   const speeds = twa.flatMap((_, i) => tws.map((_, k) => (matrix[k] as number[])[i]));
   return { label: typeof doc.name === 'string' && doc.name ? doc.name : id, twa, tws: [...tws], speeds, performanceFactor: factor };
 }
@@ -117,4 +146,46 @@ export async function selectManagedPolar(
   if (token && token !== 'auto') return undefined;
   if (!token && source === 'files') return undefined;
   return (await detectManagedPolar(app)) ?? undefined;
+}
+
+interface DerivedTarget {
+  twa: number;
+  tbs: number;
+}
+interface DerivedRow {
+  beat?: DerivedTarget;
+  run?: DerivedTarget;
+}
+
+/** Targets are SI points keyed by wind speed, not by the ordering of derived.rows. */
+function derivedTargets(derived: unknown, tws: number[]): Map<number, DerivedRow> {
+  const out = new Map<number, DerivedRow>();
+  if (derived === undefined || derived === null) return out;
+  const rows = object(derived).rows;
+  if (rows === undefined) return out;
+  if (!Array.isArray(rows)) throw new Error('Invalid derived.rows: expected an array');
+  for (const value of rows) {
+    const row = object(value);
+    if (row.beat == null && row.run == null) continue;
+    const k = tws.findIndex(wind => typeof row.tws === 'number' && Math.abs(wind - row.tws) <= 1e-9);
+    if (k < 0 || out.has(k)) throw new Error('Invalid derived.rows: expected one target row per matching TWS');
+    const targets: DerivedRow = {};
+    for (const key of ['beat', 'run'] as const) {
+      if (row[key] == null) continue;
+      const target = object(row[key]);
+      if (
+        typeof target.twa !== 'number' ||
+        !Number.isFinite(target.twa) ||
+        target.twa < 0 ||
+        target.twa > Math.PI ||
+        typeof target.tbs !== 'number' ||
+        !Number.isFinite(target.tbs) ||
+        target.tbs <= 0
+      )
+        throw new Error('Invalid derived target: expected TWA in 0..pi radians and positive boat speed in m/s');
+      targets[key] = { twa: target.twa, tbs: target.tbs };
+    }
+    out.set(k, targets);
+  }
+  return out;
 }

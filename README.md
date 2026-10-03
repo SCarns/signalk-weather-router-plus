@@ -1936,6 +1936,12 @@ colours.
 
 #### Signal K Polar Management source
 
+Imported beat/run targets in `derived.rows` are folded into each wind-speed
+row and resampled onto the union of table and target angles using straight-line
+interpolation. Below each beat target the speed is zero; beyond the final point
+the existing linear extrapolation remains. Tables without targets retain their
+original axes and speed values. No smoothing or new runtime dependency is added.
+
 Weather Router Plus automatically detects the active polar from
 [Polar Management](https://github.com/Asw1n/signalk-polar-management).
 The picker always includes **Automatic**, the active managed polar when usable,

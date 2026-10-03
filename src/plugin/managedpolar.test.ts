@@ -1,3 +1,6 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { PolarDiagram } from '../vessel/polar';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -162,4 +165,86 @@ test('automatic route selection detects managed polars, falls back, and respects
   assert.equal(await selectManagedPolar(app, 'auto'), undefined);
   assert.equal(await selectManagedPolar(app, 'signalk'), undefined);
   await assert.rejects(selectManagedPolar(app, 'auto', 'signalk-active'), /No active polar/);
+});
+
+const rad = (degrees: number): number => (degrees * Math.PI) / 180;
+const close = (actual: number, expected: number, tolerance = 1e-10): void =>
+  assert.ok(Math.abs(actual - expected) < tolerance, `${actual} != ${expected}`);
+
+test('ORC targets are restored per wind speed with linear interpolation and downwind extrapolation', () => {
+  const doc = {
+    ...table(),
+    axes: { twa: [rad(60), rad(90), rad(120)], tws: [5, 10] },
+    values: {
+      boatSpeedMatrix: [
+        [3, 4, 4.5],
+        [5, 6, 6.5],
+      ],
+    },
+    derived: {
+      rows: [
+        { tws: 10, beat: { twa: rad(45), tbs: 4 }, run: { twa: rad(160), tbs: 6 } },
+        { tws: 5, beat: { twa: rad(40), tbs: 2 }, run: { twa: rad(150), tbs: 4 } },
+      ],
+    },
+  };
+  const before = structuredClone(doc);
+  const adapted = adaptManagedPolar(doc, 'orc', 0.8);
+  const polar = managedDiagram(adapted);
+  assert.deepEqual(doc, before);
+  close(polar.noGoFloor(5), 40);
+  close(polar.noGoFloor(10), 45);
+  close(polar.noGoFloor(7.5), 42.5);
+  assert.equal(polar.boatSpeed(39.99, 5), 0);
+  assert.equal(polar.boatSpeed(44.99, 10), 0);
+  close(polar.boatSpeed(40, 5), 2);
+  close(polar.boatSpeed(45, 10), 4);
+  close(polar.boatSpeed(50, 5), 2.5);
+  close(polar.boatSpeed(150, 5), 4);
+  close(polar.boatSpeed(160, 10), 6);
+  close(polar.boatSpeed(180, 5), 3.5);
+  close(polar.boatSpeed(180, 10), 5.75);
+  close(polar.scaled(0.8).boatSpeed(180, 10), 4.6);
+  // Resampling agrees with each row's straight-line polar throughout the sailable range.
+  const expected = [
+    new PolarDiagram([40, 60, 90, 120, 150], [5], [2, 3, 4, 4.5, 4]),
+    new PolarDiagram([45, 60, 90, 120, 160], [10], [4, 5, 6, 6.5, 6]),
+  ];
+  for (let a = 0; a <= 180; a += 0.5)
+    for (let k = 0; k < 2; k++) close(polar.boatSpeed(a, doc.axes.tws[k]), expected[k].boatSpeed(a, doc.axes.tws[k]));
+});
+
+test('text-imported .pol target rows agree with direct loading, including between wind columns', () => {
+  // Output of Polar Management 1.2.0's actual matrixText importer at 4f3e4270.
+  // This fixture has beat and run target rows plus ordinary shared table rows.
+  const dir = path.join(__dirname, 'fixtures');
+  const doc = JSON.parse(fs.readFileSync(path.join(dir, 'managed-targets.json'), 'utf8'));
+  assert.equal(doc.derived.rows[0].beat.twa, rad(40));
+  assert.equal(doc.derived.rows[0].run.twa, rad(180));
+  const managed = managedDiagram(adaptManagedPolar(doc, 'text-import', 1));
+  const direct = PolarDiagram.load(path.join(dir, 'managed-targets.pol'));
+  for (const wind of [3.1, 4, 5, 6]) {
+    close(managed.noGoFloor(wind), direct.noGoFloor(wind), 1e-4);
+    for (let angle = 0; angle <= 180; angle += 0.5) close(managed.boatSpeed(angle, wind), direct.boatSpeed(angle, wind), 2e-5);
+  }
+});
+
+test('absent or empty derived targets leave matrix values and axes unchanged', () => {
+  const doc = table();
+  const plain = adaptManagedPolar(doc, 'unchanged', 0.8);
+  for (const derived of [undefined, {}, { rows: [] }, { rows: [{ tws: 5, maxSpeed: 4 }] }])
+    assert.deepEqual(adaptManagedPolar({ ...doc, derived }, 'unchanged', 0.8), plain);
+});
+
+test('malformed derived targets are rejected rather than silently dropping sailing data', () => {
+  for (const rows of [
+    [{ tws: 999, beat: { twa: rad(40), tbs: 2 } }],
+    [{ tws: 5, beat: { twa: 4, tbs: 2 } }],
+    [{ tws: 5, beat: { twa: rad(40), tbs: -1 } }],
+    [
+      { tws: 5, beat: { twa: rad(40), tbs: 2 } },
+      { tws: 5, run: { twa: rad(150), tbs: 3 } },
+    ],
+  ])
+    assert.throws(() => adaptManagedPolar({ ...table(), derived: { rows } }, 'invalid', 1), /Invalid derived/);
 });

@@ -6,6 +6,12 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve Polar Management beat/run targets stored in `derived.rows`, using
+  the existing linear polar model and per-wind-speed no-go floors.
+
+
 ### Added
 
 - Automatically use a valid active Polar Management resource as the sailing
