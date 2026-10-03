@@ -24,8 +24,12 @@ export const HANDOFF_MS = 3 * 3600_000;
 export interface RegionalWind {
   name: string;
   wind: WindSource & { covers(lon: number, lat: number): boolean };
-  /** The whole grid (not the window read): row 0 south, column 0 west. */
-  grid: { lat0: number; lon0: number; dLat: number; dLon: number; nLat: number; nLon: number };
+  /**
+   * The whole grid (not the window read): row 0 south, column 0 west.
+   * wrapLon: the grid goes all the way round (a global source such as GFS),
+   * so its first and last columns are neighbours, not a border.
+   */
+  grid: { lat0: number; lon0: number; dLat: number; dLon: number; nLat: number; nLon: number; wrapLon?: boolean };
   firstMs: number;
   lastMs: number;
 }
@@ -61,10 +65,14 @@ export class LayeredWind implements WindSource {
     if (!(tMs >= r.firstMs && tMs <= r.lastMs)) return 0;
     if (!r.wind.covers(lon, lat)) return 0;
     const g = r.grid;
-    let x = lonOffset(lon, g.lon0) / g.dLon;
-    if (x > g.nLon - 1 + EDGE_CELLS * 4) x -= 360 / g.dLon; // west of the grid, wrapped
     const y = (lat - g.lat0) / g.dLat;
-    const edge = Math.min(x, g.nLon - 1 - x, y, g.nLat - 1 - y);
+    let edge = Math.min(y, g.nLat - 1 - y);
+    // A grid that goes all the way round has no east or west border.
+    if (!g.wrapLon) {
+      let x = lonOffset(lon, g.lon0) / g.dLon;
+      if (x > g.nLon - 1 + EDGE_CELLS * 4) x -= 360 / g.dLon; // west of the grid, wrapped
+      edge = Math.min(edge, x, g.nLon - 1 - x);
+    }
     if (!(edge > 0)) return 0;
     const wEdge = Math.min(1, edge / EDGE_CELLS);
     const wTime = Math.min(1, (r.lastMs - tMs) / HANDOFF_MS);

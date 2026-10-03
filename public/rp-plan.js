@@ -9,6 +9,10 @@ import { createLiveTriggers, createPassageTracker, createRouteSimulator, createT
 import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
+// The limit inputs and the quantity of each (used by _limitSI, below). Declared
+// here, before any start-up code: in Power mode the page reads pb_cruise while
+// it loads, and a const declared further down is not initialised yet then.
+const _LIMITS = { maxWind: 'speed', maxSwh: 'wave_height', pb_cruise: 'speed' };
 let startCoord = null;  // [lon, lat]
 let endCoord = null;
 let waypointCoords = [];  // [[lon, lat], ...] — intermediate stops in order
@@ -1757,7 +1761,7 @@ function buildRoutePayload(overrides) {
 // ── Wind and wave limits ─────────────────────────────────────────────
 // Typed in the user's units, kept in SI in localStorage so a change of
 // unit preference keeps the meaning; no unit → the field is disabled.
-const _LIMITS = { maxWind: 'speed', maxSwh: 'wave_height', pb_cruise: 'speed' };
+// (_LIMITS is declared at the top of the file: start-up code reads it through _limitSI.)
 function _limitSI(id) {
   const c = UI_UNITS[_LIMITS[id]], el = document.getElementById(id);
   if (!el || !c || !c.inv || el.value === '') return null;

@@ -10,7 +10,21 @@ import { scanRegional } from '../../data/regional';
 import { decodeRegionalRun } from '../../data/regionaldecode';
 import type { WorkerState } from './state';
 
+// A decode yields to other messages, so a later refresh can arrive while one
+// runs: it skips the regional pass rather than decode the same run twice.
+let busy = false;
+
 export async function refreshRegional(st: WorkerState): Promise<void> {
+  if (busy) return;
+  busy = true;
+  try {
+    await refreshRegionalNow(st);
+  } finally {
+    busy = false;
+  }
+}
+
+async function refreshRegionalNow(st: WorkerState): Promise<void> {
   if (!st.config || !st.cacheRoot) return;
   const scan = scanRegional(st.config.forecast.regionalGribs, st.cacheRoot);
   if (!scan.root) {
@@ -21,7 +35,7 @@ export async function refreshRegional(st: WorkerState): Promise<void> {
     if (!src.run || src.problem) continue;
     const prev = st.regional.get(src.name);
     try {
-      const r = decodeRegionalRun(src, path.join(scan.root, src.name), st.cacheRoot, Math.max(1, st.config.forecast.keepCycles));
+      const r = await decodeRegionalRun(src, path.join(scan.root, src.name), st.cacheRoot, Math.max(1, st.config.forecast.keepCycles));
       st.regional.set(src.name, {
         source: src.name,
         cycle: r.cycle,

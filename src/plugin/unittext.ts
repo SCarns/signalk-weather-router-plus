@@ -20,5 +20,6 @@ const BASE_UNIT: Record<string, string> = {
 };
 
 export function siText(text: string): string {
-  return text.replace(UNIT_TOKEN, (_, cat: string, v: string) => (BASE_UNIT[cat] ? `${Number(v)} ${BASE_UNIT[cat]}` : v));
+  // A category not in the map keeps its token, so the value's kind is still readable.
+  return text.replace(UNIT_TOKEN, (m: string, cat: string, v: string) => (BASE_UNIT[cat] ? `${Number(v)} ${BASE_UNIT[cat]}` : m));
 }

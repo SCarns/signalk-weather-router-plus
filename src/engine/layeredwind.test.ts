@@ -70,3 +70,24 @@ test('layered wind: the finest grid is applied last; shares count who answered',
   assert.equal(sh.fine, 0.5);
   assert.equal(sh.coarse, 0);
 });
+
+test('layered wind: a grid that goes all the way round has no border at its seam', () => {
+  // A global 0.25° grid starting at 0°E (as GFS from signalk-grib-downloader): 1440 columns, the last at 359.75°.
+  const w = uniform(10, 270);
+  const grid = { lat0: -90, lon0: 0, dLat: 0.25, dLon: 0.25, nLat: 721, nLon: 1440 };
+  const global: RegionalWind = {
+    name: 'gfs-0p25',
+    wind: { ...w, covers: () => true },
+    grid: { ...grid, wrapLon: true },
+    firstMs: T0,
+    lastMs: T0 + 48 * 3600_000,
+  };
+  const t = new Date(T0 + 6 * 3600_000);
+  const lw = new LayeredWind(uniform(5, 270), [global]);
+  for (const lon of [-0.1, 0, 0.1, 359.9, 180]) assert.equal(+lw.at(lon, 45, t)[0].toFixed(6), 10, `lon ${lon}: the global source`);
+  // The same grid without the flag (as before) fell back to the base at 0°: the seam was a border.
+  const asBefore = new LayeredWind(uniform(5, 270), [{ ...global, grid }]);
+  assert.equal(+asBefore.at(-0.1, 45, t)[0].toFixed(6), 5);
+  // Near the poles the latitude border still applies.
+  assert.ok(lw.at(10, 89.9, t)[0] < 10);
+});

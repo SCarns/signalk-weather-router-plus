@@ -64,6 +64,21 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The web app no longer stops loading in Power mode.** With the vessel
+  type set to power, start-up read the cruise speed before the limits
+  table it uses was initialised, a `ReferenceError` that ended the page's
+  script.
+- **A regional decode no longer holds the data worker.** It decoded a whole
+  run in one go (20 s for an AROME run on a Pi 5), during which overlays,
+  the Weather API and conditions got no answer; it now reads files
+  asynchronously and yields after each field, and a refresh that comes
+  while one runs skips the regional pass instead of decoding the same run
+  again.
+- **A global regional source (GFS from the downloader) is used all the way
+  round.** Its first and last columns were treated as a border, so its
+  weight fell to 0 around 0° longitude, and a route area entirely west of
+  its first column was taken as outside it.
+
 - **Points of sail come from the polar.** "In irons" is tighter than the
   polar's no-go angle at that wind speed (its tightest angle with any
   boat speed, with the tightest sailable angle setting applied as the

@@ -193,13 +193,19 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
         const firstMs = steps[0].validMs;
         const lastMs = steps[steps.length - 1].validMs;
         if (lastMs < departureMs) continue; // over before the route starts
-        // Does the route area meet the regional grid? (Longitudes compared
-        // the short way; regional grids are narrower than 180°.)
-        const gEast = g.lon0 + (g.nLon - 1) * g.dLon;
+        // Does the route area meet the regional grid? Latitudes, and for a
+        // grid that does not go all the way round the longitudes too: the
+        // area's west edge is taken to within 180° of the grid's west edge
+        // and its east edge compared the same way, so an area that starts
+        // west of the grid and reaches into it is found.
         const gNorth = g.lat0 + (g.nLat - 1) * g.dLat;
-        const aw = g.lon0 + (((area.west - g.lon0 + 540) % 360) - 180);
-        const ae = aw + bboxWidth(area);
-        if (area.north < g.lat0 || area.south > gNorth || ae < g.lon0 || aw > gEast) continue;
+        if (area.north < g.lat0 || area.south > gNorth) continue;
+        if (!g.wrapLon) {
+          const gEast = g.lon0 + (g.nLon - 1) * g.dLon;
+          const aw = g.lon0 + (((area.west - g.lon0 + 540) % 360) - 180);
+          const ae = aw + bboxWidth(area);
+          if (ae < g.lon0 || aw > gEast) continue;
+        }
         const opts: WindowOptions = { bbox: area, params: ['10u', '10v'], marginCells: 1 };
         const need = run.windowBytes(opts);
         const mem = checkRouteForecastMemory(need, cfg.forecast.memoryHeadroomBytes);

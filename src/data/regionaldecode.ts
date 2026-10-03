@@ -55,9 +55,13 @@ export function decodedRegionalDir(dataDir: string, source: string, cycle: strin
  * Decode the newest complete run of `src` (found by scanSource in
  * `srcDir`) unless already decoded. Steps are written as soon as both
  * wind components of an hour are read; a file holds one or several hours
- * (GFS and ICON-EU one, AROME and ARPEGE a group).
+ * (GFS and ICON-EU one, AROME and ARPEGE a group). Runs in the data
+ * worker, which also answers the overlays and the Weather API: files are
+ * read asynchronously and the worker gets the event loop back after each
+ * field decoded, so a run of many large grids (an AROME run, 20 s on a
+ * Pi 5) does not hold those answers until it is done.
  */
-export function decodeRegionalRun(src: RegionalSource, srcDir: string, dataDir: string, keepRuns = 2): RegionalDecodeResult {
+export async function decodeRegionalRun(src: RegionalSource, srcDir: string, dataDir: string, keepRuns = 2): Promise<RegionalDecodeResult> {
   if (!src.run || src.problem) throw new Error(`${src.name}: ${src.problem ?? 'no complete run'}`);
   const runMs = Date.parse(src.run);
   const cycle = cycleName(new Date(runMs));
@@ -73,7 +77,7 @@ export function decodeRegionalRun(src: RegionalSource, srcDir: string, dataDir: 
   const written = new Set<number>();
   try {
     for (const file of src.files) {
-      const buf = new Uint8Array(fs.readFileSync(path.join(srcDir, file)));
+      const buf = new Uint8Array(await fs.promises.readFile(path.join(srcDir, file)));
       for (const m of iterateGrib2(buf)) {
         const param = windParam(m.product);
         if (!param) continue;
@@ -82,6 +86,7 @@ export function decodeRegionalRun(src: RegionalSource, srcDir: string, dataDir: 
         let fields = pending.get(h);
         if (!fields) pending.set(h, (fields = new Map()));
         fields.set(param, globalField(m.grid, m.decode()));
+        await new Promise(r => setImmediate(r)); // let the worker's other messages through
         if (fields.size === REGIONAL_PARAMS.length) {
           writer.writeStep({ validMs: runMs + h * 3600_000, stepHours: h, fields });
           pending.delete(h);

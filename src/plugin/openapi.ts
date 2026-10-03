@@ -157,7 +157,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       },
       '/api/polar-angles': {
         get: {
-          summary: 'Best upwind/downwind VMG angles per TWS for a polar',
+          summary: 'No-go and best upwind/downwind VMG angles per TWS for a polar, with the tightest sailable angle setting applied',
           parameters: [
             {
               name: 'path',
@@ -168,7 +168,10 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             },
           ],
           responses: {
-            200: { description: '{tws_ms[], beat_deg[], run_deg[]}' },
+            200: {
+              description:
+                '{tws_ms[], nogo_deg[], beat_deg[], run_deg[]}: nogo_deg the tightest angle with any boat speed (in irons below it)',
+            },
             400: { description: 'No polar configured, or plugin not started' },
             404: { description: 'Not in the library' },
           },

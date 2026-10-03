@@ -37,7 +37,6 @@ export interface BoatSpecs {
   hull_type?: HullType;
 }
 
-/** A spec value the VPP cannot work with (Python: ValueError from validate()). */
 /** The spec a SpecsError is about, SI, so a client can word it in its user's units. */
 export interface SpecsErrorDetail {
   field: string;
@@ -48,6 +47,7 @@ export interface SpecsErrorDetail {
   longer_than?: { field: string; value: number };
 }
 
+/** A spec value the VPP cannot work with (Python: ValueError from validate()). */
 export class SpecsError extends Error {
   readonly detail?: SpecsErrorDetail;
   constructor(message: string, detail?: SpecsErrorDetail) {

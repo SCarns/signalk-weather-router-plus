@@ -84,7 +84,7 @@ test('regional decode: a run becomes a decoded run of 10 m wind once, readable l
   const { root, dataDir } = fakeRoot();
   fs.writeFileSync(path.join(dataDir, '..', 'signalk-grib-downloader.json'), JSON.stringify({ configuration: { gribsRoot: root } }));
   const src = scanRegional('', dataDir).sources.find(s => s.name === 'gfs-0p25')!;
-  const r = decodeRegionalRun(src, path.join(root, 'gfs-0p25'), dataDir);
+  const r = await decodeRegionalRun(src, path.join(root, 'gfs-0p25'), dataDir);
   assert.equal(r.cycle, '2026100212');
   assert.equal(r.reused, false);
   // Both files of the sample are the same step (f003 in the GRIB): written once.
@@ -97,7 +97,7 @@ test('regional decode: a run becomes a decoded run of 10 m wind once, readable l
   assert.ok(Number.isFinite(ws) && ws >= 0 && ws < 40, `wind ${ws}`);
   assert.equal(store.covers(0, 45), true);
   assert.equal(store.covers(20, 45), false, 'outside the regional grid');
-  assert.equal(decodeRegionalRun(src, path.join(root, 'gfs-0p25'), dataDir).reused, true);
+  assert.equal((await decodeRegionalRun(src, path.join(root, 'gfs-0p25'), dataDir)).reused, true);
   // Pruning keeps the newest runs.
   const base = path.join(dataDir, 'regional', 'gfs-0p25');
   fs.mkdirSync(path.join(base, '2026100100'));

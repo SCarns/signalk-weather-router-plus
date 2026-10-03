@@ -313,17 +313,19 @@ export = function plugin(app: SkApp): SignalKPlugin {
   }
 
   // Regional GRIB runs of signalk-grib-downloader (discovery only, read-only):
-  // scanned at most once a minute, for the status.
+  // the folder scanned at most every 15 s, for the status. The data worker's
+  // decode state is joined on every call, so it is never older than its last
+  // report; the cached scan itself is not changed.
   let regionalCache: { at: number; value: RegionalStatus } | null = null;
   function regionalStatus(): RegionalStatus {
     const now = Date.now();
-    if (regionalCache && now - regionalCache.at < 15_000) return regionalCache.value;
-    const value = scanRegional(config?.forecast.regionalGribs ?? '', app.getDataDirPath());
+    if (!regionalCache || now - regionalCache.at >= 15_000) {
+      regionalCache = { at: now, value: scanRegional(config?.forecast.regionalGribs ?? '', app.getDataDirPath()) };
+    }
+    const scan = regionalCache.value;
     // The data worker's decode state per source (decoded run, size, time, error).
     const dec = new Map((dataStatus?.regional ?? []).map(d => [d.source, d]));
-    for (const s of value.sources) (s as typeof s & { decoded?: unknown }).decoded = dec.get(s.name) ?? null;
-    regionalCache = { at: now, value };
-    return value;
+    return { ...scan, sources: scan.sources.map(s => ({ ...s, decoded: dec.get(s.name) ?? null })) };
   }
 
   function updateStatus(): void {
