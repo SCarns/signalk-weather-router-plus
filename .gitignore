@@ -5,3 +5,5 @@ dist/
 coverage/
 # npm pack output
 *.tgz
+# local drafts (PR replies etc.), not part of the repo
+docs/drafts/

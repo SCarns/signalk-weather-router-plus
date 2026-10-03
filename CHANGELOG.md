@@ -50,6 +50,16 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **GRIB2 fields over a time range (template 4.8) are timed at the end
+  of the range.** A maximum gust or an accumulation is valid when its
+  range ends, but the reader took the range's start: ECMWF's 3 h gust
+  read as 2 h, an hour before the wind in the same file, and the step
+  refused to build. The reader now uses the end time from the message and
+  reports the range's length (`intervalHours`; 0 at step 0, where ECMWF
+  codes an empty range as zeros). No field decoded today is affected
+  (every ECMWF, RTOFS and regional wind field is template 4.0); this
+  prepares gust and similar fields.
+
 - **The page no longer asks the browser for its location (#13).** A
   first visit opens on the vessel's Signal K position
   (`navigation.position`), whether or not the Own vessel layer is on;

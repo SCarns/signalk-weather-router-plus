@@ -4,8 +4,9 @@
  * Supports:
  *  - Section 3 grid definition template 3.0 (lat/lon, Plate Carree)
  *  - Section 4 product definition template 4.0 (instant, point in time)
- *    and 4.8 (statistically processed over a time range), enough to
- *    identify the parameter and its forecast step
+ *    and 4.8 (statistically processed over a time range, e.g. a maximum
+ *    gust or an accumulation), enough to identify the parameter and its
+ *    forecast step
  *  - Section 5 data representation templates 5.0 (simple packing) and
  *    5.42 (CCSDS / libaec)
  *  - Section 6 bit maps (indicator 0 = present, 254 = reuse previous,
@@ -56,8 +57,15 @@ export interface Grib2Product {
   typeOfFirstFixedSurface: number;
   /** Value of the first fixed surface (e.g. 10 for 10 m above ground), NaN when missing. */
   firstFixedSurfaceValue: number;
-  /** Forecast step in hours from the reference time. */
+  /**
+   * Forecast step in hours from the reference time: the instant (4.0), or
+   * the END of the time range (4.8), the time the statistic is valid at.
+   * A 4.8 message's own forecast time is the start of its range: ECMWF's
+   * 3 h gust says 2 (the maximum over 2–3 h), its 3 h wind says 3.
+   */
   forecastHours: number;
+  /** Length of the time range in hours (4.8); 0 for an instant (4.0), and for a 4.8 range that is still empty (step 0). */
+  intervalHours: number;
 }
 
 export interface Grib2Packing {
@@ -287,7 +295,20 @@ function parseMessage(m: Uint8Array, absOffset: number): Grib2Message {
   const surfScaled = u32(m, q + 25);
   const firstFixedSurfaceValue =
     surfScale === 0xff || surfScaled === 0xffffffff ? NaN : surfScaled / 10 ** (surfScale > 127 ? -(surfScale & 0x7f) : surfScale);
-  const forecastHours = forecastTime * timeUnitHours(timeUnit);
+  const startHours = forecastTime * timeUnitHours(timeUnit);
+  let forecastHours = startHours;
+  let intervalHours = 0;
+  if (pdt === 8) {
+    // Octets 35–41: end of the overall time interval (UTC), the time the
+    // statistic is valid at (WMO GRIB2 code table 4.8).
+    if (u32(m, s.s4) < 58) throw new Grib2Error(`product definition template 4.8 section too short (${u32(m, s.s4)} octets)`);
+    const endMs = Date.UTC(u16(m, q + 35), u8(m, q + 37) - 1, u8(m, q + 38), u8(m, q + 39), u8(m, q + 40), u8(m, q + 41));
+    const endHours = (endMs - referenceTime.getTime()) / 3_600_000;
+    if (!(endHours >= startHours))
+      throw new Grib2Error(`template 4.8 time range ends (+${endHours} h) before it starts (+${startHours} h)`);
+    forecastHours = endHours;
+    intervalHours = endHours - startHours;
+  }
   const product: Grib2Product = {
     discipline,
     parameterCategory,
@@ -296,6 +317,7 @@ function parseMessage(m: Uint8Array, absOffset: number): Grib2Message {
     typeOfFirstFixedSurface,
     firstFixedSurfaceValue,
     forecastHours,
+    intervalHours,
   };
 
   // ---- Section 5: data representation
