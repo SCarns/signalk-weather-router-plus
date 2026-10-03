@@ -240,5 +240,6 @@ export function dataStatus(st: WorkerState): DataStatus {
     land: st.overlayLand ? st.overlayLand.stats() : null,
     tides: st.tides ? st.tides.status() : null,
     tidesError: st.tidesError,
+    regional: [...st.regional.values()],
   };
 }

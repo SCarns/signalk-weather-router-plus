@@ -72,6 +72,13 @@ test('polarAngles and polarTable from a loaded polar', () => {
     assert.ok(a.beat_deg[i] >= 20 && a.beat_deg[i] < 90);
     assert.ok(a.run_deg[i] >= 90 && a.run_deg[i] < 180);
   }
+  // The no-go angle: the tightest table row with any speed (45°: the 30° row is all zeros). The
+  // tightest sailable angle setting drops the rows closer than it, as the router does, so at 50° the
+  // 45° row goes and the no-go angle is the next row, 60°; the beat angle is never inside it.
+  assert.deepEqual(a.nogo_deg, [45, 45, 45]);
+  const floored = polarAngles(p, 50);
+  assert.deepEqual(floored.nogo_deg, [60, 60, 60]);
+  for (let i = 0; i < 3; i++) assert.ok(floored.beat_deg[i] >= 60, `beat ${floored.beat_deg[i]} inside the no-go angle`);
   const t = polarTable(p);
   assert.equal(t.twa_deg.length, 7);
   assert.equal(t.speeds_ms.length, 7);
@@ -130,6 +137,16 @@ test('polarFromSpecs: 400 validation, 400 bad name, 422 multihull, 400 without p
   const bad = polarFromSpecs(cfg, { name: 'x', specs: { ...SPECS, lwl_m: 11.5 } });
   assert.equal(bad.status, 400);
   assert.equal(bad.body.error, 'LWL 11.5 > LOA 10.97 — swap?');
+  // The field and values in SI, for the web app to word in its user's units.
+  assert.equal(bad.body.field, 'lwl_m');
+  assert.equal(bad.body.value, 11.5);
+  assert.deepEqual(bad.body.longer_than, { field: 'loa_m', value: 10.97 });
+  const heavy = polarFromSpecs(cfg, { name: 'x', specs: { ...SPECS, displacement_kg: 600_000 } });
+  assert.equal(heavy.status, 400);
+  assert.equal(heavy.body.field, 'displacement_kg');
+  assert.equal(heavy.body.value, 600_000);
+  assert.equal(heavy.body.min, 50);
+  assert.equal(heavy.body.max, 500_000);
   assert.equal(polarFromSpecs(cfg, { name: '___', specs: SPECS }).status, 400);
   assert.equal(polarFromSpecs(cfg, { name: '', specs: SPECS }).status, 400);
   assert.equal(polarFromSpecs(cfg, { name: 'x'.repeat(61), specs: SPECS }).status, 400);

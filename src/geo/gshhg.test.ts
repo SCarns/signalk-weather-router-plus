@@ -66,7 +66,7 @@ test('coastline download: fetch, check the size, extract the level-1 files, drop
     fs.truncateSync(got, 10);
     assert.equal(gshhgInstalled(dir), null);
     fs.writeFileSync(got, shp);
-    assert.ok(logs.some(l => l.includes('downloaded 100 %')));
+    assert.ok(logs.some(l => l.includes('downloaded {percentage:1}')));
     // In place: no second download.
     server.close();
     assert.equal(await ensureGshhg(dir, () => undefined, { urls: [url], expectBytes: zip.length, expectSha256: null }), got);

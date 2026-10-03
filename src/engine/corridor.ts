@@ -223,9 +223,11 @@ function legAstar(
     }
     if (!alt.length)
       throw new CorridorError(
-        `the ${which} (${lonlat[1].toFixed(4)}, ${lonlat[0].toFixed(4)}) is in water enclosed at the 0.02° grid resolution with no open water within 10 km`
+        `the ${which} (${lonlat[1].toFixed(4)}, ${lonlat[0].toFixed(4)}) is in water enclosed at the {angle:0.000349066} grid resolution with no open water within {distance:10000}`
       );
-    progress(`${which} is in a pocket the 0.02° grid closes; corridor starts from open water ${(radiusM / 1000).toFixed(1)} km away`);
+    progress(
+      `${which} is in a pocket the {angle:0.000349066} grid closes; corridor starts from open water {distance:${radiusM.toFixed(0)}} away`
+    );
     return { nodes: alt, radiusM };
   };
   src = fix(src, a, dst.nodes, 'start of this leg');
@@ -302,7 +304,7 @@ function legAstar(
       lastErr = err;
       if (cells >= maxWindowCells || (c1 - c0 + 1 >= grid.nx && r0 === 0 && r1 === grid.ny - 1)) break;
       progress(
-        `no water path inside a ${((c1 - c0 + 1) * grid.res).toFixed(0)}°×${((r1 - r0 + 1) * grid.res).toFixed(0)}° window; widening`
+        `no water path inside a {angle:${(c1 - c0 + 1) * grid.res * (Math.PI / 180)}} × {angle:${(r1 - r0 + 1) * grid.res * (Math.PI / 180)}} window; widening`
       );
     }
   }
@@ -710,7 +712,7 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
       if (!patch) break;
       stats.refines++;
       progress(
-        `route raster refined to ${(next * 1000).toFixed(2)} m° (${Math.round(next * M_PER_DEG)} m) around ${clat.toFixed(3)}, ${clon.toFixed(3)} where the corridor passes a narrow passage`
+        `route raster refined to {length:${Math.round(next * M_PER_DEG)}} around ${clat.toFixed(3)}, ${clon.toFixed(3)} where the corridor passes a narrow passage`
       );
       verdict = verifyCorridor(land, grid.res, path, chain[0], chain[chain.length - 1]);
     }
@@ -751,7 +753,7 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
     stats.blockedCells = blocked.size;
     const [lon, lat] = grid.cellCentre(path[p + 1].r, path[p + 1].c);
     progress(
-      `passage near ${lat.toFixed(3)}, ${lon.toFixed(3)} is closed on the route raster even at ${Math.round(MIN_PATCH_RES * M_PER_DEG)} m; re-routing around it`
+      `passage near ${lat.toFixed(3)}, ${lon.toFixed(3)} is closed on the route raster even at {length:${Math.round(MIN_PATCH_RES * M_PER_DEG)}}; re-routing around it`
     );
   }
   if (!land || !landBox) throw new CorridorError('internal: no route raster');
@@ -784,7 +786,7 @@ export function planCorridor(grid: WaterGrid, chain: [number, number][], opts: C
   if (refined.patches) {
     stats.refines += refined.patches;
     progress(
-      `route raster refined to ${Math.round(refined.finestDeg * M_PER_DEG)} m in ${refined.patches} narrow stretch${refined.patches === 1 ? '' : 'es'} (passages under ${PATCH_CELLS_ACROSS} raster cells wide)`
+      `route raster refined to {length:${Math.round(refined.finestDeg * M_PER_DEG)}} in ${refined.patches} narrow stretch${refined.patches === 1 ? '' : 'es'} (passages under ${PATCH_CELLS_ACROSS} raster cells wide)`
     );
     widthM = widthProfile(land, skeleton);
   }

@@ -179,6 +179,19 @@ export async function refreshForecast(st: WorkerState, force: boolean): Promise<
       return;
     }
   }
+  // Nothing in use yet (a start with a newer cycle out): serve the newest
+  // complete decoded run on disk while this cycle decodes, so the overlays,
+  // the Weather API and routes do not wait minutes for the download.
+  if (!st.run) {
+    const interim = newestDecodedRun(st, cfg);
+    if (interim) {
+      st.log(
+        'info',
+        `forecast: serving the decoded run ${path.basename(interim.dir)} on disk while cycle ${cycleName(cycle.time)} decodes`
+      );
+      adoptRun(st, interim, 'disk', Date.now() - t, 0);
+    }
+  }
   // Guard: memory for one step of decoding, disk for the whole run.
   fs.mkdirSync(decodedRoot(st), { recursive: true });
   const res = checkDecodeResources(horizon, cfg.forecast.extraFields, cfg.forecast.memoryHeadroomBytes, decodedRoot(st));

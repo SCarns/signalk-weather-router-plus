@@ -225,7 +225,7 @@ export function pointForecasts(
         lat,
         new Date(step.validMs),
         'point',
-        `ECMWF IFS 0.25° open data, cycle ${cycle}, +${step.stepHours} h`,
+        `ECMWF IFS open data, cycle ${cycle}, valid ${new Date(step.validMs).toISOString()}`,
         opts.currents
       )
     );

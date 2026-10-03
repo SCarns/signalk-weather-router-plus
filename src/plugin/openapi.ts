@@ -86,7 +86,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           description:
             'Top level: plugin, started, workers {data, route}, forecast, forecast_error, currents, currents_route_worker, rtofs_run, overlay_land, overlay_tiles, overlay_prebuild, ' +
             'weather_provider_registered, jobs, vessel, polar, land, harmonic_dir, extra_fields, tides, tides_enabled, tides_error, process_rss_bytes. ' +
-            '`forecast` (null until a run is ready): {cycle, valid_from, valid_to, steps, params, coverage, storage: "decoded-on-disk", loaded_at, has_waves, ' +
+            '`forecast` (null until a run is ready): {cycle, model, valid_from, valid_to, steps, params, coverage, storage: "decoded-on-disk", loaded_at, has_waves, ' +
             'source: "disk" (a complete decoded run was already on disk, no decode) | "grib" (decoded from the GRIB cache / download), ready_ms, fields_downloaded, ' +
             'decoded_dir, decoded_bytes (this run on disk), decoded_at, decode_ms, decoded_disk_bytes (all decoded runs kept), grib_cache_bytes, ' +
             'last_decode: {at, cycle, ms, stepBlockBytes, writtenBytes, downloaded} | null, memory: {data_worker_held_bytes, data_worker_largest_recent_window, ' +
@@ -157,7 +157,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       },
       '/api/polar-angles': {
         get: {
-          summary: 'Best upwind/downwind VMG angles per TWS for a polar',
+          summary: 'No-go and best upwind/downwind VMG angles per TWS for a polar, with the tightest sailable angle setting applied',
           parameters: [
             {
               name: 'path',
@@ -168,7 +168,10 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             },
           ],
           responses: {
-            200: { description: '{tws_ms[], beat_deg[], run_deg[]}' },
+            200: {
+              description:
+                '{tws_ms[], nogo_deg[], beat_deg[], run_deg[]}: nogo_deg the tightest angle with any boat speed (in irons below it)',
+            },
             400: { description: 'No polar configured, or plugin not started' },
             404: { description: 'Not in the library' },
           },
@@ -244,7 +247,10 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               description:
                 '{path: "user/<slug>.csv" (token for /api/polars and vessel.polar), label, warnings[], polar: {path, twa_deg[], tws_ms[], speeds_ms[][]}}',
             },
-            400: { description: 'Invalid specs or name' },
+            400: {
+              description:
+                'Invalid specs or name: {error}. For a spec out of range also {field (the specs key), value, min, max} in SI; for an LWL longer than the LOA {field: "lwl_m", value, longer_than: {field: "loa_m", value}}',
+            },
             409: { description: 'A polar with that name exists and overwrite is false' },
             422: { description: 'Hull type the polar calculator does not model (multihulls)' },
             500: { description: 'Calculator failed ("VPP failed: …")' },

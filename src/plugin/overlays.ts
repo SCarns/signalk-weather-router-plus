@@ -510,7 +510,7 @@ export function conditionsSeries(
     tides = tideSummary(ts, Date.parse(series[0].time), Date.parse(series[series.length - 1].time));
     if (!series.some(r => r.tide_m !== null)) {
       tides = null;
-      tidesError = tidesError ?? 'no model sea level within 2 grid cells (~18 km) of this point';
+      tidesError = tidesError ?? 'no model sea level within 2 grid cells (about {distance:18000}) of this point';
     }
   }
   return {

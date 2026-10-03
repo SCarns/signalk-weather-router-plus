@@ -596,6 +596,22 @@ Freeboard panel shows the same note. The **Forecast horizon** setting
 (Settings tab, Forecast group, 3 h to 360 h) decides how far the forecast
 reaches.
 
+**Regional wind (optional).** With the signalk-grib-downloader plugin
+installed (AROME, ARPEGE, ICON-EU, GFS), the plugin decodes each of its
+complete runs' 10 m wind and layers it over ECMWF: the regional model
+where it covers the point and the time, blended over five grid cells at
+its border and over its last 3 hours, ECMWF elsewhere; waves stay ECMWF.
+The job log and the summary's `regional_wind` say which model answered
+how much. `wind_model: "ecmwf"` (or unticking "Regional wind where
+available" in the Plan tab) routes on ECMWF alone. Install only the
+downloader; its companion signalk-grib-weather-provider is not needed.
+
+Where the corridor is open water, each candidate aims the centre of its
+heading sweep one step along the skeleton's direction from where it is,
+so branches can spread across the ocean to find a detour; in narrow
+water it aims at the skeleton itself, which keeps the search in the
+channel.
+
 When the search stops, the final leg of every branch with a clear
 straight hop to the waypoint (the nearest 64) is simulated, straight or
 as a beat, and the branch with the earliest predicted arrival is taken,
@@ -843,7 +859,7 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 
 | Group | Settings (default) | A change… |
 |---|---|---|
-| `vessel` | name, speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2) | applies to the next route |
+| `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2) | applies to the next route |
 | `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
@@ -1178,7 +1194,7 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `no_forecast` | boolean | | false | route with calm wind |
 | `no_currents` | boolean | | false | ignore every current source |
 | `vessel` | object | | the vessel settings | per-route overrides; absent keys use the settings ([Configuration](#configuration)) |
-| `vessel.name` | string | | setting | |
+| `vessel.name` | string | | | ignored (accepted so older clients still validate); the vessel name is Signal K's `vessels.self.name` |
 | `vessel.motor_speed_ms` | number | m/s | setting (3.087) | 0.01..50 |
 | `vessel.polar_performance` | number | ratio | setting (1) | 0.3..1.2; see below |
 | `vessel.polar` | string | | the configured `polarFile` | a token from `GET /api/polars`, at most 200 characters; see below |

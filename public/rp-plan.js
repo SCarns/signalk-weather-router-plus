@@ -4,10 +4,15 @@
 // result strip, itinerary, route library, waypoint and conditions popups,
 // Live mode with the Signal K vessel.
 
-import { _apiErrorText, _fmt, _polarAngles, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc } from './rp-core.js';
-import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, vesselMarkerSource } from './rp-layers.js';
+import { _apiErrorText, _fmt, _polarAngles, fetchPolarAngles, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
+import { createLiveTriggers, createPassageTracker, createRouteSimulator, createTrackRecorder, haversineM, VESSEL_STALE_MS } from './rp-live.js';
+import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
+// The limit inputs and the quantity of each (used by _limitSI, below). Declared
+// here, before any start-up code: in Power mode the page reads pb_cruise while
+// it loads, and a const declared further down is not initialised yet then.
+const _LIMITS = { maxWind: 'speed', maxSwh: 'wave_height', pb_cruise: 'speed' };
 let startCoord = null;  // [lon, lat]
 let endCoord = null;
 let waypointCoords = [];  // [[lon, lat], ...] — intermediate stops in order
@@ -16,10 +21,14 @@ let waypointCoords = [];  // [[lon, lat], ...] — intermediate stops in order
 // on every mutation and wire drag-to-move through the Modify interaction.
 let waypointFeatures = [];  // one ol.Feature per waypoint, aligned with waypointCoords
 let waypointRadii = [];     // per waypoint: arrival radius (m) from a loaded route, or null = the slider's value
+let _planRestored = false;  // the saved plan is written only after it was read back (see _restorePlan)
 let _settingPrecisionFromRoute = false;  // true while a loaded route sets the precision selector
 let routeActive = false;      // a route is displayed for the current markers
 let _routeStale = false;      // markers changed since that route was computed
 let _routeComputing = false;  // a route job is running
+// The displayed route's points in route order, [{ lonLat, via, time (ms) }], for Live
+// mode. routeSource.getFeatures() is not in route order (spatial index).
+let _routePoints = [];
 
 let _activeReplanES = null;
 function closeReplanStream() { if (_activeReplanES) { try { _activeReplanES.close(); } catch (_) {} _activeReplanES = null; } }
@@ -74,6 +83,11 @@ function displayRoute(geojson) {
   const lineFeat = features.find(f => f.getGeometry().getType() === 'LineString');
   const snapProps = lineFeat ? lineFeat.getProperties() : {};
   const pts = features.filter(f => f.getGeometry().getType() === 'Point');
+  _routePoints = pts.map(f => ({
+    lonLat: ol.proj.toLonLat(f.getGeometry().getCoordinates()),
+    via: f.get('role') === 'via',
+    time: Date.parse(f.get('time')),
+  }));
   if (pts.length > 0) _placeRoutePins(pts, snapProps);
   _drawRouteLegs(pts);
   _markForecastEnd(pts, snapProps);
@@ -118,6 +132,12 @@ function _placeRoutePins(pts, snapProps) {
   // (what was requested, with each circle's radius); the route's own via
   // points are where it entered each circle, not where the pin was, so
   // they are used only for a route that carries no stops.
+  // A loaded route replaces the previous route's waypoints entirely: first
+  // clear them, then restore this route's own (none is a valid answer: a
+  // route without waypoints used to keep the previous route's pins, which
+  // a re-run then sent along).
+  waypointCoords = [];
+  waypointRadii = [];
   const stops = Array.isArray(snapProps.stops) && snapProps.stops.length >= 2 ? snapProps.stops.slice(1, -1) : null;
   if (stops) {
     waypointCoords = stops.map(s => [s.lon, s.lat]);
@@ -133,11 +153,8 @@ function _placeRoutePins(pts, snapProps) {
     _rebuildWaypointFeatures();
   } else {
     const vias = pts.filter(f => f.get('role') === 'via').map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()));
-    if (vias.length) {
-      waypointCoords = vias.map(c => [c[0], c[1]]);
-      waypointRadii = [];
-      _rebuildWaypointFeatures();
-    }
+    waypointCoords = vias.map(c => [c[0], c[1]]);
+    _rebuildWaypointFeatures();
   }
   refreshFindRouteEnabled();
 }
@@ -146,12 +163,19 @@ function _placeRoutePins(pts, snapProps) {
 // conditions; a sailing leg is coloured by tack (TACK_COLOR), a motoring
 // leg black, a leg past the forecast's last step dashed. Dateline legs
 // are split at ±180 so they render the short way.
+// Longitude difference b − a in (−180, 180]: the short way, across the antimeridian.
+function _dLon(a, b) { return ((b - a + 540) % 360) - 180; }
 function _drawRouteLegs(pts) {
-  // Set outgoing_cog on each point
+  // Set outgoing_cog on each point. Map x wraps at ±180°: across the
+  // antimeridian the next point's x is on the opposite edge of the world,
+  // so the difference is taken the short way (else the arrow pointed east
+  // on a southwest leg).
+  const WORLD_X = 2 * 20037508.342789244;
   for (let k = 0; k < pts.length - 1; k++) {
     const c1 = pts[k].getGeometry().getCoordinates();
     const c2 = pts[k + 1].getGeometry().getCoordinates();
-    const dx = c2[0] - c1[0];
+    let dx = c2[0] - c1[0];
+    if (dx > WORLD_X / 2) dx -= WORLD_X; else if (dx < -WORLD_X / 2) dx += WORLD_X;
     const dy = c2[1] - c1[1];
     const bearing = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
     pts[k].set('outgoing_cog', bearing);
@@ -296,6 +320,14 @@ function loadSkeleton(id) {
       skeletonSource.clear();
       if (!geojson) return;
       const features = new ol.format.GeoJSON().readFeatures(geojson, { featureProjection: 'EPSG:3857' });
+      // Across the antimeridian: redraw each line from unwrapped longitudes.
+      for (const f of features) {
+        const g = f.getGeometry();
+        if (g && g.getType() === 'LineString') {
+          const ll = g.getCoordinates().map(c => ol.proj.toLonLat(c));
+          f.setGeometry(new ol.geom.LineString(unwrapLonLats(ll).map(c => ol.proj.fromLonLat(c))));
+        }
+      }
       skeletonSource.addFeatures(features);
     })
     .catch(() => skeletonSource.clear());
@@ -324,9 +356,49 @@ function _jobSub(j) {
   }
   if (j.request && j.request.mode) parts.push(j.request.mode);
   if (j.resource_id) parts.push('published');
-  if (j.error && j.status !== 'done') parts.push(j.error);
+  if (j.error && j.status !== 'done') parts.push(unitText(j.error));
   return parts.join(' · ');
 }
+
+// After a saved route is opened: offer to compute it again (current
+// forecast, the Plan tab's settings, the loaded start, end and waypoints).
+function _askRecompute(job) {
+  const banner = document.getElementById('recomputeBanner');
+  if (!banner) return;
+  const t = job && (job.finished_at || job.created_at);
+  const when = t ? new Date(t) : null;
+  document.getElementById('recomputeText').textContent = 'Saved route' + (when ? ', computed ' + when.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '')
+    + '. Recompute it with the current forecast and the Plan settings?';
+  banner.hidden = false;
+}
+function _hideRecompute() {
+  const banner = document.getElementById('recomputeBanner');
+  if (banner) banner.hidden = true;
+}
+{
+  const yes = document.getElementById('recomputeYes'), no = document.getElementById('recomputeNo');
+  if (yes) yes.addEventListener('click', () => {
+    _hideRecompute();
+    const fr = document.getElementById('findRoute');
+    if (fr && !fr.disabled) fr.click();
+  });
+  if (no) no.addEventListener('click', _hideRecompute);
+}
+
+// The header lists only the sources that apply to the route on the map, or
+// to the map view when no route is loaded.
+setStatusArea(() => {
+  const pts = routeSource.getFeatures().filter(f => f.getGeometry() && f.getGeometry().getType() === 'Point' && f.get('time'));
+  if (pts.length) {
+    const ll = unwrapLonLats(pts.map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates())));
+    return { west: Math.min(...ll.map(c => c[0])), east: Math.max(...ll.map(c => c[0])), south: Math.min(...ll.map(c => c[1])), north: Math.max(...ll.map(c => c[1])) };
+  }
+  const e = ol.proj.transformExtent(map.getView().calculateExtent(map.getSize()), 'EPSG:3857', 'EPSG:4326');
+  return { west: e[0], south: e[1], east: e[2], north: e[3] };
+});
+map.on('moveend', redrawStatusLine);
+routeSource.on('change', redrawStatusLine);
+{ const rw = document.getElementById('regionalWind'); if (rw) rw.addEventListener('change', redrawStatusLine); }
 
 function _loadRouteJob(id) {
   if (!id) return;
@@ -342,17 +414,56 @@ function _loadRouteJob(id) {
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(geojson => {
       displayRoute(geojson);
+      _displayedJobId = id;   // a Publish of this saved route writes its itinerary too
+      _useRouteAngles(id);
+      // The job's own request is the exact record of what was asked: its
+      // waypoints (with their circles) and precision replace whatever the
+      // route's points suggest, for older routes too.
+      const req = job && job.request;
+      if (req) {
+        const wps = Array.isArray(req.waypoints) ? req.waypoints : [];
+        waypointCoords = wps.map(w => [w.lon, w.lat]);
+        waypointRadii = wps.map(w => (Number.isFinite(w.radius_m) ? w.radius_m : (req.precision === 'approximate' && Number.isFinite(req.arrival_radius_m) ? req.arrival_radius_m : null)));
+        const precEl = document.getElementById('precision');
+        const prec = wps.length ? (req.precision === 'approximate' ? 'approximate' : 'precise') : null;
+        if (precEl && prec && precEl.value !== prec) {
+          precEl.value = prec;
+          _settingPrecisionFromRoute = true;
+          try { precEl.dispatchEvent(new Event('change', { bubbles: true })); } finally { _settingPrecisionFromRoute = false; }
+        }
+        _rebuildWaypointFeatures();
+      }
       routeActive = true;
       _routeStale = false;
       updatePlanHint();
+      _askRecompute(job);
       // Zoom to the loaded route's extent with padding so the map
-      // frames the entire track beside the panel (not under it).
-      const ext = routeSource.getExtent();
+      // frames the entire track beside the panel (not under it). The
+      // extent is taken over the route's points with unwrapped longitudes:
+      // a route across the antimeridian has points near -180 and +180, and
+      // the plain extent of those is the whole world.
+      const routePts = routeSource.getFeatures().filter(f => f.getGeometry() && f.getGeometry().getType() === 'Point' && f.get('time'));
+      const ext = routePts.length
+        ? ol.extent.boundingExtent(unwrapLonLats(routePts.map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()))).map(c => ol.proj.fromLonLat(c)))
+        : routeSource.getExtent();
+      // Keep the view in the main world: an unwrapped extent can sit past
+      // ±180°, and a view centred there showed no route at all (the route's
+      // own features are stored in the main world).
+      const W = 2 * 20037508.342789244;
+      const cx = (ext[0] + ext[2]) / 2;
+      const shift = cx > W / 2 ? -W : cx < -W / 2 ? W : 0;
+      if (shift) { ext[0] += shift; ext[2] += shift; }
       if (ext && ext.every(Number.isFinite)) {
         map.getView().fit(ext, {
           padding: _mapFitPadding(),
           duration: 400,
           maxZoom: 14,
+          // The panel padding can still push the centre past ±180°; bring it
+          // back into the main world once the animation ends.
+          callback: () => {
+            const v = map.getView(), c = v.getCenter();
+            if (c && Math.abs(c[0]) > W / 2) v.setCenter([c[0] - Math.sign(c[0]) * W, c[1]]);
+          },
         });
       }
       showTab('itinerarySection');
@@ -370,6 +481,7 @@ function _clearDisplayedRoute() {
   _currentRouteJobId = null;
   _currentRouteName = '';
   routeSource.clear();
+  _routePoints = [];
   skeletonSource.clear();
   frontSource.clear();
   startFeature.setGeometry(null);
@@ -549,6 +661,11 @@ applyVesselType(getVesselType());
           status.textContent = '✓';
           status.title = 'Published as ' + d.resource_id;
           appendLog('Published to Signal K resources: ' + d.href, 'done');
+          // Publishing writes the server's copy, which has no itinerary:
+          // write the leg details into it again.
+          _annotatedJobId = null;
+          _pendingAnnotate = { id: d.id, resourceId: d.resource_id };
+          _annotateIfPending(d.id);
           loadRouteHistory();
           setTimeout(() => { status.textContent = ''; }, 2500);
         })
@@ -713,6 +830,7 @@ function _rebuildWaypointFeatures() {
 // The arrival circle around each via waypoint in Approximate mode: the
 // radius a loaded route used for it, else the slider's. Nothing in Precise.
 function _rebuildRings() {
+  _savePlan();   // every waypoint or radius change passes through here
   ringSource.clear();
   const precEl = document.getElementById('precision');
   if (!precEl || precEl.value !== 'approximate') return;
@@ -881,10 +999,27 @@ function updateButton() {
   // Endpoint readiness is the baseline; power mode adds hull-def checks.
   refreshFindRouteEnabled();
   updatePlanHint();
+  _savePlan();
+}
+
+// The plan (start, destination, waypoints with their radii, departure) is
+// kept in this browser so a reload, or another day's look for a weather
+// window, starts from it. Saved on every change; restored once on load.
+function _savePlan() {
+  if (!_planRestored) return;   // start-up events must not overwrite the saved plan before it is read
+  const dep = document.getElementById('departure').value;
+  const t = dep ? new Date(dep) : null;
+  const plan = {
+    start: startCoord, end: endCoord,
+    waypoints: waypointCoords, radii: waypointRadii,
+    departure: t && Number.isFinite(t.getTime()) ? t.toISOString() : null,
+  };
+  try { localStorage.setItem('rp:plan', JSON.stringify(plan)); } catch (_) {}
 }
 
 // --- Reset ---
 document.getElementById('resetBtn').addEventListener('click', function() {
+  _hideRecompute();
   if (routeActive && !confirm('Clear the route and all markers?')) return;
   startCoord = null;
   endCoord = null;
@@ -896,6 +1031,7 @@ document.getElementById('resetBtn').addEventListener('click', function() {
   endFeature.setGeometry(null);
   _rebuildWaypointFeatures();
   routeSource.clear();
+  _routePoints = [];
   skeletonSource.clear();
   frontSource.clear();
   document.getElementById('startCoord').textContent = 'Click map or drag marker';
@@ -929,6 +1065,48 @@ document.getElementById('clearEnd').addEventListener('click', function() {
   markRouteStale();
   updateButton();
 });
+
+// --- The plan saved by _savePlan, read back once on load ---
+function _restorePlan() {
+  let plan = null;
+  try { plan = JSON.parse(localStorage.getItem('rp:plan') || 'null'); } catch (_) {}
+  const ll = c => Array.isArray(c) && c.length === 2 && Number.isFinite(c[0]) && Number.isFinite(c[1])
+    && Math.abs(c[0]) <= 360 && Math.abs(c[1]) <= 90;
+  if (plan && typeof plan === 'object') {
+    if (ll(plan.start)) {
+      startCoord = [plan.start[0], plan.start[1]];
+      startFeature.setGeometry(new ol.geom.Point(ol.proj.fromLonLat(startCoord)));
+      updateCoordDisplay('start', startCoord);
+    }
+    if (ll(plan.end)) {
+      endCoord = [plan.end[0], plan.end[1]];
+      endFeature.setGeometry(new ol.geom.Point(ol.proj.fromLonLat(endCoord)));
+      updateCoordDisplay('end', endCoord);
+    }
+    const wps = Array.isArray(plan.waypoints) ? plan.waypoints.filter(ll) : [];
+    if (wps.length === (Array.isArray(plan.waypoints) ? plan.waypoints.length : 0)) {
+      waypointCoords = wps.map(c => [c[0], c[1]]);
+      waypointRadii = wps.map((_, i) => (Array.isArray(plan.radii) && Number.isFinite(plan.radii[i]) ? plan.radii[i] : null));
+    }
+    // A departure still ahead is kept; one that has passed is not (the
+    // input keeps "now", set on load), and the status line says so.
+    const dep = typeof plan.departure === 'string' ? new Date(plan.departure) : null;
+    if (dep && Number.isFinite(dep.getTime())) {
+      if (dep.getTime() > Date.now()) {
+        const p2 = n => String(n).padStart(2, '0');
+        document.getElementById('departure').value = `${dep.getFullYear()}-${p2(dep.getMonth() + 1)}-${p2(dep.getDate())}T${p2(dep.getHours())}:${p2(dep.getMinutes())}`;
+        document.getElementById('departure').dispatchEvent(new Event('change'));
+      } else if (startCoord || endCoord) {
+        document.getElementById('status').textContent = 'The saved departure (' + dep.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ') has passed; departure set to now.';
+      }
+    }
+  }
+  _planRestored = true;
+  _rebuildWaypointFeatures();
+  updateButton();
+}
+_restorePlan();
+document.getElementById('departure').addEventListener('change', _savePlan);
 
 // --- Tabs ---
 // All panes share #tabBody, the route inputs and result strip included
@@ -1152,10 +1330,11 @@ function showModal() {
   cancelBtn.style.display = 'inline-block';
 }
 
+// Log lines come from the plugin with quantities as unit tokens: written in the user's units.
 function appendLog(text, cls) {
   const span = document.createElement('span');
   if (cls) span.className = cls;
-  span.textContent = text + '\n';
+  span.innerHTML = unitTextHtml(String(text)) + '\n';
   modalLog.appendChild(span);
   modalLog.scrollTop = modalLog.scrollHeight;
 }
@@ -1176,7 +1355,7 @@ function _warningCardIndex(w, lonlats) {
   const k = Math.cos(pt[1] * Math.PI / 180);
   let best = -1, bestD = Infinity;
   lonlats.forEach((c, i) => {
-    const dx = (c[0] - pt[0]) * k, dy = c[1] - pt[1];
+    const dx = _dLon(pt[0], c[0]) * k, dy = c[1] - pt[1];
     const d = dx * dx + dy * dy;
     if (d < bestD) { bestD = d; best = i; }
   });
@@ -1198,6 +1377,7 @@ function _warningText(w) {
 // in the user's display units (a quantity whose unit is not set is left
 // out). The same text the Freeboard panel writes.
 let _pendingAnnotate = null;   // {id, resourceId} from the publish status
+let _annotatedJobId = null;    // the job whose itinerary was written into its saved route
 let _displayedJobId = null;    // the job whose itinerary is on screen
 function _plainFairFoul(cog, currentDir) {
   if (cog == null || currentDir == null) return null;
@@ -1217,25 +1397,25 @@ function _legDescription(p, isArrival) {
     add('Distance', p.leg_distance_m != null ? fmtDist(p.leg_distance_m) : null);
     if (p.leg_time_s != null) { const m = Math.round(p.leg_time_s / 60); add('Time', Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0')); }
     add('SOG', p.next_sog_ms != null ? fmtSpeed(p.next_sog_ms) : null);
-    if (cogDeg != null) add('COG', degToCardinal(cogDeg) + ' ' + Math.round(cogDeg) + '°');
+    if (cogDeg != null) add('COG', degToCardinal(cogDeg) + ' ' + fmtAngleDeg(cogDeg));
   }
   const windMs = isArrival ? p.wind_ms : p.next_wind_ms, windDir = isArrival ? p.wind_dir_deg : p.next_wind_dir_deg;
   if (windMs != null && fmtSpeed(windMs)) {
     const pos = !isArrival ? pointOfSail(p.next_twa_deg, windMs) : null;
-    add('Wind', fmtSpeed(windMs) + (windDir != null ? ' from ' + degToCardinal(windDir) + ' (' + Math.round(windDir) + '°)' : '') + (pos ? ' · ' + pos : ''));
+    add('Wind', fmtSpeed(windMs) + (windDir != null ? ' from ' + degToCardinal(windDir) + ' (' + fmtAngleDeg(windDir) + ')' : '') + (pos ? ' · ' + pos : ''));
   }
-  if (!isArrival && p.next_twa_deg != null) add('TWA', Math.round(p.next_twa_deg) + '°');
+  if (!isArrival && p.next_twa_deg != null) add('TWA', fmtAngleDeg(p.next_twa_deg));
   const curMs = isArrival ? p.current_ms : p.next_current_ms, curDir = isArrival ? p.current_dir_deg : p.next_current_dir_deg;
   if (curMs != null && curMs > 0.05 && fmtSpeed(curMs)) {
     const ff = !isArrival ? _plainFairFoul(cogDeg, curDir) : null;
-    add('Current', fmtSpeed(curMs) + (curDir != null ? ' from ' + degToCardinal((curDir + 180) % 360) + ' (' + Math.round((curDir + 180) % 360) + '°)' : '') + (ff ? ' · ' + ff : ''));
+    add('Current', fmtSpeed(curMs) + (curDir != null ? ' from ' + degToCardinal((curDir + 180) % 360) + ' (' + fmtAngleDeg((curDir + 180) % 360) + ')' : '') + (ff ? ' · ' + ff : ''));
   }
   const swh = isArrival ? p.swh_m : (p.next_swh_m != null ? p.next_swh_m : p.swh_m);
   if (swh != null && fmtSwh(swh)) {
     const w = [fmtSwh(swh)];
     const mwp = isArrival ? p.mwp_s : p.next_mwp_s, mwd = isArrival ? p.mwd_deg : p.next_mwd_deg;
     if (mwp != null && fmtWavePeriod(mwp)) w.push(fmtWavePeriod(mwp));
-    if (mwd != null) w.push('from ' + degToCardinal(mwd) + ' ' + Math.round(mwd) + '°');
+    if (mwd != null) w.push('from ' + degToCardinal(mwd) + ' ' + fmtAngleDeg(mwd));
     add('Waves', w.join(' · '));
   }
   return parts.filter(Boolean).join(' · ');
@@ -1253,10 +1433,32 @@ function _routeDescription(p, n) {
   if (beyond > 0) s += ' Forecast ends ' + (p.forecast_valid_to ? fmtWhen(p.forecast_valid_to) : 'before the route does') + '; the last ' + beyond + ' leg' + (beyond > 1 ? 's' : '') + ' ran on conditions held at that step.';
   return s;
 }
+// The server publishes a route only after it reported 'done', and the job
+// stream closes on 'done', so the published resource id never reaches the
+// stream. Ask the job for it instead (a few tries while the publish
+// completes), then write the itinerary into the saved route.
+function _awaitPublished(jobId, tries = 10) {
+  if (_annotatedJobId === jobId || (_pendingAnnotate && _pendingAnnotate.id === jobId)) return;   // already written, or the stream delivered it
+  authFetch(API + '/routes/' + encodeURIComponent(jobId), { cache: 'no-store' }, null)
+    .then(r => (r.ok ? r.json() : null))
+    .then(j => {
+      if (!j || _displayedJobId !== jobId) return;
+      if (j.resource_id) {
+        _pendingAnnotate = { id: jobId, resourceId: j.resource_id };
+        _annotateIfPending(jobId);
+      } else if (j.publish_error) {
+        appendLog('publish failed: ' + j.publish_error, 'error');
+      } else if (tries > 1) {
+        setTimeout(() => _awaitPublished(jobId, tries - 1), 1000);
+      }
+    })
+    .catch(() => {});
+}
 function _annotateIfPending(jobId) {
   const pending = _pendingAnnotate;
   if (!pending || pending.id !== jobId || _displayedJobId !== jobId || !_itineraryFeatures.length) return;
   _pendingAnnotate = null;
+  _annotatedJobId = jobId;
   const feats = _itineraryFeatures;
   const resourceId = pending.resourceId;
   authFetch(API + '/routes/' + encodeURIComponent(jobId) + '/signalk', { cache: 'no-store' }, null)
@@ -1354,13 +1556,13 @@ function _legCardHtml(f, i, cw) {
   // Format
   const sog = fmtSpeed(sogMs);
   const cog = cogDeg != null
-            ? `${degToCardinal(cogDeg)} ${Math.round(cogDeg)}°` : null;
+            ? `${degToCardinal(cogDeg)} ${fmtAngleDeg(cogDeg)}` : null;
   const pos = pointOfSail(twa, windMs);
   const wind = windMs != null
-             ? `${fmtSpeed(windMs)} from ${degToCardinal(windDir)} (${Math.round(windDir || 0)}°)`
+             ? `${fmtSpeed(windMs)} from ${degToCardinal(windDir)} (${fmtAngleDeg(windDir || 0)})`
                + (pos ? ` · ${pos}` : '')
              : null;
-  const twaStr = twa != null ? Math.round(twa) + '°' : null;
+  const twaStr = twa != null ? fmtAngleDeg(twa) : null;
 
   // Current: `current_dir_deg` is the set (flows TO); shown as "from"
   // with fair/foul computed vs COG.
@@ -1369,7 +1571,7 @@ function _legCardHtml(f, i, cw) {
     const fromDeg = curDir != null ? (curDir + 180) % 360 : null;
     const ff = fairFoul(cogDeg, curDir);
     curStr = fmtSpeed(curMs)
-           + (fromDeg != null ? ` from ${degToCardinal(fromDeg)} (${Math.round(fromDeg)}°)` : '')
+           + (fromDeg != null ? ` from ${degToCardinal(fromDeg)} (${fmtAngleDeg(fromDeg)})` : '')
            + (ff ? ' · ' + ff : '');
   }
 
@@ -1378,7 +1580,7 @@ function _legCardHtml(f, i, cw) {
   if (swhM != null) {
     const parts = [fmtSwh(swhM)];
     if (mwpS != null) parts.push(fmtWavePeriod(mwpS));
-    if (mwdDeg != null) parts.push(`from ${degToCardinal(mwdDeg)} ${Math.round(mwdDeg)}°`);
+    if (mwdDeg != null) parts.push(`from ${degToCardinal(mwdDeg)} ${fmtAngleDeg(mwdDeg)}`);
     wavesStr = parts.join(' · ');
   }
 
@@ -1520,6 +1722,8 @@ function buildRoutePayload(overrides) {
   const pub = document.getElementById('publishSel').value;
   if (pub === 'true') body.publish = true; else if (pub === 'false') body.publish = false;
   if (document.getElementById('noCurrents').checked) body.no_currents = true;
+  const rw = document.getElementById('regionalWind');
+  if (rw && !rw.checked) body.wind_model = 'ecmwf';
   if (document.getElementById('noForecast').checked) body.no_forecast = true;
   const vessel = {};
   // Vessel-type override. Power mode forces mode=motor, drops polar,
@@ -1557,7 +1761,7 @@ function buildRoutePayload(overrides) {
 // ── Wind and wave limits ─────────────────────────────────────────────
 // Typed in the user's units, kept in SI in localStorage so a change of
 // unit preference keeps the meaning; no unit → the field is disabled.
-const _LIMITS = { maxWind: 'speed', maxSwh: 'wave_height', pb_cruise: 'speed' };
+// (_LIMITS is declared at the top of the file: start-up code reads it through _limitSI.)
 function _limitSI(id) {
   const c = UI_UNITS[_LIMITS[id]], el = document.getElementById(id);
   if (!el || !c || !c.inv || el.value === '') return null;
@@ -1709,7 +1913,8 @@ function _jobOnDone(job, d) {
     .then(geojson => {
       displayRoute(geojson);
       _displayedJobId = id;
-      _annotateIfPending(id);
+      // The itinerary written into the saved route is labelled with this route's polar too.
+      _useRouteAngles(id).then(() => { _annotateIfPending(id); _awaitPublished(id); });
       _loadFronts(id);
       loadRouteHistory();
       RouteProgress.hide();
@@ -1732,8 +1937,8 @@ function _jobOnError(job, ev) {
     const cancelled = d && d.status === 'cancelled';
     appendLog((cancelled ? 'Cancelled: ' : 'ERROR: ') + msg, 'error');
     modalStatus.textContent = cancelled ? 'Cancelled' : 'Failed';
-    statusEl.textContent = cancelled ? 'Route cancelled.' : 'Error: ' + msg;
-    RouteProgress.fail(cancelled ? 'Cancelled' : 'Failed: ' + msg);
+    statusEl.textContent = cancelled ? 'Route cancelled.' : 'Error: ' + unitText(msg);
+    RouteProgress.fail(cancelled ? 'Cancelled' : 'Failed: ' + unitText(msg));
     _computeUiIdle();
     showTab('logSection');
     const rawLog = document.getElementById('rawLog');
@@ -1761,6 +1966,7 @@ function _jobOnError(job, ev) {
 }
 
 document.getElementById('findRoute').addEventListener('click', function() {
+  _hideRecompute();
   const btn = this;
   const statusEl = document.getElementById('status');
   const infoEl = document.getElementById('routeInfo');
@@ -1837,19 +2043,43 @@ function _interpAt(x, xs, ys) {
   return ys[ys.length - 1];
 }
 
+// The point of sail from the polar at this wind speed (/api/polar-angles,
+// as the router uses the polar): in irons tighter than its no-go angle,
+// close hauled from there to its best upwind (VMG) angle, close reach to
+// 75°, beam reach to 105°, broad reach to 15° short of its best downwind
+// angle, then downwind. Without a polar the boundaries are not known: no
+// label rather than a guess.
+// The route on screen is labelled with the polar its job used (_useRouteAngles);
+// until that is known, or when the plugin no longer has the job, the picker's.
+let _routeAngles = null;
+let _routeAnglesJob = null;
+function _useRouteAngles(jobId) {
+  if (!jobId) return Promise.resolve();
+  return authFetch(API + '/routes/' + encodeURIComponent(jobId), { cache: 'no-store' }, null)
+    .then(r => (r.ok ? r.json() : null))
+    .then(j => {
+      const rq = (j && j.request) || null;
+      if (!rq || rq.mode === 'motor') return null;
+      return fetchPolarAngles(rq.vessel && rq.vessel.polar);
+    })
+    .then(a => {
+      if (_currentRouteJobId !== jobId) return;
+      _routeAngles = a;
+      _routeAnglesJob = a ? jobId : null;
+      if (_itineraryFeatures.length) populateItinerary(_itineraryFeatures);
+    })
+    .catch(() => {});
+}
 function pointOfSail(twa, windMs) {
-  if (twa == null) return null;
+  const g = _routeAngles && _routeAnglesJob === _currentRouteJobId ? _routeAngles : _polarAngles;
+  if (twa == null || !g || windMs == null) return null;
   const a = Math.abs(twa);
-  // Default bands when no polar is loaded.
-  let beat = 40, run = 150;
-  if (_polarAngles && windMs != null) {
-    const b = _interpAt(windMs, _polarAngles.tws_ms, _polarAngles.beat_deg);
-    const r = _interpAt(windMs, _polarAngles.tws_ms, _polarAngles.run_deg);
-    if (b != null) beat = b;
-    if (r != null) run = r;
-  }
-  if (a < beat - 5) return 'in irons';
-  if (a < beat + 15) return 'close hauled';
+  const nogo = g.nogo_deg ? _interpAt(windMs, g.tws_ms, g.nogo_deg) : null;
+  const beat = _interpAt(windMs, g.tws_ms, g.beat_deg);
+  const run = _interpAt(windMs, g.tws_ms, g.run_deg);
+  if (nogo == null || beat == null || run == null) return null;
+  if (a < nogo) return 'in irons';
+  if (a <= beat) return 'close hauled';
   if (a < 75) return 'close reach';
   if (a <= 105) return 'beam reach';
   if (a <= run - 15) return 'broad reach';
@@ -1944,7 +2174,7 @@ map.on('singleclick', function(e) {
 function _fmtHpa(pa)   { return fmtPressure(pa) || '—'; }
 function _fmtDegC(k)   { return fmtTemp(k) || '—'; }
 function _fmtMmH(rate) { return fmtPrecip(rate) || '—'; }
-function _fmtDir(deg)  { return deg == null ? '' : ' ' + degToCardinal(deg) + ' (' + Math.round(deg) + '°)'; }
+function _fmtDir(deg)  { return deg == null ? '' : ' ' + degToCardinal(deg) + ' (' + fmtAngleDeg(deg) + ')'; }
 function _rowCells(r) {
   return '<td>' + (fmtSpeed(r.wind_ms) || '—') + _fmtDir(r.wind_dir_deg) + '</td>'
        + '<td>' + (r.swh_m == null ? '—' : (fmtSwh(r.swh_m) + (r.mwp_s != null ? ' / ' + fmtWavePeriod(r.mwp_s) : '') + _fmtDir(r.mwd_deg))) + '</td>'
@@ -2332,7 +2562,7 @@ function _condReadout(tab, r) {
     if (v == null && tab.lines.length > 1) continue;   // optional line, nothing this hour
     parts.push((tab.lines.length > 1 ? l.name + ' ' : '') + (v == null ? '—' : v.toFixed(u.p) + ' ' + u.u));
   }
-  if (tab.dir && r[tab.dir.key] != null) parts.push((tab.dir.sense === 'from' ? 'from ' : 'set ') + degToCardinal(r[tab.dir.key]) + ' (' + Math.round(r[tab.dir.key]) + '°)');
+  if (tab.dir && r[tab.dir.key] != null) parts.push((tab.dir.sense === 'from' ? 'from ' : 'set ') + degToCardinal(r[tab.dir.key]) + ' (' + fmtAngleDeg(r[tab.dir.key]) + ')');
   if (tab.hover) parts.push(tab.hover(r).replace(/^ · /, ''));
   return parts.filter(Boolean).join(' · ');
 }
@@ -2379,20 +2609,20 @@ function _tideDetailsHtml(series) {
     } else h += '<div>No high or low water within this window.</div>';
     if (T.range_m != null) h += '<div>Tidal range: ' + _fmtTideH(T.range_m) + ' mean' + (T.max_range_m != null ? ', ' + _fmtTideH(T.max_range_m) + ' largest' : '') + '</div>';
   } else if (_cond && _cond.tidesError) {
-    h += '<div style="color:#b71c1c;">Tide data unavailable: ' + _cond.tidesError + '</div>';
+    h += '<div style="color:#b71c1c;">Tide data unavailable: ' + unitTextHtml(_cond.tidesError) + '</div>';
   }
   // Current: null means no current source has data here (not slack water).
   const rows = series || [];
   const noCur = rows.filter(r => r.current_ms == null).length;
   if (noCur && !(_cond && _cond.isLand)) {
-    h += '<div style="color:#b35c00;"><b>No current data ' + (noCur === rows.length ? 'here' : 'for ' + noCur + ' of ' + rows.length + ' hours')
-      + '</b>: no current model covers this water (it is narrower than their ~9 km grids, or outside them), so no current speed is shown. '
+    h += '<div style="color:#b35c00;"><b>No current data ' + (noCur === rows.length ? 'here' : 'for ' + noCur + ' of ' + rows.length + ' hourly steps')
+      + '</b>: no current model covers this water (it is narrower than their grids of about ' + _fmt(9000, 'distance') + ', or outside them), so no current speed is shown. '
       + 'Map arrows here are extended from the nearest model water and are not a measurement.</div>';
   }
   const extrap = (T && T.extrapolated) || rows.some(r => r.tide_extrapolated);
   h += '<div style="color:#666;">Heights relative to mean sea level, not chart datum. Not for under-keel clearance.'
     + (extrap ? ' <b style="color:#e65100;">Extrapolated near the coast</b> (the nearest model cells are land).' : '')
-    + ' Copernicus Marine hourly sea level, 1/12°' + (T && T.run ? ' (run ' + T.run + ')' : '') + '.</div>';
+    + ' Copernicus Marine hourly sea level' + (T && T.run ? ' (run ' + T.run + ')' : '') + '.</div>';
   return h + '</div>';
 }
 
@@ -2618,19 +2848,47 @@ popup.on('change:position', () => {
     const v = el ? parseFloat(el.value) : NaN;
     return Number.isFinite(v) ? v : fallback;
   }
-  const VESSEL_STALE_MS = 30000;
-  const MIN_SOG_MS = 0.25;    // below this COG is noise; gate triggers
   const POLL_MS = 5000;
+  const SIM_POLL_MS = 1000;   // SIMULATE: the boat moves fast, so update often
 
   let liveMode = false;
   let pollInterval = null;
   let lastSnap = null;
-  let xteSustainStart = null;
-  let lastReplanAt = 0;       // cooldown so we don't spam re-plans
-  const REPLAN_COOLDOWN_MS = 15000;
+  // Off-course timer, cooldown and reached waypoints (rp-live.js).
+  const triggers = createLiveTriggers();
+  let replanBusy = false;     // a re-plan job is running
+  let replanGen = 0;          // bumped when Live stops: a late result is dropped
+
+  // SIMULATE: Live mode with a simulated boat sailing the route on the
+  // map instead of the Signal K position, for trying the triggers ashore.
+  // Not remembered: every page load starts in Planning.
+  let simMode = false;
+  let sim = null;             // the simulated boat (rp-live.js createRouteSimulator)
+  let simPushed = false;      // "Push off course" is on
+  let simPaused = false;      // held: stopped, or while a re-plan runs or a proposal is open
+  let simRunning = false;     // Start / Stop
+  // The sailed track (rp-layers.js trackSource): in LIVE the own vessel's
+  // track from the Signal K Tracks API since LIVE started (thinned by the
+  // server); in SIMULATE the simulated boat's, recorded and thinned here
+  // (the Tracks API does not take positions yet). Both stay on the map.
+  const TRACK_EPSILON_M = 20;
+  let simTrack = null, simTrackFeature = null;
+  let liveSince = null, liveTrackFeatures = [], liveTrackBusy = false;
 
   const btnPlanning = document.getElementById('modeBtnPlanning');
   const btnLive = document.getElementById('modeBtnLive');
+  const btnSim = document.getElementById('modeBtnSim');
+  const modeHint = document.getElementById('modeHint');
+  const simFactorEl = document.getElementById('simFactor');
+  const simFactorLabel = document.getElementById('simFactorLabel');
+  const simPushBtn = document.getElementById('simPushBtn');
+  const simControls = document.getElementById('simControls');
+  const simStartBtn = document.getElementById('simStartBtn');
+  const simStopBtn = document.getElementById('simStopBtn');
+  const simRewindBtn = document.getElementById('simRewindBtn');
+  const vesselToggle = document.getElementById('vesselToggle');
+  let simOverlayHour = null;  // the hour the weather layers show for the simulated time (ISO)
+  let simOverlayAt = 0;       // when they were last redrawn for it (wall ms)
   const readoutBody = document.getElementById('liveReadoutBody');
   const readoutStale = document.getElementById('liveReadoutStale');
   const readoutPanel = document.getElementById('liveReadout');
@@ -2658,6 +2916,23 @@ popup.on('change:position', () => {
   // `channel`: a newer request on the same channel cancels the older one,
   // so a caller that must not be cancelled by the poll uses its own.
   function fetchVesselSnapshot(channel = 'vessel') {
+    if (simMode) {
+      if (_routePoints.length < 2) return Promise.reject(new Error('SIMULATE: no route on the map'));
+      const now = Date.now();
+      // A new route on the map (an accepted re-plan, a loaded route): the boat starts again at its start.
+      if (!sim || sim.points !== _routePoints) {
+        try { sim = createRouteSimulator(_routePoints, simFactor(), now); } catch (err) { return Promise.reject(err); }
+        simPaused = false;
+      }
+      // The simulated clock waits while a re-plan runs or a proposal is open,
+      // so no waypoint goes by unseen.
+      const hold = !simRunning || replanBusy || !!banner.dataset.geojson;
+      if (hold !== simPaused) { simPaused = hold; sim.setFactor(now, hold ? 0 : simFactor()); }
+      return Promise.resolve(sim.at(now, simPushed ? numOr('simPushDeg', 20) : 0, {
+        thresholdM: numOr('xteThresholdM', 500),
+        sustainMs: numOr('xteSustainSec', 30) * 1000,
+      }));
+    }
     return authFetch(SK_NAV, { cache: 'no-store' }, channel)
       .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(nav => {
@@ -2686,42 +2961,216 @@ popup.on('change:position', () => {
   }
 
   function setVisual() {
-    btnPlanning.classList.toggle('live-active', !liveMode);
-    btnLive.classList.toggle('live-active', liveMode);
-    btnPlanning.classList.toggle('live-on', false);
-    btnLive.classList.toggle('live-on', liveMode);
-    btnPlanning.setAttribute('aria-pressed', String(!liveMode));
-    btnLive.setAttribute('aria-pressed', String(liveMode));
+    const mode = !liveMode ? 'planning' : simMode ? 'sim' : 'live';
+    for (const [btn, m] of [[btnPlanning, 'planning'], [btnLive, 'live'], [btnSim, 'sim']]) {
+      btn.classList.toggle('live-active', mode === m);
+      btn.classList.toggle('live-on', mode === m && m !== 'planning');
+      btn.setAttribute('aria-pressed', String(mode === m));
+    }
     readoutPanel.style.display = liveMode ? '' : 'none';
+    simControls.style.display = simMode ? '' : 'none';
+    simStartBtn.disabled = simRunning;
+    simStopBtn.disabled = !simRunning;
+    simPushBtn.setAttribute('aria-pressed', String(simPushed));
+    simPushBtn.textContent = simPushed ? 'Back on track' : 'Push off course';
+    updateLiveButton();
+  }
+
+  // How much faster than real time the simulated boat sails the route: the
+  // slider is log10 of the factor (×1 … ×3600), rounded to 2 figures.
+  function simFactor() {
+    const v = parseFloat(simFactorEl.value);
+    return Number.isFinite(v) ? Math.max(1, Number((10 ** v).toPrecision(2))) : 600;
+  }
+  function showSimFactor() {
+    simFactorLabel.textContent = '×' + simFactor();
+    simFactorEl.setAttribute('aria-valuetext', simFactor() + ' times real time');
+  }
+  showSimFactor();
+
+  // LIVE / SIMULATE: the map stays centred on the boat (the real one in
+  // LIVE, the simulated one in SIMULATE) until the user drags it; the
+  // "Centre the map on the boat" button, or starting LIVE / SIMULATE again,
+  // follows it again. Zooming keeps following.
+  let following = true;
+  map.on('pointerdrag', () => { if (liveMode) following = false; });
+  function centreOnBoat(lonLat) {
+    if (following) map.getView().setCenter(ol.proj.fromLonLat(lonLat));
+  }
+
+  // LIVE works from the boat's own position: it is available only when the
+  // route's start (the green pin) is where the boat is, within the
+  // off-course threshold. Otherwise the button is greyed out and says why.
+  let lastRealSnap = null;    // the last Signal K position (not the simulated boat's)
+  function liveUnavailable() {
+    const plan = 'LIVE needs a route that starts at the boat: set the start to the boat\'s position and Find Route.';
+    if (!startCoord) return plan;
+    if (!lastRealSnap || lastRealSnap.lat == null || lastRealSnap.lon == null) return 'No boat position from Signal K yet.';
+    const d = haversineM([lastRealSnap.lon, lastRealSnap.lat], startCoord);
+    return d > numOr('xteThresholdM', 500) ? 'The boat is ' + _fmt(d, 'distance') + ' from the start. ' + plan : null;
+  }
+  function updateLiveButton() {
+    const why = liveMode && !simMode ? null : liveUnavailable();
+    btnLive.disabled = !!why;
+    btnLive.title = why || '';
+  }
+  document.getElementById('xteThresholdM').addEventListener('input', updateLiveButton);
+
+  // SIMULATE: the weather layers show the simulated hour (redrawn at most
+  // every 2 s at high speeds); null puts them back to the departure time.
+  function showSimOverlayHour(routeTimeMs) {
+    const hour = routeTimeMs == null ? null : new Date(Math.floor(routeTimeMs / 3600e3) * 3600e3).toISOString();
+    if (hour === simOverlayHour) return;
+    if (hour !== null && Date.now() - simOverlayAt < 2000) return;
+    simOverlayHour = hour;
+    simOverlayAt = Date.now();
+    setTimeOverride(hour);
+    _reloadTimedOverlays();
   }
 
   function startPolling() {
     if (pollInterval) return;
-    pollInterval = setInterval(poll, POLL_MS);
+    pollInterval = setInterval(poll, simMode ? SIM_POLL_MS : POLL_MS);
     poll();   // kick immediately so the marker lands before the first tick.
   }
   function stopPolling() {
     if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
   }
 
-  function startLive() {
-    if (liveMode) return;
+  // LIVE (simulate false) or SIMULATE; switching between them starts over.
+  function startLive(simulate) {
+    modeHint.style.display = 'none';
+    if (liveMode && simMode === simulate) return;
+    if (!simulate) {
+      const why = liveUnavailable();
+      if (why) { modeHint.textContent = why; modeHint.style.display = ''; return; }
+    }
+    if (simulate && _routePoints.length < 2) {
+      modeHint.textContent = 'SIMULATE needs a route on the map: Find Route or load a saved one.';
+      modeHint.style.display = '';
+      return;
+    }
+    if (liveMode) stopLive();
     liveMode = true;
+    simMode = simulate;
+    simRunning = false;   // SIMULATE waits for Start
+    following = true;
+    resetPassage();
+    if (simulate) {
+      simTrack = createTrackRecorder(TRACK_EPSILON_M);
+      simTrackFeature = new ol.Feature();
+      trackSource.addFeature(simTrackFeature);
+    } else {
+      liveSince = new Date().toISOString();
+      liveTrackFeatures = [];
+    }
     setVisual();
     readoutBody.textContent = 'connecting…';
-    startPolling();
-    poll();
+    stopPolling();
+    startPolling();   // at the mode's rate
   }
 
   function stopLive() {
     liveMode = false;
+    simMode = false;
+    sim = null;
+    simPushed = false;
+    simRunning = false;
+    simTrack = null; simTrackFeature = null;   // the drawn tracks stay
+    liveSince = null; liveTrackFeatures = [];
     setVisual();
     lastSnap = null;
-    xteSustainStart = null;
+    replanGen++;
+    replanBusy = false;
+    triggers.reset();
     dismissProposal();
+    if (simOverlayHour) showSimOverlayHour(null);
+    if (pollInterval) { stopPolling(); syncPolling(); }   // back to the Signal K rate
   }
   AuthGate.onStop(() => { stopLive(); stopPolling(); });
   window.addEventListener('rp:units', () => { if (lastSnap && liveMode) renderReadout(lastSnap); });
+
+  // SIMULATE: add the boat's position to the recorded track while it sails.
+  function recordSimTrack(snap) {
+    if (!simTrack || simPaused || snap.lat == null) return;
+    simTrack.add([snap.lon, snap.lat]);
+    const pts = simTrack.points();
+    if (pts.length >= 2) simTrackFeature.setGeometry(new ol.geom.LineString(unwrapLonLats(pts).map(c => ol.proj.fromLonLat(c))));
+  }
+  // LIVE: the own vessel's track since LIVE started, from the Signal K
+  // Tracks API (simplified by the provider), redrawn each poll.
+  function loadLiveTrack() {
+    if (!liveSince || liveTrackBusy) return;
+    liveTrackBusy = true;
+    const since = liveSince;
+    authFetch('/signalk/v2/api/tracks?from=' + encodeURIComponent(since) + '&simplify=true&epsilon=' + TRACK_EPSILON_M, { cache: 'no-store' }, 'live-track')
+      .then(r => (r.ok ? r.json() : null))
+      .then(fc => {
+        if (!fc || since !== liveSince) return;
+        const feats = new ol.format.GeoJSON().readFeatures(fc, { featureProjection: 'EPSG:3857' })
+          .filter(f => f.get('isSelf') !== false);
+        for (const f of liveTrackFeatures) trackSource.removeFeature(f);
+        liveTrackFeatures = feats;
+        trackSource.addFeatures(feats);
+      })
+      .catch(() => {})
+      .finally(() => { liveTrackBusy = false; });
+  }
+
+  // ── itinerary following the boat (LIVE / SIMULATE) ─────────────
+  // The card of the point the boat is heading to is highlighted with live
+  // figures; each point passed keeps the figures at its closest approach
+  // (rp-live.js createPassageTracker). A new route on the map, Rewind or a
+  // new LIVE / SIMULATE start begins again.
+  let passage = null, passageFor = null;
+  function resetPassage() {
+    passage = null; passageFor = null;
+    modalItinerary.querySelectorAll('.leg-card.live-next, .leg-card.passed').forEach(c => c.classList.remove('live-next', 'passed'));
+    modalItinerary.querySelectorAll('.leg-live').forEach(n => n.remove());
+  }
+  // Small distances in the user's length unit, larger ones in their distance unit.
+  const fmtD = m => (m < 1000 ? _fmt(m, 'short_distance') : _fmt(m, 'distance'));
+  function passageText(f, passedIt) {
+    const side = Math.abs(f.sideM) < 1 ? 'on the track' : fmtD(Math.abs(f.sideM)) + (f.sideM > 0 ? ' to port' : ' to starboard');
+    const speed = f.dSogMs === null ? null : (f.dSogMs >= 0 ? '+' : '−') + _fmt(Math.abs(f.dSogMs), 'speed');
+    const parts = passedIt ? ['passed ' + fmtD(f.distM) + ' off', side] : [fmtD(f.distM) + ' to go', side];
+    parts.push(fmtD(f.xteM) + ' off course');
+    if (speed) parts.push(speed + ' on the planned speed');
+    return parts.join(' · ');
+  }
+  function setCardNote(i, cls, text) {
+    const card = modalItinerary.querySelector(`.leg-card[data-idx="${i}"]`);
+    if (!card) return null;
+    card.classList.add(cls);
+    let n = card.querySelector('.leg-live');
+    if (!n) { n = document.createElement('div'); n.className = 'leg-live'; card.appendChild(n); }
+    n.textContent = text;
+    return card;
+  }
+  function updatePassage(snap) {
+    if (!routeActive || !_itineraryFeatures.length || snap.lat == null || snap.lon == null) return;
+    if (passageFor !== _itineraryFeatures) {
+      resetPassage();
+      passageFor = _itineraryFeatures;
+      passage = createPassageTracker(_itineraryFeatures.map(f => ({
+        lonLat: ol.proj.toLonLat(f.getGeometry().getCoordinates()),
+        plannedSogMs: f.get('next_sog_ms'),
+      })));
+    }
+    const out = passage.update([snap.lon, snap.lat], snap.sog_ms);
+    for (const f of out.passed) setCardNote(f.index, 'passed', passageText(f, true));
+    modalItinerary.querySelectorAll('.leg-card.live-next').forEach(c => { if (+c.dataset.idx !== out.target) c.classList.remove('live-next'); });
+    if (out.live) setCardNote(out.target, 'live-next', passageText(out.live, false));
+    showActiveCard();
+  }
+  // Keep the active card in view: every update (it scrolls only when the
+  // card is out of view) and when the Itinerary tab is opened.
+  function showActiveCard() {
+    const card = modalItinerary.querySelector('.leg-card.live-next');
+    if (card && card.offsetParent !== null && card.scrollIntoView) card.scrollIntoView({ block: 'nearest' });
+  }
+  window.addEventListener('rp:tab', e => { if (liveMode && e.detail === 'itinerarySection') showActiveCard(); });
+  window.addEventListener('rp:units', () => { if (lastSnap && liveMode) updatePassage(lastSnap); });
 
   let _pollFails = 0;
   function poll() {
@@ -2730,14 +3179,25 @@ popup.on('change:position', () => {
       .then(snap => {
         _pollFails = 0;
         lastSnap = snap;
+        if (!simMode) { lastRealSnap = snap; updateLiveButton(); }
         if (liveMode) renderReadout(snap);
-        renderMarker(snap);
+        // The marker: with the Own vessel layer on, or in LIVE / SIMULATE.
+        if ((vesselToggle && vesselToggle.checked) || liveMode) renderMarker(snap);
+        else vesselMarkerSource.clear();
+        // First visit with no saved view: open on the boat, marker or not.
+        if (!simMode && snap.lat != null && snap.lon != null) centreOnVesselOnce(ol.proj.fromLonLat([snap.lon, snap.lat]));
+        if (liveMode && snap.lat != null && snap.lon != null) centreOnBoat([snap.lon, snap.lat]);
+        if (simMode) {
+          showSimOverlayHour(snap.route_time);
+          recordSimTrack(snap);
+        } else if (liveMode) loadLiveTrack();
+        if (liveMode) updatePassage(snap);
         evaluateTriggers(snap);
       })
       .catch(err => {
         if (err && err.name === 'AbortError') return;
         _pollFails++;
-        if (liveMode && _pollFails >= 3) { readoutBody.textContent = 'no Signal K position (' + err.message + ')'; readoutStale.style.display = ''; }
+        if (liveMode && _pollFails >= 3) { readoutBody.textContent = simMode ? err.message : 'no Signal K position (' + err.message + ')'; readoutStale.style.display = ''; }
       });
   }
 
@@ -2745,14 +3205,14 @@ popup.on('change:position', () => {
     const age = snap.updated_at ? (Date.now() / 1000 - snap.updated_at) : 9999;
     const stale = age * 1000 > VESSEL_STALE_MS;
     readoutStale.style.display = stale ? '' : 'none';
-    const fmt = (v, n, u) => (v == null ? '—' : v.toFixed(n) + u);
     readoutBody.innerHTML =
+      (simMode && sim ? '<b>SIMULATED ' + (!simPaused ? '×' + sim.factor : simRunning ? 'paused for the re-plan' : 'stopped') + '</b> · ' + escapeHtml(fmtWhen(new Date(snap.route_time).toISOString())) + '<br>' : '') +
       (snap.lat != null && snap.lon != null
         ? `${snap.lat.toFixed(4)}, ${snap.lon.toFixed(4)}`
         : '—') +
-      `<br>SOG ${fmtSpeed(snap.sog_ms) || '—'} · COG ${fmt(snap.cog_deg, 0, '°')}` +
-      (snap.heading_deg != null ? ` · HDG ${fmt(snap.heading_deg, 0, '°')}` : '') +
-      `<br>TWA ${fmt(snap.twa_deg, 0, '°')} · TWS ${fmtSpeed(snap.tws_ms) || '—'}`;
+      `<br>SOG ${fmtSpeed(snap.sog_ms) || '—'} · COG ${fmtAngleDeg(snap.cog_deg) || '—'}` +
+      (snap.heading_deg != null ? ` · HDG ${fmtAngleDeg(snap.heading_deg)}` : '') +
+      `<br>TWA ${fmtAngleDeg(snap.twa_deg) || '—'} · TWS ${fmtSpeed(snap.tws_ms) || '—'}`;
   }
 
   function renderMarker(snap) {
@@ -2776,158 +3236,87 @@ popup.on('change:position', () => {
   // ── trigger logic ────────────────────────────────────────────────
   function evaluateTriggers(snap) {
     if (!liveMode || !routeActive) return;
-    if (snap.lat == null || snap.lon == null) return;
-    const age = snap.updated_at ? (Date.now() / 1000 - snap.updated_at) : 9999;
-    if (age * 1000 > VESSEL_STALE_MS) return;              // stale data
-    if ((snap.sog_ms ?? 0) < MIN_SOG_MS) { xteSustainStart = null; return; }
-    if (Date.now() - lastReplanAt < REPLAN_COOLDOWN_MS) return;
-    if (_routeComputing) return;
-
-    const vesselLonLat = [snap.lon, snap.lat];
-
-    const proxM = numOr('proximityRadiusM', 200);
-    const xteM_thresh = numOr('xteThresholdM', 500);
-    const xteSustainMs = numOr('xteSustainSec', 30) * 1000;
-
-    // Proximity trigger: within X m of the next unvisited user via.
-    const nextVia = nextRemainingVia(vesselLonLat);
-    if (nextVia) {
-      const d = haversineM(vesselLonLat, nextVia);
-      if (d <= proxM) {
-        fireReplan(vesselLonLat, `Within ${proxM.toFixed(0)} m of next waypoint`);
-        return;
-      }
-    }
-
-    // Cross-track trigger: sustained XTE > threshold.
-    const xteM = xteToActiveRoute(vesselLonLat);
-    if (xteM != null && xteM > xteM_thresh) {
-      if (xteSustainStart == null) xteSustainStart = Date.now();
-      if (Date.now() - xteSustainStart >= xteSustainMs) {
-        fireReplan(vesselLonLat, `Off course by ${xteM.toFixed(0)} m`);
-        return;
-      }
-    } else {
-      xteSustainStart = null;
-    }
-  }
-
-  // Walk the Point features of the active route that are tagged
-  // role="via"; return the next one ahead of the vessel (by index),
-  // or null if none remain.
-  function nextRemainingVia(vesselLonLat) {
-    const feats = routeSource.getFeatures().filter(
-      f => f.getGeometry().getType() === 'Point');
-    const vias = feats.filter(f => f.get('role') === 'via');
-    if (vias.length === 0) return null;
-    let nearestIdx = -1, nearestD = Infinity;
-    feats.forEach((f, i) => {
-      const c = ol.proj.toLonLat(f.getGeometry().getCoordinates());
-      const d = haversineM(vesselLonLat, c);
-      if (d < nearestD) { nearestD = d; nearestIdx = i; }
+    // SIMULATE: the triggers run on the simulated clock (the sustain time and
+    // cooldown are passage time), the snapshot dated on it too.
+    const sim2 = simMode && Number.isFinite(snap.route_time);
+    const r = triggers.check(sim2 ? { ...snap, updated_at: snap.route_time / 1000 } : snap, {
+      points: _routePoints,
+      now: sim2 ? snap.route_time : Date.now(),
+      // One re-plan at a time; none while a proposal waits for Accept / Dismiss.
+      blocked: _routeComputing || replanBusy || !!banner.dataset.geojson,
+      proxM: numOr('proximityRadiusM', 200),
+      xteThreshM: numOr('xteThresholdM', 500),
+      xteSustainMs: numOr('xteSustainSec', 30) * 1000,
     });
-    for (const v of vias) {
-      const globalIdx = feats.indexOf(v);
-      if (globalIdx > nearestIdx) {
-        return ol.proj.toLonLat(v.getGeometry().getCoordinates());
-      }
-    }
-    return null;
-  }
-
-  // Cross-track distance from the active route (min perpendicular
-  // distance across all legs, flat-earth metres).
-  function xteToActiveRoute(lonLat) {
-    const coords = routeSource.getFeatures()
-      .filter(f => f.getGeometry().getType() === 'Point')
-      .map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()));
-    if (coords.length < 2) return null;
-    let minD = Infinity;
-    for (let i = 0; i < coords.length - 1; i++) {
-      const d = perpendicularM(lonLat, coords[i], coords[i + 1]);
-      if (d < minD) minD = d;
-    }
-    return minD;
-  }
-
-  function haversineM(a, b) {
-    const R = 6371000;
-    const toRad = x => x * Math.PI / 180;
-    const dLat = toRad(b[1] - a[1]);
-    const dLon = toRad(b[0] - a[0]);
-    const la1 = toRad(a[1]);
-    const la2 = toRad(b[1]);
-    const h = Math.sin(dLat / 2) ** 2
-            + Math.cos(la1) * Math.cos(la2) * Math.sin(dLon / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(h));
-  }
-
-  // Perpendicular distance (m) from point P to the segment A-B.
-  function perpendicularM(p, a, b) {
-    const cosLat = Math.cos(a[1] * Math.PI / 180);
-    const mPerDegLon = 111320 * cosLat;
-    const mPerDegLat = 110540;
-    const ax = 0, ay = 0;
-    const bx = (b[0] - a[0]) * mPerDegLon, by = (b[1] - a[1]) * mPerDegLat;
-    const px = (p[0] - a[0]) * mPerDegLon, py = (p[1] - a[1]) * mPerDegLat;
-    const segLen2 = bx * bx + by * by;
-    if (segLen2 === 0) return Math.hypot(px, py);
-    let t = (px * bx + py * by) / segLen2;
-    t = Math.max(0, Math.min(1, t));
-    const qx = ax + t * bx, qy = ay + t * by;
-    return Math.hypot(px - qx, py - qy);
+    // SIMULATE: the re-plan departs at the simulated time, not the real one.
+    if (r) fireReplan({ ...r, departureMs: sim2 ? snap.route_time : Date.now() });
   }
 
   // ── re-plan flow (job API) ─────────────────────────────────
-  function fireReplan(vesselLonLat, reason) {
-    lastReplanAt = Date.now();
-    xteSustainStart = null;
-    // Collect remaining vias ahead of the vessel.
-    const vias = [];
-    const feats = routeSource.getFeatures().filter(
-      f => f.getGeometry().getType() === 'Point');
-    let nearestIdx = -1, nearestD = Infinity;
-    feats.forEach((f, i) => {
-      const c = ol.proj.toLonLat(f.getGeometry().getCoordinates());
-      const d = haversineM(vesselLonLat, c);
-      if (d < nearestD) { nearestD = d; nearestIdx = i; }
-    });
-    feats.forEach((f, i) => {
-      if (i > nearestIdx && f.get('role') === 'via') {
-        const c = ol.proj.toLonLat(f.getGeometry().getCoordinates());
-        vias.push({ lat: c[1], lon: c[0] });
-      }
-    });
+  // The trigger in words, distances in the user's length unit.
+  function replanReason(kind, distM) {
+    if (kind === 'accepted') return 'Accepted: re-planning from the boat\'s position now';
+    const d = _fmt(distM, 'short_distance');
+    return kind === 'waypoint' ? `Within ${d} of next waypoint` : `Off course by ${d}`;
+  }
 
+  let lastReplanVias = [];    // the waypoints the last re-plan went through ([lon, lat]), for Accept in LIVE
+
+  // autoAccept: the re-plan LIVE runs at Accept, from the boat's position
+  // then; its route goes on the map without a second prompt.
+  function fireReplan({ kind, distM, start, vias, departureMs, autoAccept = false }) {
+    lastReplanVias = vias;
+    // SIMULATE: hold the boat where the re-plan starts from, now, not at the next update.
+    if (simMode && sim) { sim.holdAt(departureMs, Date.now()); simPaused = true; }
+    const reason = replanReason(kind, distM);
     const payload = buildRoutePayload({
-      start: vesselLonLat,
-      waypoints: vias,
-      departure: new Date().toISOString(),
+      start,
+      waypoints: vias.map(c => ({ lat: c[1], lon: c[0] })),
+      departure: new Date(departureMs).toISOString(),
     });
     payload.name = (payload.name ? payload.name + ' ' : '') + '(re-plan)';
     payload.publish = false;
 
     summaryEl.innerHTML = `<span style="color:#ffcf7a">${escapeHtml(reason)}</span><br>Computing re-plan…`;
+    setBannerButtons('computing');
     banner.style.display = '';
-    appendLog(`[re-plan] ${reason}`, 'done');
-    showTab('logSection');
+    appendLog(`[re-plan] ${reason}`, 'done');   // the banner shows progress; the panel stays where it is
 
     let jobId = null;
+    replanJobId = null;
+    replanBusy = true;
+    const gen = replanGen;
+    const current = () => gen === replanGen;
     authFetch(API + '/routes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }, null)
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
-    .then(job => { jobId = job.id; return streamJobUntilDone(job.id); })
+    .then(job => {
+      jobId = job.id;
+      replanJobId = job.id;
+      // Cancelled before the job existed: stop it now.
+      if (!current()) { cancelReplanJob(job.id); throw new Error('cancelled'); }
+      return streamJobUntilDone(job.id);
+    })
     .then(id => authFetch(API + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, null))
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
-    .then(geojson => { renderProposal(geojson, reason); banner.dataset.jobId = jobId; loadRouteHistory(); })
+    .then(geojson => {
+      if (!current()) return;
+      loadRouteHistory();
+      if (autoAccept) { applyRoute(geojson, jobId); dismissProposal(); return; }
+      renderProposal(geojson, reason);
+      banner.dataset.jobId = jobId;
+    })
     .catch(err => {
+      if (!current()) return;
       summaryEl.innerHTML =
-        `<span style="color:#ff9090">Re-plan failed: ${escapeHtml(err.message)}</span>`;
+        `<span style="color:#ff9090">Re-plan failed: ${unitTextHtml(err.message)}</span>`;
+      setBannerButtons('failed');
       appendLog(`[re-plan] FAILED: ${err.message}`, 'error');
-    });
+    })
+    .finally(() => { if (current()) replanBusy = false; });
   }
 
   // Subscribe to the per-job SSE stream, tee progress into the Log
@@ -2988,7 +3377,33 @@ popup.on('change:position', () => {
     });
   }
 
+  // The banner's buttons: Cancel while the re-plan computes, Accept and
+  // Dismiss once the proposed route is ready, Dismiss alone after a failure.
+  const btnAccept = document.getElementById('proposalAccept');
+  const btnDismiss = document.getElementById('proposalDismiss');
+  const btnCancel = document.getElementById('proposalCancel');
+  function setBannerButtons(state) {
+    btnCancel.hidden = state !== 'computing';
+    btnAccept.hidden = state !== 'ready';
+    btnDismiss.hidden = state === 'computing';
+  }
+  let replanJobId = null;     // the re-plan job running, for Cancel
+  function cancelReplanJob(id) {
+    authFetch(API + '/routes/' + encodeURIComponent(id) + '/cancel', { method: 'POST' }, null).catch(() => {});
+  }
+  // Cancel: stop the re-plan; its result, if any, is dropped (replanGen).
+  function cancelReplan() {
+    replanGen++;
+    replanBusy = false;
+    closeReplanStream();
+    if (replanJobId) cancelReplanJob(replanJobId);
+    replanJobId = null;
+    appendLog('[re-plan] cancelled', 'done');
+    dismissProposal();
+  }
+
   function renderProposal(geojson, reason) {
+    setBannerButtons('ready');
     proposedRouteSource.clear();
     const features = new ol.format.GeoJSON().readFeatures(geojson, {
       featureProjection: 'EPSG:3857',
@@ -3017,15 +3432,38 @@ popup.on('change:position', () => {
   function acceptProposal() {
     const raw = banner.dataset.geojson;
     if (!raw) { dismissProposal(); return; }
+    // LIVE: the boat sailed on while the proposal was computed and waited;
+    // compute it again from where the boat is now and put that on the map.
+    if (liveMode && !simMode && lastSnap && lastSnap.lat != null && lastSnap.lon != null) {
+      proposedRouteSource.clear();
+      delete banner.dataset.geojson;
+      fireReplan({ kind: 'accepted', distM: 0, start: [lastSnap.lon, lastSnap.lat], vias: lastReplanVias, departureMs: Date.now(), autoAccept: true });
+      return;
+    }
     try {
-      const geojson = JSON.parse(raw);
-      if (banner.dataset.jobId) { _currentRouteJobId = banner.dataset.jobId; }
-      displayRoute(geojson);    // replaces active route wholesale
-      routeActive = true;
-      _routeStale = false;
-      updatePlanHint();
+      applyRoute(JSON.parse(raw), banner.dataset.jobId);
     } catch (e) { /* ignore */ }
     dismissProposal();
+  }
+
+  // Put an accepted re-plan on the map in place of the route being followed.
+  function applyRoute(geojson, jobId) {
+    if (jobId) { _currentRouteJobId = jobId; }
+    // The route being followed stays as a faint line (pastRouteSource).
+    if (_routePoints.length >= 2) {
+      pastRouteSource.addFeature(new ol.Feature(new ol.geom.LineString(unwrapLonLats(_routePoints.map(p => p.lonLat)).map(c => ol.proj.fromLonLat(c)))));
+    }
+    displayRoute(geojson);    // replaces active route wholesale
+    _useRouteAngles(jobId);
+    routeActive = true;
+    _routeStale = false;
+    updatePlanHint();
+    // SIMULATE: the new course starts with no push off course.
+    if (simMode) {
+      const push = document.getElementById('simPushDeg');
+      push.value = '0';
+      push.dispatchEvent(new Event('input'));   // its label
+    }
   }
 
   function dismissProposal() {
@@ -3037,10 +3475,37 @@ popup.on('change:position', () => {
   }
 
   // ── wiring ───────────────────────────────────────────────────────
-  btnPlanning.addEventListener('click', () => stopLive());
-  btnLive.addEventListener('click', () => startLive());
+  btnPlanning.addEventListener('click', () => { modeHint.style.display = 'none'; stopLive(); });
+  btnLive.addEventListener('click', () => startLive(false));
+  btnSim.addEventListener('click', () => startLive(true));
+  simFactorEl.addEventListener('input', () => {
+    showSimFactor();
+    if (sim && !simPaused) sim.setFactor(Date.now(), simFactor());
+  });
+  simStartBtn.addEventListener('click', () => { simRunning = true; setVisual(); poll(); });
+  simStopBtn.addEventListener('click', () => { simRunning = false; setVisual(); poll(); });
+  // Rewind: back to the start of the route on the map; its waypoints fire
+  // again, a pending re-plan is dropped. The track and earlier routes stay.
+  simRewindBtn.addEventListener('click', () => {
+    if (!sim) return;
+    if (replanBusy) cancelReplan(); else dismissProposal();
+    sim.rewind(Date.now());
+    triggers.reset();
+    resetPassage();
+    // A new track line from the start (the one sailed so far stays).
+    simTrack = createTrackRecorder(TRACK_EPSILON_M);
+    simTrackFeature = new ol.Feature();
+    trackSource.addFeature(simTrackFeature);
+    poll();
+  });
+  simPushBtn.addEventListener('click', () => {
+    simPushed = !simPushed;
+    setVisual();
+    if (simMode) poll();
+  });
   document.getElementById('proposalAccept').addEventListener('click', acceptProposal);
   document.getElementById('proposalDismiss').addEventListener('click', dismissProposal);
+  btnCancel.addEventListener('click', cancelReplan);
 
   // When the user clicks Find Route while Live is on, implicitly turn
   // Live off — they're starting a new route from scratch.
@@ -3064,11 +3529,11 @@ popup.on('change:position', () => {
     origResetBtn.addEventListener('click', () => { if (liveMode) stopLive(); });
   }
 
-  // The marker poll runs whenever the Own-vessel layer is on.
-  const vesselToggle = document.getElementById('vesselToggle');
+  // The position poll always runs (LIVE's availability needs the boat's
+  // position); the marker is drawn with the Own vessel layer on, or in LIVE.
   function syncPolling() {
-    if ((vesselToggle && vesselToggle.checked) || liveMode) startPolling();
-    else { stopPolling(); vesselMarkerSource.clear(); }
+    startPolling();
+    if (!((vesselToggle && vesselToggle.checked) || liveMode)) vesselMarkerSource.clear();
   }
   if (vesselToggle) vesselToggle.addEventListener('change', syncPolling);
   window.addEventListener('load', syncPolling);
@@ -3094,6 +3559,7 @@ popup.on('change:position', () => {
         .then(snap => {
           if (snap.lat == null || snap.lon == null) throw new Error('no position');
           renderMarker(snap);
+          following = true;   // LIVE / SIMULATE: follow the boat again
           map.getView().animate({ center: ol.proj.fromLonLat([snap.lon, snap.lat]), duration: 400 });
           btn.title = 'Centre the map on the boat (Signal K position)';
         })

@@ -3,7 +3,7 @@
 // drawn on canvas, or the plugin's PNG tiles), streamlines, pressure, the
 // layer toggles and the legends box. rp-plan.js imports what it uses.
 
-import { _apiErrorText, API, authFetch, AuthGate, fmtPressure, fmtWhen, KT_MS, TACK_COLOR, tackSide, UNIT_MISSING, unitDesc } from './rp-core.js';
+import { _apiErrorText, _fmt, API, authFetch, AuthGate, fmtPressure, fmtWhen, KT_MS, TACK_COLOR, tackSide, UNIT_MISSING, unitDesc } from './rp-core.js';
 
 // --- Marker features and route sources (drawn by the layers below, placed by rp-plan.js) ---
 // --- Marker features ---
@@ -221,6 +221,23 @@ const frontLayer = new ol.layer.Vector({
 // track within each viaCount; best [[lon, lat], …]. `reset` clears earlier
 // stages (a new job); `resetLeg` clears only that leg's stages (a re-run of
 // one leg's search), keeping the other legs' fronts.
+/**
+ * [lon, lat] points with each longitude put within 180° of the one before,
+ * so a line that crosses the antimeridian is drawn across it (OpenLayers
+ * wraps the world) instead of the long way round the globe.
+ */
+export function unwrapLonLats(points) {
+  const out = [];
+  let prev = null;
+  for (const p of points) {
+    let x = p[0];
+    if (prev !== null) { while (x - prev > 180) x -= 360; while (x - prev < -180) x += 360; }
+    out.push([x, p[1]]);
+    prev = x;
+  }
+  return out;
+}
+
 export function drawFront(front, opts) {
   const o = opts || {};
   if (o.reset) frontSource.clear();
@@ -235,16 +252,17 @@ export function drawFront(front, opts) {
   for (const p of front.points || []) {
     const k = p[3] || 0;
     if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(ol.proj.fromLonLat([p[0], p[1]]));
+    groups.get(k).push([p[0], p[1]]);
   }
-  for (const [k, coords] of groups) {
+  for (const [k, lonlats] of groups) {
+    const coords = unwrapLonLats(lonlats).map(c => ol.proj.fromLonLat(c));
     const geom = coords.length > 1 ? new ol.geom.LineString(coords) : new ol.geom.Point(coords[0]);
     const f = new ol.Feature({ geometry: geom, kind: 'front', stage: front.stage, leg: front.leg || 0, via: k, frac, final: !!o.final });
     frontSource.addFeature(f);
   }
   if (!o.final && Array.isArray(front.best) && front.best.length > 1) {
     frontSource.getFeatures().filter(f => f.get('kind') === 'best').forEach(f => frontSource.removeFeature(f));
-    frontSource.addFeature(new ol.Feature({ geometry: new ol.geom.LineString(front.best.map(p => ol.proj.fromLonLat([p[0], p[1]]))), kind: 'best' }));
+    frontSource.addFeature(new ol.Feature({ geometry: new ol.geom.LineString(unwrapLonLats(front.best).map(c => ol.proj.fromLonLat(c))), kind: 'best' }));
   }
 }
 export function drawFronts(fronts) {
@@ -277,6 +295,23 @@ const proposedRouteLayer = new ol.layer.Vector({
     });
   },
   zIndex: 17,
+});
+
+// --- Track and earlier routes (Live and Simulate) ---
+// The path the boat has sailed (solid) and the routes it followed before
+// each accepted re-plan (faint dashed, the line only). Kept after Live or
+// Simulate ends.
+export const trackSource = new ol.source.Vector();
+const trackLayer = new ol.layer.Vector({
+  source: trackSource,
+  style: new ol.style.Style({ stroke: new ol.style.Stroke({ color: 'rgba(0, 150, 170, 0.9)', width: 3 }) }),
+  zIndex: 16,
+});
+export const pastRouteSource = new ol.source.Vector();
+const pastRouteLayer = new ol.layer.Vector({
+  source: pastRouteSource,
+  style: new ol.style.Style({ stroke: new ol.style.Stroke({ color: 'rgba(120, 120, 120, 0.55)', width: 2, lineDash: [6, 6] }) }),
+  zIndex: 15,
 });
 
 // --- Vessel marker layer (own boat from Signal K) ---
@@ -1335,11 +1370,11 @@ try {
 
 export const map = new ol.Map({
   target: 'map',
-  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, frontLayer, skeletonLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, ringLayer, markerLayer, condMarkerLayer],
+  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, frontLayer, skeletonLayer, pastRouteLayer, trackLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, ringLayer, markerLayer, condMarkerLayer],
   view: new ol.View({
     // Last view this browser had (saved on every move), else Block
-    // Island Sound at zoom 11. On a first visit the geolocation block
-    // below (or the first Signal K position fix) pans to the vessel.
+    // Island Sound at zoom 11. On a first visit the first Signal K
+    // position fix (navigation.position) pans to the vessel.
     center: ol.proj.fromLonLat(_SAVED_VIEW ? [_SAVED_VIEW.lon, _SAVED_VIEW.lat] : _DEFAULT_LONLAT),
     zoom: _SAVED_VIEW ? _SAVED_VIEW.zoom : 11
   })
@@ -1360,40 +1395,27 @@ export const map = new ol.Map({
 })();
 
 // Remember where the map was left, so the next load opens there. Not
-// while a first-visit position request is pending: OL fires moveend
-// after the first render, which would otherwise save the default view
-// and stop the next visit from asking for the device position.
-let _geoPending = false;
+// on a first visit until the map has moved (the user, or the first
+// Signal K fix): OL fires moveend after the first render, which would
+// otherwise save the default view and stop the next visit from opening
+// on the boat. The page never asks the browser for its location: the
+// vessel's position comes from Signal K.
 let _autoCentreOnVessel = !_SAVED_VIEW;   // first visit: the first Signal K fix centres the map
 const _startCenter = map.getView().getCenter();
 map.on('moveend', function() {
-  if (_geoPending) return;
   const v = map.getView();
   const c = v.getCenter();
-  if (_autoCentreOnVessel && (c[0] !== _startCenter[0] || c[1] !== _startCenter[1])) _autoCentreOnVessel = false;
+  if (_autoCentreOnVessel) {
+    if (c[0] === _startCenter[0] && c[1] === _startCenter[1]) return;
+    _autoCentreOnVessel = false;
+  }
   const [lon, lat] = ol.proj.toLonLat(c);
   try { localStorage.setItem('rp:view', JSON.stringify({ lon, lat, zoom: v.getZoom() })); } catch (_) {}
 });
-
-// First visit (nothing saved): centre on the device's position if the
-// browser grants it. Denied, unavailable or timed out → stay on the
-// default (or wherever the Signal K vessel fix put us).
-if (!_SAVED_VIEW && typeof navigator !== 'undefined' && navigator.geolocation) {
-  _geoPending = true;
-  navigator.geolocation.getCurrentPosition(pos => {
-    _geoPending = false;
-    const v = map.getView();
-    const c = v.getCenter();
-    if (c[0] !== _startCenter[0] || c[1] !== _startCenter[1]) return;
-    _autoCentreOnVessel = false;
-    v.animate({ center: ol.proj.fromLonLat([pos.coords.longitude, pos.coords.latitude]), zoom: 11, duration: 400 });
-  }, () => { _geoPending = false; }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 600000 });
-}
-// First visit with no saved view: the first Signal K fix opens the map on the boat (rp-plan.js Live mode).
+// First visit with no saved view: the first Signal K fix opens the map on the boat (rp-plan.js).
 export function centreOnVesselOnce(coord) {
   if (!_autoCentreOnVessel) return;
   _autoCentreOnVessel = false;
-  _geoPending = false;
   map.getView().animate({ center: coord, zoom: 11, duration: 400 });
 }
 
@@ -1511,7 +1533,7 @@ function updateLegends() {
   if (_on('windToggle')) rows.push(_classesRow('Wind barbs', WIND_BARB_CLASSES, (lo, c) => _windBarbSvg(lo, c)) + _noteRow('windToggle'));
   if (_on('windCombinedToggle') && G.wind) rows.push(_gradientRow(G.wind) + _noteRow('windCombinedToggle'));
   if (_on('currentToggle')) rows.push(_classesRow('Tidal current', CURRENT_ARROW_CLASSES) + _noteRow('currentToggle'));
-  if (_on('currentHeatmapToggle') && G.current) rows.push(_gradientRow(G.current) + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (~9 km)</div>' + _noteRow('currentHeatmapToggle'));
+  if (_on('currentHeatmapToggle') && G.current) rows.push(_gradientRow(G.current) + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (about ' + _fmt(9000, 'distance') + ')</div>' + _noteRow('currentHeatmapToggle'));
   if (_on('wavesCombinedToggle') && G.waves) rows.push(_gradientRow(G.waves) + _noteRow('wavesCombinedToggle'));
   if (_on('roughnessToggle') && G.sea_state) rows.push(_bandsRow(G.sea_state) + _noteRow('roughnessToggle'));
   if (_on('precipToggle') && G.precip) rows.push(_gradientRow(G.precip) + _noteRow('precipToggle'));
@@ -1520,7 +1542,7 @@ function updateLegends() {
   if (_on('tideToggle') && G.tide) {
     // The map stretches the tide scale to the tiles loaded (rp-layers _noteTileScale); show the stops actually drawn.
     const scaled = _autoScaleStops.tide ? Object.assign({}, G.tide, { stops: _autoScaleStops.tide }) : G.tide;
-    rows.push(_gradientRow(scaled) + '<div class="lg-note">scaled to the largest tide in the tiles loaded · relative to mean sea level, not chart datum · Copernicus Marine</div>' + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (~9 km)</div>' + _noteRow('tideToggle'));
+    rows.push(_gradientRow(scaled) + '<div class="lg-note">scaled to the largest tide in the tiles loaded · relative to mean sea level, not chart datum · Copernicus Marine</div>' + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (about ' + _fmt(9000, 'distance') + ')</div>' + _noteRow('tideToggle'));
   }
   if (_on('pressureToggle')) rows.push('<div class="lg-row"><div class="lg-title">Pressure <span>(' + unitDesc('pressure').u + ')</span></div><div class="lg-note">isobars every ' + fmtPressure(400) + ' · bold every ' + fmtPressure(2000) + ' · <b style="color:#1565C0">H</b> / <b style="color:#C62828">L</b> centres</div>' + _noteRow('pressureToggle') + '</div>');
   box.innerHTML = rows.join('');

@@ -273,10 +273,10 @@ export async function routeMultiLeg(args: MultiLegArgs): Promise<Route> {
   const run = async (plan: LegPlan): Promise<void> => {
     if (multi) {
       const through = plan.vias.length
-        ? `, through ${plan.vias.length} waypoint circle(s) (${plan.vias.map(v => `${v.radiusM.toFixed(0)} m`).join(', ')}) in one search`
+        ? `, through ${plan.vias.length} waypoint circle(s) (${plan.vias.map(v => `{length:${v.radiusM.toFixed(0)}}`).join(', ')}) in one search`
         : '';
       progress(
-        `${legLabel(plan)}: (${start[1].toFixed(4)}, ${start[0].toFixed(4)}) → (${plan.end[1].toFixed(4)}, ${plan.end[0].toFixed(4)}), departing ${departure.toISOString()}${through}${plan.snapToExact ? ', ends exactly on the point' : `, ends on entering the ${plan.arrivalRadiusM!.toFixed(0)} m circle`}`
+        `${legLabel(plan)}: (${start[1].toFixed(4)}, ${start[0].toFixed(4)}) → (${plan.end[1].toFixed(4)}, ${plan.end[0].toFixed(4)}), departing ${departure.toISOString()}${through}${plan.snapToExact ? ', ends exactly on the point' : `, ends on entering the {length:${plan.arrivalRadiusM!.toFixed(0)}} circle`}`
       );
     }
     const r = await args.runLeg(plan, start, departure);
@@ -285,7 +285,7 @@ export async function routeMultiLeg(args: MultiLegArgs): Promise<Route> {
     if (multi) {
       const miss = haversineDistanceM(last.lon, last.lat, plan.end[0], plan.end[1]);
       progress(
-        `${legLabel(plan)} done: ${(r.totalDistanceM / 1852).toFixed(1)} nm, ${(r.totalTimeS / 3600).toFixed(1)} h, ends ${miss.toFixed(0)} m from the ${plan.lastIndex + 1 < plan.count ? 'waypoint' : 'destination'}`
+        `${legLabel(plan)} done: {distance:${r.totalDistanceM.toFixed(0)}}, {time:${r.totalTimeS.toFixed(0)}}, ends {length:${miss.toFixed(0)}} from the ${plan.lastIndex + 1 < plan.count ? 'waypoint' : 'destination'}`
       );
     }
     legs.push(r);

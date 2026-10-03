@@ -6,6 +6,159 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Freeboard-SK panel: a weather route's legs without routing again.**
+  Ticking a saved weather route in Freeboard's Routes list opens the
+  plugin's panel (a hidden background page of the plotter extension
+  watches the routes shown) and shows that route's legs: from the
+  plugin's own result when it still has it, else from the per-point
+  weather saved with the route. Routes Freeboard shows again in its first
+  seconds after starting do not open it. The leg cards are redesigned:
+  time, waypoint and mode with tack on top; distance, time, SOG and COG
+  large; wind with the point of sail, current fair or foul, and waves
+  below. A tap on a card centres the chart on its waypoint. The card of
+  the leg the boat is on is marked and kept in view, from the boat's
+  position (the nearest leg, within 10 nautical miles of the route), else
+  from the active course. Wave period is in seconds, as in the web app.
+
+- **The plan is remembered across reloads (#16)**: start, destination,
+  waypoints (with the radius a loaded route gave each) and departure are
+  kept in this browser and restored on load. A saved departure that has
+  passed is not restored: departure stays at now and the status line
+  says so.
+
+- **Opening a saved route asks whether to recompute it.** A banner at the
+  top of the itinerary offers **Recompute** (current forecast, the Plan
+  tab's settings, the loaded start, end and waypoints) or **Keep as
+  saved**; it goes away on Find Route or Clear all.
+
+- **The web app header names the source of each quantity**, one line
+  each: wind (ECMWF IFS 0.25° run, plus any regional model), waves,
+  currents, tides, jobs. It lists only the sources that apply to the
+  loaded route, or to the map view when no route is loaded (CMEMS-SMOC,
+  worldwide, always; "none here" when nothing else applies), and updates
+  as the map moves. `/api/status` `forecast.model` names the global model.
+
+- **Regional wind from signalk-grib-downloader, layered over ECMWF**
+  (docs/plans/grib-downloader-enhancement.md). Optional: with the
+  downloader installed, the plugin finds its folder (its own setting, else
+  `~/.signalk/gribs`; or the new Settings → Forecast → Regional GRIB
+  folder), lists its complete runs in `/api/status` (`regional`) and the
+  web app header, and decodes each new run's 10 m wind once into its own
+  folder (`<data>/regional/<source>/<run>/`, the same format as the ECMWF
+  runs; newest runs kept per Forecast → keep cycles). Routes then use the
+  regional wind where it covers the point and the time, ECMWF elsewhere:
+  its weight ramps from 0 at its grid's border to 1 five cells inside, and
+  back to 0 over its last 3 hours of forecast; wind vectors are blended,
+  never directions; several regional models apply coarse to fine. Waves
+  stay ECMWF. The job log and the route summary (`regional_wind`) give the
+  share of the search's wind samples each model answered. Request field
+  `wind_model` (`auto`, the default, or `ecmwf`); Plan tab checkbox
+  "Regional wind where available". Measured on the test box: an AROME
+  0.025° run (52 hourly steps) decodes in 20 s and takes 334 MB. The
+  GRIB reader now exposes a field's height, so only 10 m wind is read.
+- Reading a whole regional grid made it claim to cover the whole globe
+  (the coverage check assumed every grid wraps, as ECMWF's does); a
+  regional grid now ends at its edges.
+
+### Fixed
+
+- **The web app no longer stops loading in Power mode.** With the vessel
+  type set to power, start-up read the cruise speed before the limits
+  table it uses was initialised, a `ReferenceError` that ended the page's
+  script.
+- **A regional decode no longer holds the data worker.** It decoded a whole
+  run in one go (20 s for an AROME run on a Pi 5), during which overlays,
+  the Weather API and conditions got no answer; it now reads files
+  asynchronously and yields after each field, and a refresh that comes
+  while one runs skips the regional pass instead of decoding the same run
+  again.
+- **A global regional source (GFS from the downloader) is used all the way
+  round.** Its first and last columns were treated as a border, so its
+  weight fell to 0 around 0° longitude, and a route area entirely west of
+  its first column was taken as outside it.
+
+- **Points of sail come from the polar.** "In irons" is tighter than the
+  polar's no-go angle at that wind speed (its tightest angle with any
+  boat speed, with the tightest sailable angle setting applied as the
+  router applies it), and close hauled runs from there to its best
+  upwind (VMG) angle; close reach to 75°, beam reach to 105°, broad reach
+  to 15° short of its best downwind angle. Before, the web app called a
+  leg in irons more than 5° inside the best upwind angle and the
+  Freeboard panel below a fixed 35°, so a leg the router sailed at 34°
+  read "in irons". `/api/polar-angles` adds `nogo_deg` per wind speed and
+  applies the tightest sailable angle setting. Without the route's polar
+  no point of sail is shown.
+
+- **Routes computed in the web app now carry their leg details into the
+  saved route**, so chartplotters such as Freeboard-SK show each point's
+  leg (time, mode, distance, SOG, COG, wind, current, waves) and the
+  route's summary in the user's units. The server publishes after it
+  reports the route done, when the job's event stream has already closed,
+  so the web app never learned the saved route's id and never wrote them;
+  it now asks the job for the id. Publish in the itinerary bar wrote the
+  server's own copy over them; it now writes them again.
+
+- **A restart no longer leaves the plugin without a forecast while a
+  newer cycle downloads.** When a new ECMWF cycle had come out since the
+  last run, the plugin served nothing (no overlays, Weather API or
+  routes) until it was downloaded and decoded, minutes on a slow link.
+  It now serves the newest complete decoded run on disk meanwhile and
+  switches to the new cycle when it is ready.
+
+- **GRIB2 fields over a time range (template 4.8) are timed at the end
+  of the range.** A maximum gust or an accumulation is valid when its
+  range ends, but the reader took the range's start: ECMWF's 3 h gust
+  read as 2 h, an hour before the wind in the same file, and the step
+  refused to build. The reader now uses the end time from the message and
+  reports the range's length (`intervalHours`; 0 at step 0, where ECMWF
+  codes an empty range as zeros). No field decoded today is affected
+  (every ECMWF, RTOFS and regional wind field is template 4.0); this
+  prepares gust and similar fields.
+
+- **The page no longer asks the browser for its location (#13).** A
+  first visit opens on the vessel's Signal K position
+  (`navigation.position`), whether or not the Own vessel layer is on;
+  the browser geolocation call (blocked over plain http, a permission
+  prompt over https) is gone.
+- **The vessel name is Signal K's (#14).** Settings → Vessel → Name is
+  removed; the status shows `vessels.self.name` ("—" when the server has
+  none). A stored name in settings.json is dropped on load; the route
+  request's `vessel.name` is still accepted but ignored.
+
+- **Opening a saved route kept the previous route's waypoints** when the
+  opened route had none of its own, and a re-run then sent them along (a
+  route off Morocco went via two waypoints near La Rochelle). Opening a
+  route now clears the waypoints first, then restores the opened route's
+  own from the job's request: the exact points, their circle sizes and the
+  precision, for older routes too.
+- **In open water the search can leave the direct line.** Each candidate
+  aimed the centre of its ±30° heading sweep at the skeleton (the
+  land-avoiding guide line) one step ahead, which pulled every branch that
+  drifted off the line back to it: on Tonga → Auckland no candidate got
+  more than 170 km off the direct line, while a route via a waypoint
+  479 km west was 15 h faster (1214 nm, 192.7 h against 1110 nm,
+  207.4 h, same start, end and departure). Where the corridor is open
+  water (wider than its probe), a candidate now aims one step along the
+  skeleton's own direction from where it is, so a branch keeps its offset
+  and the front can widen; narrow water keeps the skeleton aim that finds
+  channels. Same number of candidates. A test with a breeze 55 km off the
+  line: the front reached 0.21° aimed at the skeleton, 1.6° aimed
+  parallel, and the route was 37 % faster.
+- **Routes across the antimeridian drawn the long way round.** Loading a
+  route that crosses 180° zoomed the map out to the whole world (its
+  points sit near both −180° and +180°, so their plain extent is the
+  world), and stage fronts, the dashed best path and the skeleton that
+  cross 180° were drawn as lines round the globe. Longitudes are now
+  unwrapped along each line before drawing, and the map fit uses the
+  unwrapped extent and keeps the view in the main world (a view centred
+  past 180° showed no route at all); the course arrow at the last point
+  before 180° pointed east on a southwest leg, and Live mode's off-course
+  check and the warning-to-leg match measured across 180° the long way:
+  all take longitude differences the short way now; the Freeboard panel fits a box that crosses 180° as
+  west > east, as the Plotter Extensions API defines.
+
 ## [0.1.0-beta.6] - 2026-10-02
 
 ### Added

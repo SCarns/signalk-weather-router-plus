@@ -8,6 +8,7 @@
 
 import { MINUTE_MS } from '../geo/units';
 import { ensureGshhg } from '../geo/gshhg';
+import { siText } from './unittext';
 
 /** Downloaded-coastline state (status `coastline`, config panel). */
 export interface CoastlineState {
@@ -57,10 +58,11 @@ export class Coastline {
     const ctrl = new AbortController();
     this.ctrl = ctrl;
     const current = (): boolean => stillCurrent() && !ctrl.signal.aborted;
-    this.app.setPluginStatus('no coastline configured: downloading GSHHG (149 MB, once)');
+    // Values in Signal K base units (siText): the client converts.
+    this.app.setPluginStatus(siText('no coastline configured: downloading GSHHG ({dataSize:149000000}, once)'));
     for (;;) {
       const shp = await this.fetch(dataDir, ctrl.signal, m => {
-        if (current()) this.app.setPluginStatus(m);
+        if (current()) this.app.setPluginStatus(siText(m));
       });
       if (!current()) return false; // stopped
       if (shp) {

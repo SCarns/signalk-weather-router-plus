@@ -8,7 +8,7 @@
  *   GET  /api/forecast              forecast metadata (+ series at ?lat=&lon=)
  *   POST /api/forecast/refresh      re-check ECMWF / NOMADS
  *   GET  /api/polars                polar library (default polar, library, user polars)
- *   GET  /api/polar-angles?path=    best VMG angles per TWS
+ *   GET  /api/polar-angles?path=    no-go and best VMG angles per TWS
  *   GET  /api/polars/table?path=    polar table in m/s
  *   POST /api/polar-from-specs      generate a polar from boat specs (physics calculator) into the user polar directory
  *   GET  /api/legends               colour ramps (SI stops) for every layer
@@ -278,7 +278,14 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     try {
       const file = resolvePolarPath(polarLib(), String(req.query.path ?? ''));
       if (!file) throw new Error('no polar configured');
-      json(res, 200, polarAngles(loadPolarCached(file)));
+      // The tightest sailable angle setting, as the router applies it (degrees; 0 before the plugin has started).
+      let minTwaDeg = 0;
+      try {
+        minTwaDeg = deps.getSettings().values.routing.noGoMinAngle ?? 0;
+      } catch {
+        /* not started */
+      }
+      json(res, 200, polarAngles(loadPolarCached(file), minTwaDeg));
     } catch (err) {
       fail(res, err);
     }

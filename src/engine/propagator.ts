@@ -105,7 +105,7 @@ export class OceanPropagator {
     ctx.progress(
       0,
       guide.kEff,
-      `K=${this.K} stages, k=${this.k} subsectors, m=${this.m} headings, step ${(candStepM / 1000).toFixed(1)} km, budget ${(budgetDistM / 1000).toFixed(1)} km (straight ${(ctx.totalDistM / 1000).toFixed(1)} km)`
+      `K=${this.K} stages, k=${this.k} subsectors, m=${this.m} headings, step {distance:${candStepM.toFixed(0)}}, budget {distance:${budgetDistM.toFixed(0)}} (straight {distance:${ctx.totalDistM.toFixed(0)}})`
     );
     const stages = runStages(ctx, guide);
     const terminal = chooseTerminal(ctx, guide, stages);

@@ -46,6 +46,7 @@ import { refreshForecast } from './worker/forecast';
 import { prepareWaterGrid } from './worker/landgrid';
 import { loadHarmonic, makeSmocClient, rebuildStack, refreshRtofs, refreshSmoc, sendCurrents, sendSmoc } from './worker/currents';
 import { makeSeaLevelClient, refreshTides, tideSettings } from './worker/tides';
+import { refreshRegional } from './worker/regional';
 import { route } from './worker/route';
 import { dataStatus, query } from './worker/query';
 import type { WorkerState } from './worker/state';
@@ -80,6 +81,7 @@ const st: WorkerState = {
   reportedLandBuilds: 0,
   reportedSmocRev: -1,
   cacheRoot: '',
+  regional: new Map(),
   seaLevelClient: null,
   tides: null,
   tidesError: null,
@@ -87,6 +89,7 @@ const st: WorkerState = {
   waterGrid: null,
   gridBuilder: null,
   routeWindow: null,
+  routeRegional: [],
   cancelledQueries: new Set<number>(),
 };
 
@@ -107,6 +110,8 @@ export async function refresh(st: WorkerState, force: boolean): Promise<void> {
     sendCurrents(st);
     await refreshTides(st);
     st.send({ type: 'tides-run', run: st.tides?.run ?? null });
+    // Last: optional finer wind from signalk-grib-downloader's runs.
+    await refreshRegional(st);
   }
 }
 

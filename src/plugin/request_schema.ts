@@ -71,12 +71,19 @@ export const ROUTE_REQUEST_FIELDS: Record<string, RouteFieldSpec> = {
   stages: { type: 'number', ...settingRange('routing.stages'), description: 'Overrides the routing.stages setting' },
   no_forecast: { type: 'boolean', description: 'Route with calm wind' },
   no_currents: { type: 'boolean', description: 'Route without currents' },
+  wind_model: {
+    type: 'enum',
+    values: ['auto', 'ecmwf'],
+    default: 'auto',
+    description:
+      'auto: regional wind from signalk-grib-downloader (AROME, ARPEGE, ICON-EU) where it covers the point and time, ECMWF elsewhere; ecmwf: ECMWF only',
+  },
   publish: { type: 'boolean', description: 'Override the publish.toResources setting for this route' },
 };
 
 /** The per-route vessel overrides. */
 export const VESSEL_FIELDS: Record<string, RouteFieldSpec> = {
-  name: { type: 'string', description: 'The vessel name for this route' },
+  name: { type: 'string', description: 'Ignored (accepted so older clients still validate); the vessel name comes from Signal K' },
   motor_speed_ms: { type: 'number', description: 'Motor speed, m/s' },
   polar_performance: {
     type: 'number',

@@ -121,7 +121,9 @@ export interface MemoryCheck {
   message: string;
 }
 
-const mb = (b: number): string => `${Math.round(b / 1e6)} MB`;
+// Sizes and times as unit tokens: the web app writes them in its user's units.
+const mb = (b: number): string => `{dataSize:${Math.round(b)}}`;
+const hrs = (h: number): string => `{time:${Math.round(h * HOUR_S)}}`;
 
 /** Parameters per step for a field set. */
 export function fieldsPerStep(extraFields: boolean): number {
@@ -160,7 +162,7 @@ export function checkDecodeResources(
   const memOk = need + headroomBytes <= available.bytes;
   const diskOk = disk === null || runBytes + DISK_RESERVE_BYTES <= disk;
   const diskText = disk === null ? 'free disk space unknown' : `${mb(disk)} disk free`;
-  let message = `update needs ${mb(need)} of memory for one decode step (${horizonHours} h${extraFields ? ', extra fields' : ''}) and ${mb(runBytes)} of disk for the decoded run; ${mb(available.bytes)} memory available, ${mb(headroomBytes)} headroom kept; ${diskText}`;
+  let message = `update needs ${mb(need)} of memory for one decode step (${hrs(horizonHours)}${extraFields ? ', extra fields' : ''}) and ${mb(runBytes)} of disk for the decoded run; ${mb(available.bytes)} memory available, ${mb(headroomBytes)} headroom kept; ${diskText}`;
   if (!memOk) {
     message = `not enough memory: ${message}. Free memory or lower the memory headroom setting (Settings tab).`;
   } else if (!diskOk) {
@@ -170,11 +172,11 @@ export function checkDecodeResources(
     for (const h of [120, 96, 72, 48, 24, 12]) {
       if (h >= horizonHours) continue;
       if (fits(h, extraFields)) {
-        options.push(`shorten the forecast horizon to ${h} h`);
+        options.push(`shorten the forecast horizon to ${hrs(h)}`);
         break;
       }
       if (extraFields && fits(h, false)) {
-        options.push(`shorten the horizon to ${h} h with the extra fields off`);
+        options.push(`shorten the horizon to ${hrs(h)} with the extra fields off`);
         break;
       }
     }

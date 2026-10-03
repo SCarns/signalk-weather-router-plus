@@ -153,7 +153,8 @@ async function downloadOnce(
   signal: AbortSignal | undefined,
   log: (msg: string) => void
 ): Promise<void> {
-  log(`coastline: none configured; downloading GSHHG 2.3.7 (${(expectBytes / 1e6).toFixed(0)} MB) from ${url}`);
+  // Quantities as unit tokens: the web app writes them in its user's units.
+  log(`coastline: none configured; downloading GSHHG 2.3.7 ({dataSize:${expectBytes}}) from ${url}`);
   let res: Response;
   try {
     res = await fetch(url, { signal });
@@ -174,7 +175,7 @@ async function downloadOnce(
       done += chunk.length;
       hash.update(chunk);
       while (nextPct <= 100 && (done / expectBytes) * 100 >= nextPct) {
-        log(`coastline: downloaded ${nextPct} % (${(done / 1e6).toFixed(0)} MB, ${((Date.now() - t0) / 1000).toFixed(0)} s)`);
+        log(`coastline: downloaded {percentage:${nextPct / 100}} ({dataSize:${done}}, {time:${(Date.now() - t0) / 1000}})`);
         nextPct += 10;
       }
       cb(null, chunk);

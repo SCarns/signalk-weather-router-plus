@@ -7,7 +7,7 @@
  * arithmetic is unchanged; the golden routes hold that.
  */
 
-import { haversineDistanceM, perpendicularOffsetM } from '../../geo/geodesy';
+import { haversineBearing, haversineDistanceM, perpendicularOffsetM, projectAlongBearing } from '../../geo/geodesy';
 import { unwrapLonNear } from '../../geo/angles';
 import { M_PER_DEG } from '../../geo/units';
 import { MIN_STEP_M, STEP_PER_WIDTH } from '../corridor';
@@ -27,7 +27,14 @@ export interface SkeletonGuide extends SkeletonData {
   nearestSkeleton(pLon: number, pLat: number, from?: number, to?: number): number;
   /** Step for a parent at a position (candStepM without a skeleton). */
   stepFor(pLon: number, pLat: number): { step: number; idx: number };
-  targetForParent(idx: number, stepM: number): [number, number];
+  /**
+   * Where a parent at (pLon, pLat), nearest skeleton point `idx`, aims the
+   * centre of its heading sweep. In narrow water: the skeleton point one
+   * step ahead. In open water (the corridor wider than its probe there):
+   * one step along the skeleton's own direction from the parent itself, so
+   * a branch off the line keeps its offset instead of being pulled back.
+   */
+  targetForParent(idx: number, stepM: number, pLon?: number, pLat?: number): [number, number];
   /** Narrow-zone bin key for a candidate, or null outside every zone. */
   zoneKey(c: { lon: number; lat: number; viaCount: number }): string | null;
 }
@@ -100,7 +107,7 @@ export function buildGuide(ctx: SearchContext, sk: SkeletonData): SkeletonGuide 
     progress(
       0,
       kEff,
-      `narrow passages: stages shortened down to ${(minStep / 1000).toFixed(1)} km there; ${kEff} stages planned (${zones.length} narrow stretch${zones.length === 1 ? '' : 'es'} binned across the passage)`
+      `narrow passages: stages shortened down to {distance:${minStep.toFixed(0)}} there; ${kEff} stages planned (${zones.length} narrow stretch${zones.length === 1 ? '' : 'es'} binned across the passage)`
     );
   }
 
@@ -122,14 +129,29 @@ export function buildGuide(ctx: SearchContext, sk: SkeletonData): SkeletonGuide 
     const idx = nearestSkeleton(pLon, pLat);
     return { step: stepAt[idx], idx };
   };
-  const targetForParent = (idx: number, stepM: number): [number, number] => {
+  const targetForParent = (idx: number, stepM: number, pLon?: number, pLat?: number): [number, number] => {
     if (!skeleton || !skeletonCum || nSk < 2 || idx < 0) return [eLon, eLat];
     const targetCum = skeletonCum[idx] + stepM;
     if (targetCum >= skeletonCum[skeletonCum.length - 1]) return [eLon, eLat];
+    let ti = -1;
     for (let i = idx + 1; i < nSk; i++) {
-      if (skeletonCum[i] >= targetCum) return [skeleton[i].lon, skeleton[i].lat];
+      if (skeletonCum[i] >= targetCum) {
+        ti = i;
+        break;
+      }
     }
-    return [eLon, eLat];
+    if (ti < 0) return [eLon, eLat];
+    // Open water (deviation from the reference): aim parallel to the
+    // skeleton from the parent itself. Aiming at the skeleton point pulled
+    // every branch back to the line, so a detour of hundreds of km could
+    // never form: Tonga → Auckland, the front never got more than 170 km
+    // off the direct line while a route 479 km west was 15 h faster.
+    // Narrow water keeps the skeleton aim, which is what finds channels.
+    if (pLon !== undefined && pLat !== undefined && widths && !Number.isFinite(widths[idx])) {
+      const b = haversineBearing(skeleton[idx].lon, skeleton[idx].lat, skeleton[ti].lon, skeleton[ti].lat);
+      return projectAlongBearing(pLon, pLat, b, stepM);
+    }
+    return [skeleton[ti].lon, skeleton[ti].lat];
   };
   /** Narrow-zone bin key for a candidate, or null outside every zone. */
   const zoneKey = (c: { lon: number; lat: number; viaCount: number }): string | null => {

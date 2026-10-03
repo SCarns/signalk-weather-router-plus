@@ -1,7 +1,6 @@
 /** Vessel parameters. SI throughout (metres, m/s, seconds). */
 
 export interface VesselParams {
-  name: string;
   /** Cruising speed under power, m/s. */
   motorSpeedMs: number;
   /**
@@ -13,7 +12,6 @@ export interface VesselParams {
 }
 
 export const DEFAULT_VESSEL: VesselParams = {
-  name: 'Vessel',
   motorSpeedMs: 3.09,
   polarPerformance: 1,
 };

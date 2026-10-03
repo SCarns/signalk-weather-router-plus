@@ -47,9 +47,20 @@ export function filesHash(dir: string, exclude: string[] = []): string {
   return h.digest('hex').slice(0, 8);
 }
 
-/** The panel's files (public/plotterext), for its cache-busting URL. */
+/** Modules in public/ the panel imports (with its own ?v=, so they count in its hash). */
+const PANEL_SHARED = ['rp-units.js'];
+
+/** The panel's files (public/plotterext and the shared modules it imports), for its cache-busting URL. */
 export function panelFilesHash(publicDir: string): string {
-  return filesHash(path.join(publicDir, 'plotterext'));
+  const h = createHash('sha1').update(filesHash(path.join(publicDir, 'plotterext')));
+  for (const f of PANEL_SHARED) {
+    try {
+      h.update(f).update(untagged(fs.readFileSync(path.join(publicDir, f), 'utf8')));
+    } catch {
+      h.update(f);
+    }
+  }
+  return h.digest('hex').slice(0, 8);
 }
 
 /**

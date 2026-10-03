@@ -162,7 +162,7 @@ export function assembleRoute(ctx: SearchContext, guide: SkeletonGuide, stages: 
   progress(
     Math.max(kEff, stages.length - 1),
     Math.max(kEff, stages.length - 1),
-    `done: ${wps.length} waypoints, ${(dist / 1000).toFixed(1)} km, ${(route.totalTimeS / 3600).toFixed(1)} h`
+    `done: ${wps.length} waypoints, {distance:${dist.toFixed(0)}}, {time:${route.totalTimeS.toFixed(0)}}`
   );
   return route;
 }

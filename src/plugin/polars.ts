@@ -13,7 +13,16 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { PolarDiagram } from '../vessel/polar';
 import { KTS_TO_MS } from '../geo/geodesy';
-import { HULL_TYPES, KEEL_TYPES, RIG_TYPES, slugifyPolarName, UnsupportedHull, validateSpecs, type BoatSpecs } from '../vessel/vpp';
+import {
+  HULL_TYPES,
+  KEEL_TYPES,
+  RIG_TYPES,
+  slugifyPolarName,
+  SpecsError,
+  UnsupportedHull,
+  validateSpecs,
+  type BoatSpecs,
+} from '../vessel/vpp';
 import { polarCsv, type VppTable } from '../vessel/vpp_empirical';
 import { computePhysicsTable } from '../vessel/vpp_physics';
 
@@ -159,10 +168,18 @@ export function loadPolarCached(file: string): PolarDiagram {
 }
 
 /**
- * Per-TWS beat (best upwind VMG) and run (best downwind VMG) angles,
- * from a 1° scan of the polar.
+ * Per-TWS angles of the polar as the router uses it (rows closer to the
+ * wind than `minTwaDeg`, the tightest sailable angle setting, ignored):
+ * the no-go angle (the tightest angle with any boat speed), and the beat
+ * (best upwind VMG) and run (best downwind VMG) angles, from a 1° scan.
+ * They bound the points of sail: in irons below the no-go angle, close
+ * hauled from it to the beat angle.
  */
-export function polarAngles(polar: PolarDiagram): { tws_ms: number[]; beat_deg: number[]; run_deg: number[] } {
+export function polarAngles(
+  raw: PolarDiagram,
+  minTwaDeg = 0
+): { tws_ms: number[]; nogo_deg: number[]; beat_deg: number[]; run_deg: number[] } {
+  const polar = minTwaDeg > 0 ? raw.withNoGoFloor(minTwaDeg) : raw;
   const beat: number[] = [];
   const run: number[] = [];
   for (const tws of polar.tws) {
@@ -187,7 +204,7 @@ export function polarAngles(polar: PolarDiagram): { tws_ms: number[]; beat_deg: 
     beat.push(bestBTwa);
     run.push(bestRTwa);
   }
-  return { tws_ms: Array.from(polar.tws), beat_deg: beat, run_deg: run };
+  return { tws_ms: Array.from(polar.tws), nogo_deg: Array.from(polar.tws, tws => polar.noGoFloor(tws)), beat_deg: beat, run_deg: run };
 }
 
 /** The raw table in SI (m/s) for drawing a polar diagram. */
@@ -272,7 +289,9 @@ export function polarFromSpecs(cfg: PolarLibraryConfig, raw: unknown): PolarFrom
     warnings = validateSpecs(req.specs, { downwindDefault: false });
     if ((req.specs.sail_area_downwind_m2 ?? 0) > 0) warnings.push('Downwind sail area is not used: the calculator assumes no spinnaker.');
   } catch (err) {
-    return { status: 400, body: { error: (err as Error).message } };
+    // The message for API clients, plus the field and limits in SI (SpecsError.detail) for the web app to word in its user's units.
+    const detail = err instanceof SpecsError ? err.detail : undefined;
+    return { status: 400, body: { error: (err as Error).message, ...detail } };
   }
   const slug = slugifyPolarName(req.name);
   if (!slug) return { status: 400, body: { error: 'Name must contain at least one alphanumeric character' } };

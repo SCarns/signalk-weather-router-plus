@@ -211,6 +211,12 @@
   .rs-warnlist div { padding: 1px 0; }
   .rs-warnlist .land { color: var(--danger); font-weight: 600; }
   .rs-stale { margin-top: 2px; font-size: var(--f-xs); color: var(--warn); font-weight: 600; }
+  /* Asked after a saved route is opened: recompute it now? */
+  .recompute-banner { margin: var(--s-2) var(--s-2) 0; padding: var(--s-2) var(--s-3); border-radius: var(--r-sm); background: #fff1d6; color: #5a3a00; font-size: var(--f-xs); display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; justify-content: space-between; }
+  .recompute-banner[hidden] { display: none; }
+  .recompute-actions { display: flex; gap: var(--s-1); }
+  .recompute-actions button { padding: 3px 9px; border-radius: var(--r-sm); border: 1px solid #c79a3a; background: #fff; cursor: pointer; font: inherit; font-weight: 600; }
+  #recomputeYes { background: var(--go); color: #fff; border-color: var(--go); }
   /* The forecast ends before the route does: badge + note, and the affected cards. */
   .rs-beyond { margin-top: 2px; font-size: var(--f-xs); color: var(--warn); }
   .rs-beyond a { color: inherit; text-decoration: underline; cursor: pointer; }
@@ -316,6 +322,8 @@
   }
   #dataStatus { font-size: var(--f-xs); color: var(--text-2); line-height: 1.4; }
   #dataStatus .ok { color: var(--tack-starboard); font-weight: 600; }
+  #dataStatus .nowrap { white-space: nowrap; }
+  #dataStatus .statusKey { color: var(--tack-starboard); font-weight: 600; }
   #dataStatus .warn { color: var(--warn); font-weight: 600; }
   #dataStatus .err { color: var(--danger); font-weight: 600; }
   .sm-btn {
@@ -452,6 +460,10 @@
   .leg-card.active.mode-sailing.tack-port { background: rgba(193, 55, 47, 0.22); border-color: var(--tack-port); }
   .leg-card.active.mode-motoring { background: rgba(217, 147, 25, 0.18); border-color: var(--mode-motoring); }
   .leg-card.active.mode-arrival { background: rgba(90, 127, 214, 0.22); border-color: var(--mode-arrival); }
+  /* LIVE / SIMULATE: the point the boat is heading to, the points passed, and their figures. */
+  .leg-card.live-next { outline: 2px solid var(--live); outline-offset: -2px; }
+  .leg-card.passed { opacity: 0.7; }
+  .leg-live { margin-top: var(--s-1); font-size: var(--f-xs); color: var(--ink-text); font-family: ui-monospace, Menlo, monospace; }
   .leg-card.active { background: var(--ink-bg-3); border-color: var(--ink-text-2); }
   .leg-head {
     display: flex; justify-content: space-between; align-items: baseline;
@@ -492,6 +504,8 @@
   .live-mode-btn:hover { background: var(--surface-3); }
   .live-mode-btn.live-active { background: var(--go); color: #fff; }
   .live-mode-btn.live-active.live-on { background: var(--live); }
+  .live-mode-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .live-mode-btn:disabled:hover { background: inherit; }
   /* Clear-marker buttons — 28px tap target. */
   .clear-btn {
     background: var(--danger); color: #fff; border: 0;
@@ -533,6 +547,7 @@
   <div style="font-weight:600;color:#9be8ab;margin-bottom:var(--s-1);">Proposed re-plan</div>
   <div id="proposalSummary" style="font-family:ui-monospace,Menlo,monospace;font-size:var(--f-sm);color:var(--ink-text-2);">—</div>
   <div style="display:flex;gap:var(--s-2);margin-top:var(--s-2);justify-content:flex-end;">
+    <button type="button" id="proposalCancel" hidden style="background:transparent;color:var(--ink-text-2);border:1px solid var(--ink-border);border-radius:var(--r-sm);padding:6px 14px;cursor:pointer;font-size:var(--f-sm);">Cancel</button>
     <button type="button" id="proposalDismiss" style="background:transparent;color:var(--ink-text-2);border:1px solid var(--ink-border);border-radius:var(--r-sm);padding:6px 14px;cursor:pointer;font-size:var(--f-sm);">Dismiss</button>
     <button type="button" id="proposalAccept" style="background:var(--tack-starboard);color:#fff;border:0;border-radius:var(--r-sm);padding:6px 18px;cursor:pointer;font-size:var(--f-sm);font-weight:600;">Accept</button>
   </div>
@@ -569,7 +584,9 @@
     <div style="display:flex;gap:0;margin-bottom:var(--s-2);border:1px solid var(--border-hard);border-radius:var(--r-sm);overflow:hidden;">
       <button type="button" id="modeBtnPlanning" class="live-mode-btn live-active" aria-pressed="true">Planning</button>
       <button type="button" id="modeBtnLive" class="live-mode-btn" style="border-left:1px solid var(--border-hard);" aria-pressed="false">LIVE</button>
+      <button type="button" id="modeBtnSim" class="live-mode-btn" style="border-left:1px solid var(--border-hard);" aria-pressed="false" title="LIVE with a simulated boat sailing the route on the map instead of the Signal K position, for trying the re-plan triggers ashore. Nothing is sent to Signal K.">SIMULATE</button>
     </div>
+    <div id="modeHint" class="ctl-hint" style="display:none;color:var(--warn);"></div>
   </div>
 
   <!-- Live-mode vessel readout. Hidden in Planning; shown in Live. -->
@@ -577,6 +594,20 @@
     <div style="font-weight:600;color:var(--live);margin-bottom:2px;">Live vessel</div>
     <div id="liveReadoutBody" style="font-family:ui-monospace,Menlo,monospace;color:var(--text);">connecting…</div>
     <div id="liveReadoutStale" style="color:var(--danger);font-size:10px;margin-top:2px;display:none;">⚠ data stale</div>
+    <label style="margin-top:var(--s-2);" title="Perpendicular distance from the planned route that counts as off course; a re-plan follows when the boat stays further off for the off-course sustain time (Setup tab).">Off-course threshold: <span id="xteThresholdMLabel">500</span> <span class="unitOf" data-for="xteThresholdMLabel"></span></label>
+    <input type="range" id="xteThresholdM" min="100" max="2000" step="50" value="500" aria-label="Off-course threshold">
+    <div id="simControls" style="display:none;">
+      <div style="display:flex;gap:var(--s-1);margin-top:var(--s-2);">
+        <button type="button" id="simStartBtn" title="Sail the simulated boat from where it is.">Start</button>
+        <button type="button" id="simStopBtn" disabled title="Hold the simulated boat where it is; Start continues from there.">Stop</button>
+        <button type="button" id="simRewindBtn" title="Put the simulated boat back at the start of the route on the map. The track and earlier routes stay.">Rewind to start</button>
+      </div>
+      <label title="How much faster than real time the simulated boat sails the route, at the speeds the route was computed with for the selected vessel.">Simulation speed: <span id="simFactorLabel">×600</span></label>
+      <input type="range" id="simFactor" min="0" max="3.556" step="0.01" value="2.778" autocomplete="off" aria-label="Simulation speed, times real time">
+      <label title="How far the simulated boat steers off the route's course while pushed: positive to starboard, negative to port. It drifts further off the longer it stays pushed; a change applies at once.">Push off course by: <span id="simPushDegLabel">20</span> <span class="unitOf" data-for="simPushDegLabel"></span></label>
+      <input type="range" id="simPushDeg" min="-90" max="90" step="1" value="20" autocomplete="off" aria-label="Push off course angle">
+      <button type="button" id="simPushBtn" aria-pressed="false" title="The simulated boat steers off the route's course by the angle above. Click again to put it back on the route.">Push off course</button>
+    </div>
   </div>
 
   <label>Start <span style="color:var(--tack-starboard);font-weight:600;">(green)</span></label>
@@ -630,7 +661,7 @@
   <summary>Display</summary>
   <div class="subsection-body">
   <div class="ctl-hint" id="unitSource">Loading your Signal K unit preferences…</div>
-  <div class="ctl-hint">Units are set in your Signal K unit preferences. Boat specs are always entered in metres and knots.</div>
+  <div class="ctl-hint">Units are set in your Signal K unit preferences.</div>
   </div>
   </details>
 
@@ -708,7 +739,7 @@
 
   <label>Waypoint radius: <span id="arrivalRadiusMLabel">200</span> <span class="unitOf" data-for="arrivalRadiusMLabel"></span></label>
   <div class="ctl-hint">Circle around each intermediate waypoint in Approximate mode. Ignored in Precise mode.</div>
-  <input type="range" id="arrivalRadiusM" min="50" max="2000" step="50" value="200" aria-label="Waypoint circle radius in metres">
+  <input type="range" id="arrivalRadiusM" min="50" max="2000" step="50" value="200" aria-label="Waypoint circle radius">
 
   </div>
   </details>
@@ -723,6 +754,7 @@
   <input type="range" id="stages" min="0" max="200" step="4" value="0" aria-label="Isochrone stages (0 = default)">
 
   <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="noCurrents">Ignore currents</label>
+  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;" title="Finer wind from the signalk-grib-downloader plugin (AROME, ARPEGE, ICON-EU) where it covers the route and time, ECMWF elsewhere. Unticked: ECMWF only. No effect without the downloader."><input type="checkbox" id="regionalWind" checked>Regional wind where available</label>
   <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="noForecast">Ignore forecast (route in calm wind)</label>
 
   <label for="publishSel">Publish to Signal K resources</label>
@@ -754,15 +786,13 @@
 
   <label>Proximity radius: <span id="proximityRadiusMLabel">200</span> <span class="unitOf" data-for="proximityRadiusMLabel"></span></label>
   <div class="ctl-hint">Re-plan fires when the vessel comes within this distance of the next waypoint.</div>
-  <input type="range" id="proximityRadiusM" min="50" max="1000" step="25" value="200" aria-label="Proximity re-plan radius in metres">
+  <input type="range" id="proximityRadiusM" min="50" max="1000" step="25" value="200" aria-label="Proximity re-plan radius">
 
-  <label>Off-course threshold: <span id="xteThresholdMLabel">500</span> <span class="unitOf" data-for="xteThresholdMLabel"></span></label>
-  <div class="ctl-hint">Perpendicular distance from the planned route that counts as "off course."</div>
-  <input type="range" id="xteThresholdM" min="100" max="2000" step="50" value="500" aria-label="Off-course threshold in metres">
+  <div class="ctl-hint">The off-course threshold is in the LIVE / SIMULATE box on the Route tab.</div>
 
-  <label>Off-course sustain: <span id="xteSustainSecLabel">30</span> sec</label>
+  <label>Off-course sustain: <span id="xteSustainSecLabel">30</span> <span class="unitOf" data-for="xteSustainSecLabel"></span></label>
   <div class="ctl-hint">How long the vessel must stay off-course before triggering a re-plan.</div>
-  <input type="range" id="xteSustainSec" min="10" max="300" step="5" value="30" aria-label="Off-course sustain in seconds">
+  <input type="range" id="xteSustainSec" min="10" max="300" step="5" value="30" aria-label="Off-course sustain">
 
   </div>
   </details>
@@ -783,7 +813,7 @@
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="windToggle" style="width:auto;margin-right:4px;">Wind barbs</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="windCombinedToggle" style="width:auto;margin-right:4px;">Wind speed (colour) + flow lines</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="precipToggle" style="width:auto;margin-right:4px;">Precipitation rate</label>
-    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="temperatureToggle" style="width:auto;margin-right:4px;">Air temperature (2 m)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="temperatureToggle" style="width:auto;margin-right:4px;">Air temperature</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="sstToggle" style="width:auto;margin-right:4px;">Sea-surface temp (skin)</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="pressureToggle" style="width:auto;margin-right:4px;">Pressure (isobars, H/L)</label>
     <div class="ctl-hint" style="margin-top:var(--s-1);">Shift-click anywhere on the map (or use the click menu) for the 72-hour conditions forecast at that spot.</div>
@@ -794,7 +824,7 @@
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="wavesCombinedToggle" style="width:auto;margin-right:4px;">Wave height (colour) + direction lines</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="roughnessToggle" style="width:auto;margin-right:4px;">Sea state (wind + swell + current)</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="tideToggle" style="width:auto;margin-right:4px;">Tide height (colour)</label>
-    <div class="ctl-hint" style="margin-top:var(--s-1);">Tide height is relative to mean sea level, not chart datum (Copernicus Marine, 1/12°). Not for under-keel clearance.</div>
+    <div class="ctl-hint" style="margin-top:var(--s-1);">Tide height is relative to mean sea level, not chart datum (Copernicus Marine). Not for under-keel clearance.</div>
     </div>
   </div>
   </section>
@@ -828,6 +858,10 @@
       <button id="routePublish" type="button" title="Save this route to the Signal K Resources API" style="padding:4px 10px;font-size:var(--f-xs);background:var(--go);color:#fff;border:0;border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Publish</button>
       <button id="routeDelete" type="button" title="Delete this route job" style="padding:4px 10px;font-size:var(--f-xs);background:var(--danger);color:#fff;border:0;border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Delete</button>
       <span id="routeNameStatus" style="color:var(--ink-text-muted);min-width:28px;"></span>
+    </div>
+    <div id="recomputeBanner" class="recompute-banner" hidden>
+      <span id="recomputeText"></span>
+      <span class="recompute-actions"><button type="button" id="recomputeYes">Recompute</button><button type="button" id="recomputeNo">Keep as saved</button></span>
     </div>
     <div id="itinSummary"></div>
     <div id="modalItinerary"></div>
@@ -868,13 +902,13 @@
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
         <div><label>Boat name <span style="color:#c00;">*</span></label><input type="text" id="vf_name" maxlength="60" style="width:100%;padding:4px;box-sizing:border-box;"></div>
-        <div><label>LOA (m) <span style="color:#c00;">*</span></label><input type="number" step="0.01" id="vf_loa" style="width:100%;padding:4px;box-sizing:border-box;"></div>
-        <div><label>LWL (m) <span style="color:#c00;">*</span></label><input type="number" step="0.01" id="vf_lwl" style="width:100%;padding:4px;box-sizing:border-box;"></div>
-        <div><label>Beam (m) <span style="color:#c00;">*</span></label><input type="number" step="0.01" id="vf_beam" style="width:100%;padding:4px;box-sizing:border-box;"></div>
-        <div><label>Draft (m) <span style="color:#c00;">*</span></label><input type="number" step="0.01" id="vf_draft" style="width:100%;padding:4px;box-sizing:border-box;"></div>
-        <div><label>Displacement (kg) <span style="color:#c00;">*</span></label><input type="number" step="1" id="vf_disp" style="width:100%;padding:4px;box-sizing:border-box;"></div>
-        <div><label>Ballast (kg)</label><input type="number" step="1" id="vf_ballast" style="width:100%;padding:4px;box-sizing:border-box;"></div>
-        <div><label>Upwind sail area (m²) <span style="color:#c00;">*</span></label><input type="number" step="0.1" id="vf_sa_up" style="width:100%;padding:4px;box-sizing:border-box;"></div>
+        <div><label>LOA <span class="unitOf" data-q="short_distance"></span> <span style="color:#c00;">*</span></label><input type="number" step="any" id="vf_loa" style="width:100%;padding:4px;box-sizing:border-box;"></div>
+        <div><label>LWL <span class="unitOf" data-q="short_distance"></span> <span style="color:#c00;">*</span></label><input type="number" step="any" id="vf_lwl" style="width:100%;padding:4px;box-sizing:border-box;"></div>
+        <div><label>Beam <span class="unitOf" data-q="short_distance"></span> <span style="color:#c00;">*</span></label><input type="number" step="any" id="vf_beam" style="width:100%;padding:4px;box-sizing:border-box;"></div>
+        <div><label>Draft <span class="unitOf" data-q="short_distance"></span> <span style="color:#c00;">*</span></label><input type="number" step="any" id="vf_draft" style="width:100%;padding:4px;box-sizing:border-box;"></div>
+        <div><label>Displacement <span class="unitOf" data-q="mass"></span> <span style="color:#c00;">*</span></label><input type="number" step="any" id="vf_disp" style="width:100%;padding:4px;box-sizing:border-box;"></div>
+        <div><label>Ballast <span class="unitOf" data-q="mass"></span></label><input type="number" step="any" id="vf_ballast" style="width:100%;padding:4px;box-sizing:border-box;"></div>
+        <div><label>Upwind sail area <span class="unitOf" data-q="area"></span> <span style="color:#c00;">*</span></label><input type="number" step="any" id="vf_sa_up" style="width:100%;padding:4px;box-sizing:border-box;"></div>
         <div><label>Rig type</label>
           <select id="vf_rig" style="width:100%;padding:4px;box-sizing:border-box;">
             <option>sloop</option><option>cutter</option><option>ketch</option><option>yawl</option><option>cat</option>
