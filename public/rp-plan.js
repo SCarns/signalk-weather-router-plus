@@ -4,7 +4,7 @@
 // result strip, itinerary, route library, waypoint and conditions popups,
 // Live mode with the Signal K vessel.
 
-import { _apiErrorText, _fmt, _polarAngles, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc } from './rp-core.js';
+import { _apiErrorText, _fmt, _polarAngles, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
 import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
@@ -118,6 +118,12 @@ function _placeRoutePins(pts, snapProps) {
   // (what was requested, with each circle's radius); the route's own via
   // points are where it entered each circle, not where the pin was, so
   // they are used only for a route that carries no stops.
+  // A loaded route replaces the previous route's waypoints entirely: first
+  // clear them, then restore this route's own (none is a valid answer: a
+  // route without waypoints used to keep the previous route's pins, which
+  // a re-run then sent along).
+  waypointCoords = [];
+  waypointRadii = [];
   const stops = Array.isArray(snapProps.stops) && snapProps.stops.length >= 2 ? snapProps.stops.slice(1, -1) : null;
   if (stops) {
     waypointCoords = stops.map(s => [s.lon, s.lat]);
@@ -133,11 +139,8 @@ function _placeRoutePins(pts, snapProps) {
     _rebuildWaypointFeatures();
   } else {
     const vias = pts.filter(f => f.get('role') === 'via').map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()));
-    if (vias.length) {
-      waypointCoords = vias.map(c => [c[0], c[1]]);
-      waypointRadii = [];
-      _rebuildWaypointFeatures();
-    }
+    waypointCoords = vias.map(c => [c[0], c[1]]);
+    _rebuildWaypointFeatures();
   }
   refreshFindRouteEnabled();
 }
@@ -343,6 +346,46 @@ function _jobSub(j) {
   return parts.join(' · ');
 }
 
+// After a saved route is opened: offer to compute it again (current
+// forecast, the Plan tab's settings, the loaded start, end and waypoints).
+function _askRecompute(job) {
+  const banner = document.getElementById('recomputeBanner');
+  if (!banner) return;
+  const t = job && (job.finished_at || job.created_at);
+  const when = t ? new Date(t) : null;
+  document.getElementById('recomputeText').textContent = 'Saved route' + (when ? ', computed ' + when.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '')
+    + '. Recompute it with the current forecast and the Plan settings?';
+  banner.hidden = false;
+}
+function _hideRecompute() {
+  const banner = document.getElementById('recomputeBanner');
+  if (banner) banner.hidden = true;
+}
+{
+  const yes = document.getElementById('recomputeYes'), no = document.getElementById('recomputeNo');
+  if (yes) yes.addEventListener('click', () => {
+    _hideRecompute();
+    const fr = document.getElementById('findRoute');
+    if (fr && !fr.disabled) fr.click();
+  });
+  if (no) no.addEventListener('click', _hideRecompute);
+}
+
+// The header lists only the sources that apply to the route on the map, or
+// to the map view when no route is loaded.
+setStatusArea(() => {
+  const pts = routeSource.getFeatures().filter(f => f.getGeometry() && f.getGeometry().getType() === 'Point' && f.get('time'));
+  if (pts.length) {
+    const ll = unwrapLonLats(pts.map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates())));
+    return { west: Math.min(...ll.map(c => c[0])), east: Math.max(...ll.map(c => c[0])), south: Math.min(...ll.map(c => c[1])), north: Math.max(...ll.map(c => c[1])) };
+  }
+  const e = ol.proj.transformExtent(map.getView().calculateExtent(map.getSize()), 'EPSG:3857', 'EPSG:4326');
+  return { west: e[0], south: e[1], east: e[2], north: e[3] };
+});
+map.on('moveend', redrawStatusLine);
+routeSource.on('change', redrawStatusLine);
+{ const rw = document.getElementById('regionalWind'); if (rw) rw.addEventListener('change', redrawStatusLine); }
+
 function _loadRouteJob(id) {
   if (!id) return;
   const job = routeHistoryItems.find(j => j.id === id);
@@ -357,9 +400,27 @@ function _loadRouteJob(id) {
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(geojson => {
       displayRoute(geojson);
+      // The job's own request is the exact record of what was asked: its
+      // waypoints (with their circles) and precision replace whatever the
+      // route's points suggest, for older routes too.
+      const req = job && job.request;
+      if (req) {
+        const wps = Array.isArray(req.waypoints) ? req.waypoints : [];
+        waypointCoords = wps.map(w => [w.lon, w.lat]);
+        waypointRadii = wps.map(w => (Number.isFinite(w.radius_m) ? w.radius_m : (req.precision === 'approximate' && Number.isFinite(req.arrival_radius_m) ? req.arrival_radius_m : null)));
+        const precEl = document.getElementById('precision');
+        const prec = wps.length ? (req.precision === 'approximate' ? 'approximate' : 'precise') : null;
+        if (precEl && prec && precEl.value !== prec) {
+          precEl.value = prec;
+          _settingPrecisionFromRoute = true;
+          try { precEl.dispatchEvent(new Event('change', { bubbles: true })); } finally { _settingPrecisionFromRoute = false; }
+        }
+        _rebuildWaypointFeatures();
+      }
       routeActive = true;
       _routeStale = false;
       updatePlanHint();
+      _askRecompute(job);
       // Zoom to the loaded route's extent with padding so the map
       // frames the entire track beside the panel (not under it). The
       // extent is taken over the route's points with unwrapped longitudes:
@@ -919,6 +980,7 @@ function updateButton() {
 
 // --- Reset ---
 document.getElementById('resetBtn').addEventListener('click', function() {
+  _hideRecompute();
   if (routeActive && !confirm('Clear the route and all markers?')) return;
   startCoord = null;
   endCoord = null;
@@ -1797,6 +1859,7 @@ function _jobOnError(job, ev) {
 }
 
 document.getElementById('findRoute').addEventListener('click', function() {
+  _hideRecompute();
   const btn = this;
   const statusEl = document.getElementById('status');
   const infoEl = document.getElementById('routeInfo');

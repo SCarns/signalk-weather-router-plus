@@ -909,28 +909,77 @@ export function escapeHtml(v) {
 }
 
 // Regional GRIB runs found from signalk-grib-downloader (discovery only so far).
-function _regionalLine(r) {
+// The area the header's sources are filtered by: the loaded route's
+// extent, else the map view, as { west, south, east, north } in degrees
+// (east may exceed 180 across the antimeridian). Set by the planning page.
+let _statusArea = null;
+let _lastStatus = null;
+export function setStatusArea(fn) { _statusArea = fn; }
+/** Redraw the header from the last status (after the route or the map view changed). */
+export function redrawStatusLine() {
+  const el = document.getElementById('dataStatus');
+  if (el && _lastStatus) el.innerHTML = _statusLine(_lastStatus);
+}
+// Does a source's box meet the area? Longitudes compared across the antimeridian.
+function _meets(b, a) {
+  if (!b || !a) return true;
+  if (b.north < a.south || b.south > a.north) return false;
+  if (a.east - a.west >= 360) return true;
+  // A map view panned round the globe sits in a wrapped world copy (lon 500…).
+  const shift = Math.floor((a.west + 180) / 360) * 360;
+  a = { west: a.west - shift, east: a.east - shift };
+  let bw = b.west, be = b.east;
+  if (be < bw) be += 360;
+  for (const k of [-360, 0, 360]) if (a.west + k <= be && a.east + k >= bw) return true;
+  return false;
+}
+function _area() {
+  try { return _statusArea ? _statusArea() : null; } catch (_) { return null; }
+}
+
+// Regional wind models whose grid meets the route or the map view, as text for the wind line.
+function _regionalWind(r, area) {
   if (!r) return '';
-  const ok = (r.sources || []).filter(x => x.run && !x.problem);
-  if (!ok.length) return r.root ? '<br>regional: <span class="warn">' + escapeHtml(r.note || ((r.sources || [])[0] || {}).problem || 'no complete run') + '</span>' : '';
-  return '<br>regional: ' + ok.map(x => {
+  const ok = (r.sources || []).filter(x => x.run && !x.problem && (!x.domain || _meets(x.domain, area)));
+  if (!ok.length) {
+    // The downloader is there but has nothing usable: say why.
+    return r.root && !(r.sources || []).some(x => x.run && !x.problem)
+      ? ' · regional: <span class="warn">' + escapeHtml(r.note || ((r.sources || [])[0] || {}).problem || 'no complete run') + '</span>'
+      : '';
+  }
+  const rw = document.getElementById('regionalWind');
+  const off = rw && !rw.checked ? ' <span class="warn">(off for routes: Regional wind unticked)</span>' : '';
+  return ' · ' + ok.map(x => {
     const d = x.decoded;
     const state = d && d.error ? ' <span class="warn">' + escapeHtml(d.error) + '</span>'
       : d && d.cycle && x.run.slice(0, 13).replace(/[-T]/g, '') === d.cycle ? ' (decoded)'
       : ' (decoding)';
     return escapeHtml(x.name) + ' ' + x.run.slice(0, 13) + 'Z +' + x.hours[0] + '…' + x.hours[x.hours.length - 1] + ' h' + state;
-  }).join(', ');
+  }).join(', ') + off;
 }
 
 function _statusLine(s) {
   const f = s.forecast;
   if (s.starting) return '<span class="warn">' + escapeHtml(s.starting) + '</span>';
   if (!f) return '<span class="warn">no forecast loaded</span>' + (s.forecast_error ? ': ' + escapeHtml(s.forecast_error) : ' (loading)');
-  const cur = Array.isArray(s.currents) && s.currents.length ? s.currents.map(c => c.name).join(', ') : 'none';
-  return '<span class="ok">forecast</span> ' + f.cycle.slice(0, 13) + 'Z · ' + f.steps + ' steps to ' + f.valid_to.slice(0, 13) + 'Z'
-    + (f.has_waves ? ' · waves' : '') + '<br>currents: ' + cur
-    + (s.jobs ? ' · jobs: ' + (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued' : '')
-    + _regionalLine(s.regional)
+  const area = _area();
+  const run = escapeHtml(f.model || 'forecast') + ' ' + f.cycle.slice(0, 13) + 'Z → ' + f.valid_to.slice(0, 13) + 'Z';
+  // Only the current sources that apply to the route or the map view. SMOC
+  // is worldwide (any area loads on demand), its box is only the standing
+  // area around the boat; the others cover their own box.
+  const applies = c => /SMOC/i.test(c.name) || _meets(c.bbox, area);
+  const curList = Array.isArray(s.currents) ? s.currents.filter(applies) : [];
+  const t = s.tides;
+  const tides = s.tides_enabled === false ? 'off (Settings)'
+    : s.tides_error ? '<span class="warn">' + escapeHtml(s.tides_error) + '</span>'
+    : t ? escapeHtml(t.name) + (t.run ? ', run ' + escapeHtml(t.run) : '')
+    : 'loading';
+  const row = (k, v) => '<span class="statusKey">' + k + '</span> ' + v;
+  return row('wind', run + _regionalWind(s.regional, area))
+    + '<br>' + row('waves', f.has_waves ? run : '<span class="warn">none in this run</span>')
+    + '<br>' + row('currents', curList.length ? curList.map(c => escapeHtml(c.name)).join(', ') : 'none here')
+    + '<br>' + row('tides', tides)
+    + (s.jobs ? '<br>' + row('jobs', (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued') : '')
     // A refused reload (e.g. the memory guard) while the previous forecast keeps serving.
     + (s.forecast_error ? '<br><span class="warn">' + escapeHtml(s.forecast_error) + '</span>' : '');
 }
@@ -942,6 +991,7 @@ export function loadPluginStatus() {
   return authFetch(API + '/status', { cache: 'no-store' }, 'status')
     .then(r => r.json())
     .then(s => {
+      _lastStatus = s;
       if (el) el.innerHTML = _statusLine(s);
       // First start (coastline, first forecast): check again soon, not in 30 s.
       clearTimeout(_statusSoon);

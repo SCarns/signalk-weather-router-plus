@@ -8,6 +8,18 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Opening a saved route asks whether to recompute it.** A banner at the
+  top of the itinerary offers **Recompute** (current forecast, the Plan
+  tab's settings, the loaded start, end and waypoints) or **Keep as
+  saved**; it goes away on Find Route or Clear all.
+
+- **The web app header names the source of each quantity**, one line
+  each: wind (ECMWF IFS 0.25° run, plus any regional model), waves,
+  currents, tides, jobs. It lists only the sources that apply to the
+  loaded route, or to the map view when no route is loaded (CMEMS-SMOC,
+  worldwide, always; "none here" when nothing else applies), and updates
+  as the map moves. `/api/status` `forecast.model` names the global model.
+
 - **Regional wind from signalk-grib-downloader, layered over ECMWF**
   (docs/plans/grib-downloader-enhancement.md). Optional: with the
   downloader installed, the plugin finds its folder (its own setting, else
@@ -32,6 +44,12 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Opening a saved route kept the previous route's waypoints** when the
+  opened route had none of its own, and a re-run then sent them along (a
+  route off Morocco went via two waypoints near La Rochelle). Opening a
+  route now clears the waypoints first, then restores the opened route's
+  own from the job's request: the exact points, their circle sizes and the
+  precision, for older routes too.
 - **In open water the search can leave the direct line.** Each candidate
   aimed the centre of its ±30° heading sweep at the skeleton (the
   land-avoiding guide line) one step ahead, which pulled every branch that

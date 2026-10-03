@@ -211,6 +211,12 @@
   .rs-warnlist div { padding: 1px 0; }
   .rs-warnlist .land { color: var(--danger); font-weight: 600; }
   .rs-stale { margin-top: 2px; font-size: var(--f-xs); color: var(--warn); font-weight: 600; }
+  /* Asked after a saved route is opened: recompute it now? */
+  .recompute-banner { margin: var(--s-2) var(--s-2) 0; padding: var(--s-2) var(--s-3); border-radius: var(--r-sm); background: #fff1d6; color: #5a3a00; font-size: var(--f-xs); display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; justify-content: space-between; }
+  .recompute-banner[hidden] { display: none; }
+  .recompute-actions { display: flex; gap: var(--s-1); }
+  .recompute-actions button { padding: 3px 9px; border-radius: var(--r-sm); border: 1px solid #c79a3a; background: #fff; cursor: pointer; font: inherit; font-weight: 600; }
+  #recomputeYes { background: var(--go); color: #fff; border-color: var(--go); }
   /* The forecast ends before the route does: badge + note, and the affected cards. */
   .rs-beyond { margin-top: 2px; font-size: var(--f-xs); color: var(--warn); }
   .rs-beyond a { color: inherit; text-decoration: underline; cursor: pointer; }
@@ -316,6 +322,7 @@
   }
   #dataStatus { font-size: var(--f-xs); color: var(--text-2); line-height: 1.4; }
   #dataStatus .ok { color: var(--tack-starboard); font-weight: 600; }
+  #dataStatus .statusKey { color: var(--tack-starboard); font-weight: 600; }
   #dataStatus .warn { color: var(--warn); font-weight: 600; }
   #dataStatus .err { color: var(--danger); font-weight: 600; }
   .sm-btn {
@@ -829,6 +836,10 @@
       <button id="routePublish" type="button" title="Save this route to the Signal K Resources API" style="padding:4px 10px;font-size:var(--f-xs);background:var(--go);color:#fff;border:0;border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Publish</button>
       <button id="routeDelete" type="button" title="Delete this route job" style="padding:4px 10px;font-size:var(--f-xs);background:var(--danger);color:#fff;border:0;border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Delete</button>
       <span id="routeNameStatus" style="color:var(--ink-text-muted);min-width:28px;"></span>
+    </div>
+    <div id="recomputeBanner" class="recompute-banner" hidden>
+      <span id="recomputeText"></span>
+      <span class="recompute-actions"><button type="button" id="recomputeYes">Recompute</button><button type="button" id="recomputeNo">Keep as saved</button></span>
     </div>
     <div id="itinSummary"></div>
     <div id="modalItinerary"></div>

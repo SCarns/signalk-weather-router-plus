@@ -735,6 +735,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
               valid_to: new Date(forecastRun.index.steps[forecastRun.index.steps.length - 1].validMs).toISOString(),
               steps: forecastRun.index.steps.length,
               params: forecastRun.index.request.params,
+              // Always ECMWF open data (src/data/ecmwf.ts): wind from the oper stream, waves from the wave stream.
+              model: 'ECMWF IFS 0.25°',
               coverage: 'global',
               storage: 'decoded-on-disk',
               loaded_at: new Date(forecastRun.loadedAtMs).toISOString(),

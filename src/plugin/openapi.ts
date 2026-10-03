@@ -86,7 +86,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           description:
             'Top level: plugin, started, workers {data, route}, forecast, forecast_error, currents, currents_route_worker, rtofs_run, overlay_land, overlay_tiles, overlay_prebuild, ' +
             'weather_provider_registered, jobs, vessel, polar, land, harmonic_dir, extra_fields, tides, tides_enabled, tides_error, process_rss_bytes. ' +
-            '`forecast` (null until a run is ready): {cycle, valid_from, valid_to, steps, params, coverage, storage: "decoded-on-disk", loaded_at, has_waves, ' +
+            '`forecast` (null until a run is ready): {cycle, model, valid_from, valid_to, steps, params, coverage, storage: "decoded-on-disk", loaded_at, has_waves, ' +
             'source: "disk" (a complete decoded run was already on disk, no decode) | "grib" (decoded from the GRIB cache / download), ready_ms, fields_downloaded, ' +
             'decoded_dir, decoded_bytes (this run on disk), decoded_at, decode_ms, decoded_disk_bytes (all decoded runs kept), grib_cache_bytes, ' +
             'last_decode: {at, cycle, ms, stepBlockBytes, writtenBytes, downloaded} | null, memory: {data_worker_held_bytes, data_worker_largest_recent_window, ' +
