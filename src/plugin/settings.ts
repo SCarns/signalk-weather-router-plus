@@ -24,7 +24,6 @@ import type { LegacyPluginConfig } from './config';
 
 export interface AppSettings {
   vessel: {
-    name: string;
     motorSpeed: number;
     polarPerformance: number;
   };
@@ -158,16 +157,6 @@ export const SETTINGS_GROUPS: { id: SettingsGroup; label: string; help: string }
 ];
 
 export const SETTINGS_SPEC: readonly SettingSpec[] = [
-  {
-    key: 'vessel.name',
-    group: 'vessel',
-    label: 'Name',
-    type: 'string',
-    default: 'Vessel',
-    maxLength: 60,
-    help: 'Shown in the status line.',
-    reload: 'next_job',
-  },
   {
     key: 'vessel.motorSpeed',
     group: 'vessel',
@@ -788,7 +777,6 @@ export function migrateLegacy(legacy: LegacyPluginConfig | undefined): { values:
   const num = (v: unknown, k = 1): unknown =>
     v === undefined || v === null || v === '' ? undefined : typeof v === 'number' ? v * k : Number.isFinite(Number(v)) ? Number(v) * k : v;
   const v = l.vessel ?? {};
-  set(src.vessel, 'name', v.name);
   set(src.vessel, 'motorSpeed', num(v.motorSpeedKts, KTS_TO_MS));
   const f = l.forecast ?? {};
   set(src.forecast, 'horizon', num(f.horizonHours, HOUR_S));

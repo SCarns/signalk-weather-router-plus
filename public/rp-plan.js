@@ -17,6 +17,7 @@ let waypointCoords = [];  // [[lon, lat], ...] — intermediate stops in order
 // on every mutation and wire drag-to-move through the Modify interaction.
 let waypointFeatures = [];  // one ol.Feature per waypoint, aligned with waypointCoords
 let waypointRadii = [];     // per waypoint: arrival radius (m) from a loaded route, or null = the slider's value
+let _planRestored = false;  // the saved plan is written only after it was read back (see _restorePlan)
 let _settingPrecisionFromRoute = false;  // true while a loaded route sets the precision selector
 let routeActive = false;      // a route is displayed for the current markers
 let _routeStale = false;      // markers changed since that route was computed
@@ -818,6 +819,7 @@ function _rebuildWaypointFeatures() {
 // The arrival circle around each via waypoint in Approximate mode: the
 // radius a loaded route used for it, else the slider's. Nothing in Precise.
 function _rebuildRings() {
+  _savePlan();   // every waypoint or radius change passes through here
   ringSource.clear();
   const precEl = document.getElementById('precision');
   if (!precEl || precEl.value !== 'approximate') return;
@@ -986,6 +988,22 @@ function updateButton() {
   // Endpoint readiness is the baseline; power mode adds hull-def checks.
   refreshFindRouteEnabled();
   updatePlanHint();
+  _savePlan();
+}
+
+// The plan (start, destination, waypoints with their radii, departure) is
+// kept in this browser so a reload, or another day's look for a weather
+// window, starts from it. Saved on every change; restored once on load.
+function _savePlan() {
+  if (!_planRestored) return;   // start-up events must not overwrite the saved plan before it is read
+  const dep = document.getElementById('departure').value;
+  const t = dep ? new Date(dep) : null;
+  const plan = {
+    start: startCoord, end: endCoord,
+    waypoints: waypointCoords, radii: waypointRadii,
+    departure: t && Number.isFinite(t.getTime()) ? t.toISOString() : null,
+  };
+  try { localStorage.setItem('rp:plan', JSON.stringify(plan)); } catch (_) {}
 }
 
 // --- Reset ---
@@ -1036,6 +1054,48 @@ document.getElementById('clearEnd').addEventListener('click', function() {
   markRouteStale();
   updateButton();
 });
+
+// --- The plan saved by _savePlan, read back once on load ---
+function _restorePlan() {
+  let plan = null;
+  try { plan = JSON.parse(localStorage.getItem('rp:plan') || 'null'); } catch (_) {}
+  const ll = c => Array.isArray(c) && c.length === 2 && Number.isFinite(c[0]) && Number.isFinite(c[1])
+    && Math.abs(c[0]) <= 360 && Math.abs(c[1]) <= 90;
+  if (plan && typeof plan === 'object') {
+    if (ll(plan.start)) {
+      startCoord = [plan.start[0], plan.start[1]];
+      startFeature.setGeometry(new ol.geom.Point(ol.proj.fromLonLat(startCoord)));
+      updateCoordDisplay('start', startCoord);
+    }
+    if (ll(plan.end)) {
+      endCoord = [plan.end[0], plan.end[1]];
+      endFeature.setGeometry(new ol.geom.Point(ol.proj.fromLonLat(endCoord)));
+      updateCoordDisplay('end', endCoord);
+    }
+    const wps = Array.isArray(plan.waypoints) ? plan.waypoints.filter(ll) : [];
+    if (wps.length === (Array.isArray(plan.waypoints) ? plan.waypoints.length : 0)) {
+      waypointCoords = wps.map(c => [c[0], c[1]]);
+      waypointRadii = wps.map((_, i) => (Array.isArray(plan.radii) && Number.isFinite(plan.radii[i]) ? plan.radii[i] : null));
+    }
+    // A departure still ahead is kept; one that has passed is not (the
+    // input keeps "now", set on load), and the status line says so.
+    const dep = typeof plan.departure === 'string' ? new Date(plan.departure) : null;
+    if (dep && Number.isFinite(dep.getTime())) {
+      if (dep.getTime() > Date.now()) {
+        const p2 = n => String(n).padStart(2, '0');
+        document.getElementById('departure').value = `${dep.getFullYear()}-${p2(dep.getMonth() + 1)}-${p2(dep.getDate())}T${p2(dep.getHours())}:${p2(dep.getMinutes())}`;
+        document.getElementById('departure').dispatchEvent(new Event('change'));
+      } else if (startCoord || endCoord) {
+        document.getElementById('status').textContent = 'The saved departure (' + dep.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ') has passed; departure set to now.';
+      }
+    }
+  }
+  _planRestored = true;
+  _rebuildWaypointFeatures();
+  updateButton();
+}
+_restorePlan();
+document.getElementById('departure').addEventListener('change', _savePlan);
 
 // --- Tabs ---
 // All panes share #tabBody, the route inputs and result strip included
@@ -3065,6 +3125,8 @@ popup.on('change:position', () => {
         // The marker: with the Own vessel layer on, or in LIVE / SIMULATE.
         if ((vesselToggle && vesselToggle.checked) || liveMode) renderMarker(snap);
         else vesselMarkerSource.clear();
+        // First visit with no saved view: open on the boat, marker or not.
+        if (!simMode && snap.lat != null && snap.lon != null) centreOnVesselOnce(ol.proj.fromLonLat([snap.lon, snap.lat]));
         if (liveMode && snap.lat != null && snap.lon != null) centreOnBoat([snap.lon, snap.lat]);
         if (simMode) {
           showSimOverlayHour(snap.route_time);

@@ -314,7 +314,6 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
     polarsDir: c.polarsDir && c.polarsDir.trim() ? c.polarsDir.trim() : null,
     polarUserDir: null,
     vessel: makeVessel({
-      name: v.name,
       motorSpeedMs: v.motorSpeed,
       polarPerformance: v.polarPerformance,
     }),
@@ -392,7 +391,6 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
 export function routeVessel(cfg: ResolvedConfig, rv: RouteRequest['vessel']): VesselParams {
   return makeVessel({
     ...cfg.vessel,
-    name: rv?.name ?? cfg.vessel.name,
     motorSpeedMs: rv?.motor_speed_ms ?? cfg.vessel.motorSpeedMs,
     polarPerformance: rv?.polar_performance ?? cfg.vessel.polarPerformance,
   });

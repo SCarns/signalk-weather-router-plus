@@ -8,6 +8,12 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The plan is remembered across reloads (#16)**: start, destination,
+  waypoints (with the radius a loaded route gave each) and departure are
+  kept in this browser and restored on load. A saved departure that has
+  passed is not restored: departure stays at now and the status line
+  says so.
+
 - **Opening a saved route asks whether to recompute it.** A banner at the
   top of the itinerary offers **Recompute** (current forecast, the Plan
   tab's settings, the loaded start, end and waypoints) or **Keep as
@@ -43,6 +49,16 @@ uses [Semantic Versioning](https://semver.org/).
   regional grid now ends at its edges.
 
 ### Fixed
+
+- **The page no longer asks the browser for its location (#13).** A
+  first visit opens on the vessel's Signal K position
+  (`navigation.position`), whether or not the Own vessel layer is on;
+  the browser geolocation call (blocked over plain http, a permission
+  prompt over https) is gone.
+- **The vessel name is Signal K's (#14).** Settings → Vessel → Name is
+  removed; the status shows `vessels.self.name` ("—" when the server has
+  none). A stored name in settings.json is dropped on load; the route
+  request's `vessel.name` is still accepted but ignored.
 
 - **Opening a saved route kept the previous route's waypoints** when the
   opened route had none of its own, and a re-run then sent them along (a

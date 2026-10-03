@@ -76,10 +76,10 @@ test('defaults resolve to the same engine config the plugin config gave before',
 
 test('migration converts the old plugin config to SI settings and ignores region keys', () => {
   const m = migrateLegacy(LEGACY);
-  assert.equal(m.values.vessel.name, 'Catalina 36');
   assert.ok(Math.abs(m.values.vessel.motorSpeed - 6 * 0.514444444) < 1e-6, 'kt → m/s');
-  // Vessel keys the router never used (draught, clearances, tack penalty…) are not carried over.
-  assert.deepEqual(Object.keys(m.values.vessel).sort(), ['motorSpeed', 'name', 'polarPerformance']);
+  // Vessel keys the router never used (draught, clearances, tack penalty…) are not carried over, nor the
+  // name (Signal K's vessels.self.name is used).
+  assert.deepEqual(Object.keys(m.values.vessel).sort(), ['motorSpeed', 'polarPerformance']);
   assert.equal(m.values.forecast.horizon, 48 * 3600, 'h → s');
   assert.equal(m.values.forecast.refreshInterval, 3600, 'min → s');
   assert.ok(Math.abs(m.values.routing.sailThreshold - 4.9 * 0.514444444) < 1e-6, 'kt → m/s');
@@ -119,7 +119,7 @@ test('partial merge validates with the old ranges and enums, all-or-nothing', ()
     assert.ok(err instanceof SettingsValidationError);
     const e = err.errors;
     assert.match(e['vessel.motorSpeed'], /\[\{speed:0.01\}, \{speed:50\}\]/, 'unit tokens, Signal K base units; the client converts');
-    assert.match(e['vessel.name'], /string/);
+    assert.match(e['vessel.name'], /unknown setting/, 'the name comes from Signal K');
     assert.match(e['vessel.draught'], /unknown setting/, 'removed settings are unknown');
     assert.match(e['forecast.horizon'], /\[\{time:10800\}, \{time:1296000\}\]/);
     assert.match(e['forecast.refreshInterval'], /multiple of \{time:60\}/);
@@ -155,11 +155,12 @@ test('SettingsStore: first load migrates and writes settings.json; later loads i
   const s = new SettingsStore(dir);
   const r = s.load(LEGACY);
   assert.equal(r.created, true);
-  assert.ok(r.migrated.includes('vessel.name'));
+  assert.ok(r.migrated.includes('vessel.motorSpeed'));
+  assert.ok(!r.migrated.includes('vessel.name'));
   const file = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
   assert.equal(file.version, 1);
   assert.equal(file.migratedFrom, 'plugin-config');
-  assert.equal(file.values.vessel.name, 'Catalina 36');
+  assert.ok(Math.abs(file.values.vessel.motorSpeed - 6 * KTS_TO_MS) < 1e-12);
   // Update persists; a second store reads the file, not the legacy config.
   const u = s.update({ vessel: { motorSpeed: 1.2 }, forecast: { horizon: 72 * 3600 } });
   assert.deepEqual(u.changed.sort(), ['forecast.horizon', 'vessel.motorSpeed']);
@@ -194,7 +195,7 @@ test('SettingsStore: bad stored values fall back per key; unreadable file is kep
   const s2 = new SettingsStore(dir2);
   const r2 = s2.load(LEGACY);
   assert.equal(r2.created, true);
-  assert.equal(s2.values.vessel.name, 'Catalina 36');
+  assert.ok(Math.abs(s2.values.vessel.motorSpeed - 6 * KTS_TO_MS) < 1e-12);
   assert.ok(fs.readdirSync(dir2).some(f => f.startsWith('settings.json.corrupt-')));
 });
 
@@ -319,7 +320,8 @@ test('per-route vessel values override the settings; omitted ones come from the 
   assert.ok(Math.abs(plain.motorSpeedMs - 6 * KTS_TO_MS) < 1e-12);
   const o = routeVessel(cfg, { motor_speed_ms: 2.5 });
   assert.equal(o.motorSpeedMs, 2.5);
-  assert.equal(o.name, 'Catalina 36', 'not overridden → setting, not the default');
+  assert.equal(o.polarPerformance, 1, 'not overridden → setting, not the default');
+  assert.ok(!('name' in o), "the vessel name is Signal K's, not a route value");
 });
 
 test('polar performance: ratio setting (default 1), per-route override, 0.3..1.2', () => {

@@ -859,7 +859,7 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 
 | Group | Settings (default) | A change… |
 |---|---|---|
-| `vessel` | name, speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2) | applies to the next route |
+| `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2) | applies to the next route |
 | `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
@@ -1194,7 +1194,7 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `no_forecast` | boolean | | false | route with calm wind |
 | `no_currents` | boolean | | false | ignore every current source |
 | `vessel` | object | | the vessel settings | per-route overrides; absent keys use the settings ([Configuration](#configuration)) |
-| `vessel.name` | string | | setting | |
+| `vessel.name` | string | | | ignored (accepted so older clients still validate); the vessel name is Signal K's `vessels.self.name` |
 | `vessel.motor_speed_ms` | number | m/s | setting (3.087) | 0.01..50 |
 | `vessel.polar_performance` | number | ratio | setting (1) | 0.3..1.2; see below |
 | `vessel.polar` | string | | the configured `polarFile` | a token from `GET /api/polars`, at most 200 characters; see below |

@@ -83,7 +83,7 @@ export const ROUTE_REQUEST_FIELDS: Record<string, RouteFieldSpec> = {
 
 /** The per-route vessel overrides. */
 export const VESSEL_FIELDS: Record<string, RouteFieldSpec> = {
-  name: { type: 'string', description: 'The vessel name for this route' },
+  name: { type: 'string', description: 'Ignored (accepted so older clients still validate); the vessel name comes from Signal K' },
   motor_speed_ms: { type: 'number', description: 'Motor speed, m/s' },
   polar_performance: {
     type: 'number',

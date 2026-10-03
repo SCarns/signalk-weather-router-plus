@@ -305,6 +305,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
     return `${jobs.runningId ? 1 : 0} running, ${jobs.queueLength} queued`;
   }
 
+  /** The vessel's name from Signal K (vessels.self.name), or null when the server has none. */
+  function selfName(): string | null {
+    const raw = app.getSelfPath?.('name') as unknown;
+    const v = raw && typeof raw === 'object' && 'value' in raw ? (raw as { value: unknown }).value : raw;
+    return typeof v === 'string' && v.trim() ? v.trim() : null;
+  }
+
   // Regional GRIB runs of signalk-grib-downloader (discovery only, read-only):
   // scanned at most once a minute, for the status.
   let regionalCache: { at: number; value: RegionalStatus } | null = null;
@@ -788,7 +795,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
         weather_provider_registered: weatherRegistered,
         regional: regionalStatus(),
         jobs: jobs ? { running: jobs.runningId, queued: jobs.queueLength, total: jobs.list(500).length } : null,
-        vessel: config?.vessel,
+        // The name is Signal K's (vessels.self.name), not a plugin setting.
+        vessel: config?.vessel ? { ...config.vessel, name: selfName() } : undefined,
         polar: config?.polarFile,
         land: config?.landShapefiles,
         harmonic_dir: config?.currents.harmonicDir,
