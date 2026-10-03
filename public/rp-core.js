@@ -937,6 +937,13 @@ function _area() {
   try { return _statusArea ? _statusArea() : null; } catch (_) { return null; }
 }
 
+// "2026-10-03T00:00Z" or "2026100300" → "03 Oct 00Z" (UTC), for the header.
+const _MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function _shortUtc(v) {
+  const m = /^(\d{4})-?(\d{2})-?(\d{2})T?(\d{2})/.exec(String(v));
+  return m ? m[3] + ' ' + _MON[+m[2] - 1] + ' ' + m[4] + 'Z' : escapeHtml(v);
+}
+
 // Regional wind models whose grid meets the route or the map view, as text for the wind line.
 function _regionalWind(r, area) {
   if (!r) return '';
@@ -954,7 +961,7 @@ function _regionalWind(r, area) {
     const state = d && d.error ? ' <span class="warn">' + escapeHtml(d.error) + '</span>'
       : d && d.cycle && x.run.slice(0, 13).replace(/[-T]/g, '') === d.cycle ? ' (decoded)'
       : ' (decoding)';
-    return escapeHtml(x.name) + ' ' + x.run.slice(0, 13) + 'Z +' + x.hours[0] + '…' + x.hours[x.hours.length - 1] + ' h' + state;
+    return escapeHtml(x.name) + ' ' + _shortUtc(x.run) + ' +' + x.hours[0] + '…' + x.hours[x.hours.length - 1] + ' h' + state;
   }).join(', ') + off;
 }
 
@@ -963,7 +970,7 @@ function _statusLine(s) {
   if (s.starting) return '<span class="warn">' + escapeHtml(s.starting) + '</span>';
   if (!f) return '<span class="warn">no forecast loaded</span>' + (s.forecast_error ? ': ' + escapeHtml(s.forecast_error) : ' (loading)');
   const area = _area();
-  const run = escapeHtml(f.model || 'forecast') + ' ' + f.cycle.slice(0, 13) + 'Z → ' + f.valid_to.slice(0, 13) + 'Z';
+  const run = escapeHtml(f.model || 'forecast') + ' <span class="nowrap">' + _shortUtc(f.cycle) + ' → ' + _shortUtc(f.valid_to) + '</span>';
   // Only the current sources that apply to the route or the map view. SMOC
   // is worldwide (any area loads on demand), its box is only the standing
   // area around the boat; the others cover their own box.
@@ -972,11 +979,11 @@ function _statusLine(s) {
   const t = s.tides;
   const tides = s.tides_enabled === false ? 'off (Settings)'
     : s.tides_error ? '<span class="warn">' + escapeHtml(s.tides_error) + '</span>'
-    : t ? escapeHtml(t.name) + (t.run ? ', run ' + escapeHtml(t.run) : '')
+    : t ? escapeHtml(t.name.replace(/ hourly sea level \((\S+) tide\)/, ' ($1)')) + (t.run ? ', run ' + _shortUtc(t.run) : '')
     : 'loading';
   const row = (k, v) => '<span class="statusKey">' + k + '</span> ' + v;
   return row('wind', run + _regionalWind(s.regional, area))
-    + '<br>' + row('waves', f.has_waves ? run : '<span class="warn">none in this run</span>')
+    + '<br>' + row('waves', f.has_waves ? escapeHtml(f.model || 'forecast') + ', same run' : '<span class="warn">none in this run</span>')
     + '<br>' + row('currents', curList.length ? curList.map(c => escapeHtml(c.name)).join(', ') : 'none here')
     + '<br>' + row('tides', tides)
     + (s.jobs ? '<br>' + row('jobs', (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued') : '')

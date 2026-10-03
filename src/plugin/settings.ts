@@ -258,7 +258,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'string',
     default: '',
     maxLength: 500,
-    help: 'Where the signalk-grib-downloader plugin keeps its runs (AROME, ARPEGE, ICON-EU, GFS). Empty: found by itself (the downloader’s own setting, else ~/.signalk/gribs). Optional: without it the router uses the ECMWF forecast alone. Its runs are listed in the status; using them for wind is the next step.',
+    help: 'Where the signalk-grib-downloader plugin keeps its runs (AROME, ARPEGE, ICON-EU, GFS). Empty: found by itself (the downloader’s own setting, else ~/.signalk/gribs). Optional: without it the router uses the ECMWF forecast alone. Each complete run’s 10 m wind is decoded and layered over ECMWF for routes where the regional model covers the point and time (ECMWF elsewhere; waves stay ECMWF). Its runs are listed in the status.',
     reload: 'next_job',
   },
 
