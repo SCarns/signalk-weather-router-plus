@@ -5,7 +5,7 @@
 // Live mode with the Signal K vessel.
 
 import { _apiErrorText, _fmt, _polarAngles, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
-import { createLiveTriggers, createRouteSimulator, createTrackRecorder, VESSEL_STALE_MS } from './rp-live.js';
+import { createLiveTriggers, createPassageTracker, createRouteSimulator, createTrackRecorder, haversineM, VESSEL_STALE_MS } from './rp-live.js';
 import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
@@ -2767,6 +2767,7 @@ popup.on('change:position', () => {
   const simStartBtn = document.getElementById('simStartBtn');
   const simStopBtn = document.getElementById('simStopBtn');
   const simRewindBtn = document.getElementById('simRewindBtn');
+  const vesselToggle = document.getElementById('vesselToggle');
   let simOverlayHour = null;  // the hour the weather layers show for the simulated time (ISO)
   let simOverlayAt = 0;       // when they were last redrawn for it (wall ms)
   const readoutBody = document.getElementById('liveReadoutBody');
@@ -2853,6 +2854,7 @@ popup.on('change:position', () => {
     simStopBtn.disabled = !simRunning;
     simPushBtn.setAttribute('aria-pressed', String(simPushed));
     simPushBtn.textContent = simPushed ? 'Back on track' : 'Push off course';
+    updateLiveButton();
   }
 
   // How much faster than real time the simulated boat sails the route: the
@@ -2867,16 +2869,33 @@ popup.on('change:position', () => {
   }
   showSimFactor();
 
-  // SIMULATE: move the map only when the boat nears the edge of the view
-  // (every move reloads the weather layers), keeping the zoom.
-  function keepBoatInView(lonLat) {
-    const size = map.getSize();
-    if (!size) return;
-    const coord = ol.proj.fromLonLat(lonLat);
-    const px = map.getPixelFromCoordinate(coord);
-    const mx = size[0] * 0.2, my = size[1] * 0.2;
-    if (!px || px[0] < mx || px[0] > size[0] - mx || px[1] < my || px[1] > size[1] - my) map.getView().setCenter(coord);
+  // LIVE / SIMULATE: the map stays centred on the boat (the real one in
+  // LIVE, the simulated one in SIMULATE) until the user drags it; the
+  // "Centre the map on the boat" button, or starting LIVE / SIMULATE again,
+  // follows it again. Zooming keeps following.
+  let following = true;
+  map.on('pointerdrag', () => { if (liveMode) following = false; });
+  function centreOnBoat(lonLat) {
+    if (following) map.getView().setCenter(ol.proj.fromLonLat(lonLat));
   }
+
+  // LIVE works from the boat's own position: it is available only when the
+  // route's start (the green pin) is where the boat is, within the
+  // off-course threshold. Otherwise the button is greyed out and says why.
+  let lastRealSnap = null;    // the last Signal K position (not the simulated boat's)
+  function liveUnavailable() {
+    const plan = 'LIVE needs a route that starts at the boat: set the start to the boat\'s position and Find Route.';
+    if (!startCoord) return plan;
+    if (!lastRealSnap || lastRealSnap.lat == null || lastRealSnap.lon == null) return 'No boat position from Signal K yet.';
+    const d = haversineM([lastRealSnap.lon, lastRealSnap.lat], startCoord);
+    return d > numOr('xteThresholdM', 500) ? 'The boat is ' + _fmt(d, 'distance') + ' from the start. ' + plan : null;
+  }
+  function updateLiveButton() {
+    const why = liveMode && !simMode ? null : liveUnavailable();
+    btnLive.disabled = !!why;
+    btnLive.title = why || '';
+  }
+  document.getElementById('xteThresholdM').addEventListener('input', updateLiveButton);
 
   // SIMULATE: the weather layers show the simulated hour (redrawn at most
   // every 2 s at high speeds); null puts them back to the departure time.
@@ -2903,6 +2922,10 @@ popup.on('change:position', () => {
   function startLive(simulate) {
     modeHint.style.display = 'none';
     if (liveMode && simMode === simulate) return;
+    if (!simulate) {
+      const why = liveUnavailable();
+      if (why) { modeHint.textContent = why; modeHint.style.display = ''; return; }
+    }
     if (simulate && _routePoints.length < 2) {
       modeHint.textContent = 'SIMULATE needs a route on the map: Find Route or load a saved one.';
       modeHint.style.display = '';
@@ -2912,6 +2935,8 @@ popup.on('change:position', () => {
     liveMode = true;
     simMode = simulate;
     simRunning = false;   // SIMULATE waits for Start
+    following = true;
+    resetPassage();
     if (simulate) {
       simTrack = createTrackRecorder(TRACK_EPSILON_M);
       simTrackFeature = new ol.Feature();
@@ -2973,6 +2998,61 @@ popup.on('change:position', () => {
       .finally(() => { liveTrackBusy = false; });
   }
 
+  // ── itinerary following the boat (LIVE / SIMULATE) ─────────────
+  // The card of the point the boat is heading to is highlighted with live
+  // figures; each point passed keeps the figures at its closest approach
+  // (rp-live.js createPassageTracker). A new route on the map, Rewind or a
+  // new LIVE / SIMULATE start begins again.
+  let passage = null, passageFor = null;
+  function resetPassage() {
+    passage = null; passageFor = null;
+    modalItinerary.querySelectorAll('.leg-card.live-next, .leg-card.passed').forEach(c => c.classList.remove('live-next', 'passed'));
+    modalItinerary.querySelectorAll('.leg-live').forEach(n => n.remove());
+  }
+  // Small distances in the user's length unit, larger ones in their distance unit.
+  const fmtD = m => (m < 1000 ? _fmt(m, 'short_distance') : _fmt(m, 'distance'));
+  function passageText(f, passedIt) {
+    const side = Math.abs(f.sideM) < 1 ? 'on the track' : fmtD(Math.abs(f.sideM)) + (f.sideM > 0 ? ' to port' : ' to starboard');
+    const speed = f.dSogMs === null ? null : (f.dSogMs >= 0 ? '+' : '−') + _fmt(Math.abs(f.dSogMs), 'speed');
+    const parts = passedIt ? ['passed ' + fmtD(f.distM) + ' off', side] : [fmtD(f.distM) + ' to go', side];
+    parts.push(fmtD(f.xteM) + ' off course');
+    if (speed) parts.push(speed + ' on the planned speed');
+    return parts.join(' · ');
+  }
+  function setCardNote(i, cls, text) {
+    const card = modalItinerary.querySelector(`.leg-card[data-idx="${i}"]`);
+    if (!card) return null;
+    card.classList.add(cls);
+    let n = card.querySelector('.leg-live');
+    if (!n) { n = document.createElement('div'); n.className = 'leg-live'; card.appendChild(n); }
+    n.textContent = text;
+    return card;
+  }
+  function updatePassage(snap) {
+    if (!routeActive || !_itineraryFeatures.length || snap.lat == null || snap.lon == null) return;
+    if (passageFor !== _itineraryFeatures) {
+      resetPassage();
+      passageFor = _itineraryFeatures;
+      passage = createPassageTracker(_itineraryFeatures.map(f => ({
+        lonLat: ol.proj.toLonLat(f.getGeometry().getCoordinates()),
+        plannedSogMs: f.get('next_sog_ms'),
+      })));
+    }
+    const out = passage.update([snap.lon, snap.lat], snap.sog_ms);
+    for (const f of out.passed) setCardNote(f.index, 'passed', passageText(f, true));
+    modalItinerary.querySelectorAll('.leg-card.live-next').forEach(c => { if (+c.dataset.idx !== out.target) c.classList.remove('live-next'); });
+    if (out.live) setCardNote(out.target, 'live-next', passageText(out.live, false));
+    showActiveCard();
+  }
+  // Keep the active card in view: every update (it scrolls only when the
+  // card is out of view) and when the Itinerary tab is opened.
+  function showActiveCard() {
+    const card = modalItinerary.querySelector('.leg-card.live-next');
+    if (card && card.offsetParent !== null && card.scrollIntoView) card.scrollIntoView({ block: 'nearest' });
+  }
+  window.addEventListener('rp:tab', e => { if (liveMode && e.detail === 'itinerarySection') showActiveCard(); });
+  window.addEventListener('rp:units', () => { if (lastSnap && liveMode) updatePassage(lastSnap); });
+
   let _pollFails = 0;
   function poll() {
     if (AuthGate.tripped) return;
@@ -2980,13 +3060,17 @@ popup.on('change:position', () => {
       .then(snap => {
         _pollFails = 0;
         lastSnap = snap;
+        if (!simMode) { lastRealSnap = snap; updateLiveButton(); }
         if (liveMode) renderReadout(snap);
-        renderMarker(snap);
+        // The marker: with the Own vessel layer on, or in LIVE / SIMULATE.
+        if ((vesselToggle && vesselToggle.checked) || liveMode) renderMarker(snap);
+        else vesselMarkerSource.clear();
+        if (liveMode && snap.lat != null && snap.lon != null) centreOnBoat([snap.lon, snap.lat]);
         if (simMode) {
-          keepBoatInView([snap.lon, snap.lat]);
           showSimOverlayHour(snap.route_time);
           recordSimTrack(snap);
         } else if (liveMode) loadLiveTrack();
+        if (liveMode) updatePassage(snap);
         evaluateTriggers(snap);
       })
       .catch(err => {
@@ -3285,6 +3369,7 @@ popup.on('change:position', () => {
     if (replanBusy) cancelReplan(); else dismissProposal();
     sim.rewind(Date.now());
     triggers.reset();
+    resetPassage();
     // A new track line from the start (the one sailed so far stays).
     simTrack = createTrackRecorder(TRACK_EPSILON_M);
     simTrackFeature = new ol.Feature();
@@ -3322,11 +3407,11 @@ popup.on('change:position', () => {
     origResetBtn.addEventListener('click', () => { if (liveMode) stopLive(); });
   }
 
-  // The marker poll runs whenever the Own-vessel layer is on.
-  const vesselToggle = document.getElementById('vesselToggle');
+  // The position poll always runs (LIVE's availability needs the boat's
+  // position); the marker is drawn with the Own vessel layer on, or in LIVE.
   function syncPolling() {
-    if ((vesselToggle && vesselToggle.checked) || liveMode) startPolling();
-    else { stopPolling(); vesselMarkerSource.clear(); }
+    startPolling();
+    if (!((vesselToggle && vesselToggle.checked) || liveMode)) vesselMarkerSource.clear();
   }
   if (vesselToggle) vesselToggle.addEventListener('change', syncPolling);
   window.addEventListener('load', syncPolling);
@@ -3352,6 +3437,7 @@ popup.on('change:position', () => {
         .then(snap => {
           if (snap.lat == null || snap.lon == null) throw new Error('no position');
           renderMarker(snap);
+          following = true;   // LIVE / SIMULATE: follow the boat again
           map.getView().animate({ center: ol.proj.fromLonLat([snap.lon, snap.lat]), duration: 400 });
           btn.title = 'Centre the map on the boat (Signal K position)';
         })

@@ -254,3 +254,65 @@ export function createTrackRecorder(epsilonM = 20, maxBuffer = 500) {
     get keptCount() { return kept.length; },
   };
 }
+
+// Signed distance (m) of P from the line A→B, flat earth: positive when P
+// is to port (left of the direction A→B), negative to starboard.
+export function sideOfTrackM(p, a, b) {
+  const cosLat = Math.cos(a[1] * Math.PI / 180);
+  const mPerDegLon = 111320 * cosLat, mPerDegLat = 110540;
+  const bx = _dLon(a[0], b[0]) * mPerDegLon, by = (b[1] - a[1]) * mPerDegLat;
+  const px = _dLon(a[0], p[0]) * mPerDegLon, py = (p[1] - a[1]) * mPerDegLat;
+  const len = Math.hypot(bx, by);
+  return len > 0 ? (bx * py - by * px) / len : 0;
+}
+
+// The boat's progress along the route's points (the itinerary): which point
+// it is heading to, and for each point passed the figures at the closest
+// approach. A point is passed when the boat's distance to it grows again
+// (more than `hysteresisM` past the closest, so position noise does not
+// pass it early). `points`: [{ lonLat, plannedSogMs }] in route order,
+// plannedSogMs the route's speed on the leg leaving that point.
+// update(lonLat, sogMs) → { target, live, passed } with
+//   live: { index, distM, sideM, xteM, dSogMs } for the point ahead,
+//   passed: [{ index, distM, sideM, xteM, dSogMs }] in order;
+// sideM positive = to port of the track into that point; dSogMs = the
+// boat's speed minus the planned speed on the leg into it (null at the start).
+export function createPassageTracker(points, hysteresisM = 10) {
+  let target = 0;
+  let best = null;             // the closest approach to the target so far
+  const passed = [];
+  const figures = (k, lonLat, sogMs) => {
+    const p = points[k];
+    const a = k > 0 ? points[k - 1].lonLat : null;
+    const planned = k > 0 ? points[k - 1].plannedSogMs : null;
+    return {
+      index: k,
+      distM: haversineM(lonLat, p.lonLat),
+      sideM: a ? sideOfTrackM(lonLat, a, p.lonLat) : 0,
+      xteM: xteM(points, lonLat) ?? 0,
+      dSogMs: Number.isFinite(planned) && Number.isFinite(sogMs) ? sogMs - planned : null,
+    };
+  };
+  return {
+    update(lonLat, sogMs) {
+      // The leg the boat is on: past a point whose outgoing leg is behind it
+      // (a fast update can carry it past several points at once).
+      const leg = nearestLegIdx(points, lonLat);
+      while (target < points.length) {
+        const f = figures(target, lonLat, sogMs);
+        const beyond = leg > target;
+        if (!beyond) {
+          if (!best || f.distM <= best.distM) { best = f; break; }
+          if (f.distM <= best.distM + hysteresisM) break;
+        }
+        // Moving away (or already beyond): passed, with the figures at its
+        // closest approach; on to the next point.
+        passed.push(best && best.distM <= f.distM ? best : f);
+        target++;
+        best = null;
+      }
+      const live = target < points.length ? figures(target, lonLat, sogMs) : null;
+      return { target, live, passed: passed.slice() };
+    },
+  };
+}

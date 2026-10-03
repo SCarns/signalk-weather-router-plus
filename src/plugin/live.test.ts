@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createLiveTriggers,
+  createPassageTracker,
   createRouteSimulator,
   createTrackRecorder,
   haversineM,
@@ -398,4 +399,73 @@ test('simulator: holdAt keeps the boat at the start of the re-plan (the trigger 
     assert.equal(s.route_time, fired.route_time);
     assert.ok(haversineM([s.lon, s.lat], [fired.lon, fired.lat]) < 0.01);
   }
+});
+
+// The itinerary following the boat (LIVE / SIMULATE).
+interface Passage {
+  index: number;
+  distM: number;
+  sideM: number;
+  xteM: number;
+  dSogMs: number | null;
+}
+const PLANNED = LONG.map((p, i) => ({
+  lonLat: p.lonLat,
+  plannedSogMs: i < LONG.length - 1 ? haversineM(p.lonLat, LONG[i + 1].lonLat) / ((LONG[i + 1].time - p.time) / 1000) : null,
+}));
+
+for (const factor of [60, 600, 3600]) {
+  test(`passage tracker at ×${factor}: every point passed once, in order, on the track, at the planned speed`, () => {
+    const sim = createRouteSimulator(LONG, factor, 0);
+    const tracker = createPassageTracker(PLANNED);
+    let out = { target: 0, passed: [] as Passage[] };
+    const endWall = (LONG[LONG.length - 1].time - T0) / factor;
+    for (let t = 0; t <= endWall + 2000; t += 1000) {
+      const s2 = sim.at(t);
+      out = tracker.update([s2.lon, s2.lat], s2.sog_ms) as typeof out;
+    }
+    // All but the arrival (the boat stops there, so it never moves away).
+    assert.deepEqual(
+      out.passed.map(p => p.index),
+      LONG.slice(0, -1).map((_, i) => i)
+    );
+    for (const p of out.passed) {
+      assert.ok(p.xteM < 5, `point ${p.index}: ${p.xteM} m off the route`);
+      if (p.dSogMs !== null) assert.ok(Math.abs(p.dSogMs) < 0.01, `point ${p.index}: speed off by ${p.dSogMs}`);
+    }
+  });
+}
+
+test('passage tracker: pushed to starboard, passed points are recorded to starboard and off course', () => {
+  const sim = createRouteSimulator(LONG, 60, 0);
+  const tracker = createPassageTracker(PLANNED);
+  let out = { passed: [] as Passage[] };
+  for (let t = 0; t <= 400e3; t += 1000) {
+    const s2 = sim.at(t, 20);
+    out = tracker.update([s2.lon, s2.lat], s2.sog_ms) as typeof out;
+  }
+  const late = out.passed.filter(p => p.index >= 3);
+  assert.ok(late.length > 0, 'passed some points while pushed');
+  for (const p of late) {
+    assert.ok(p.sideM < 0, `point ${p.index}: side ${p.sideM} (negative = starboard)`);
+    assert.ok(p.xteM > 100, `point ${p.index}: ${p.xteM} m off course`);
+  }
+});
+
+test('passage tracker: position noise near a point does not pass it', () => {
+  const tracker = createPassageTracker(PLANNED);
+  const [lon, lat] = LONG[1].lonLat;
+  let out = { target: 0, passed: [] as Passage[] };
+  out = tracker.update(LONG[0].lonLat, 3) as typeof out;
+  // Leave the start, then sit 300 m short of point 1 with ±3 m of jitter.
+  for (let k = 0; k < 50; k++) {
+    const j = (k % 2 ? 3 : -3) / 110540;
+    const back = 300 / 110540;
+    out = tracker.update(
+      [LONG[0].lonLat[0] + (lon - LONG[0].lonLat[0]) * 0.5, LONG[0].lonLat[1] + (lat - LONG[0].lonLat[1]) * 0.5 + j - back],
+      3
+    ) as typeof out;
+  }
+  assert.ok(out.target <= 1, `heading to ${out.target}`);
+  assert.ok(out.passed.length <= 1, 'only the start passed');
 });

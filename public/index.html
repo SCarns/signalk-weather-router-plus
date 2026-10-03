@@ -460,6 +460,10 @@
   .leg-card.active.mode-sailing.tack-port { background: rgba(193, 55, 47, 0.22); border-color: var(--tack-port); }
   .leg-card.active.mode-motoring { background: rgba(217, 147, 25, 0.18); border-color: var(--mode-motoring); }
   .leg-card.active.mode-arrival { background: rgba(90, 127, 214, 0.22); border-color: var(--mode-arrival); }
+  /* LIVE / SIMULATE: the point the boat is heading to, the points passed, and their figures. */
+  .leg-card.live-next { outline: 2px solid var(--live); outline-offset: -2px; }
+  .leg-card.passed { opacity: 0.7; }
+  .leg-live { margin-top: var(--s-1); font-size: var(--f-xs); color: var(--ink-text); font-family: ui-monospace, Menlo, monospace; }
   .leg-card.active { background: var(--ink-bg-3); border-color: var(--ink-text-2); }
   .leg-head {
     display: flex; justify-content: space-between; align-items: baseline;
@@ -500,6 +504,8 @@
   .live-mode-btn:hover { background: var(--surface-3); }
   .live-mode-btn.live-active { background: var(--go); color: #fff; }
   .live-mode-btn.live-active.live-on { background: var(--live); }
+  .live-mode-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .live-mode-btn:disabled:hover { background: inherit; }
   /* Clear-marker buttons — 28px tap target. */
   .clear-btn {
     background: var(--danger); color: #fff; border: 0;
