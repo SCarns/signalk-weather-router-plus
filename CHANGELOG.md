@@ -6,7 +6,32 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0-beta.7] - 2026-10-03
+
 ### Added
+
+- **LIVE and SIMULATE follow the boat along the itinerary.** The card of
+  the point the boat is heading to is highlighted with live figures
+  (distance to it, cross-track, side of the track, speed against the
+  plan), and each point passed keeps the figures at its closest approach
+  (a point counts as passed once the boat moves away from it again, so
+  position noise near it does not pass it early). The map stays centred
+  on the boat until it is dragged; the locate button follows again. LIVE
+  is available only when the route starts where the boat is (within the
+  off-course threshold); otherwise its button is greyed out and says why.
+- **SIMULATE: Start, Stop and Rewind to start**, and the sailed track is
+  drawn, thinned as it is recorded (a straight run is one segment, every
+  turn keeps its corner).
+- **Every quantity in the user's Signal K units.** Settings, their help
+  text, job progress, warnings and errors carry their quantities as unit
+  tokens that the web app and the Freeboard panel write in the user's
+  preferences (angles, times and data sizes too); notifications, the
+  admin status and the server log, which cannot convert, show them in
+  Signal K's base units. The Freeboard panel takes speed, distance and
+  depth from Freeboard and the rest from the Signal K user's preferences
+  (`public/rp-units.js`, shared with the web app).
+- **Forecast times in local time** in the header, with the UTC time as a
+  tooltip.
 
 - **Freeboard-SK panel: a weather route's legs without routing again.**
   Ticking a saved weather route in Freeboard's Routes list opens the
@@ -816,7 +841,8 @@ builds before this release, with their measurements, is in
   loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.6...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.7...HEAD
+[0.1.0-beta.7]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.6...v0.1.0-beta.7
 [0.1.0-beta.6]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.5...v0.1.0-beta.6
 [0.1.0-beta.5]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.4...v0.1.0-beta.5
 [0.1.0-beta.4]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.3...v0.1.0-beta.4

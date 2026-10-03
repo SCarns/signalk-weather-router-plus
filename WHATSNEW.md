@@ -1,5 +1,51 @@
 # What's new
 
+## 0.1.0-beta.7
+
+- **Finer wind where you have it.** Install the signalk-grib-downloader
+  plugin and its regional runs (AROME, ARPEGE, ICON-EU) are layered over
+  ECMWF: routes use the regional wind wherever it covers the point and
+  the time, blended in at its edges and handed back to ECMWF near the end
+  of its forecast. Waves stay ECMWF. The route summary says how much of
+  the route each model answered; a checkbox turns it off.
+- **Freeboard shows your weather routes properly.** Tick a saved weather
+  route in Freeboard's Routes list and the plugin's panel opens on its
+  legs, with no re-routing. The leg cards are redesigned (when, mode and
+  tack; distance, time, SOG and COG in large type; wind, current fair or
+  foul, waves), a tap on one centres the chart on that waypoint, and the
+  leg the boat is on is outlined and kept in view. Routes computed in the
+  web app now carry each point's leg into the saved route, so Freeboard's
+  points sheet shows it too.
+- **LIVE and SIMULATE follow the boat.** The itinerary card of the next
+  point shows live figures, each point passed keeps its closest-approach
+  figures, and the map stays on the boat. SIMULATE has Start, Stop and
+  Rewind, and draws the track sailed.
+- **"In irons" means in irons.** Points of sail come from the route's
+  polar: in irons only tighter than the polar's no-go angle, close hauled
+  up to its best upwind angle. A leg the router sailed at 34° no longer
+  reads "in irons".
+- **Routes that go where the wind is.** In open water the search can now
+  leave the direct line: Tonga → Auckland went from 207.4 h to 185.7 h,
+  faster now than the route you had to force through a waypoint far to
+  the west (192.7 h). Routes across the 180° meridian draw and fit the
+  short way.
+- **Less to set up, more remembered.** The page opens on the boat's
+  Signal K position instead of asking the browser for its location; the
+  vessel name comes from Signal K; your start, destination, waypoints and
+  departure survive a reload; opening a saved route offers to recompute
+  it with the current forecast.
+- **A clearer header.** One line each for wind, waves, currents and
+  tides, naming the model behind it, listing only what applies where you
+  are looking, in local time.
+- **Your units everywhere.** Settings, progress messages, warnings and
+  errors are written in your Signal K unit preferences, angles, times and
+  data sizes included.
+- **Fixes.** After a restart the plugin keeps serving the forecast it has
+  while a newer one downloads (overlays used to go blank for minutes);
+  opening a saved route no longer brings the previous route's waypoints
+  along; the web app no longer stops loading in Power mode; a regional
+  decode no longer stalls the map and the Weather API.
+
 ## 0.1.0-beta.6
 
 - **Freeboard's wind barbs from this plugin.** The Weather API now

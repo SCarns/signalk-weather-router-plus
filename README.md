@@ -21,7 +21,7 @@ much for a plugin; it lives in the separate
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
 
-**Status: beta** (0.1.0-beta.6). Please report
+**Status: beta** (0.1.0-beta.7). Please report
 problems at https://github.com/motamman/signalk-weather-router-plus/issues.
 
 What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
@@ -320,9 +320,42 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   the course). Drag any pin to move it. Holding on a computed route pins
   that point as a waypoint. The button under the zoom buttons (⌖)
   centres the map on the boat's Signal K position (`navigation.position`),
-  keeping the zoom. The route summary (distance, time, arrival, sail and
-  motor time, waypoints, highest waves, validation) shows on the Route tab
-  and at the top of the Itinerary tab.
+  keeping the zoom; a first visit opens on it (the page never asks the
+  browser for its location). The route summary (distance, time, arrival,
+  sail and motor time, waypoints, highest waves, validation) shows on the
+  Route tab and at the top of the Itinerary tab. The plan (start,
+  destination, waypoints with their radii, departure) is kept in the
+  browser and restored on reload; a departure that has passed is set to
+  now, and the status line says so.
+- **Header.** One line per quantity with the source it comes from: wind
+  (the ECMWF run, plus any regional model), waves, currents, tides, and
+  the job queue. Only the sources that apply to the route on the map, or
+  to the map view when there is none, are listed; times are local, with
+  UTC as a tooltip.
+- **Saved routes** (Saved tab): opening one replaces the route on the map
+  (its own start, destination, waypoints and precision) and offers
+  **Recompute** with the current forecast and settings, or **Keep as
+  saved**. **Publish** in the itinerary bar saves it to Signal K's
+  Resources; a published route carries each point's leg (time, mode,
+  distance, SOG, COG, wind, current, waves) as the point's description,
+  in your units, which chartplotters show with the point.
+- **Points of sail** in the itinerary come from the route's polar at each
+  leg's wind speed: in irons tighter than the polar's no-go angle (the
+  tightest angle it gives any speed, with the tightest sailable angle
+  setting applied), close hauled from there to its best upwind (VMG)
+  angle, close reach to 75°, beam reach to 105°, broad reach to 15° short
+  of its best downwind angle, then downwind.
+- **LIVE and SIMULATE** (Route tab). LIVE follows the real boat along the
+  route on the map; it is available when the route starts where the boat
+  is. The itinerary card of the point the boat is heading to is
+  highlighted with live figures, and each point passed keeps those at its
+  closest approach. Off the route by more than the cross-track threshold
+  for the sustain time, or at a waypoint, the page computes a re-plan
+  from the boat's position through the remaining waypoints and offers it
+  in a banner (Accept, Dismiss). SIMULATE sails a simulated boat along
+  the route at a chosen speed-up, with **Start**, **Stop** and **Rewind to
+  start**, and draws its track. Both run only while the page is open; the
+  re-plan is not published and does not change Freeboard's active course.
 
   ![Planning: start, destination and waypoints on the map, with the click menu open](public/screenshots/02-planning.jpg)
 
@@ -412,21 +445,31 @@ and the panel runs in a sandboxed iframe served from
   Cancel stops the job. The map
   is fitted to the result; the panel shows distance and time in
   Freeboard's unit preferences, the sailing/motoring split, the arrival
-  time and an **itinerary**: for every point its time, whether the next
-  leg is sailed or motored, wind speed and direction, TWA, current,
-  waves and the boat's speed and course. Each point's name and
-  description also carry its ETA, mode and wind, which Freeboard shows
-  in its route points list; your own point names are kept. When the
-  route is the one Freeboard is navigating (its active course), the card
-  of the leg the boat is on is outlined and tagged "boat", and moves on
-  as points are passed; Freeboard has no event for a tap on a route
-  point, so the cards cannot follow a tap. Every value in the panel is
-  in **Freeboard's own units** (its Settings → Units: speed, distance,
-  depth; wave height follows depth), so nothing changes unit from one
-  part of the Freeboard screen to another. Those can differ from your
-  Signal K unit preferences, which the web app uses, until Freeboard
-  adopts the Signal K preferences (PR-8 in
-  `docs/plans/freeboard-sk-integration.md`).
+  time and an **itinerary**: one card per leg with its time, waypoint,
+  mode and tack, then distance, time, SOG and COG, then the wind (with
+  the point of sail from the route's polar), the current (fair or foul)
+  and the waves. A tap on a card centres the chart on its waypoint. Each
+  point's description also carries its leg, which Freeboard shows in the
+  route's points sheet (the ⇅ icon beside Points); your own point names
+  are kept.
+- **A saved weather route shows its legs without routing again.** Ticking
+  a saved route that carries the plugin's weather (one computed in the
+  web app, or here and saved) in Freeboard's Routes list opens the panel
+  on that route's legs (a hidden background page of the extension
+  watches the routes shown; routes Freeboard shows again in its first
+  seconds after starting do not open it).
+- **Following the boat.** The card of the leg the boat is on is outlined
+  and tagged "boat" and kept in view: the leg nearest the boat's position,
+  within 10 nautical miles of the route, else the leg of Freeboard's
+  active course when it is this route. Freeboard has no event for a tap
+  on a route point, so the cards cannot follow a tap on the chart.
+- **Units.** Speed, distance and depth are in **Freeboard's own units**
+  (its Settings → Units; wave height follows depth), so nothing changes
+  unit from one part of the Freeboard screen to another; angles, times
+  and data sizes, which Freeboard has no setting for, follow your Signal
+  K unit preferences; wave periods are in seconds. Freeboard's units can
+  differ from your Signal K preferences, which the web app uses, until
+  Freeboard adopts them (PR-8 in `docs/plans/freeboard-sk-integration.md`).
 - **Save route…** opens Freeboard's Route Details dialog and stores the
   route in Signal K's Resources (the plugin does not publish it itself in
   this case, so there is one copy); for a saved route, **Save changes**
@@ -1890,7 +1933,7 @@ colours.
 | Method | Path | Access | Purpose |
 |---|---|---|---|
 | GET | `/api/polars` | readonly | polar library |
-| GET | `/api/polar-angles` | readonly | best upwind and downwind VMG angles per wind speed |
+| GET | `/api/polar-angles` | readonly | no-go and best upwind and downwind VMG angles per wind speed |
 | GET | `/api/polars/table` | readonly | polar speed table in m/s |
 | POST | `/api/polar-from-specs` | readwrite | generate a polar from boat specs |
 
@@ -1915,9 +1958,14 @@ file that is the same as one already listed is left out.
 |---|---|---|
 | `path` | the default polar | a token |
 
-`200`: `{tws_ms[], beat_deg[], run_deg[]}`: for each true wind speed of
-the polar (m/s), the true wind angle of best upwind VMG (scanned
-20°–89°, 1° steps) and best downwind VMG (90°–179°).
+`200`: `{tws_ms[], nogo_deg[], beat_deg[], run_deg[]}`: for each true
+wind speed of the polar (m/s), the no-go angle (the tightest true wind
+angle with any boat speed: in irons below it), and the true wind angle of
+best upwind VMG (scanned 20°–89°, 1° steps) and best downwind VMG
+(90°–179°). All three are of the polar as the router uses it, with the
+`routing.noGoMinAngle` setting (tightest sailable angle) applied: rows
+closer to the wind than it are dropped, so the no-go angle is the
+polar's first row with speed at or beyond the setting.
 
 #### GET /api/polars/table
 
