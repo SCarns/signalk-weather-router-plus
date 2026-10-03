@@ -8,6 +8,20 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Freeboard-SK panel: a weather route's legs without routing again.**
+  Ticking a saved weather route in Freeboard's Routes list opens the
+  plugin's panel (a hidden background page of the plotter extension
+  watches the routes shown) and shows that route's legs: from the
+  plugin's own result when it still has it, else from the per-point
+  weather saved with the route. Routes Freeboard shows again in its first
+  seconds after starting do not open it. The leg cards are redesigned:
+  time, waypoint and mode with tack on top; distance, time, SOG and COG
+  large; wind with the point of sail, current fair or foul, and waves
+  below. A tap on a card centres the chart on its waypoint. The card of
+  the leg the boat is on is marked and kept in view, from the boat's
+  position (the nearest leg, within 10 nautical miles of the route), else
+  from the active course. Wave period is in seconds, as in the web app.
+
 - **The plan is remembered across reloads (#16)**: start, destination,
   waypoints (with the radius a loaded route gave each) and departure are
   kept in this browser and restored on load. A saved departure that has
@@ -49,6 +63,34 @@ uses [Semantic Versioning](https://semver.org/).
   regional grid now ends at its edges.
 
 ### Fixed
+
+- **Points of sail come from the polar.** "In irons" is tighter than the
+  polar's no-go angle at that wind speed (its tightest angle with any
+  boat speed, with the tightest sailable angle setting applied as the
+  router applies it), and close hauled runs from there to its best
+  upwind (VMG) angle; close reach to 75°, beam reach to 105°, broad reach
+  to 15° short of its best downwind angle. Before, the web app called a
+  leg in irons more than 5° inside the best upwind angle and the
+  Freeboard panel below a fixed 35°, so a leg the router sailed at 34°
+  read "in irons". `/api/polar-angles` adds `nogo_deg` per wind speed and
+  applies the tightest sailable angle setting. Without the route's polar
+  no point of sail is shown.
+
+- **Routes computed in the web app now carry their leg details into the
+  saved route**, so chartplotters such as Freeboard-SK show each point's
+  leg (time, mode, distance, SOG, COG, wind, current, waves) and the
+  route's summary in the user's units. The server publishes after it
+  reports the route done, when the job's event stream has already closed,
+  so the web app never learned the saved route's id and never wrote them;
+  it now asks the job for the id. Publish in the itinerary bar wrote the
+  server's own copy over them; it now writes them again.
+
+- **A restart no longer leaves the plugin without a forecast while a
+  newer cycle downloads.** When a new ECMWF cycle had come out since the
+  last run, the plugin served nothing (no overlays, Weather API or
+  routes) until it was downloaded and decoded, minutes on a slow link.
+  It now serves the newest complete decoded run on disk meanwhile and
+  switches to the new cycle when it is ready.
 
 - **GRIB2 fields over a time range (template 4.8) are timed at the end
   of the range.** A maximum gust or an accumulation is valid when its

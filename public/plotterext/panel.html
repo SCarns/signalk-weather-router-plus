@@ -47,7 +47,6 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
 .status.error { color: var(--danger); }
 .status.warn { color: #8a5a00; background: rgba(249,168,37,.15); }
 .leg.beyond { border-style: dashed; }
-.leg.current { outline: 2px solid var(--primary); outline-offset: 1px; }
 .chip.boat { border-style: solid; color: var(--primary); border-color: var(--primary); }
 .chip { display: inline-block; font-size: 10px; padding: 0 5px; border-radius: 8px; border: 1px dashed #8a5a00; color: #8a5a00; margin-left: 4px; vertical-align: middle; }
 .muted { color: var(--muted); }
@@ -63,18 +62,30 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
 .badge.warn { background: rgba(249,168,37,.2); color: #8a5a00; }
 .badge.danger { background: rgba(211,47,47,.15); color: #c62828; }
 .sum .row { margin-top: 8px; }
-/* One card per waypoint: the leg leaving it (the web app's itinerary cards). */
-.leg { border: 1px solid var(--border); border-left-width: 4px; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
+/* One card per waypoint: the leg leaving it. Mode colour on the left edge. */
+.leg { border: 1px solid var(--border); border-left-width: 5px; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; cursor: pointer; }
 .leg.sailing { border-left-color: #43a047; }
 .leg.motoring { border-left-color: #f9a825; }
 .leg.arrival { border-left-color: var(--primary); }
 .leg.tack-port { border-left-color: #d32f2f; }
-.leg-head { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
-.leg-mode { font-weight: 600; text-transform: capitalize; }
+.leg.picked { background: rgba(127,127,127,.08); }
+.leg.current { outline: 3px solid var(--primary); outline-offset: 1px; background: rgba(21,101,192,.07); }
+.leg-top { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.leg-no { display: inline-block; min-width: 20px; padding: 0 5px; border-radius: 10px; background: var(--fg); color: var(--bg); font-size: 12px; font-weight: 700; text-align: center; }
+.leg-when { font-weight: 700; }
+.leg-name { color: var(--muted); font-size: 12px; }
+.leg-mode { margin-left: auto; font-weight: 600; text-transform: capitalize; font-size: 13px; }
 .leg.sailing .leg-mode, .leg.tack-starboard .leg-mode { color: #2e7d32; }
 .leg.motoring .leg-mode { color: #b26a00; }
 .leg.tack-port .leg-mode { color: #d32f2f; }
-.leg-foot { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.leg.arrival .leg-mode { color: var(--primary); }
+.leg-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 8px 0 6px; }
+.stat b { display: block; font-size: 16px; line-height: 1.2; white-space: nowrap; }
+.stat span { display: block; font-size: 11px; color: var(--muted); }
+.leg-cond { display: grid; gap: 2px; font-size: 13px; }
+.cond { display: grid; grid-template-columns: 62px 1fr; gap: 6px; }
+.ck { color: var(--muted); }
+.leg-chips { margin-top: 4px; }
 .fair { color: #2e7d32; font-weight: 600; }
 .foul { color: #c62828; font-weight: 600; }
 .cross { color: #b8860b; }
@@ -360,6 +371,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   var courseRoute = null;   // {href, first: [lon, lat], last: [lon, lat], n} of the active route, fetched once per href
   var visible = [];         // the host's visible routes: {routeId, name, pointCount, saved, dirty}
   var autoSelected = false;
+  var unitsReady = null;    // resolves once the host's and Signal K's units are known (cards drawn before would show '—')
 
   // ---- plugin status ------------------------------------------------------
   var statusTimer = null;
@@ -442,7 +454,12 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     refreshRouteIt();
   }
   function refreshRouteIt() { $('routeIt').disabled = !$('routeSelect').value || !!job; }
-  $('routeSelect').addEventListener('change', function () { autoSelected = false; renderRoutes(); });
+  $('routeSelect').addEventListener('change', function () {
+    autoSelected = false;
+    renderRoutes();
+    var v = visible.filter(function (x) { return x.routeId === $('routeSelect').value; })[0];
+    if (v && v.saved && !v.dirty) showWeatherRoute(v.routeId);
+  });
 
   // ---- a route job --------------------------------------------------------
   // While a job runs the previous result is off screen; a failure is shown
@@ -467,7 +484,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     hideResultForRun();
     refreshRouteIt(); refreshFind();
     return post(API + '/routes', body).then(function (r) {
-      job = { id: r.id, links: r.links, es: null, onDone: onDone };
+      job = { id: r.id, links: r.links, es: null, onDone: onDone, angles: body.mode === 'motor' ? Promise.resolve(null) : anglesFor(body.vessel && body.vessel.polar) };
       $('cancel').hidden = false;
       refreshRouteIt(); refreshFind();
       follow();
@@ -496,7 +513,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     });
     es.addEventListener('done', function () {
       var onDone = job.onDone;
-      get(job.links.result).then(function (geojson) { onDone(geojson); }).catch(function (e) { finishJob('Could not read the result: ' + e.message); });
+      Promise.all([get(job.links.result), job.angles]).then(function (r) { routeAngles = r[1]; onDone(r[0]); }).catch(function (e) { finishJob('Could not read the result: ' + e.message); });
     });
   }
   function finishJob(message) {
@@ -610,11 +627,29 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var rel = (((windFromDeg - cogDeg) % 360) + 360) % 360;
     return rel <= 180 ? 'starboard' : 'port';
   }
-  // Default bands (the web app refines them from the polar's angles).
-  function pointOfSail(twa) {
-    if (!fin(twa)) return null;
+  // The point of sail from the route's polar at this wind speed
+  // (/api/polar-angles, as the router uses the polar), as in the web app:
+  // in irons tighter than its no-go angle, close hauled from there to its
+  // best upwind (VMG) angle, close reach to 75°, beam reach to 105°, broad
+  // reach to 15° short of its best downwind angle, then downwind. Without
+  // the route's polar the boundaries are not known: no label.
+  var routeAngles = null;   // the angles of the polar the shown route was computed with
+  function anglesFor(token) {
+    return get(API + '/polar-angles?path=' + encodeURIComponent(token || '')).catch(function () { return null; });
+  }
+  function interpAt(x, xs, ys) {
+    if (!xs || !ys || !xs.length || xs.length !== ys.length) return null;
+    if (x <= xs[0]) return ys[0];
+    for (var i = 1; i < xs.length; i++) if (x <= xs[i]) return ys[i - 1] + (x - xs[i - 1]) / (xs[i] - xs[i - 1]) * (ys[i] - ys[i - 1]);
+    return ys[ys.length - 1];
+  }
+  function pointOfSail(twa, windMs) {
+    var g = routeAngles;
+    if (!fin(twa) || !fin(windMs) || !g || !g.nogo_deg) return null;
     var a = Math.abs(twa);
-    return a < 35 ? 'in irons' : a < 55 ? 'close hauled' : a < 75 ? 'close reach' : a <= 105 ? 'beam reach' : a <= 135 ? 'broad reach' : 'downwind';
+    var nogo = interpAt(windMs, g.tws_ms, g.nogo_deg), beat = interpAt(windMs, g.tws_ms, g.beat_deg), run = interpAt(windMs, g.tws_ms, g.run_deg);
+    if (!fin(nogo) || !fin(beat) || !fin(run)) return null;
+    return a < nogo ? 'in irons' : a <= beat ? 'close hauled' : a < 75 ? 'close reach' : a <= 105 ? 'beam reach' : a <= run - 15 ? 'broad reach' : 'downwind';
   }
   function fairFoul(cogDeg, curToDeg) {
     if (!fin(cogDeg) || !fin(curToDeg)) return null;
@@ -628,6 +663,8 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     return 2 * 6371008.8 * Math.asin(Math.sqrt(s));
   }
   function fmtWaves(m) { return fmtQ('length', m) || '—'; }
+  // Wave period has no Signal K category: always seconds, as in the web app.
+  function fmtWavePeriod(s) { return Math.round(s) + ' s'; }
   function leg(feats, i) {
     var f = feats[i], p = f.properties;
     var last = i === feats.length - 1;
@@ -658,7 +695,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     if (fin(l.sogMs) && (v = fmtSpeed(l.sogMs))) rows.push(['SOG', v]);
     if (fin(l.cogDeg)) rows.push(['COG', cardinal(l.cogDeg) + ' ' + fmtAngle(l.cogDeg)]);
     if (fin(l.windMs) && (v = fmtSpeed(l.windMs))) {
-      var pos = l.last ? null : pointOfSail(l.twa);
+      var pos = l.last ? null : pointOfSail(l.twa, l.windMs);
       rows.push(['Wind', v + (fin(l.windDir) ? ' from ' + cardinal(l.windDir) + ' (' + fmtAngle(l.windDir) + ')' : '') + (pos ? ' · ' + pos : '')]);
     }
     if (!l.last && fin(l.twa)) rows.push(['TWA', fmtAngle(l.twa)]);
@@ -670,7 +707,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     }
     if (fin(l.swh)) {
       var wv = [fmtWaves(l.swh)];
-      if (fin(l.mwp)) wv.push(fmtDuration(l.mwp));
+      if (fin(l.mwp)) wv.push(fmtWavePeriod(l.mwp));
       if (fin(l.mwd)) wv.push('from ' + cardinal(l.mwd) + ' ' + fmtAngle(l.mwd));
       rows.push(['Waves', wv.join(' · ')]);
     }
@@ -697,31 +734,61 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     if (beyond > 0) s += ' Forecast ends ' + (p.forecast_valid_to ? fmtTime(p.forecast_valid_to) : 'before the route does') + '; the last ' + beyond + ' leg' + (beyond > 1 ? 's' : '') + ' ran on conditions held at that step.';
     return s;
   }
+  // One card per waypoint, the leg leaving it: when, mode and tack on top,
+  // the leg's numbers (distance, time, SOG, COG) large, then the conditions
+  // (wind with the point of sail, current fair or foul, waves). A tap on a
+  // card centres the chart on that waypoint.
+  var legPoints = [];   // [lon, lat] of each card's waypoint, for following the boat
+  function condRow(label, text, cls) {
+    return text ? '<div class="cond' + (cls ? ' ' + cls : '') + '"><span class="ck">' + esc(label) + '</span><span>' + esc(text) + '</span></div>' : '';
+  }
+  function legCardHtml(l, i, name) {
+    var stat = function (v, k) { return v ? '<div class="stat"><b>' + esc(v) + '</b><span>' + esc(k) + '</span></div>' : ''; };
+    var v;
+    var wind = fin(l.windMs) && (v = fmtSpeed(l.windMs))
+      ? v + (fin(l.windDir) ? ' from ' + cardinal(l.windDir) + ' ' + fmtAngle(l.windDir) : '') + (!l.last && fin(l.twa) ? ' · TWA ' + fmtAngle(l.twa) + (pointOfSail(l.twa, l.windMs) ? ' · ' + pointOfSail(l.twa, l.windMs) : '') : '')
+      : null;
+    var ff = l.last ? null : fairFoul(l.cogDeg, l.curDir);
+    var cur = fin(l.curMs) && l.curMs > 0.05 && (v = fmtSpeed(l.curMs))
+      ? v + (fin(l.curDir) ? ' from ' + cardinal((l.curDir + 180) % 360) : '') + (ff ? ' · ' + ff : '')
+      : null;
+    var waves = fin(l.swh)
+      ? [fmtWaves(l.swh)].concat(fin(l.mwp) ? [fmtWavePeriod(l.mwp)] : [], fin(l.mwd) ? ['from ' + cardinal(l.mwd)] : []).join(' · ')
+      : null;
+    var chips = (l.beyond ? '<span class="chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '')
+      + (l.movedM ? '<span class="chip" title="The drawn point was on land according to the coastline data; the route uses the nearest water">moved ' + esc(fmtQ('length', l.movedM) || '—') + '</span>' : '');
+    return '<div class="leg-top"><span class="leg-no">' + (i + 1) + '</span>'
+      + '<span class="leg-when">' + esc(fmtTime(l.time)) + '</span>'
+      + '<span class="leg-name">' + esc(name || '') + '</span>'
+      + '<span class="leg-mode">' + esc(l.last ? 'arrival' : (l.mode || '—')) + (l.tack ? ' · ' + esc(l.tack) : '') + '</span></div>'
+      + (l.last ? '' : '<div class="leg-stats">'
+        + stat(fin(l.distM) ? fmtDistance(l.distM) : null, 'distance')
+        + stat(fin(l.timeS) ? fmtDuration(l.timeS) : null, 'time')
+        + stat(fin(l.sogMs) ? fmtSpeed(l.sogMs) : null, 'SOG')
+        + stat(fin(l.cogDeg) ? cardinal(l.cogDeg) + ' ' + fmtAngle(l.cogDeg) : null, 'COG')
+        + '</div>')
+      + '<div class="leg-cond">' + condRow('Wind', wind) + condRow('Current', cur, ff) + condRow('Waves', waves) + '</div>'
+      + (chips ? '<div class="leg-chips">' + chips + '</div>' : '');
+  }
   function renderItinerary(feats, points) {
     var el = $('itinerary');
     el.innerHTML = '';
+    legPoints = points.map(function (p) { return p.position; });
+    shownLeg = -1;
     feats.forEach(function (f, i) {
       var l = leg(feats, i);
       var card = document.createElement('div');
-      card.className = 'leg ' + (l.mode || '') + (l.tack ? ' tack-' + l.tack : '') + (l.beyond ? ' beyond' : '');
-      var grid = legFields(l).map(function (r) {
-        return '<span class="k">' + esc(r[0]) + '</span><span class="v' + (r[2] ? ' ' + r[2] : '') + '">' + esc(r[1]) + '</span>';
-      }).join('');
-      card.innerHTML =
-        '<div class="leg-head"><span><b>' + (i + 1) + '.</b> ' + esc(fmtTime(l.time)) + ' <span class="muted">' + esc(points[i] ? points[i].name : '') + '</span>' + (l.beyond ? '<span class="chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '') + (l.movedM ? '<span class="chip" title="The drawn point was on land according to the coastline data; the route uses the nearest water">moved ' + esc(fmtQ('length', l.movedM) || '—') + '</span>' : '') + '</span>'
-        + '<span class="leg-mode">' + esc(l.mode || '—') + (l.tack ? ' · ' + esc(l.tack) : '') + '</span></div>'
-        + '<div class="leg-grid">' + (grid || '<span class="muted">—</span>') + '</div>'
-        + '<div class="leg-foot">' + l.lat.toFixed(4) + ', ' + l.lon.toFixed(4) + (l.via ? ' · via' : '') + '</div>';
+      card.className = 'leg ' + (l.last ? 'arrival' : (l.mode || '')) + (l.tack ? ' tack-' + l.tack : '') + (l.beyond ? ' beyond' : '');
+      card.innerHTML = legCardHtml(l, i, points[i] ? points[i].name : '');
+      card.addEventListener('click', function () {
+        var cs = $('itinerary').children;
+        for (var k = 0; k < cs.length; k++) cs[k].classList.toggle('picked', k === i);
+        if (host && host.has('map') && points[i]) host.call('map.center', { position: points[i].position }).catch(function () {});
+      });
       el.appendChild(card);
     });
-    followCourse();
+    followBoat();
   }
-  // Follow the boat: when the result is the route Freeboard is navigating
-  // (Signal K's navigation.course.activeRoute), the card of the leg the boat
-  // is on is marked and scrolled into view, and moves on as points are
-  // passed. The chartplotter has no event for a tap on a route point
-  // (PR-7 in docs/plans/freeboard-sk-integration.md), so this is the only
-  // way the cards can advance by themselves.
   function tail(h) { return h ? String(h).split('/').pop() : ''; }
   function samePos(a, b) { return !!a && !!b && Math.abs(a[0] - b[0]) < 1e-4 && Math.abs(a[1] - b[1]) < 1e-4; }
   function activeIsResult() {
@@ -733,20 +800,51 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var pts = result.points;
     return courseRoute.n === pts.length && samePos(courseRoute.first, pts[0].position) && samePos(courseRoute.last, pts[pts.length - 1].position);
   }
-  function followCourse() {
-    var cards = $('itinerary').children;
-    for (var i = 0; i < cards.length; i++) { cards[i].classList.remove('current'); var c = cards[i].querySelector('.chip.boat'); if (c) c.remove(); }
-    if (!activeIsResult() || typeof course.pointIndex !== 'number') return;
-    if (course.pointTotal !== undefined && course.pointTotal !== cards.length) return;   // the route was edited after routing
-    if (course.reverse) return;   // a weather route sailed backwards has no itinerary to follow
-    // pointIndex is the point the boat is heading to; its card is the leg leaving the point before it.
-    var card = cards[Math.max(0, Math.min(cards.length - 1, course.pointIndex - 1))];
-    if (!card) return;
-    card.classList.add('current');
-    var head = card.querySelector('.leg-head > span');
-    if (head) head.insertAdjacentHTML('beforeend', '<span class="chip boat" title="The leg the boat is on (the active course)">boat</span>');
-    card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  // Follow the boat: the card of the leg the boat is on is marked and kept in
+  // view. The leg comes from the boat's position (the route leg nearest to
+  // it, within FOLLOW_MAX_M), so the cards move on as each waypoint is
+  // passed whether or not the course is advanced; without a position, from
+  // the active course when it is this route (its next point).
+  var FOLLOW_MAX_M = 18520;   // 10 nautical miles: farther off, the boat is not on this route
+  var shownLeg = -1;
+  function segDistM(p, a, b) {
+    // Local flat projection around p; fine at leg scale.
+    var k = Math.cos(p[1] * Math.PI / 180) * 111320, m = 110540;
+    var dx = function (lon) { var d = lon - p[0]; return (d > 180 ? d - 360 : d < -180 ? d + 360 : d) * k; };
+    var ax = dx(a[0]), ay = (a[1] - p[1]) * m, bx = dx(b[0]), by = (b[1] - p[1]) * m;
+    var vx = bx - ax, vy = by - ay, len2 = vx * vx + vy * vy;
+    var t = len2 > 0 ? Math.max(0, Math.min(1, -(ax * vx + ay * vy) / len2)) : 0;
+    return Math.hypot(ax + t * vx, ay + t * vy);
   }
+  function legFromPosition() {
+    if (!vessel || legPoints.length < 2) return -1;
+    var p = [vessel.lon, vessel.lat], best = -1, bestD = Infinity;
+    for (var i = 0; i + 1 < legPoints.length; i++) {
+      var d = segDistM(p, legPoints[i], legPoints[i + 1]);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return bestD <= FOLLOW_MAX_M ? best : -1;
+  }
+  function legFromCourse(n) {
+    if (!activeIsResult() || typeof course.pointIndex !== 'number' || course.reverse) return -1;
+    if (course.pointTotal !== undefined && course.pointTotal !== n) return -1;   // the route was edited after routing
+    return Math.max(0, Math.min(n - 1, course.pointIndex - 1));   // the leg leaving the point before the one the boat heads to
+  }
+  function followBoat() {
+    var cards = $('itinerary').children;
+    var byPos = legFromPosition();
+    var i = byPos >= 0 ? byPos : legFromCourse(cards.length);
+    for (var k = 0; k < cards.length; k++) {
+      cards[k].classList.toggle('current', k === i);
+      var c = cards[k].querySelector('.chip.boat');
+      if (c && k !== i) c.remove();
+    }
+    if (i < 0 || !cards[i]) { shownLeg = -1; return; }
+    var top = cards[i].querySelector('.leg-top');
+    if (top && !top.querySelector('.chip.boat')) top.insertAdjacentHTML('beforeend', '<span class="chip boat" title="' + (byPos >= 0 ? 'The leg the boat is on (its position)' : 'The leg the boat is on (the active course)') + '">boat</span>');
+    if (i !== shownLeg) { shownLeg = i; cards[i].scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+  }
+  function followCourse() { followBoat(); }
   function setCourse(v) {
     course = v && typeof v === 'object' && v.href ? v : null;
     if (course && (!courseRoute || courseRoute.href !== course.href)) {
@@ -776,6 +874,63 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       return { position: [lon, lat], name: name, description: legText(feats, i) };
     });
     return { points: points, props: (line && line.properties) || {}, feats: feats };
+  }
+
+  // ---- a weather route shown on the chart ---------------------------------
+  // A saved route computed earlier (in the web app, or here and saved) is
+  // shown with its legs, without routing again: from this plugin's own job
+  // result when it still has it (a web-app route is saved under its job id),
+  // else from the per-point weather saved with the route (coordinatesMeta:
+  // time, mode, SOG, COG, wind, current, waves). A route without that
+  // weather is not a weather route and leaves the panel as it is.
+  function savedLegs(resource, hostRoute) {
+    var coords = resource && resource.feature && resource.feature.geometry && resource.feature.geometry.coordinates;
+    var meta = resource && resource.feature && resource.feature.properties && resource.feature.properties.coordinatesMeta;
+    if (!Array.isArray(coords) || !Array.isArray(meta) || coords.length < 2 || coords.length !== meta.length) return null;
+    if (!meta.every(function (m) { return m && m.time && m.mode; })) return null;
+    var feats = coords.map(function (c, i) {
+      return { type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: Object.assign({}, meta[i], { lat: c[1], lon: c[0] }) };
+    });
+    var hostPts = (hostRoute && hostRoute.points) || [];
+    var points = coords.map(function (c, i) { return { position: c, name: (hostPts[i] && hostPts[i].name) || meta[i].name || '' }; });
+    var props = Object.assign({}, resource.feature.properties);
+    delete props.coordinatesMeta;
+    if (fin(resource.distance)) props.total_distance_m = resource.distance;
+    return { feats: feats, points: points, props: props };
+  }
+  function showWeatherRoute(routeId) {
+    if (job) return;
+    if (result && !result.viewOnly && !result.saved) return;   // a fresh, unsaved result stays until saved or discarded
+    (unitsReady || Promise.resolve()).then(function () { return host.call('route.get', { routeId: routeId }); }).then(function (r) {
+      if (!r || !r.href) return;
+      var id = tail(r.href);
+      return get('/signalk/v2/api/resources/routes/' + encodeURIComponent(id)).then(function (resource) {
+        var legs = savedLegs(resource, r);
+        if (!legs) return;
+        // The plugin's own result and the polar it used, when it has them for this route.
+        var angles = get(API + '/routes/' + encodeURIComponent(id)).then(function (j) {
+          var rq = (j && j.request) || {};
+          return rq.mode === 'motor' ? null : anglesFor(rq.vessel && rq.vessel.polar);
+        }).catch(function () { return null; });
+        return get(API + '/routes/' + encodeURIComponent(id) + '/result').then(function (geojson) {
+          var feats = (geojson.features || []).filter(function (f) { return f.geometry && f.geometry.type === 'Point' && f.properties && f.properties.time; });
+          var line = (geojson.features || []).filter(function (f) { return f.geometry && f.geometry.type === 'LineString'; })[0];
+          if (feats.length === legs.feats.length && line) { legs.feats = feats; legs.props = line.properties || legs.props; }
+        }).catch(function () {}).then(function () { return angles; }).then(function (a) {
+          if (job || (result && !result.viewOnly && !result.saved)) return;
+          routeAngles = a;
+          result = { routeId: routeId, created: false, original: null, props: legs.props, saved: true, href: r.href, n: legs.points.length, points: legs.points, viewOnly: true };
+          // The route dropdown names the route whose legs are shown.
+          if (visible.some(function (x) { return x.routeId === routeId; })) { $('routeSelect').value = routeId; autoSelected = false; renderRoutes(); }
+          showResult(legs.props, legs.points.length);
+          $('save').hidden = true;
+          $('discard').hidden = true;
+          $('restore').hidden = true;
+          renderItinerary(legs.feats, legs.points);
+          followCourse();
+        });
+      });
+    }).catch(function () {});
   }
 
   // ---- weather-route a route on the chart ---------------------------------
@@ -823,6 +978,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   function setVessel(lat, lon) {
     if (!(isFinite(lat) && isFinite(lon))) return;
     vessel = { lat: lat, lon: lon };
+    followBoat();
     if (!fromEdited) {
       $('fromLat').value = lat.toFixed(4);
       $('fromLon').value = lon.toFixed(4);
@@ -880,7 +1036,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var land = p.land_crossings || 0;
     var badge = land > 0 ? '<span class="badge danger">' + land + ' land crossing' + (land > 1 ? 's' : '') + '</span>'
       : warns ? '<span class="badge warn">' + warns + ' warning' + (warns > 1 ? 's' : '') + '</span>'
-      : p.validated === false ? '<span class="badge">not validated</span>' : '<span class="badge ok">validated</span>';
+      : p.validated === true ? '<span class="badge ok">validated</span>' : p.validated === false ? '<span class="badge">not validated</span>' : '';
     var html = '<div class="sum-main"><b>' + esc(dist || '—') + '</b><span>' + esc(fin(p.total_time_s) ? fmtDuration(p.total_time_s) : '—') + '</span>'
       + (p.arrival ? '<span>arrives ' + esc(fmtTime(p.arrival)) + '</span>' : '') + badge + '</div>'
       + '<div class="sum-grid">'
@@ -970,7 +1126,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       setStatus('This chartplotter cannot show routes from extensions (no "routes" capability).', 'error');
       return;
     }
-    var unitsReady = Promise.all([
+    unitsReady = Promise.all([
       host.has('units') ? host.call('units.get').then(function (r) { units = r.units || null; }).catch(function () {}) : Promise.resolve(),
       loadSkUnits(),
     ]);
@@ -978,7 +1134,10 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     // The host's visible routes: seed from route.list, then follow the events.
     host.subscribe(['route.**'], function (name, ev) {
       if (!ev || !ev.routeId) return;
-      if (name === 'route.visible') upsertVisible({ routeId: ev.routeId, name: ev.name, pointCount: ev.pointCount, saved: ev.saved, dirty: ev.dirty });
+      if (name === 'route.visible') {
+        upsertVisible({ routeId: ev.routeId, name: ev.name, pointCount: ev.pointCount, saved: ev.saved, dirty: ev.dirty });
+        if (ev.saved && !ev.dirty) showWeatherRoute(ev.routeId);
+      }
       else if (name === 'route.hidden') { removeVisible(ev.routeId); if (result && result.routeId === ev.routeId) clearResult(); }
       else if (name === 'route.saved') { upsertVisible({ routeId: ev.routeId, name: ev.name, saved: true, dirty: false }); if (result && result.routeId === ev.routeId && ev.href) { result.href = ev.href; followCourse(); } }
       else if (name === 'route.dirty') upsertVisible({ routeId: ev.routeId, dirty: true });
@@ -986,6 +1145,9 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     }).then(function () { return host.call('route.list'); }).then(function (r) {
       (r.routes || []).forEach(upsertVisible);
       renderRoutes();
+      // Opened with a saved route already on the chart: show the last one's legs.
+      var shown = visible.filter(function (v) { return v.saved && !v.dirty; });
+      if (shown.length) showWeatherRoute(shown[shown.length - 1].routeId);
     }).catch(function () { renderRoutes(); });
     // The vessel position, relayed by the host over its own Signal K connection.
     if (host.has('signalk.stream')) {

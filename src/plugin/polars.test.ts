@@ -72,6 +72,13 @@ test('polarAngles and polarTable from a loaded polar', () => {
     assert.ok(a.beat_deg[i] >= 20 && a.beat_deg[i] < 90);
     assert.ok(a.run_deg[i] >= 90 && a.run_deg[i] < 180);
   }
+  // The no-go angle: the tightest table row with any speed (45°: the 30° row is all zeros). The
+  // tightest sailable angle setting drops the rows closer than it, as the router does, so at 50° the
+  // 45° row goes and the no-go angle is the next row, 60°; the beat angle is never inside it.
+  assert.deepEqual(a.nogo_deg, [45, 45, 45]);
+  const floored = polarAngles(p, 50);
+  assert.deepEqual(floored.nogo_deg, [60, 60, 60]);
+  for (let i = 0; i < 3; i++) assert.ok(floored.beat_deg[i] >= 60, `beat ${floored.beat_deg[i]} inside the no-go angle`);
   const t = polarTable(p);
   assert.equal(t.twa_deg.length, 7);
   assert.equal(t.speeds_ms.length, 7);

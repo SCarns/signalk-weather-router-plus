@@ -168,10 +168,18 @@ export function loadPolarCached(file: string): PolarDiagram {
 }
 
 /**
- * Per-TWS beat (best upwind VMG) and run (best downwind VMG) angles,
- * from a 1° scan of the polar.
+ * Per-TWS angles of the polar as the router uses it (rows closer to the
+ * wind than `minTwaDeg`, the tightest sailable angle setting, ignored):
+ * the no-go angle (the tightest angle with any boat speed), and the beat
+ * (best upwind VMG) and run (best downwind VMG) angles, from a 1° scan.
+ * They bound the points of sail: in irons below the no-go angle, close
+ * hauled from it to the beat angle.
  */
-export function polarAngles(polar: PolarDiagram): { tws_ms: number[]; beat_deg: number[]; run_deg: number[] } {
+export function polarAngles(
+  raw: PolarDiagram,
+  minTwaDeg = 0
+): { tws_ms: number[]; nogo_deg: number[]; beat_deg: number[]; run_deg: number[] } {
+  const polar = minTwaDeg > 0 ? raw.withNoGoFloor(minTwaDeg) : raw;
   const beat: number[] = [];
   const run: number[] = [];
   for (const tws of polar.tws) {
@@ -196,7 +204,7 @@ export function polarAngles(polar: PolarDiagram): { tws_ms: number[]; beat_deg: 
     beat.push(bestBTwa);
     run.push(bestRTwa);
   }
-  return { tws_ms: Array.from(polar.tws), beat_deg: beat, run_deg: run };
+  return { tws_ms: Array.from(polar.tws), nogo_deg: Array.from(polar.tws, tws => polar.noGoFloor(tws)), beat_deg: beat, run_deg: run };
 }
 
 /** The raw table in SI (m/s) for drawing a polar diagram. */

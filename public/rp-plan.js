@@ -4,7 +4,7 @@
 // result strip, itinerary, route library, waypoint and conditions popups,
 // Live mode with the Signal K vessel.
 
-import { _apiErrorText, _fmt, _polarAngles, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
+import { _apiErrorText, _fmt, _polarAngles, fetchPolarAngles, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
 import { createLiveTriggers, createPassageTracker, createRouteSimulator, createTrackRecorder, haversineM, VESSEL_STALE_MS } from './rp-live.js';
 import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
@@ -410,6 +410,8 @@ function _loadRouteJob(id) {
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(geojson => {
       displayRoute(geojson);
+      _displayedJobId = id;   // a Publish of this saved route writes its itinerary too
+      _useRouteAngles(id);
       // The job's own request is the exact record of what was asked: its
       // waypoints (with their circles) and precision replace whatever the
       // route's points suggest, for older routes too.
@@ -655,6 +657,11 @@ applyVesselType(getVesselType());
           status.textContent = '✓';
           status.title = 'Published as ' + d.resource_id;
           appendLog('Published to Signal K resources: ' + d.href, 'done');
+          // Publishing writes the server's copy, which has no itinerary:
+          // write the leg details into it again.
+          _annotatedJobId = null;
+          _pendingAnnotate = { id: d.id, resourceId: d.resource_id };
+          _annotateIfPending(d.id);
           loadRouteHistory();
           setTimeout(() => { status.textContent = ''; }, 2500);
         })
@@ -1366,6 +1373,7 @@ function _warningText(w) {
 // in the user's display units (a quantity whose unit is not set is left
 // out). The same text the Freeboard panel writes.
 let _pendingAnnotate = null;   // {id, resourceId} from the publish status
+let _annotatedJobId = null;    // the job whose itinerary was written into its saved route
 let _displayedJobId = null;    // the job whose itinerary is on screen
 function _plainFairFoul(cog, currentDir) {
   if (cog == null || currentDir == null) return null;
@@ -1421,10 +1429,32 @@ function _routeDescription(p, n) {
   if (beyond > 0) s += ' Forecast ends ' + (p.forecast_valid_to ? fmtWhen(p.forecast_valid_to) : 'before the route does') + '; the last ' + beyond + ' leg' + (beyond > 1 ? 's' : '') + ' ran on conditions held at that step.';
   return s;
 }
+// The server publishes a route only after it reported 'done', and the job
+// stream closes on 'done', so the published resource id never reaches the
+// stream. Ask the job for it instead (a few tries while the publish
+// completes), then write the itinerary into the saved route.
+function _awaitPublished(jobId, tries = 10) {
+  if (_annotatedJobId === jobId || (_pendingAnnotate && _pendingAnnotate.id === jobId)) return;   // already written, or the stream delivered it
+  authFetch(API + '/routes/' + encodeURIComponent(jobId), { cache: 'no-store' }, null)
+    .then(r => (r.ok ? r.json() : null))
+    .then(j => {
+      if (!j || _displayedJobId !== jobId) return;
+      if (j.resource_id) {
+        _pendingAnnotate = { id: jobId, resourceId: j.resource_id };
+        _annotateIfPending(jobId);
+      } else if (j.publish_error) {
+        appendLog('publish failed: ' + j.publish_error, 'error');
+      } else if (tries > 1) {
+        setTimeout(() => _awaitPublished(jobId, tries - 1), 1000);
+      }
+    })
+    .catch(() => {});
+}
 function _annotateIfPending(jobId) {
   const pending = _pendingAnnotate;
   if (!pending || pending.id !== jobId || _displayedJobId !== jobId || !_itineraryFeatures.length) return;
   _pendingAnnotate = null;
+  _annotatedJobId = jobId;
   const feats = _itineraryFeatures;
   const resourceId = pending.resourceId;
   authFetch(API + '/routes/' + encodeURIComponent(jobId) + '/signalk', { cache: 'no-store' }, null)
@@ -1879,7 +1909,8 @@ function _jobOnDone(job, d) {
     .then(geojson => {
       displayRoute(geojson);
       _displayedJobId = id;
-      _annotateIfPending(id);
+      // The itinerary written into the saved route is labelled with this route's polar too.
+      _useRouteAngles(id).then(() => { _annotateIfPending(id); _awaitPublished(id); });
       _loadFronts(id);
       loadRouteHistory();
       RouteProgress.hide();
@@ -2008,19 +2039,43 @@ function _interpAt(x, xs, ys) {
   return ys[ys.length - 1];
 }
 
+// The point of sail from the polar at this wind speed (/api/polar-angles,
+// as the router uses the polar): in irons tighter than its no-go angle,
+// close hauled from there to its best upwind (VMG) angle, close reach to
+// 75°, beam reach to 105°, broad reach to 15° short of its best downwind
+// angle, then downwind. Without a polar the boundaries are not known: no
+// label rather than a guess.
+// The route on screen is labelled with the polar its job used (_useRouteAngles);
+// until that is known, or when the plugin no longer has the job, the picker's.
+let _routeAngles = null;
+let _routeAnglesJob = null;
+function _useRouteAngles(jobId) {
+  if (!jobId) return Promise.resolve();
+  return authFetch(API + '/routes/' + encodeURIComponent(jobId), { cache: 'no-store' }, null)
+    .then(r => (r.ok ? r.json() : null))
+    .then(j => {
+      const rq = (j && j.request) || null;
+      if (!rq || rq.mode === 'motor') return null;
+      return fetchPolarAngles(rq.vessel && rq.vessel.polar);
+    })
+    .then(a => {
+      if (_currentRouteJobId !== jobId) return;
+      _routeAngles = a;
+      _routeAnglesJob = a ? jobId : null;
+      if (_itineraryFeatures.length) populateItinerary(_itineraryFeatures);
+    })
+    .catch(() => {});
+}
 function pointOfSail(twa, windMs) {
-  if (twa == null) return null;
+  const g = _routeAngles && _routeAnglesJob === _currentRouteJobId ? _routeAngles : _polarAngles;
+  if (twa == null || !g || windMs == null) return null;
   const a = Math.abs(twa);
-  // Default bands when no polar is loaded.
-  let beat = 40, run = 150;
-  if (_polarAngles && windMs != null) {
-    const b = _interpAt(windMs, _polarAngles.tws_ms, _polarAngles.beat_deg);
-    const r = _interpAt(windMs, _polarAngles.tws_ms, _polarAngles.run_deg);
-    if (b != null) beat = b;
-    if (r != null) run = r;
-  }
-  if (a < beat - 5) return 'in irons';
-  if (a < beat + 15) return 'close hauled';
+  const nogo = g.nogo_deg ? _interpAt(windMs, g.tws_ms, g.nogo_deg) : null;
+  const beat = _interpAt(windMs, g.tws_ms, g.beat_deg);
+  const run = _interpAt(windMs, g.tws_ms, g.run_deg);
+  if (nogo == null || beat == null || run == null) return null;
+  if (a < nogo) return 'in irons';
+  if (a <= beat) return 'close hauled';
   if (a < 75) return 'close reach';
   if (a <= 105) return 'beam reach';
   if (a <= run - 15) return 'broad reach';
@@ -3395,6 +3450,7 @@ popup.on('change:position', () => {
       pastRouteSource.addFeature(new ol.Feature(new ol.geom.LineString(unwrapLonLats(_routePoints.map(p => p.lonLat)).map(c => ol.proj.fromLonLat(c)))));
     }
     displayRoute(geojson);    // replaces active route wholesale
+    _useRouteAngles(jobId);
     routeActive = true;
     _routeStale = false;
     updatePlanHint();

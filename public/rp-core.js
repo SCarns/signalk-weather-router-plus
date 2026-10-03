@@ -474,6 +474,14 @@ function loadPolarAngles(polarPath) {
     .catch(() => { _polarAngles = null; });
 }
 
+// The angles of any polar (a /api/polars token; '' = the default), without
+// touching the picker's: for the points of sail of a route computed with it.
+export function fetchPolarAngles(token) {
+  return authFetch(API + '/polar-angles?path=' + encodeURIComponent(token || ''), {}, null)
+    .then(r => (r.ok ? r.json() : null))
+    .catch(() => null);
+}
+
 // ─────────── Polar diagram (GET /api/polars/table) ───────────
 // Half polar, TWA 0–180° clockwise from the top, one curve per TWS,
 // radius = boat speed in the display speed unit. Beat/run angles from

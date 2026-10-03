@@ -50,7 +50,7 @@ export function makePlotterExtension(deps: PlotterExtensionDeps): { register: ()
       version,
       apiVersion: '1',
       requires: ['buttons', 'panels.iframe', 'routes'],
-      optional: ['map', 'units', 'signalk.stream'],
+      optional: ['map', 'units', 'signalk.stream', 'background.iframe', 'ui'],
       buttons: [
         {
           id: 'open-weather-router',
@@ -70,6 +70,16 @@ export function makePlotterExtension(deps: PlotterExtensionDeps): { register: ()
           // is bypassed whenever they change, release or not.
           url: `/${deps.pluginId}/plotterext/panel.html?v=${encodeURIComponent(version)}-${panelFilesHash(deps.publicDir)}`,
           lifecycle: 'keepAlive',
+        },
+      ],
+      // A hidden page that watches the routes shown on the chart and opens the
+      // panel when a weather route (one of ours, with its per-point weather) is
+      // shown, so its legs come up without the user looking for them.
+      background: [
+        {
+          id: 'weather-route-watch',
+          type: 'iframe',
+          url: `/${deps.pluginId}/plotterext/background.html?v=${encodeURIComponent(version)}-${panelFilesHash(deps.publicDir)}`,
         },
       ],
     };

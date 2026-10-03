@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Weather Router Plus: route watch</title>
+</head>
+<body>
+<script>
+/*
+ * Weather Router Plus: background page of the plotter extension (Signal K
+ * Plotter Extensions API, version 1). Hidden; loaded by the chartplotter
+ * (Freeboard-SK) while the plugin is enabled. When a route is shown on the
+ * chart and it is a weather route (its saved points carry this plugin's
+ * per-point weather: time and mode), it opens the panel, which then shows
+ * that route's legs. Routes already shown when the chartplotter starts
+ * (restored from its last session) do not open it.
+ */
+(function () {
+  'use strict';
+  var BUS = 'plotterExt/1';
+  var PANEL = 'weather-router-panel';
+  // Routes the chartplotter shows again on start are announced in its first seconds.
+  var QUIET_MS = 8000;
+  var startedAt = Date.now();
+
+  function connectHost() {
+    return new Promise(function (resolve) {
+      var pending = {};
+      var seq = 0;
+      var subs = [];
+      var origin = window.location.origin;
+      var connected = false;
+      function post(msg) { window.parent.postMessage({ bus: BUS, msg: msg }, origin); }
+      var api = {
+        call: function (method, params) {
+          return new Promise(function (res, rej) {
+            var id = 'wrpbg-' + (++seq);
+            var timer = setTimeout(function () { delete pending[id]; rej(new Error(method + ': no answer')); }, 20000);
+            pending[id] = { res: res, rej: rej, timer: timer };
+            post({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
+          });
+        },
+        subscribe: function (pattern, handler) {
+          return api.call('events.subscribe', { patterns: [pattern] }).then(function () { subs.push({ name: pattern, handler: handler }); });
+        }
+      };
+      window.addEventListener('message', function (ev) {
+        var d = ev.data;
+        if (!d || d.bus !== BUS || !d.msg) return;
+        var m = d.msg;
+        if (m.id !== undefined && pending[m.id]) {
+          var p = pending[m.id];
+          delete pending[m.id];
+          clearTimeout(p.timer);
+          if (m.error) p.rej(new Error(m.error.message || 'host error')); else p.res(m.result);
+          return;
+        }
+        if (m.method === 'bus.handshake') {
+          if (connected) return;
+          connected = true;
+          clearInterval(ready);
+          resolve(api);
+          return;
+        }
+        if (m.method && m.id === undefined) subs.forEach(function (s) { if (s.name === m.method) s.handler(m.params); });
+      });
+      var ready = setInterval(function () { post({ jsonrpc: '2.0', method: 'bus.ready', params: {} }); }, 250);
+      post({ jsonrpc: '2.0', method: 'bus.ready', params: {} });
+    });
+  }
+
+  // A saved route whose points carry this plugin's weather (time and mode per point).
+  function isWeatherRoute(href) {
+    var id = String(href || '').split('/').pop();
+    if (!id) return Promise.resolve(false);
+    return fetch('/signalk/v2/api/resources/routes/' + encodeURIComponent(id), { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (r) {
+        var meta = r && r.feature && r.feature.properties && r.feature.properties.coordinatesMeta;
+        return Array.isArray(meta) && meta.length > 1 && meta.every(function (m) { return m && m.time && m.mode; });
+      })
+      .catch(function () { return false; });
+  }
+
+  connectHost().then(function (host) {
+    host.subscribe('route.visible', function (ev) {
+      if (!ev || !ev.routeId || !ev.saved || Date.now() - startedAt < QUIET_MS) return;
+      host.call('route.get', { routeId: ev.routeId })
+        .then(function (r) { return r && r.href ? isWeatherRoute(r.href) : false; })
+        .then(function (yes) { if (yes) return host.call('ui.openPanel', { panel: PANEL }); })
+        .catch(function () {});
+    }).catch(function () {});
+  });
+})();
+</script>
+</body>
+</html>
