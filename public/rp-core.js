@@ -943,6 +943,13 @@ function _shortUtc(v) {
   const m = /^(\d{4})-?(\d{2})-?(\d{2})T?(\d{2})/.exec(String(v));
   return m ? m[3] + ' ' + _MON[+m[2] - 1] + ' ' + m[4] + 'Z' : escapeHtml(v);
 }
+// An ISO time as "Mon 20:00 EDT" in the browser's time zone, the UTC time as its tooltip.
+function _shortLocal(iso) {
+  const d = iso ? new Date(iso) : null;
+  if (!d || isNaN(d)) return escapeHtml(iso || '');
+  const local = d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+  return '<span title="' + escapeHtml(d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC') + '">' + escapeHtml(local) + '</span>';
+}
 
 // Regional wind models whose grid meets the route or the map view, as text for the wind line.
 function _regionalWind(r, area) {
@@ -961,7 +968,7 @@ function _regionalWind(r, area) {
     const state = d && d.error ? ' <span class="warn">' + escapeHtml(d.error) + '</span>'
       : d && d.cycle && x.run.slice(0, 13).replace(/[-T]/g, '') === d.cycle ? ' (decoded)'
       : ' (decoding)';
-    return escapeHtml(x.name) + ' ' + _shortUtc(x.run) + ' +' + x.hours[0] + '…' + x.hours[x.hours.length - 1] + ' h' + state;
+    return escapeHtml(x.name) + ' ' + _shortUtc(x.run) + (x.validTo ? ', to ' + _shortLocal(x.validTo) : '') + state;
   }).join(', ') + off;
 }
 
@@ -970,7 +977,7 @@ function _statusLine(s) {
   if (s.starting) return '<span class="warn">' + escapeHtml(s.starting) + '</span>';
   if (!f) return '<span class="warn">no forecast loaded</span>' + (s.forecast_error ? ': ' + escapeHtml(s.forecast_error) : ' (loading)');
   const area = _area();
-  const run = escapeHtml(f.model || 'forecast') + ' <span class="nowrap">' + _shortUtc(f.cycle) + ' → ' + _shortUtc(f.valid_to) + '</span>';
+  const run = escapeHtml(f.model || 'forecast') + ' <span class="nowrap">' + _shortUtc(f.cycle) + ' → ' + _shortLocal(f.valid_to) + '</span>';
   // Only the current sources that apply to the route or the map view. SMOC
   // is worldwide (any area loads on demand), its box is only the standing
   // area around the boat; the others cover their own box.
