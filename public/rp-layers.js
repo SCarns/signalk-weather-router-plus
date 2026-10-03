@@ -221,6 +221,23 @@ const frontLayer = new ol.layer.Vector({
 // track within each viaCount; best [[lon, lat], …]. `reset` clears earlier
 // stages (a new job); `resetLeg` clears only that leg's stages (a re-run of
 // one leg's search), keeping the other legs' fronts.
+/**
+ * [lon, lat] points with each longitude put within 180° of the one before,
+ * so a line that crosses the antimeridian is drawn across it (OpenLayers
+ * wraps the world) instead of the long way round the globe.
+ */
+export function unwrapLonLats(points) {
+  const out = [];
+  let prev = null;
+  for (const p of points) {
+    let x = p[0];
+    if (prev !== null) { while (x - prev > 180) x -= 360; while (x - prev < -180) x += 360; }
+    out.push([x, p[1]]);
+    prev = x;
+  }
+  return out;
+}
+
 export function drawFront(front, opts) {
   const o = opts || {};
   if (o.reset) frontSource.clear();
@@ -235,16 +252,17 @@ export function drawFront(front, opts) {
   for (const p of front.points || []) {
     const k = p[3] || 0;
     if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(ol.proj.fromLonLat([p[0], p[1]]));
+    groups.get(k).push([p[0], p[1]]);
   }
-  for (const [k, coords] of groups) {
+  for (const [k, lonlats] of groups) {
+    const coords = unwrapLonLats(lonlats).map(c => ol.proj.fromLonLat(c));
     const geom = coords.length > 1 ? new ol.geom.LineString(coords) : new ol.geom.Point(coords[0]);
     const f = new ol.Feature({ geometry: geom, kind: 'front', stage: front.stage, leg: front.leg || 0, via: k, frac, final: !!o.final });
     frontSource.addFeature(f);
   }
   if (!o.final && Array.isArray(front.best) && front.best.length > 1) {
     frontSource.getFeatures().filter(f => f.get('kind') === 'best').forEach(f => frontSource.removeFeature(f));
-    frontSource.addFeature(new ol.Feature({ geometry: new ol.geom.LineString(front.best.map(p => ol.proj.fromLonLat([p[0], p[1]]))), kind: 'best' }));
+    frontSource.addFeature(new ol.Feature({ geometry: new ol.geom.LineString(unwrapLonLats(front.best).map(c => ol.proj.fromLonLat(c))), kind: 'best' }));
   }
 }
 export function drawFronts(fronts) {

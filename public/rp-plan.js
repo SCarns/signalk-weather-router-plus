@@ -5,7 +5,7 @@
 // Live mode with the Signal K vessel.
 
 import { _apiErrorText, _fmt, _polarAngles, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc } from './rp-core.js';
-import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, vesselMarkerSource } from './rp-layers.js';
+import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
 let startCoord = null;  // [lon, lat]
@@ -146,12 +146,19 @@ function _placeRoutePins(pts, snapProps) {
 // conditions; a sailing leg is coloured by tack (TACK_COLOR), a motoring
 // leg black, a leg past the forecast's last step dashed. Dateline legs
 // are split at ±180 so they render the short way.
+// Longitude difference b − a in (−180, 180]: the short way, across the antimeridian.
+function _dLon(a, b) { return ((b - a + 540) % 360) - 180; }
 function _drawRouteLegs(pts) {
-  // Set outgoing_cog on each point
+  // Set outgoing_cog on each point. Map x wraps at ±180°: across the
+  // antimeridian the next point's x is on the opposite edge of the world,
+  // so the difference is taken the short way (else the arrow pointed east
+  // on a southwest leg).
+  const WORLD_X = 2 * 20037508.342789244;
   for (let k = 0; k < pts.length - 1; k++) {
     const c1 = pts[k].getGeometry().getCoordinates();
     const c2 = pts[k + 1].getGeometry().getCoordinates();
-    const dx = c2[0] - c1[0];
+    let dx = c2[0] - c1[0];
+    if (dx > WORLD_X / 2) dx -= WORLD_X; else if (dx < -WORLD_X / 2) dx += WORLD_X;
     const dy = c2[1] - c1[1];
     const bearing = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
     pts[k].set('outgoing_cog', bearing);
@@ -296,6 +303,14 @@ function loadSkeleton(id) {
       skeletonSource.clear();
       if (!geojson) return;
       const features = new ol.format.GeoJSON().readFeatures(geojson, { featureProjection: 'EPSG:3857' });
+      // Across the antimeridian: redraw each line from unwrapped longitudes.
+      for (const f of features) {
+        const g = f.getGeometry();
+        if (g && g.getType() === 'LineString') {
+          const ll = g.getCoordinates().map(c => ol.proj.toLonLat(c));
+          f.setGeometry(new ol.geom.LineString(unwrapLonLats(ll).map(c => ol.proj.fromLonLat(c))));
+        }
+      }
       skeletonSource.addFeatures(features);
     })
     .catch(() => skeletonSource.clear());
@@ -346,13 +361,32 @@ function _loadRouteJob(id) {
       _routeStale = false;
       updatePlanHint();
       // Zoom to the loaded route's extent with padding so the map
-      // frames the entire track beside the panel (not under it).
-      const ext = routeSource.getExtent();
+      // frames the entire track beside the panel (not under it). The
+      // extent is taken over the route's points with unwrapped longitudes:
+      // a route across the antimeridian has points near -180 and +180, and
+      // the plain extent of those is the whole world.
+      const routePts = routeSource.getFeatures().filter(f => f.getGeometry() && f.getGeometry().getType() === 'Point' && f.get('time'));
+      const ext = routePts.length
+        ? ol.extent.boundingExtent(unwrapLonLats(routePts.map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()))).map(c => ol.proj.fromLonLat(c)))
+        : routeSource.getExtent();
+      // Keep the view in the main world: an unwrapped extent can sit past
+      // ±180°, and a view centred there showed no route at all (the route's
+      // own features are stored in the main world).
+      const W = 2 * 20037508.342789244;
+      const cx = (ext[0] + ext[2]) / 2;
+      const shift = cx > W / 2 ? -W : cx < -W / 2 ? W : 0;
+      if (shift) { ext[0] += shift; ext[2] += shift; }
       if (ext && ext.every(Number.isFinite)) {
         map.getView().fit(ext, {
           padding: _mapFitPadding(),
           duration: 400,
           maxZoom: 14,
+          // The panel padding can still push the centre past ±180°; bring it
+          // back into the main world once the animation ends.
+          callback: () => {
+            const v = map.getView(), c = v.getCenter();
+            if (c && Math.abs(c[0]) > W / 2) v.setCenter([c[0] - Math.sign(c[0]) * W, c[1]]);
+          },
         });
       }
       showTab('itinerarySection');
@@ -1176,7 +1210,7 @@ function _warningCardIndex(w, lonlats) {
   const k = Math.cos(pt[1] * Math.PI / 180);
   let best = -1, bestD = Infinity;
   lonlats.forEach((c, i) => {
-    const dx = (c[0] - pt[0]) * k, dy = c[1] - pt[1];
+    const dx = _dLon(pt[0], c[0]) * k, dy = c[1] - pt[1];
     const d = dx * dx + dy * dy;
     if (d < bestD) { bestD = d; best = i; }
   });
@@ -2868,8 +2902,8 @@ popup.on('change:position', () => {
     const mPerDegLon = 111320 * cosLat;
     const mPerDegLat = 110540;
     const ax = 0, ay = 0;
-    const bx = (b[0] - a[0]) * mPerDegLon, by = (b[1] - a[1]) * mPerDegLat;
-    const px = (p[0] - a[0]) * mPerDegLon, py = (p[1] - a[1]) * mPerDegLat;
+    const bx = _dLon(a[0], b[0]) * mPerDegLon, by = (b[1] - a[1]) * mPerDegLat;
+    const px = _dLon(a[0], p[0]) * mPerDegLon, py = (p[1] - a[1]) * mPerDegLat;
     const segLen2 = bx * bx + by * by;
     if (segLen2 === 0) return Math.hypot(px, py);
     let t = (px * bx + py * by) / segLen2;

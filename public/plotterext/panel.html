@@ -816,8 +816,21 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   // ---- result -------------------------------------------------------------
   function fitTo(points) {
     if (!host.has('map')) return;
-    var lons = points.map(function (p) { return p.position[0]; }), lats = points.map(function (p) { return p.position[1]; });
-    host.call('map.fitBounds', { bounds: [Math.min.apply(null, lons), Math.min.apply(null, lats), Math.max.apply(null, lons), Math.max.apply(null, lats)] }).catch(function () {});
+    // Longitudes unwrapped along the route (each within 180° of the one
+    // before), so a route across the antimeridian gives its own narrow box,
+    // sent as west > east as the Plotter Extensions API defines, and not
+    // the whole world.
+    var lons = [], prev = null;
+    points.forEach(function (p) {
+      var x = p.position[0];
+      if (prev !== null) { while (x - prev > 180) x -= 360; while (x - prev < -180) x += 360; }
+      lons.push(x); prev = x;
+    });
+    var lats = points.map(function (p) { return p.position[1]; });
+    var wrap = function (x) { return ((x + 540) % 360) - 180; };
+    var w = Math.min.apply(null, lons), e = Math.max.apply(null, lons);
+    var bounds = e - w >= 360 ? [-180, Math.min.apply(null, lats), 180, Math.max.apply(null, lats)] : [wrap(w), Math.min.apply(null, lats), wrap(e), Math.max.apply(null, lats)];
+    host.call('map.fitBounds', { bounds: bounds }).catch(function () {});
   }
   // The trip summary (the web app's result strip): distance, time, arrival,
   // sailing and motoring time, waypoints, highest waves, validation badge.

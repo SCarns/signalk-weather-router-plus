@@ -6,6 +6,34 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **In open water the search can leave the direct line.** Each candidate
+  aimed the centre of its ±30° heading sweep at the skeleton (the
+  land-avoiding guide line) one step ahead, which pulled every branch that
+  drifted off the line back to it: on Tonga → Auckland no candidate got
+  more than 170 km off the direct line, while a route via a waypoint
+  479 km west was 15 h faster (1214 nm, 192.7 h against 1110 nm,
+  207.4 h, same start, end and departure). Where the corridor is open
+  water (wider than its probe), a candidate now aims one step along the
+  skeleton's own direction from where it is, so a branch keeps its offset
+  and the front can widen; narrow water keeps the skeleton aim that finds
+  channels. Same number of candidates. A test with a breeze 55 km off the
+  line: the front reached 0.21° aimed at the skeleton, 1.6° aimed
+  parallel, and the route was 37 % faster.
+- **Routes across the antimeridian drawn the long way round.** Loading a
+  route that crosses 180° zoomed the map out to the whole world (its
+  points sit near both −180° and +180°, so their plain extent is the
+  world), and stage fronts, the dashed best path and the skeleton that
+  cross 180° were drawn as lines round the globe. Longitudes are now
+  unwrapped along each line before drawing, and the map fit uses the
+  unwrapped extent and keeps the view in the main world (a view centred
+  past 180° showed no route at all); the course arrow at the last point
+  before 180° pointed east on a southwest leg, and Live mode's off-course
+  check and the warning-to-leg match measured across 180° the long way:
+  all take longitude differences the short way now; the Freeboard panel fits a box that crosses 180° as
+  west > east, as the Plotter Extensions API defines.
+
 ## [0.1.0-beta.6] - 2026-10-02
 
 ### Added

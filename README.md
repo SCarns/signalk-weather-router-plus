@@ -596,6 +596,12 @@ Freeboard panel shows the same note. The **Forecast horizon** setting
 (Settings tab, Forecast group, 3 h to 360 h) decides how far the forecast
 reaches.
 
+Where the corridor is open water, each candidate aims the centre of its
+heading sweep one step along the skeleton's direction from where it is,
+so branches can spread across the ocean to find a detour; in narrow
+water it aims at the skeleton itself, which keeps the search in the
+channel.
+
 When the search stops, the final leg of every branch with a clear
 straight hop to the waypoint (the nearest 64) is simulated, straight or
 as a beat, and the branch with the earliest predicted arrival is taken,

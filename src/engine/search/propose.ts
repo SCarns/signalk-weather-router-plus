@@ -42,7 +42,7 @@ export function propose(
     const par = parents[p];
     const sf = guide.stepFor(par.lon, par.lat);
     pStep[p] = sf.step * stepFactor;
-    pTgt.push(guide.targetForParent(sf.idx, sf.step));
+    pTgt.push(guide.targetForParent(sf.idx, sf.step, par.lon, par.lat));
     total += nH;
     if (par.viaCount < nVias) {
       const g = goals[par.viaCount];
