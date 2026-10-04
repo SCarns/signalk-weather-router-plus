@@ -719,6 +719,16 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   function fmtWaves(m) { return fmtQ('length', m) || '—'; }
   // Wave period has no Signal K category: always seconds, as in the web app.
   function fmtWavePeriod(s) { return Math.round(s) + ' s'; }
+  // "2.9 kn–18.4 kn" reads better as "2.9–18.4 kn": drop the first end's
+  // unit when both ends format with the same suffix. Null when either end
+  // is missing or they format the same (a range needs two distinct ends).
+  function fmtRange(minStr, maxStr) {
+    if (!minStr || !maxStr || minStr === maxStr) return null;
+    var m = /^(.*) ([^ ]+)$/.exec(minStr);
+    if (!m) return minStr + '–' + maxStr;
+    var suf = ' ' + m[2];
+    return maxStr.lastIndexOf(suf) === maxStr.length - suf.length ? m[1] + '–' + maxStr : minStr + '–' + maxStr;
+  }
   function leg(feats, i) {
     var f = feats[i], p = f.properties;
     var last = i === feats.length - 1;
@@ -735,6 +745,8 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     out.timeS = fin(p.leg_time_s) ? p.leg_time_s : (new Date(n.time) - new Date(p.time)) / 1000;
     out.sogMs = n.sog_ms; out.cogDeg = fin(n.cog_deg) ? n.cog_deg : null;
     out.windMs = n.wind_ms; out.windDir = n.wind_dir_deg; out.twa = n.twa_deg;
+    out.legWindMin = p.leg_wind_min_ms; out.legWindMax = p.leg_wind_max_ms;
+    out.legSwhMin = p.leg_swh_min_m; out.legSwhMax = p.leg_swh_max_m;
     out.tack = out.mode === 'sailing' ? tackSide(out.cogDeg, out.windDir) : null;
     out.curMs = n.current_ms; out.curDir = n.current_dir_deg;
     out.swh = n.swh_m; out.mwp = n.mwp_s; out.mwd = n.mwd_deg;
@@ -785,7 +797,10 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     if (fin(l.cogDeg)) rows.push(['COG', cardinal(l.cogDeg) + ' ' + fmtAngle(l.cogDeg)]);
     if (fin(l.windMs) && (v = fmtSpeed(l.windMs))) {
       var pos = l.last ? null : pointOfSail(l.twa, l.windMs);
-      rows.push(['Wind', v + (fin(l.windDir) ? ' from ' + cardinal(l.windDir) + ' (' + fmtAngle(l.windDir) + ')' : '') + (pos ? ' · ' + pos : '')]);
+      // The leg's wind range (sampled along it) when the leg has one: on a
+      // long leg the end-of-leg wind alone misleads.
+      var spd = l.last ? v : (fmtRange(fmtSpeed(l.legWindMin), fmtSpeed(l.legWindMax)) || v);
+      rows.push(['Wind', spd + (fin(l.windDir) ? ' from ' + cardinal(l.windDir) + ' (' + fmtAngle(l.windDir) + ')' : '') + (pos ? ' · ' + pos : '')]);
     }
     if (!l.last && fin(l.twa)) rows.push(['TWA', fmtAngle(l.twa)]);
     if (l.tack) rows.push(['Tack', l.tack === 'port' ? 'Port' : 'Starboard']);
@@ -795,7 +810,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       rows.push(['Current', v + (from !== null ? ' from ' + cardinal(from) + ' (' + fmtAngle(from) + ')' : '') + (ff ? ' · ' + ff : ''), ff]);
     }
     if (fin(l.swh)) {
-      var wv = [fmtWaves(l.swh)];
+      var wv = [l.last ? fmtWaves(l.swh) : (fmtRange(fmtWaves(l.legSwhMin), fmtWaves(l.legSwhMax)) || fmtWaves(l.swh))];
       if (fin(l.mwp)) wv.push(fmtWavePeriod(l.mwp));
       if (fin(l.mwd)) wv.push('from ' + cardinal(l.mwd) + ' ' + fmtAngle(l.mwd));
       rows.push(['Waves', wv.join(' · ')]);
