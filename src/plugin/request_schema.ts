@@ -56,6 +56,12 @@ export const ROUTE_REQUEST_FIELDS: Record<string, RouteFieldSpec> = {
     description:
       'A leg is not allowed where the significant wave height exceeds this (m); overrides routing.maxSwh. Needs wave data in the forecast',
   },
+  comfort_weight: {
+    type: 'number',
+    ...settingRange('routing.comfortWeight'),
+    description:
+      'How much the search avoids rough water as the boat meets it (sea-state index weighted for the wave angle); 0 = off; overrides routing.comfortWeight. Route times stay real',
+  },
   simplify_m: {
     type: 'number',
     ...settingRange('routing.simplify'),
@@ -77,6 +83,11 @@ export const ROUTE_REQUEST_FIELDS: Record<string, RouteFieldSpec> = {
     default: 'auto',
     description:
       'auto: regional wind from signalk-grib-downloader (AROME, ARPEGE, ICON-EU) where it covers the point and time, ECMWF elsewhere; ecmwf: ECMWF only',
+  },
+  avoid_areas: {
+    type: 'boolean',
+    description:
+      'Treat the areas marked on Signal K notes (a note with properties.avoid.radius_m, metres, around its position) as land; default true',
   },
   publish: { type: 'boolean', description: 'Override the publish.toResources setting for this route' },
 };

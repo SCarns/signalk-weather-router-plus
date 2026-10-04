@@ -45,13 +45,120 @@ uses [Semantic Versioning](https://semver.org/).
   purpose. The memory and disk guard knows the new field set and suggests
   turning the setting off when a run would not fit.
 
+- **Ship's time (#19).** Clock times in the web app and the Freeboard
+  panel are shown in the ship's time zone when the Signal K server
+  publishes one (`environment.time.timezoneRegion`, an IANA zone, else
+  `environment.time.timezoneOffset`, (-)hhmm), else in the browser's, and
+  the departure field is read and written in the same zone. Checked every
+  10 minutes; a change redraws the times and keeps the departure's moment.
+  A departure typed in the hour the clocks skip (spring forward) moves on
+  past the gap (02:30 → 03:30), as the browser does with its own zone,
+  and the field shows the time used.
+- **Signal K notes on the map (#20).** Layers → Base → Signal K notes
+  (on by default) shows the Resources API's notes that have a position,
+  for the map view, as markers; a click shows the note's title, text and
+  link, who wrote it and when, and its bearing and distance from the
+  boat, with **Edit** and **Delete** (a second press confirms); a note
+  can be dragged to a new position. **Add note here** in the map's click
+  menu writes a new note (title, text) at that point. Notes are ordinary Signal K resources (`POST`, `PUT`, `DELETE`
+  `/signalk/v2/api/resources/notes`; an edit keeps the note's other
+  fields), so Freeboard and other apps see them; writing needs a Signal K
+  login with write access. A failed notes request keeps the notes already
+  shown (logged to the console) instead of emptying the layer.
+- **Areas to avoid.** A note can mark a circle around it to avoid (its
+  form's "Avoid this area" and a radius, stored as
+  `properties.avoid.radius_m`). The router treats every such circle as
+  land: candidates and legs inside one are dropped, and a route point
+  inside one is refused with a message naming the note. Plan tab "Avoid
+  marked areas" (on by default) and the request field `avoid_areas`; the
+  job log lists the areas used. The main thread reads the notes from the
+  Resources API at each job's start; the land mask gets a per-route view
+  with the circles (`LandMask.withAvoid`), the cached mask unchanged.
+- **GPX export (#22).** The itinerary bar's GPX button downloads the route
+  on the map as a GPX 1.1 route: each point with its name (Start, WP1 …
+  End), time and leg description in the user's units, and the route's
+  summary as its description.
+- **Comfort: routing around rough water.** The router weights the
+  sea-state index by the angle of the waves to the course (× 1.3 in head
+  seas, × 1.05 abeam, × 0.8 following, a cosine between: the "encounter
+  index", `src/engine/seas.ts`), and with a comfort weight each second
+  sailed above an encounter index of 75 counts extra in the search's
+  choices (weight × (index − 75) / 100, at most 2 × weight; with 1,
+  choppy water adds 25 %, rough 50 %, extreme 125 %). Setting
+  `routing.comfortWeight` (0–3, default 1, 0 = off) and request field
+  `comfort_weight`. The cost steers pruning, the terminal choice and the
+  smoother; the route's times stay real. Needs wave data.
+- **The sea on each leg.** Route points carry `sea_index`,
+  `seas_angle_deg`, `seas_side`, `seas_sector` and `encounter_index` for
+  the leg into them. The leg cards and the Freeboard panel show a
+  **Seas** row (where the waves come from and the encounter index's
+  band); Layers → Base → **Seas along the route** (on by default) draws
+  an arrow on each leg along the waves' travel, coloured by the encounter
+  index.
+- **Sea state arrows (waves vs current).** Layers → Water (off by
+  default), from the new point tile layer `/api/tile/seas`: arrows along
+  the waves' travel, coloured by the sea-state index; heads meeting in
+  the middle where the current opposes the waves (larger the more it
+  steepens them), a double chevron where it runs with them, a thin arrow
+  with little current.
+  All seas glyphs (these arrows, the route arrows, the Seas row's chip)
+  use the sea-state heatmap's colour scale, shifted slightly darker and
+  outlined.
+- **Wave direction (arrows).** Layers → Water (off by default): an arrow
+  per point along the waves' travel, coloured by the significant wave
+  height on the wave-height heatmap's scale, longer for a longer mean
+  period. The `seas` tile points now carry `mwp_s`.
+- **Sea state and wave arrows in Freeboard.** Two new chart layers, drawn
+  on the server as the web app draws them: "Sea state arrows" and "Wave
+  arrows" (Weather Router Plus), PNG glyph layers `seas` and
+  `wave_arrows` (`/api/tile/<layer>/{z}/{x}/{y}.png`), listed while the
+  forecast has wave data. The Freeboard groups now pair each colour layer
+  with its own glyphs: *Waves* shows wave arrows (was wind barbs) and
+  *Sea state* shows sea state arrows (was current arrows).
+
+### Changed
+
+- **Waiting for the forecast is said once, calmly.** While the server gets
+  its first forecast (a first start, or a decode after the forecast
+  settings changed, e.g. the new gust and cloud cover fields), the web app
+  shows one notice with the progress ("decoding the 06Z cycle, step 12 of
+  37"), a progress bar and the time left measured from the decode; the
+  map layers no longer fail one by one with "query timed out" after
+  120 s, and everything (layers, units) reloads by itself when the
+  forecast is ready. Map and point requests are answered at once with 503,
+  `Retry-After` and the progress; `/api/status` has `forecast_loading`;
+  the Signal K plugin status, a waiting route's log and the Freeboard
+  panel show the same progress. A 503 no longer winds up the web app's
+  request backoff.
+
+- **The shortcut smoother is off by default** (`routing.smoother`). It
+  can still be turned on in the settings or per request (`smoother`).
+
+- **Durations of a day or more read as days, hours and minutes (#24).**
+  "223.0 hour" is now "9d 7h": a duration of 24 h or more is written in
+  Signal K's duration-compact format whatever the user's time unit, in
+  the web app, the Freeboard panel and the plugin's messages; shorter
+  durations follow the time unit as before. A deliberate, documented
+  exception to following the Signal K unit preferences (Signal K has one
+  time unit for every duration). A clock time a day or more away now
+  carries its date ("Tue 13 Oct 21:58").
+- **"Calculating" instead of "Submitting" (#21)** on the Find Route button
+  and in the Freeboard panel while a route is computed.
+
 ### Fixed
+
+- **Wind barbs and current arrows came back empty** when turned off and
+  on again without moving the map: turning a point layer off cleared its
+  points but kept OpenLayers' record of the tiles already loaded, so
+  nothing was fetched again. It is now refreshed instead (also for the
+  new sea state and wave arrows, which share one tile source).
 
 - **The step-0 wind gust is no longer published as 0 m/s.** ECMWF codes
   the gust's step 0 (an empty maximum-over-time range) as 0 everywhere,
   which is not a real value; the step is decoded without a gust field and
   the first three hours answer without one. From step 3 on every step
   carries the real maximum over the past interval.
+
 
 ## [0.1.0-beta.8] - 2026-10-03
 

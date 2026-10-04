@@ -133,6 +133,7 @@ export interface ResolvedConfig {
     noGoMinAngleDeg: number;
     maxWindMs: number | null;
     maxSwhM: number | null;
+    comfortWeight: number;
     simStepM: number;
     landRasterMaxCells: number;
     /** Open the known canals' edges in the global water grid. */
@@ -355,6 +356,7 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       noGoMinAngleDeg: r.noGoMinAngle ?? 0,
       maxWindMs: r.maxWind ?? null,
       maxSwhM: r.maxSwh ?? null,
+      comfortWeight: r.comfortWeight ?? 0,
       simStepM: r.simStep,
       landRasterMaxCells: r.landRasterMaxCells,
       allowCanals: r.allowCanals,

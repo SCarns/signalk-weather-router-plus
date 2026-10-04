@@ -5,6 +5,8 @@
  * the ones the web app and the plotter extension read.
  */
 
+import { roughnessIndex } from './conditions';
+import { encounterIndex, seaAngle, seaSector } from '../engine/seas';
 import type { Route, StopSnap, Waypoint } from '../engine/route';
 import { haversineDistanceM } from '../geo/geodesy';
 
@@ -115,6 +117,29 @@ export function waypointProperties(wp: Waypoint): Record<string, unknown> {
   if (finite(wp.currentDirDeg)) d.current_dir_deg = Math.round(wp.currentDirDeg);
   if (finite(wp.currentUMs)) d.current_u_ms = round(wp.currentUMs, 4);
   if (finite(wp.currentVMs)) d.current_v_ms = round(wp.currentVMs, 4);
+  // The sea on the leg arriving here (the values of a waypoint are those of
+  // the leg into it): the sea-state index of the water, the angle between the
+  // leg's course and the waves (0 = head seas), and the index weighted for
+  // that angle (engine/seas.ts). Not at the start (no leg into it).
+  if (finite(wp.windMs) && finite(wp.windDirDeg) && finite(wp.swhM)) {
+    const r = roughnessIndex(
+      wp.windMs,
+      finite(wp.currentMs) ? wp.currentMs : 0,
+      wp.windDirDeg,
+      finite(wp.currentDirDeg) ? wp.currentDirDeg : 0,
+      wp.swhM,
+      finite(wp.mwpS) ? wp.mwpS : 5,
+      finite(wp.mwdDeg) ? wp.mwdDeg : 0
+    );
+    d.sea_index = round(r.idx, 1);
+    if (wp.sogMs > 0 && finite(wp.mwdDeg) && finite(wp.cogDeg)) {
+      const a = seaAngle(wp.cogDeg, wp.mwdDeg);
+      d.seas_angle_deg = Math.round(a.angle);
+      d.seas_side = a.side;
+      d.seas_sector = seaSector(a.angle);
+      d.encounter_index = round(encounterIndex(r.idx, wp.cogDeg, wp.mwdDeg), 1);
+    }
+  }
   if (wp.leg !== undefined) d.leg = wp.leg;
   if (wp.role !== undefined) d.role = wp.role;
   return d;

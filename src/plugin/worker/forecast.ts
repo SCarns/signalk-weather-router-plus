@@ -28,6 +28,7 @@ import { releaseMemory } from '../../util/gc';
 import { type ResolvedConfig } from '../config';
 import { requireInit } from './state';
 import type { WorkerState } from './state';
+import type { ForecastLoading } from '../protocol';
 
 /** ECMWF open-data short names; 2 m dew point is `2d` in the index files, 10 m wind gust `10fg`, total cloud cover `tcc`. */
 const EXTRA_ATM = ['2t', 'tprate', 'skt', '2d', 'ptype', 'tcc', '10fg'];
@@ -139,7 +140,21 @@ export function pruneForecastCaches(st: WorkerState, cfg: ResolvedConfig, cl: Ec
  * during the decode is one step (streamingDecodeBytes), not a store.
  */
 export async function refreshForecast(st: WorkerState, force: boolean): Promise<void> {
+  try {
+    await refreshForecastInner(st, force);
+  } finally {
+    // Done, unchanged or failed: nothing is loading any more.
+    st.send({ type: 'forecast-loading', loading: null });
+  }
+}
+
+async function refreshForecastInner(st: WorkerState, force: boolean): Promise<void> {
   const { config: cfg, client: cl } = requireInit(st);
+  const startedAt = new Date().toISOString();
+  // Why a decode would be needed, for the user waiting on it.
+  const why: ForecastLoading['why'] = st.run ? 'update' : listDecodedRuns(decodedRoot(st)).length ? 'redecode' : 'first';
+  const loading = (l: Omit<ForecastLoading, 'why' | 'startedAt'>): void =>
+    st.send({ type: 'forecast-loading', loading: { ...l, why, startedAt } });
   const horizon = cfg.forecast.horizonS;
   const t = Date.now();
   const expected = latestExpectedCycle(new Date(), horizon);
@@ -156,6 +171,7 @@ export async function refreshForecast(st: WorkerState, force: boolean): Promise<
     }
   }
   let resolved: ResolvedCycle;
+  loading({ phase: 'checking', cycle: null, done: 0, total: null });
   try {
     resolved = await resolveCycle(cl, horizon, { extraAtmParams: extraParams(cfg), log: m => st.log('info', `forecast: ${m}`) });
   } catch (err) {
@@ -211,6 +227,14 @@ export async function refreshForecast(st: WorkerState, force: boolean): Promise<
   }
   st.log('debug', `forecast: resource check ok: ${res.message} [${res.source}]`);
   let writer: DecodedRunWriter | null = null;
+  // The interim run above (if any) serves meanwhile: then this is an update, not a wait.
+  const cycleIso = cycle.time.toISOString();
+  const decoding = (done: number, total: number | null): void =>
+    st.send({
+      type: 'forecast-loading',
+      loading: { phase: 'decoding', why: st.run ? 'update' : why, cycle: cycleIso, done, total, startedAt },
+    });
+  decoding(0, null);
   try {
     writer = new DecodedRunWriter(decodedRoot(st), cycleName(cycle.time));
     st.decodingBlockBytes = res.needBytes;
@@ -220,6 +244,7 @@ export async function refreshForecast(st: WorkerState, force: boolean): Promise<
       extraAtmParams: extraParams(cfg),
       log: m => st.log('debug', `forecast: ${m}`),
       onStep: (done, total) => {
+        decoding(done, total);
         if (done === 1 || done % 5 === 0 || done === total) st.log('debug', `forecast: decoded and wrote step ${done}/${total}`);
       },
     });

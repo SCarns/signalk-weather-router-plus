@@ -54,6 +54,9 @@ import { joinField, joinLandMask, joinPoints, joinPressure, type TileGetter } fr
 import { isPngLayer, PNG_LAYERS, PngCache, renderTilePng } from './pngtiles';
 import { GLYPH_LAYERS, isGlyphLayer, renderGlyphTilePng } from './glyphtiles';
 
+/** Retry-After (s) on the answers given while the first forecast loads. */
+const FORECAST_RETRY_S = 10;
+
 export interface ApiDeps {
   pluginId: string;
   basePath: string;
@@ -68,6 +71,11 @@ export interface ApiDeps {
   tiles: () => TileService | null;
   /** Why the plugin is not answering yet ("starting: downloading the coastline (40 %)"), for 503 answers. */
   notReady: () => string;
+  /**
+   * While the first forecast loads: the answer for map and point requests
+   * (they would only queue behind the decode), else null. Optional for tests.
+   */
+  forecastWait?: () => { error: string; loading: unknown } | null;
   /** Start (or retry now) the GSHHG coastline download; progress in /api/status `coastline`. */
   downloadCoastline: () => void;
   /** The page asked for this tile (the prebuilder follows the view). */
@@ -324,10 +332,24 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     return ctrl.signal;
   };
 
-  /** The shared tile store, or null after answering 503 when the plugin is not started. */
-  const tilesOr503 = (res: Response): TileService | null => {
+  /**
+   * The shared tile store, or null after answering 503: the plugin is not
+   * started, or (forecast data) the first forecast is still loading, which
+   * is answered at once with its progress and Retry-After, not after the
+   * query timeout.
+   */
+  const tilesOr503 = (res: Response, needsForecast = true): TileService | null => {
     const t = deps.tiles();
-    if (!t) json(res, 503, { error: deps.notReady() });
+    if (!t) {
+      json(res, 503, { error: deps.notReady() });
+      return null;
+    }
+    const wait = needsForecast ? (deps.forecastWait?.() ?? null) : null;
+    if (wait) {
+      res.setHeader('Retry-After', String(FORECAST_RETRY_S));
+      json(res, 503, wait);
+      return null;
+    }
     return t;
   };
   /**
@@ -372,7 +394,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const bbox = parseBBox(req.query.bbox);
       const w = Math.round(num(req.query.w, 1024, 16, 2048, 'w'));
       const h = Math.round(num(req.query.h, 1024, 16, 2048, 'h'));
-      const service = tilesOr503(res);
+      const service = tilesOr503(res, false);
       if (!service) return;
       const out = await joinLandMask(getter(service, clientGone(res)), bbox, w, h);
       const body = zlib.gzipSync(Buffer.from(out.buffer, out.byteOffset, out.byteLength));
@@ -428,14 +450,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   const pngCache = new PngCache(48e6);
   ro.get('/api/tile/:layer/:z/:x/:y.png', async (req: Request, res: Response) => {
     try {
-      const service = deps.tiles();
-      if (!service) {
-        json(res, 503, { error: deps.notReady() });
-        return;
-      }
       const layer = String(req.params.layer);
       if (!isPngLayer(layer) && !isGlyphLayer(layer))
         throw new Error(`layer must be one of ${[...PNG_LAYERS, ...GLYPH_LAYERS].join(', ')}`);
+      const service = tilesOr503(res);
+      if (!service) return;
       const z = Number(req.params.z);
       const x = Number(req.params.x);
       const y = Number(req.params.y);
@@ -463,13 +482,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   // 0 north, rows evenly spaced in Web Mercator y.
   ro.get('/api/tile/:layer/:z/:x/:y', async (req: Request, res: Response) => {
     try {
-      const service = deps.tiles();
-      if (!service) {
-        json(res, 503, { error: deps.notReady() });
-        return;
-      }
       const layer = String(req.params.layer) as TileLayer;
       if (!(TILE_LAYERS as readonly string[]).includes(layer)) throw new Error(`layer must be one of ${TILE_LAYERS.join(', ')}`);
+      // The coastline does not wait for the forecast.
+      const service = tilesOr503(res, layer !== 'land');
+      if (!service) return;
       const z = Number(req.params.z);
       const x = Number(req.params.x);
       const y = Number(req.params.y);

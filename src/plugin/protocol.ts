@@ -14,6 +14,7 @@
  * Everything crossing the boundary is structured-cloneable.
  */
 
+import type { AvoidArea } from '../geo/avoid';
 import type { ResolvedConfig } from './config';
 import type { ModePolicy } from '../engine/legsim';
 import type { BBox } from '../geo/geodesy';
@@ -49,6 +50,8 @@ export interface RouteRequest {
   /** Wind speed (m/s) and significant wave height (m) a leg must not exceed; default from routing.maxWind / routing.maxSwh. */
   max_wind_ms?: number;
   max_swh_m?: number;
+  /** Comfort weight, 0–3 (0 = off); overrides routing.comfortWeight. */
+  comfort_weight?: number;
   /** RDP simplification tolerance, metres (0 = off); default from routing.simplify. */
   simplify_m?: number;
   /** Run the shortcut smoother; default from routing.smoother. */
@@ -61,6 +64,8 @@ export interface RouteRequest {
   no_currents?: boolean;
   /** auto (default): regional wind layered over ECMWF where available; ecmwf: ECMWF only. */
   wind_model?: 'auto' | 'ecmwf';
+  /** Treat the areas marked on Signal K notes (properties.avoid.radius_m) as land (default true). */
+  avoid_areas?: boolean;
   publish?: boolean;
   vessel?: {
     name?: string;
@@ -108,12 +113,22 @@ export interface RouteSummary {
 }
 
 export type QueryKind =
-  'field' | 'currents' | 'wind_points' | 'conditions' | 'pressure' | 'land_mask' | 'tide_series' | 'weather_point' | 'forecast_info';
+  | 'field'
+  | 'currents'
+  | 'wind_points'
+  | 'sea_points'
+  | 'conditions'
+  | 'pressure'
+  | 'land_mask'
+  | 'tide_series'
+  | 'weather_point'
+  | 'forecast_info';
 
 export interface QueryArgs {
   field: { layer: string; bbox: BBox; timeMs: number; res: number };
   currents: { bbox: BBox; timeMs: number; res: number };
   wind_points: { bbox: BBox; timeMs: number; res: number };
+  sea_points: { bbox: BBox; timeMs: number; res: number };
   conditions: { lon: number; lat: number; fromMs: number; hours: number; stepH: number };
   /** Current-hour conditions sample points for one XYZ tile. */
   /** `mercator`: rows evenly spaced in Web Mercator y (a map tile), else in latitude. */
@@ -171,6 +186,24 @@ export interface LandCacheStatus {
   builds: number;
   hits: number;
   last_build_ms: number;
+}
+
+/**
+ * What the data worker is doing to get a forecast (null when idle):
+ * finding the cycle, then decoding it step by step (downloading what is
+ * not in the GRIB cache). `why`: no decoded run on disk yet ('first'), the
+ * runs on disk do not fit the settings or are incomplete ('redecode'), or a
+ * newer cycle while a run serves ('update').
+ */
+export interface ForecastLoading {
+  phase: 'checking' | 'decoding';
+  why: 'first' | 'redecode' | 'update';
+  /** The cycle being decoded (ISO), once known. */
+  cycle: string | null;
+  /** Steps decoded and written, and of how many (0 / null until the first step). */
+  done: number;
+  total: number | null;
+  startedAt: string;
 }
 
 export interface DataStatus {
@@ -254,7 +287,8 @@ export type MainToWorker =
       reload: { forecast: boolean; currents: boolean; tides?: boolean };
       position?: VesselPosition | null;
     }
-  | { type: 'route'; id: string; request: RouteRequest }
+  /** avoid: the areas to avoid marked on Signal K notes, read by the main thread (the workers have no Resources API). */
+  | { type: 'route'; id: string; request: RouteRequest; avoid?: AvoidArea[] }
   | { type: 'query'; id: number; kind: QueryKind; args: QueryArgs[QueryKind] }
   /** tiles workers: the data worker's tide run (null: tides off or not loaded). */
   | { type: 'tides-run'; run: ArcoRun | null }
@@ -271,6 +305,8 @@ export type WorkerToMain =
   /** route worker: forecast memory it holds (the corridor store while a route runs). */
   | { type: 'forecast-memory'; memory: ForecastMemory }
   | { type: 'refresh-error'; message: string }
+  /** data worker: forecast loading progress (null when it stops, done or failed). */
+  | { type: 'forecast-loading'; loading: ForecastLoading | null }
   | { type: 'currents'; status: DataStatus['currents']; rtofsRun: string | null }
   | { type: 'data-status'; status: DataStatus }
   /** data worker: SMOC run / resident area changed (SharedArrayBuffer views: relaying shares, not copies). */

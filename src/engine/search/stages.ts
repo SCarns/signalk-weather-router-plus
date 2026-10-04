@@ -54,6 +54,7 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
         lat: sLat,
         timeMs: args.departureTime.getTime(),
         elapsedS: 0,
+        costS: 0,
         parentIdx: -1,
         sogMs: 0,
         cogDeg: 0,
@@ -139,7 +140,8 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
       const c = cands[i];
       const g = goals[c.viaCount];
       remaining[i] = haversineDistanceM(c.lon, c.lat, g.lon, g.lat);
-      cost[i] = c.elapsedS + remaining[i] / cruise;
+      // The cost so far (time plus any comfort cost) and the rest at cruise speed.
+      cost[i] = c.costS + remaining[i] / cruise;
       let key = guide.zoneKey(c);
       if (key === null) {
         const off = perpendicularOffsetM(sLon, sLat, eLon, eLat, c.lon, c.lat);

@@ -670,6 +670,39 @@ export class ForecastStore implements WindSource {
     return out;
   }
 
+  /** Height, mean period and mean direction (FROM, degrees; blended as a vector) per point at its own time. */
+  wavesFullAtManyAt(
+    lons: Float64Array,
+    lats: Float64Array,
+    timesMs: Float64Array
+  ): { swh: Float64Array; mwp: Float64Array; mwd: Float64Array } {
+    const n = lons.length;
+    const swh = new Float64Array(n).fill(NaN);
+    const mwp = new Float64Array(n).fill(NaN);
+    const mwd = new Float64Array(n).fill(NaN);
+    if (!this.hasWaves) return { swh, mwp, mwd };
+    for (let k = 0; k < n; k++) {
+      const [i0, i1, a] = this.timeBlendMs(timesMs[k]);
+      const g = (p: string, i: number): number => sampleField(this.steps[i].fields.get(p)!, lons[k], lats[k]);
+      let h = g('swh', i0);
+      let t = g('mwp', i0);
+      const d0 = (g('mwd', i0) * Math.PI) / 180;
+      let sx = Math.sin(d0);
+      let cx = Math.cos(d0);
+      if (a !== 0 && i0 !== i1) {
+        h = h * (1 - a) + g('swh', i1) * a;
+        t = t * (1 - a) + g('mwp', i1) * a;
+        const d1 = (g('mwd', i1) * Math.PI) / 180;
+        sx = sx * (1 - a) + Math.sin(d1) * a;
+        cx = cx * (1 - a) + Math.cos(d1) * a;
+      }
+      swh[k] = h;
+      mwp[k] = t;
+      mwd[k] = norm360((Math.atan2(sx, cx) * 180) / Math.PI);
+    }
+    return { swh, mwp, mwd };
+  }
+
   /** Mean sea-level pressure in Pa, or NaN when not loaded. */
   mslAt(lon: number, lat: number, time: Date): number {
     return this.blended('msl', lon, lat, time);

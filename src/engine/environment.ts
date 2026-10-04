@@ -21,6 +21,12 @@ export interface WindSource {
   wavesAtMany?(lons: Float64Array, lats: Float64Array, time: Date): Float64Array;
   /** As wavesAtMany with one time per point. Optional. */
   wavesAtManyAt?(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): Float64Array;
+  /** Height (m), mean period (s) and mean direction FROM (degrees) per point at its own time, NaN where there is none; for the comfort cost. Optional: without it the search calls `wavesAt` per point. */
+  wavesFullAtManyAt?(
+    lons: Float64Array,
+    lats: Float64Array,
+    timesMs: Float64Array
+  ): { swh: Float64Array; mwp: Float64Array; mwd: Float64Array };
 }
 
 export interface CurrentSource {

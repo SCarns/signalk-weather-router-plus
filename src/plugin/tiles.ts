@@ -29,7 +29,7 @@ import type { QueryArgs, QueryKind } from './protocol';
 export { FIELD_LAYERS as TILE_FIELD_LAYERS } from './layers';
 import { FIELD_LAYERS } from './layers';
 /** Every tile layer: colour layers, wind barbs, current arrows, coastline mask. */
-export const TILE_LAYERS = [...FIELD_LAYERS, 'barbs', 'arrows', 'land'] as const;
+export const TILE_LAYERS = [...FIELD_LAYERS, 'barbs', 'arrows', 'seas', 'land'] as const;
 export type TileLayer = (typeof TILE_LAYERS)[number];
 
 /** Which data a layer's answer depends on. */
@@ -54,6 +54,7 @@ export function tileGroup(layer: TileLayer): TileGroup {
     case 'current':
     case 'sea_state':
     case 'arrows':
+    case 'seas':
       return 'cur';
     case 'tide':
       return 'tide';
@@ -74,6 +75,8 @@ export const FIELD_SAMPLES_PER_TILE = 64;
 export const BARBS_PER_TILE = 7;
 /** Current arrows across a tile's width. */
 export const ARROWS_PER_TILE = 5;
+/** Sea-state glyphs per tile edge (the double-ended wave arrows). */
+export const SEAS_PER_TILE = 5;
 
 export interface TileId {
   layer: TileLayer;
@@ -153,6 +156,8 @@ export function tileQuery(t: TileId): { kind: QueryKind; args: QueryArgs[QueryKi
       return { kind: 'wind_points', args: { bbox, timeMs: t.hourMs, res: clamp(width / BARBS_PER_TILE, 0.02, 5) } };
     case 'arrows':
       return { kind: 'currents', args: { bbox, timeMs: t.hourMs, res: clamp(width / ARROWS_PER_TILE, 0.005, 5) } };
+    case 'seas':
+      return { kind: 'sea_points', args: { bbox, timeMs: t.hourMs, res: clamp(width / SEAS_PER_TILE, 0.02, 5) } };
     default: {
       const res = clamp(width / FIELD_SAMPLES_PER_TILE, 0.002, 2);
       const padded: BBox = {
@@ -458,7 +463,10 @@ export async function encodeTile(t: TileId, result: unknown): Promise<Buffer> {
     const u = result as Uint8Array;
     return gzip(Buffer.from(u.buffer, u.byteOffset, u.byteLength));
   }
-  const body = t.layer === 'barbs' || t.layer === 'arrows' ? trimPoints(result as { lon: number; lat: number }[], t.z, t.x, t.y) : result;
+  const body =
+    t.layer === 'barbs' || t.layer === 'arrows' || t.layer === 'seas'
+      ? trimPoints(result as { lon: number; lat: number }[], t.z, t.x, t.y)
+      : result;
   return gzip(Buffer.from(JSON.stringify(body)));
 }
 

@@ -17,6 +17,8 @@
 
 import { haversineBearing, haversineDistanceM, projectAlongBearing, DEG } from '../geo/geodesy';
 import { twaFromHeading } from '../geo/angles';
+import { roughnessIndex } from '../plugin/conditions';
+import { comfortRate, encounterFactor, seaAngle } from './seas';
 import type { CurrentSource, WindSource } from './environment';
 import type { PolarDiagram } from '../vessel/polar';
 import type { VesselParams } from '../vessel/vessel';
@@ -31,6 +33,8 @@ export interface LegSimResult {
   motoringSeconds: number;
   /** Why the leg is stuck: over a wind/wave limit, heading in the polar's no-go angle, the current cancelling the boat's speed, or no boat speed at all. */
   reason?: 'limited' | 'no_go' | 'current' | 'no_speed';
+  /** Comfort cost of the leg in seconds (engine/seas.ts comfortRate), on top of `seconds`; 0 without a comfort weight. */
+  penaltySeconds: number;
 }
 
 /**
@@ -46,6 +50,8 @@ export interface SimOptions {
   /** A leg is not allowed where the wind speed (m/s) or the significant wave height (m) exceeds these. */
   maxWindMs?: number;
   maxSwhM?: number;
+  /** Comfort weight (0 or absent: off): rough water, as the boat meets it, costs extra seconds in the search's choices (engine/seas.ts). */
+  comfortWeight?: number;
 }
 
 function selectSpeed(sailSpeed: number, motorSpeed: number, policy: ModePolicy, sailThreshMs: number): [number, boolean] {
@@ -112,7 +118,7 @@ export function simulateLegTime(
 ): LegSimResult {
   const totalDistM = haversineDistanceM(aLon, aLat, cLon, cLat);
   if (totalDistM <= 0) {
-    return { seconds: 0, dominantMode: 'motoring', sailingSeconds: 0, motoringSeconds: 0 };
+    return { seconds: 0, dominantMode: 'motoring', sailingSeconds: 0, motoringSeconds: 0, penaltySeconds: 0 };
   }
   const bearingDeg = haversineBearing(aLon, aLat, cLon, cLat);
   const sc = scoreCandidatesFromParent(
@@ -129,13 +135,14 @@ export function simulateLegTime(
   );
   if (!Number.isFinite(sc.seconds[0]) || sc.seconds[0] <= 0) {
     const reason: LegSimResult['reason'] = sc.limited[0] ? 'limited' : sc.noGo[0] ? 'no_go' : sc.foul[0] ? 'current' : 'no_speed';
-    return { seconds: Infinity, dominantMode: 'stuck', sailingSeconds: 0, motoringSeconds: 0, reason };
+    return { seconds: Infinity, dominantMode: 'stuck', sailingSeconds: 0, motoringSeconds: 0, reason, penaltySeconds: Infinity };
   }
   return {
     seconds: sc.seconds[0],
     dominantMode: sc.dominant[0] === 1 ? 'sailing' : 'motoring',
     sailingSeconds: sc.sailing[0],
     motoringSeconds: sc.motoring[0],
+    penaltySeconds: sc.penalty[0],
   };
 }
 
@@ -177,6 +184,25 @@ export function currentAtTimes(
   return { u, v };
 }
 
+/** Height, mean period and mean direction FROM per point at its own time (NaN where there is none). */
+export function wavesFullAtTimes(
+  wind: WindSource,
+  lons: Float64Array,
+  lats: Float64Array,
+  timesMs: Float64Array
+): { swh: Float64Array; mwp: Float64Array; mwd: Float64Array } {
+  if (wind.wavesFullAtManyAt) return wind.wavesFullAtManyAt(lons, lats, timesMs);
+  const n = lons.length;
+  const swh = new Float64Array(n).fill(NaN);
+  const mwp = new Float64Array(n).fill(NaN);
+  const mwd = new Float64Array(n).fill(NaN);
+  for (let k = 0; k < n; k++) {
+    const v = wind.wavesAt(lons[k], lats[k], new Date(timesMs[k]));
+    if (v) [swh[k], mwp[k], mwd[k]] = [v.swh, v.mwp, v.mwd];
+  }
+  return { swh, mwp, mwd };
+}
+
 /** Significant wave height per point at its own time (NaN where there is none). */
 export function wavesAtTimes(wind: WindSource, lons: Float64Array, lats: Float64Array, timesMs: Float64Array): Float64Array {
   if (wind.wavesAtManyAt) return wind.wavesAtManyAt(lons, lats, timesMs);
@@ -204,6 +230,8 @@ export interface CandidateScores {
   foul: Uint8Array;
   /** 1 when a current sample above MAX_CURRENT_MS was read as no data along the candidate. */
   badCurrent: Uint8Array;
+  /** Comfort cost in seconds per candidate (0 without a comfort weight; Infinity when stuck). */
+  penalty: Float64Array;
 }
 
 /**
@@ -241,7 +269,9 @@ export function scoreCandidatesFromParent(
   const noGo = new Uint8Array(n);
   const foul = new Uint8Array(n);
   const badCurrent = new Uint8Array(n);
-  if (n === 0) return { seconds, sailing, motoring, dominant, limited, noGo, foul, badCurrent };
+  const penalty = new Float64Array(n);
+  if (n === 0) return { seconds, sailing, motoring, dominant, limited, noGo, foul, badCurrent, penalty };
+  const comfortW = opts.comfortWeight && opts.comfortWeight > 0 && wind.hasWaves ? opts.comfortWeight : 0;
 
   const motor = vessel.motorSpeedMs;
   let maxDist = 0;
@@ -283,7 +313,9 @@ export function scoreCandidatesFromParent(
     const timesL = liveT.subarray(0, nLive);
     const w = windAtTimes(wind, lonsL, latsL, timesL);
     const c = currentAtTimes(current, lonsL, latsL, timesL);
-    const swh = opts.maxSwhM !== undefined && wind.hasWaves ? wavesAtTimes(wind, lonsL, latsL, timesL) : null;
+    // Full waves when the comfort cost needs them (height for the limit too); else height alone for the limit.
+    const full = comfortW > 0 ? wavesFullAtTimes(wind, lonsL, latsL, timesL) : null;
+    const swh = full ? full.swh : opts.maxSwhM !== undefined && wind.hasWaves ? wavesAtTimes(wind, lonsL, latsL, timesL) : null;
 
     for (let q = 0; q < nLive; q++) {
       const i = liveIdx[q];
@@ -324,6 +356,21 @@ export function scoreCandidatesFromParent(
       }
       const stepS = stepPerCand[i] / progress;
       seconds[i] += stepS;
+      if (full && Number.isFinite(full.swh[q])) {
+        // The sea as this candidate meets it: the index of the water (wind and
+        // swell against the current) weighted by the angle of the waves to the heading.
+        const idx = roughnessIndex(
+          ws,
+          Math.hypot(cu, cv),
+          wd,
+          (Math.atan2(cu, cv) * 180) / Math.PI,
+          full.swh[q],
+          Number.isFinite(full.mwp[q]) ? full.mwp[q] : 5,
+          Number.isFinite(full.mwd[q]) ? full.mwd[q] : wd
+        ).idx;
+        const enc = Number.isFinite(full.mwd[q]) ? idx * encounterFactor(seaAngle(bearings[i], full.mwd[q]).angle) : idx;
+        penalty[i] += stepS * comfortRate(enc, comfortW);
+      }
       if (sailUsed) sailing[i] += stepS;
       else motoring[i] += stepS;
       const [nl, nla] = projectAlongBearing(curLon[i], curLat[i], bearings[i], stepPerCand[i]);
@@ -335,10 +382,11 @@ export function scoreCandidatesFromParent(
   for (let i = 0; i < n; i++) {
     if (stuck[i]) {
       seconds[i] = Infinity;
+      penalty[i] = Infinity;
       dominant[i] = -1;
     } else {
       dominant[i] = sailing[i] >= motoring[i] ? 1 : 0;
     }
   }
-  return { seconds, sailing, motoring, dominant, limited, noGo, foul, badCurrent };
+  return { seconds, sailing, motoring, dominant, limited, noGo, foul, badCurrent, penalty };
 }

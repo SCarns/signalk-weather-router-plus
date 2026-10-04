@@ -18,6 +18,7 @@ import {
   type OverlaySources,
   pressureFeatures,
   windPoints,
+  seaPoints,
 } from '../overlays';
 import { POINT_FORECAST_PARAMS, pointForecasts } from '../weather';
 import { type DataStatus, type QueryArgs } from '../protocol';
@@ -77,6 +78,15 @@ export async function queryWindow(st: WorkerState, kind: string, args: QueryArgs
     case 'wind_points': {
       const a = args as QueryArgs['wind_points'];
       return readWindow(st, 'wind arrows', { bbox: a.bbox, params: ['10u', '10v'], steps: st.run.bracket(a.timeMs), marginCells: 2 });
+    }
+    case 'sea_points': {
+      const a = args as QueryArgs['sea_points'];
+      return readWindow(st, 'sea-state arrows', {
+        bbox: a.bbox,
+        params: ['10u', '10v', 'swh', 'mwp', 'mwd'],
+        steps: st.run.bracket(a.timeMs),
+        marginCells: 2,
+      });
     }
     case 'pressure': {
       const a = args as QueryArgs['pressure'];
@@ -142,6 +152,11 @@ export async function query(st: WorkerState, id: number, kind: string, args: Que
       case 'wind_points': {
         const a = args as QueryArgs['wind_points'];
         result = windPoints(src, a.bbox, new Date(a.timeMs), a.res);
+        break;
+      }
+      case 'sea_points': {
+        const a = args as QueryArgs['sea_points'];
+        result = seaPoints(src, a.bbox, new Date(a.timeMs), a.res);
         break;
       }
       case 'conditions': {

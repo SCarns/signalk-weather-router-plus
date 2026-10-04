@@ -85,7 +85,14 @@ export function buildContext(prop: PropagatorParams, args: ComputeRouteArgs): Se
   const checkCancel = (): void => {
     if (shouldCancel()) throw new RouteCancelled();
   };
-  const simOpts = { modePolicy, sailThreshMs, simStepM, maxWindMs: args.maxWindMs, maxSwhM: args.maxSwhM };
+  const simOpts = {
+    modePolicy,
+    sailThreshMs,
+    simStepM,
+    maxWindMs: args.maxWindMs,
+    maxSwhM: args.maxSwhM,
+    comfortWeight: args.comfortWeight,
+  };
   const hasLimit = args.maxWindMs !== undefined || args.maxSwhM !== undefined;
   const limitNote = hasLimit ? ' or over the wind/wave limit' : '';
   const lastTry = { tried: 0, land: 0, limited: 0, noGo: 0, stuck: 0, latestMs: 0 };
