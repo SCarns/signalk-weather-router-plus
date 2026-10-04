@@ -81,6 +81,20 @@ test('applyAccumulated: step 0 is dropped (its range is empty), later steps diff
   assert.ok(ACCUMULATED_PARAMS.includes('tp') && ACCUMULATED_PARAMS.includes('str'), 'the reviewed parameter set');
 });
 
+test('applyAccumulated: tp, sf, ssrd and strd clamp at 0 (packing rounding); str keeps its sign', () => {
+  const prev: Map<string, AccumPrev> = new Map();
+  // Where nothing fell, the packed accumulations can round so that raw N
+  // sits a hair below raw N−1: the depth and the downward fluxes cannot
+  // be negative, so the difference clamps to 0. The net thermal flux can
+  // legitimately go either way and is left alone.
+  applyAccumulated(makeStep(0, { tp: 0.001, ssrd: 1e5, str: 0 }), prev);
+  const s3 = makeStep(3, { tp: 0.0009, ssrd: 1e5 - 8, str: -5e4 });
+  applyAccumulated(s3, prev);
+  assert.equal(s3.fields.get('tp')!.values[3], 0, 'the hair-below-zero depth clamps to 0');
+  assert.equal(s3.fields.get('ssrd')!.values[3], 0, 'the hair-below-zero downward flux clamps to 0');
+  assert.ok(s3.fields.get('str')!.values[3] < 0, 'the net flux keeps its negative sign');
+});
+
 test('applyAccumulated: a parameter absent from a step diffs over the real span when it comes back', () => {
   const prev: Map<string, AccumPrev> = new Map();
   applyAccumulated(makeStep(0, { tp: 0 }), prev);

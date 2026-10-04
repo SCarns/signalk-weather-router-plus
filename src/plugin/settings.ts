@@ -240,7 +240,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     label: 'Solar, thermal radiation, snowfall and instability',
     type: 'boolean',
     default: false,
-    help: 'Also fetch tp, ssrd, sf, strd, str and mucape (total precipitation, surface solar radiation, snowfall, surface thermal radiation down and net, and convective instability) for energy modelling: roughly doubles the download (about +177 MB per 72 h cycle) and adds about 830 MB of decoded data on disk. Off by default, so a metered connection only pays for it on purpose. Changing it reloads the forecast.',
+    help: 'Also fetch tp, ssrd, sf, strd, str and mucape (total precipitation, surface solar radiation, snowfall, surface thermal radiation down and net, and convective instability) for energy modelling: roughly doubles the download (about +127 MB per 72 h cycle) and adds about 620 MB of decoded data on disk. Off by default, so a metered connection only pays for it on purpose. Changing it reloads the forecast.',
     reload: 'forecast',
   },
   {

@@ -170,12 +170,19 @@ export interface ForecastStep {
  * a depth in m for `tp` and `sf` (snowfall water equivalent), an average
  * W/m² over the interval for `ssrd`, `strd` and `str` (the GRIB holds
  * J/m², divided by the interval's seconds). The step-0 fields, whose
- * range is empty, are dropped.
+ * range is empty, are dropped. `tp`, `sf`, `ssrd` and `strd` cannot be
+ * negative, so their difference clamps at 0: each accumulation is
+ * rounded to its packing precision, and where nothing fell raw N can sit
+ * a hair below raw N−1. `str`, the net thermal radiation, keeps its
+ * sign.
  */
 export const ACCUMULATED_PARAMS = ['tp', 'ssrd', 'sf', 'strd', 'str'] as const;
 
 /** The accumulated fields published in J/m², stored as average W/m² over the interval. */
 export const RADIATIVE_ACCUM: ReadonlySet<string> = new Set(['ssrd', 'strd', 'str']);
+
+/** The accumulated fields that cannot be negative: their step difference clamps at 0 (`str` keeps its sign). */
+export const NON_NEGATIVE_ACCUM: ReadonlySet<string> = new Set(['tp', 'sf', 'ssrd', 'strd']);
 
 /** The previous step's raw accumulated field, kept by the streaming decoder for the step difference. */
 export interface AccumPrev {
@@ -205,9 +212,18 @@ export function applyAccumulated(step: ForecastStep, prev: Map<string, AccumPrev
     if (was) {
       const intervalH = step.stepHours - was.stepHours;
       const div = RADIATIVE_ACCUM.has(p) ? intervalH * HOUR_S : 1;
+      const clamp = NON_NEGATIVE_ACCUM.has(p);
       const v = f.values;
-      if (div === 1) for (let i = 0; i < v.length; i++) v[i] -= was.values[i];
-      else for (let i = 0; i < v.length; i++) v[i] = (v[i] - was.values[i]) / div;
+      if (div === 1)
+        for (let i = 0; i < v.length; i++) {
+          const d = v[i] - was.values[i];
+          v[i] = clamp && d < 0 ? 0 : d;
+        }
+      else
+        for (let i = 0; i < v.length; i++) {
+          const d = (v[i] - was.values[i]) / div;
+          v[i] = clamp && d < 0 ? 0 : d;
+        }
       if (!step.intervals) step.intervals = new Map();
       step.intervals.set(p, intervalH);
     }

@@ -2184,7 +2184,7 @@ function _rowCells(r) {
        + '<td>' + _fmtMmH(r.precip_rate_ms) + (r.precip_m != null ? ' / ' + fmtDepth(r.precip_m) : '') + '</td>'
        + '<td>' + (r.precip_type_label || '—') + '</td>'
        + '<td>' + (r.ssrd_wm2 == null ? '—' : r.ssrd_wm2.toFixed(0) + ' W/m²') + '</td>'
-       + '<td>' + (r.cloud_cover == null ? '—' : (r.cloud_cover * 100).toFixed(0) + ' %') + '</td>'
+       + '<td>' + (r.cloud_cover == null ? '—' : _fmt(r.cloud_cover, 'ratio')) + '</td>'
        + '<td>' + _fmtDegC(r.feels_like_k) + (r.feels_like_basis && r.feels_like_basis !== 'air' ? ' (' + r.feels_like_basis.replace('_', ' ') + ')' : '') + '</td>'
        + '<td>' + (r.rh == null ? '—' : (r.rh * 100).toFixed(0) + ' %') + '</td>'
        + '<td>' + (r.beaufort == null ? '—' : 'F' + r.beaufort) + '</td>'
@@ -2222,7 +2222,7 @@ const _COND_TABS = [
             { key: 'gust_ms', unit: () => unitDesc('speed'), color: '#90a4ae', name: 'gust', dash: [4, 3] }],
     dir: { key: 'wind_dir_deg', sense: 'from' },
     hover: r => (r.beaufort == null ? '' : ' · Beaufort ' + r.beaufort)
-              + (r.cloud_cover == null ? '' : ' · cloud ' + (r.cloud_cover * 100).toFixed(0) + ' %') },
+              + (r.cloud_cover == null ? '' : ' · cloud ' + _fmt(r.cloud_cover, 'ratio')) },
   { id: 'waves', label: 'Waves', marine: true, overlays: [['wavesCombinedToggle', 'Wave height']],
     lines: [{ key: 'swh_m', unit: () => unitDesc('wave_height'), color: '#00838f', name: 'height' }],
     dir: { key: 'mwd_deg', sense: 'from' },
