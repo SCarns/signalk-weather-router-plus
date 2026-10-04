@@ -2275,8 +2275,8 @@ const _COND_TABS = [
               + (r.dewpoint_k == null ? '' : ' · dew point ' + _fmtDegC(r.dewpoint_k)) },
   { id: 'precip', label: 'Precip', overlays: [['precipToggle', 'Precip']],
     lines: [{ key: 'precip_rate_ms', unit: () => unitDesc('precip'), color: '#2e7d32', name: 'rate' },
-            { key: 'precip_m', unit: () => unitDesc('depth'), color: '#7cb342', name: 'depth per interval' },
-            { key: 'snowfall_m', unit: () => unitDesc('depth'), color: '#546e7a', name: 'snow (water eq.)', dash: [4, 3] }],
+            { key: 'precip_m', unit: () => unitDesc('depth'), color: '#7cb342', name: 'depth per interval', axis: 'right' },
+            { key: 'snowfall_m', unit: () => unitDesc('depth'), color: '#546e7a', name: 'snow (water eq.)', dash: [4, 3], axis: 'right' }],
     colorBy: { key: 'precip_type_label', colors: _PRECIP_COLORS },
     hover: r => (r.precip_type_label && r.precip_type_label !== 'none' ? ' · ' + r.precip_type_label : '')
               + (r.interval_h != null ? ' · depth over ' + r.interval_h + ' h' : '') },
@@ -2364,13 +2364,13 @@ function _chartFrame(canvas, tab, series) {
 }
 
 // Value ranges in display units (padded; a fixed `tab.range` wins), the
-// lines on the left axis and those on the right (tide & current), and
-// the value → y mappings. False (after writing "No data") when empty.
+// lines on the left axis and those on the right (tide & current, precip
+// depth), and the value → y mappings. False (after writing "No data") when empty.
 function _chartScales(g, tab, series, instant) {
   const { ctx, x0, y0, y1 } = g;
   // Value range across all lines (display units), padded.
   const allLines = tab.lines.map(l => ({ ...l, u: l.unit(), vals: series.map(r => _condDisplay(r[l.key], l.unit())) }));
-  // Lines on a right-hand axis get their own range and scale (tide & current).
+  // Lines on a right-hand axis get their own range and scale (tide & current, precip depth).
   const rightLines = allLines.filter(l => l.axis === 'right' && l.vals.some(v => v != null));
   let lines = allLines.filter(l => l.axis !== 'right');
   if (!lines.some(l => l.vals.some(v => v != null)) && rightLines.length) lines = [];

@@ -197,7 +197,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     max: 360 * HOUR_S,
     multipleOf: HOUR_S,
     default: 72 * HOUR_S,
-    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to {time:1296000}, 06z/18z runs to {time:518400}, so above {time:518400} only 00z/12z runs are used). Changing it decodes the forecast again; the decoded run on disk grows with it (about {dataSize:1.1e9} for {time:259200} and {dataSize:3.9e9} for {time:1296000} with the extra fields), memory does not.',
+    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to {time:1296000}, 06z/18z runs to {time:518400}, so above {time:518400} only 00z/12z runs are used). Changing it decodes the forecast again; the decoded run on disk grows with it (about {dataSize:1.35e9} for {time:259200} and {dataSize:4.6e9} for {time:1296000} with the extra fields), memory does not.',
     reload: 'forecast',
   },
   {

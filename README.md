@@ -2145,6 +2145,7 @@ Each entry (Signal K units: m/s, rad, Pa, K, m, s, ratio):
 | `outside.dewPointTemperature` | `2d` | K; extra fields only |
 | `outside.relativeHumidity` | from `2t` and `2d` | ratio 0..1; extra fields only |
 | `outside.cloudCover` | `tcc`, total cloud cover | ratio 0..1; extra fields only |
+| `outside.precipitationVolume` | `tp`, total precipitation | m; energy fields only, the depth of the interval ending at the step valid time |
 | `water.temperature` | `skt` | K; extra fields only |
 | `water.waveSignificantHeight` | `swh` | m |
 | `water.wavePeriod` | `mwp` | s |
@@ -2152,10 +2153,7 @@ Each entry (Signal K units: m/s, rad, Pa, K, m, s, ratio):
 | `water.level` | Copernicus Marine hourly sea level | m, total water level (tide + surge) relative to local mean sea level, not chart datum; tides on only |
 | `water.levelTendency` | same | `increasing`, `decreasing` or `steady` (within ±2 cm/h), `not available` |
 
-A field is left out when its value is not available. The Weather API
-omits precipitation volume, because only the instantaneous rate is
-fetched. When the water-level series cannot be fetched, the two
-`water.level*` fields are left out and the rest is returned.
+A field is left out when its value is not available. With the energy fields on, point forecasts carry `outside.precipitationVolume` (m, the `tp` interval depth); observations omit it, because their time falls inside an interval that has not ended. When the water-level series cannot be fetched, the two `water.level*` fields are left out and the rest is returned.
 
 #### Resources API publishing
 
