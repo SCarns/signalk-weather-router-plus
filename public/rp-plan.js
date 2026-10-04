@@ -1611,6 +1611,14 @@ function _routeGpx(name) {
     + '  <rte>\n    <name>' + x(name) + '</name>' + (summary ? '\n    <desc>' + x(summary) + '</desc>' : '') + '\n'
     + pts.join('\n') + '\n  </rte>\n</gpx>\n';
 }
+// "2.9 kn–18.4 kn" reads better as "2.9–18.4 kn": drop the first end's
+// unit when both ends format with the same suffix. Null when either end
+// is missing or they format the same (a range needs two distinct ends).
+function _fmtRange(minStr, maxStr) {
+  if (minStr == null || maxStr == null || minStr === maxStr) return null;
+  const m = /^(.*) ([^ ]+)$/.exec(minStr);
+  return m && maxStr.endsWith(' ' + m[2]) ? m[1] + '–' + maxStr : minStr + '–' + maxStr;
+}
 function _legDescription(p, isArrival) {
   const parts = [fmtWhen(p.time)];
   const mode = isArrival ? 'arrival' : (p.next_mode || null);
@@ -1629,7 +1637,12 @@ function _legDescription(p, isArrival) {
   const windMs = isArrival ? p.wind_ms : p.next_wind_ms, windDir = isArrival ? p.wind_dir_deg : p.next_wind_dir_deg;
   if (windMs != null && fmtSpeed(windMs)) {
     const pos = !isArrival ? pointOfSail(p.next_twa_deg, windMs) : null;
-    add('Wind', fmtSpeed(windMs) + (windDir != null ? ' from ' + degToCardinal(windDir) + ' (' + fmtAngleDeg(windDir) + ')' : '') + (pos ? ' · ' + pos : ''));
+    // The leg's wind range (sampled along it) when the leg has one: on a
+    // smoothed multi-hour leg the end-of-leg wind alone misleads.
+    const speed = !isArrival
+      ? (_fmtRange(fmtSpeed(p.leg_wind_min_ms), fmtSpeed(p.leg_wind_max_ms)) ?? fmtSpeed(windMs))
+      : fmtSpeed(windMs);
+    add('Wind', speed + (windDir != null ? ' from ' + degToCardinal(windDir) + ' (' + fmtAngleDeg(windDir) + ')' : '') + (pos ? ' · ' + pos : ''));
   }
   if (!isArrival && p.next_twa_deg != null) add('TWA', fmtAngleDeg(p.next_twa_deg));
   const curMs = isArrival ? p.current_ms : p.next_current_ms, curDir = isArrival ? p.current_dir_deg : p.next_current_dir_deg;
@@ -1639,7 +1652,9 @@ function _legDescription(p, isArrival) {
   }
   const swh = isArrival ? p.swh_m : (p.next_swh_m != null ? p.next_swh_m : p.swh_m);
   if (swh != null && fmtSwh(swh)) {
-    const w = [fmtSwh(swh)];
+    const w = [!isArrival
+      ? (_fmtRange(fmtSwh(p.leg_swh_min_m), fmtSwh(p.leg_swh_max_m)) ?? fmtSwh(swh))
+      : fmtSwh(swh)];
     const mwp = isArrival ? p.mwp_s : p.next_mwp_s, mwd = isArrival ? p.mwd_deg : p.next_mwd_deg;
     if (mwp != null && fmtWavePeriod(mwp)) w.push(fmtWavePeriod(mwp));
     if (mwd != null) w.push('from ' + degToCardinal(mwd) + ' ' + fmtAngleDeg(mwd));
@@ -1804,7 +1819,7 @@ function _legCardHtml(f, i, cw) {
             ? `${degToCardinal(cogDeg)} ${fmtAngleDeg(cogDeg)}` : null;
   const pos = pointOfSail(twa, windMs);
   const wind = windMs != null
-             ? `${fmtSpeed(windMs)} from ${degToCardinal(windDir)} (${fmtAngleDeg(windDir || 0)})`
+             ? `${_fmtRange(fmtSpeed(p.leg_wind_min_ms), fmtSpeed(p.leg_wind_max_ms)) ?? fmtSpeed(windMs)} from ${degToCardinal(windDir)} (${fmtAngleDeg(windDir || 0)})`
                + (pos ? ` · ${pos}` : '')
              : null;
   const twaStr = twa != null ? fmtAngleDeg(twa) : null;
@@ -1823,7 +1838,7 @@ function _legCardHtml(f, i, cw) {
   // Waves
   let wavesStr = null;
   if (swhM != null) {
-    const parts = [fmtSwh(swhM)];
+    const parts = [_fmtRange(fmtSwh(p.leg_swh_min_m), fmtSwh(p.leg_swh_max_m)) ?? fmtSwh(swhM)];
     if (mwpS != null) parts.push(fmtWavePeriod(mwpS));
     if (mwdDeg != null) parts.push(`from ${degToCardinal(mwdDeg)} ${fmtAngleDeg(mwdDeg)}`);
     wavesStr = parts.join(' · ');

@@ -1556,6 +1556,8 @@ Point `properties` (one feature per route point, in order):
 | `role` | string | | `"via"` on the junction point of each request waypoint |
 | `leg_distance_m` | number | m | distance to the next point; absent on the last point |
 | `leg_time_s` | number | s | time to the next point; absent on the last point |
+| `leg_wind_min_ms`, `leg_wind_max_ms` | number | m/s | lowest and highest wind speed sampled along the leg to the next point (about hourly samples, both ends included); absent on the last point and when no wind data |
+| `leg_swh_min_m`, `leg_swh_max_m` | number | m | lowest and highest significant wave height sampled along the leg to the next point; absent on the last point and when no wave data |
 | `beyond_forecast` | boolean | | `true` on a point whose time is after the forecast's last step |
 | `snap_distance_m`, `original` | number, `[lon, lat]` | m, degrees | present on a start, via or end point that was on land and was moved: how far, and the drawn point |
 

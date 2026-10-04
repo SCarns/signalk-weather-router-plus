@@ -140,6 +140,12 @@ export function waypointProperties(wp: Waypoint): Record<string, unknown> {
       d.encounter_index = round(encounterIndex(r.idx, wp.cogDeg, wp.mwdDeg), 1);
     }
   }
+  // Wind and wave extremes sampled along the leg departing here (the
+  // waypoint's own wind_ms/swh_m are the conditions at this point).
+  if (finite(wp.windMinMs)) d.leg_wind_min_ms = round(wp.windMinMs, 2);
+  if (finite(wp.windMaxMs)) d.leg_wind_max_ms = round(wp.windMaxMs, 2);
+  if (finite(wp.swhMinM)) d.leg_swh_min_m = round(wp.swhMinM, 2);
+  if (finite(wp.swhMaxM)) d.leg_swh_max_m = round(wp.swhMaxM, 2);
   if (wp.leg !== undefined) d.leg = wp.leg;
   if (wp.role !== undefined) d.role = wp.role;
   return d;

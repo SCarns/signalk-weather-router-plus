@@ -31,6 +31,14 @@ export interface Waypoint {
   currentMs?: number;
   /** Current set (flows TO), degrees true. */
   currentDirDeg?: number;
+  /** Lowest wind speed sampled along the leg departing here, m/s. */
+  windMinMs?: number;
+  /** Highest wind speed sampled along the leg departing here, m/s. */
+  windMaxMs?: number;
+  /** Lowest significant wave height along the leg departing here, m. */
+  swhMinM?: number;
+  /** Highest significant wave height along the leg departing here, m. */
+  swhMaxM?: number;
   leg?: string;
   role?: 'via';
   /**

@@ -116,6 +116,20 @@ uses [Semantic Versioning](https://semver.org/).
   with its own glyphs: *Waves* shows wave arrows (was wind barbs) and
   *Sea state* shows sea state arrows (was current arrows).
 
+- **Leg cards show the wind and wave range of the leg, not just its end
+  point.** The shortcut smoother can merge many hours of routing into one
+  leg, and the itinerary card then presented a single end-of-leg wind
+  sample (say 2.9 kn) beside the leg's average speed over ground — a
+  38-hour leg sailed mostly in a fresh breeze could read as an impossible
+  5 kn in light air. Each leg is now sampled about once per hour along
+  its track (both ends included, at most 25 samples) and the extremes
+  are published on the departing point as `leg_wind_min_ms` /
+  `leg_wind_max_ms` and `leg_swh_min_m` / `leg_swh_max_m` (Signal K
+  route `coordinatesMeta` included). The webapp itinerary card, the
+  Freeboard leg descriptions and the Freeboard panel cards show these
+  as a range (e.g. "Wind 2.9–18.4 kn from NE") whenever the leg's ends
+  differ; single-sample legs are unchanged.
+
 ### Changed
 
 - **The sea-state index no longer flags ordinary long-period ocean swell as
