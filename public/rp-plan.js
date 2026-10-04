@@ -2428,13 +2428,15 @@ function _fmtDegC(k)   { return fmtTemp(k) || '—'; }
 function _fmtMmH(rate) { return fmtPrecip(rate) || '—'; }
 function _fmtDir(deg)  { return deg == null ? '' : ' ' + degToCardinal(deg) + ' (' + fmtAngleDeg(deg) + ')'; }
 function _rowCells(r) {
-  return '<td>' + (fmtSpeed(r.wind_ms) || '—') + _fmtDir(r.wind_dir_deg) + '</td>'
+  return '<td>' + (fmtSpeed(r.wind_ms) || '—') + (r.gust_ms != null ? ' / ' + fmtSpeed(r.gust_ms) : '') + _fmtDir(r.wind_dir_deg) + '</td>'
        + '<td>' + (r.swh_m == null ? '—' : (fmtSwh(r.swh_m) + (r.mwp_s != null ? ' / ' + fmtWavePeriod(r.mwp_s) : '') + _fmtDir(r.mwd_deg))) + '</td>'
        + '<td>' + (r.current_ms == null ? '—' : (fmtSpeed(r.current_ms) + _fmtDir(r.current_dir_deg))) + '</td>'
        + '<td>' + _fmtHpa(r.msl_pa) + '</td>'
        + '<td>' + _fmtDegC(r.t2m_k) + ' / ' + ((_cond && _cond.isLand) ? '—' : _fmtDegC(r.skt_k)) + '</td>'
-       + '<td>' + _fmtMmH(r.precip_rate_ms) + '</td>'
+       + '<td>' + _fmtMmH(r.precip_rate_ms) + (r.precip_m != null ? ' / ' + fmtDepth(r.precip_m) : '') + '</td>'
        + '<td>' + (r.precip_type_label || '—') + '</td>'
+       + '<td>' + (r.ssrd_wm2 == null ? '—' : r.ssrd_wm2.toFixed(0) + ' W/m²') + '</td>'
+       + '<td>' + (r.cloud_cover == null ? '—' : _fmt(r.cloud_cover, 'ratio')) + '</td>'
        + '<td>' + _fmtDegC(r.feels_like_k) + (r.feels_like_basis && r.feels_like_basis !== 'air' ? ' (' + r.feels_like_basis.replace('_', ' ') + ')' : '') + '</td>'
        + '<td>' + (r.rh == null ? '—' : (r.rh * 100).toFixed(0) + ' %') + '</td>'
        + '<td>' + (r.beaufort == null ? '—' : 'F' + r.beaufort) + '</td>'
@@ -2451,7 +2453,7 @@ function _fmtTideH(m) {
   const t = u.fn(m).toFixed(u.p);
   return (t.startsWith('-') && Number(t) === 0 ? t.slice(1) : t) + ' ' + u.u;
 }
-const _COND_HEAD = '<tr><th>time</th><th>wind</th><th>waves (h / T)</th><th>current (set)</th><th>press.</th><th>air / water</th><th>rain</th><th>type</th><th>feels like</th><th>RH</th><th>Bft</th><th>Douglas</th><th>sea state</th><th>tide / level / surge</th></tr>';
+const _COND_HEAD = '<tr><th>time</th><th>wind / gust</th><th>waves (h / T)</th><th>current (set)</th><th>press.</th><th>air / water</th><th>rain (rate / depth)</th><th>type</th><th>solar</th><th>cloud</th><th>feels like</th><th>RH</th><th>Bft</th><th>Douglas</th><th>sea state</th><th>tide / level / surge</th></tr>';
 
 // Display-unit scale for a SI value.
 
@@ -2468,9 +2470,11 @@ const _PRECIP_COLORS = {
 };
 const _COND_TABS = [
   { id: 'wind',  label: 'Wind', overlays: [['windToggle', 'Barbs'], ['windCombinedToggle', 'Wind speed']],
-    lines: [{ key: 'wind_ms', unit: () => unitDesc('speed'), color: '#1565c0', name: 'wind' }],
+    lines: [{ key: 'wind_ms', unit: () => unitDesc('speed'), color: '#1565c0', name: 'wind' },
+            { key: 'gust_ms', unit: () => unitDesc('speed'), color: '#90a4ae', name: 'gust', dash: [4, 3] }],
     dir: { key: 'wind_dir_deg', sense: 'from' },
-    hover: r => r.beaufort == null ? '' : ' · Beaufort ' + r.beaufort },
+    hover: r => (r.beaufort == null ? '' : ' · Beaufort ' + r.beaufort)
+              + (r.cloud_cover == null ? '' : ' · cloud ' + _fmt(r.cloud_cover, 'ratio')) },
   { id: 'waves', label: 'Waves', marine: true, overlays: [['wavesCombinedToggle', 'Wave height']],
     lines: [{ key: 'swh_m', unit: () => unitDesc('wave_height'), color: '#00838f', name: 'height' }],
     dir: { key: 'mwd_deg', sense: 'from' },
@@ -2522,9 +2526,21 @@ const _COND_TABS = [
     hover: r => (r.rh == null ? '' : ' · RH ' + (r.rh * 100).toFixed(0) + ' %')
               + (r.dewpoint_k == null ? '' : ' · dew point ' + _fmtDegC(r.dewpoint_k)) },
   { id: 'precip', label: 'Precip', overlays: [['precipToggle', 'Precip']],
-    lines: [{ key: 'precip_rate_ms', unit: () => unitDesc('precip'), color: '#2e7d32', name: 'rate' }],
+    lines: [{ key: 'precip_rate_ms', unit: () => unitDesc('precip'), color: '#2e7d32', name: 'rate' },
+            { key: 'precip_m', unit: () => unitDesc('depth'), color: '#7cb342', name: 'depth per interval', axis: 'right' },
+            { key: 'snowfall_m', unit: () => unitDesc('depth'), color: '#546e7a', name: 'snow (water eq.)', dash: [4, 3], axis: 'right' }],
     colorBy: { key: 'precip_type_label', colors: _PRECIP_COLORS },
-    hover: r => r.precip_type_label && r.precip_type_label !== 'none' ? ' · ' + r.precip_type_label : '' },
+    hover: r => (r.precip_type_label && r.precip_type_label !== 'none' ? ' · ' + r.precip_type_label : '')
+              + (r.interval_h != null ? ' · depth over ' + r.interval_h + ' h' : '') },
+  // Surface fluxes from the energy fields (off by default): average solar
+  // and thermal radiation over each step's interval (the tab hides when
+  // they carry no data), with instability in the readout.
+  { id: 'energy', label: 'Energy',
+    lines: [{ key: 'ssrd_wm2', unit: () => ({ fn: v => v, u: 'W/m²', p: 0 }), color: '#f9a825', name: 'solar' },
+            { key: 'strd_wm2', unit: () => ({ fn: v => v, u: 'W/m²', p: 0 }), color: '#ef6c00', name: 'IR down', dash: [4, 3] },
+            { key: 'str_wm2', unit: () => ({ fn: v => v, u: 'W/m²', p: 0 }), color: '#6d4c41', name: 'IR net', dash: [2, 3] }],
+    hover: r => (r.interval_h != null ? ' · average over ' + r.interval_h + ' h' : '')
+              + (r.mucape_jkg == null ? '' : ' · MUCAPE ' + r.mucape_jkg.toFixed(0) + ' J/kg') },
   { id: 'raw', label: 'Raw' },
 ];
 let _condTab = 'wind';
@@ -2600,13 +2616,13 @@ function _chartFrame(canvas, tab, series) {
 }
 
 // Value ranges in display units (padded; a fixed `tab.range` wins), the
-// lines on the left axis and those on the right (tide & current), and
-// the value → y mappings. False (after writing "No data") when empty.
+// lines on the left axis and those on the right (tide & current, precip
+// depth), and the value → y mappings. False (after writing "No data") when empty.
 function _chartScales(g, tab, series, instant) {
   const { ctx, x0, y0, y1 } = g;
   // Value range across all lines (display units), padded.
   const allLines = tab.lines.map(l => ({ ...l, u: l.unit(), vals: series.map(r => _condDisplay(r[l.key], l.unit())) }));
-  // Lines on a right-hand axis get their own range and scale (tide & current).
+  // Lines on a right-hand axis get their own range and scale (tide & current, precip depth).
   const rightLines = allLines.filter(l => l.axis === 'right' && l.vals.some(v => v != null));
   let lines = allLines.filter(l => l.axis !== 'right');
   if (!lines.some(l => l.vals.some(v => v != null)) && rightLines.length) lines = [];
