@@ -116,7 +116,32 @@ uses [Semantic Versioning](https://semver.org/).
   with its own glyphs: *Waves* shows wave arrows (was wind barbs) and
   *Sea state* shows sea state arrows (was current arrows).
 
+- **Leg cards show the wind and wave range of the leg, not just its end
+  point.** The shortcut smoother can merge many hours of routing into one
+  leg, and the itinerary card then presented a single end-of-leg wind
+  sample (say 2.9 kn) beside the leg's average speed over ground — a
+  38-hour leg sailed mostly in a fresh breeze could read as an impossible
+  5 kn in light air. Each leg is now sampled about once per hour along
+  its track (both ends included, at most 25 samples) and the extremes
+  are published on the departing point as `leg_wind_min_ms` /
+  `leg_wind_max_ms` and `leg_swh_min_m` / `leg_swh_max_m` (Signal K
+  route `coordinatesMeta` included). The webapp itinerary card, the
+  Freeboard leg descriptions and the Freeboard panel cards show these
+  as a range (e.g. "Wind 2.9–18.4 kn from NE") whenever the leg's ends
+  differ; single-sample legs are unchanged.
+
 ### Changed
+
+- **The sea-state index no longer flags ordinary long-period ocean swell as
+  extreme.** The swell term was a plain quadratic in wave height, so any
+  open-ocean cell above about 2.23 m — a routine 2.25 m trade swell at
+  12 s — scored over 150 and landed in the `extreme` band even in light
+  wind and slack current. The swell term is now scaled by
+  `5 / max(mwp, 5)`, which leaves steep short-period coastal seas (period
+  5 s or less, and the missing-wave-data default of 5 s) at their original
+  values and cuts a 12 s swell to 5/12, shifting standard trade swells
+  back into the `slight`/`good` bands. The band cuts themselves (35 / 50 /
+  75 / 100 / 150) are unchanged.
 
 - **Waiting for the forecast is said once, calmly.** While the server gets
   its first forecast (a first start, or a decode after the forecast
