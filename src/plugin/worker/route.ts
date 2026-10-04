@@ -35,6 +35,7 @@ import { requireInit } from './state';
 import { extraParams, readWindow, releaseWindow } from './forecast';
 import { landMaskFor } from './landgrid';
 import { rebuildStack } from './currents';
+import { GLOBAL_DLON_DEG, isFinerThanGlobal } from './regional';
 import type { WorkerState } from './state';
 
 /** The request as the API validated it; a job that slipped past (another caller) is refused the same way. */
@@ -189,6 +190,8 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
         const { run } = cycles.length ? openDecodedRun(path.join(root, name, cycles[0])) : { run: null };
         if (!run) continue;
         const g = run.index.grid;
+        // Only a grid finer than the global forecast's is layered over it (a decoded run from before this rule included).
+        if (!isFinerThanGlobal(g.dLon, st.run?.index.grid.dLon ?? GLOBAL_DLON_DEG)) continue;
         const steps = run.index.steps;
         const firstMs = steps[0].validMs;
         const lastMs = steps[steps.length - 1].validMs;
@@ -208,6 +211,11 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
         }
         const opts: WindowOptions = { bbox: area, params: ['10u', '10v'], marginCells: 1 };
         const need = run.windowBytes(opts);
+        if (need <= 0) {
+          // The overlap check above passed but the grid has no cells in the area (an edge case): skip, never fail the route.
+          progress(0, 0, `regional wind ${name}: no grid cells in the ${what}, not used`);
+          continue;
+        }
         const mem = checkRouteForecastMemory(need, cfg.forecast.memoryHeadroomBytes);
         if (!mem.ok) {
           progress(0, 0, `WARNING: regional wind ${name} not used for the ${what}: ${mem.message}`);

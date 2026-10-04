@@ -10,6 +10,14 @@ import { scanRegional } from '../../data/regional';
 import { decodeRegionalRun } from '../../data/regionaldecode';
 import type { WorkerState } from './state';
 
+/** ECMWF open data's grid spacing, for when no global run is loaded yet. */
+export const GLOBAL_DLON_DEG = 0.25;
+
+/** Is a regional grid finer than the global forecast's (spacings in degrees, a rounding margin allowed)? */
+export function isFinerThanGlobal(regionalDLon: number, globalDLon: number): boolean {
+  return regionalDLon < globalDLon - 1e-6;
+}
+
 // A decode yields to other messages, so a later refresh can arrive while one
 // runs: it skips the regional pass rather than decode the same run twice.
 let busy = false;
@@ -31,9 +39,32 @@ async function refreshRegionalNow(st: WorkerState): Promise<void> {
     st.regional.clear();
     return;
   }
+  // A source is layered over the global forecast only where it is finer:
+  // at the same spacing (GFS 0.25° against ECMWF 0.25°) it would replace
+  // ECMWF wherever it covers, for no gain.
+  const globalDLon = st.run?.index.grid.dLon ?? GLOBAL_DLON_DEG;
   for (const src of scan.sources) {
     if (!src.run || src.problem) continue;
     const prev = st.regional.get(src.name);
+    if (src.domain && !isFinerThanGlobal(src.domain.di, globalDLon)) {
+      if (!prev?.skipped)
+        st.log(
+          'info',
+          `regional wind: ${src.name} (${src.domain.di}°) is not finer than the global forecast (${globalDLon}°); not decoded or used for routes`
+        );
+      st.regional.set(src.name, {
+        source: src.name,
+        cycle: null,
+        dir: null,
+        steps: 0,
+        bytes: 0,
+        decodeMs: 0,
+        decodedAt: null,
+        error: null,
+        skipped: 'not finer than the global forecast',
+      });
+      continue;
+    }
     try {
       const r = await decodeRegionalRun(src, path.join(scan.root, src.name), st.cacheRoot, Math.max(1, st.config.forecast.keepCycles));
       st.regional.set(src.name, {

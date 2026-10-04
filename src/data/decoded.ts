@@ -385,10 +385,15 @@ export class DecodedRun {
     const r1 = Math.min(g.nLat - 1, Math.ceil((north - g.lat0) / g.dLat) + margin);
     const width = bboxWidth(bbox);
     if (!g.wrapLon) {
-      const xw = (bbox.west - g.lon0) / g.dLon;
+      // The box's west edge taken to within 180° of the grid's (as the
+      // regional overlap check in the route worker does), so a box that
+      // starts on the other side of 180° from the grid (170°E for a grid
+      // from 175°W) reads the right columns. A box that misses the grid
+      // gives an empty window (0 rows or columns), never a negative one.
+      const xw = (((((bbox.west - g.lon0 + 540) % 360) + 360) % 360) - 180) / g.dLon;
       const c0 = Math.max(0, Math.floor(xw) - margin);
       const c1 = Math.min(g.nLon - 1, Math.ceil(xw + width / g.dLon) + margin);
-      return { r0, nr: r1 - r0 + 1, c0, nc: c1 - c0 + 1 };
+      return { r0, nr: Math.max(0, r1 - r0 + 1), c0, nc: Math.max(0, c1 - c0 + 1) };
     }
     const xw = lonOffset(bbox.west, g.lon0) / g.dLon;
     const cStart = Math.floor(xw) - margin;
@@ -428,6 +433,7 @@ export class DecodedRun {
     const list = this.fieldSteps(opts);
     if (list.length === 0) throw new Error(`the decoded run has none of ${opts.params.join('/')} for the requested steps`);
     const cells = geo.nr * geo.nc;
+    if (cells === 0) throw new Error('the requested area does not meet the decoded grid');
     const block = new Float32Array(cells * list.length);
     const full = geo.nc === g.nLon;
     const rowBytes = g.nLon * 4;

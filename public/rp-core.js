@@ -923,7 +923,8 @@ function _regionalWind(r, area) {
   const off = rw && !rw.checked ? ' <span class="warn">(off for routes: Regional wind unticked)</span>' : '';
   return ' · ' + ok.map(x => {
     const d = x.decoded;
-    const state = d && d.error ? ' <span class="warn">' + unitTextHtml(d.error) + '</span>'
+    const state = d && d.skipped ? ' (not used: ' + escapeHtml(d.skipped) + ')'
+      : d && d.error ? ' <span class="warn">' + unitTextHtml(d.error) + '</span>'
       : d && d.cycle && x.run.slice(0, 13).replace(/[-T]/g, '') === d.cycle ? ' (decoded)'
       : ' (decoding)';
     return escapeHtml(x.name) + ' ' + _shortUtc(x.run) + (x.validTo ? ', to ' + _shortLocal(x.validTo) : '') + state;

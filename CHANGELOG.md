@@ -6,6 +6,25 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Regional wind is used only where it is finer than ECMWF.** Every
+  signalk-grib-downloader source was layered over ECMWF at full weight
+  wherever it covered, so a GFS 0.25° area (the same spacing as ECMWF's
+  open data) replaced ECMWF's wind over the whole area. A source is now
+  decoded and used for routes only when its grid is finer than the global
+  forecast's; the others are listed with "not used: not finer than the
+  global forecast".
+
+- **A route across 180° failed with "Invalid typed array length" when a
+  regional wind source lay on the other side of 180°** (a Tonga → New
+  Zealand route with a downloader source around Tonga). The check that a
+  regional grid meets the route area compared longitudes the short way,
+  but the columns read were worked out the long way, which gave a
+  negative number of columns. Both now take the short way, and a source
+  whose grid has no cells in the area is skipped with a line in the job
+  log instead of failing the route.
+
 ## [0.1.0-beta.7] - 2026-10-03
 
 ### Added
