@@ -149,9 +149,12 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
       }
       const sim = simulateLegTime(A.lon, A.lat, A.time, C.lon, C.lat, a.vessel, a.polar, a.wind, a.current, a.sim);
       const origS = (C.time.getTime() - A.time.getTime()) / 1000;
-      const origCost = origS + (comfort ? penaltyBetween(examined, anchor) : 0);
-      const simCost = sim.seconds + (comfort ? sim.penaltySeconds : 0);
-      if (!Number.isFinite(sim.seconds) || simCost > tol * origCost) {
+      // The time tolerance holds on elapsed time; with a comfort weight the
+      // shortcut must also not cost more in time plus comfort.
+      const tooSlow = sim.seconds > tol * origS;
+      const tooRough =
+        comfort && sim.seconds + sim.penaltySeconds > tol * (origS + penaltyBetween(examined, anchor));
+      if (!Number.isFinite(sim.seconds) || tooSlow || tooRough) {
         failedAt = examined;
         break;
       }
