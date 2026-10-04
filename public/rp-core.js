@@ -902,7 +902,8 @@ export function loadShipTime() {
       if (typeof region === 'string' && region) {
         try { new Intl.DateTimeFormat([], { timeZone: region }); z = { tz: region }; } catch (_) { /* not a zone this browser knows */ }
       }
-      if (!z && typeof offset === 'number' && Number.isFinite(offset) && Math.abs(offset) <= 1400) {
+      // A whole signed hhmm with minutes under 60 (1260 is not 13:00); anything else: the browser's zone.
+      if (!z && typeof offset === 'number' && Number.isInteger(offset) && Math.abs(offset) <= 1400 && Math.abs(offset) % 100 < 60) {
         const a = Math.abs(offset);
         z = { offsetMin: Math.sign(offset) * (Math.floor(a / 100) * 60 + (a % 100)) };
       }

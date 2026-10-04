@@ -318,7 +318,8 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         var val = function (n) { return n && typeof n === 'object' && 'value' in n ? n.value : n; };
         var region = t ? val(t.timezoneRegion) : null, offset = t ? val(t.timezoneOffset) : null, z = null;
         if (typeof region === 'string' && region) { try { new Intl.DateTimeFormat([], { timeZone: region }); z = { tz: region }; } catch (_) { z = null; } }
-        if (!z && typeof offset === 'number' && isFinite(offset) && Math.abs(offset) <= 1400) {
+        // A whole signed hhmm with minutes under 60 (1260 is not 13:00); anything else: the browser's zone.
+        if (!z && typeof offset === 'number' && Number.isInteger(offset) && Math.abs(offset) <= 1400 && Math.abs(offset) % 100 < 60) {
           var a = Math.abs(offset);
           z = { offsetMin: (offset < 0 ? -1 : 1) * (Math.floor(a / 100) * 60 + (a % 100)) };
         }
