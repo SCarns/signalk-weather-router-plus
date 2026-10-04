@@ -71,6 +71,13 @@ uses [Semantic Versioning](https://semver.org/).
   per point along the waves' travel, coloured by the significant wave
   height on the wave-height heatmap's scale, longer for a longer mean
   period. The `seas` tile points now carry `mwp_s`.
+- **Sea state and wave arrows in Freeboard.** Two new chart layers, drawn
+  on the server as the web app draws them: "Sea state arrows" and "Wave
+  arrows" (Weather Router Plus), PNG glyph layers `seas` and
+  `wave_arrows` (`/api/tile/<layer>/{z}/{x}/{y}.png`), listed while the
+  forecast has wave data. The Freeboard groups now pair each colour layer
+  with its own glyphs: *Waves* shows wave arrows (was wind barbs) and
+  *Sea state* shows sea state arrows (was current arrows).
 
 ### Changed
 

@@ -556,14 +556,16 @@ listed only while its data is there: currents need a current source,
 tides the tide data, waves and the temperatures the forecast fields. The
 colours are the web app's; Freeboard has no legend, so the scale is in
 the web app's layer legend (`GET /api/legends`). The tide layer uses its
-fixed ±3 m scale here. Three glyph layers come with them: **Wind barbs**,
-**Current arrows** and **Isobars** (4 hPa, bold every 20 hPa; highs and
+fixed ±3 m scale here. Five glyph layers come with them: **Wind barbs**,
+**Current arrows**, **Isobars** (4 hPa, bold every 20 hPa; highs and
 lows as blue and red dots; no pressure labels, as the server has no
-font). The layers are also organised as Freeboard **Groups** (resources
+font), **Sea state arrows** (the waves against the current, as the web
+app's layer) and **Wave arrows** (coloured by wave height, longer for a
+longer period); the last two need wave data. The layers are also organised as Freeboard **Groups** (resources
 menu → Groups), one colour layer each with the glyphs that belong with
-it, shown in one tap: *Wind* (speed, barbs), *Waves* (height, barbs),
+it, shown in one tap: *Wind* (speed, barbs), *Waves* (height, wave arrows),
 *Currents* (speed, arrows), *Pressure* (isobars, barbs), *Sea state*
-(index, arrows), *Tide* (height, arrows), *Rain* (precipitation,
+(index, sea state arrows), *Tide* (height, arrows), *Rain* (precipitation,
 isobars), *Air temperature* and *Sea temperature* (with isobars and
 arrows). Two colour layers over each other are unreadable, so no group
 has more than one. A group holds the layers whose data is there and is
@@ -1789,7 +1791,7 @@ nested `smoc` and `tides` fields in full.
 | GET | `/api/pressure` | readonly | isobars and highs/lows as GeoJSON |
 | GET | `/api/land-mask` | readonly | binary land mask at screen resolution |
 | GET | `/api/tile/{layer}/{z}/{x}/{y}` | readonly | one web-map tile of a layer at a whole hour, saved on the server |
-| GET | `/api/tile/{layer}/{z}/{x}/{y}.png` | readonly | the same tile as a PNG image, for chartplotters (the eight colour layers, and the `barbs`, `arrows` and `isobars` glyph layers) |
+| GET | `/api/tile/{layer}/{z}/{x}/{y}.png` | readonly | the same tile as a PNG image, for chartplotters (the eight colour layers, and the `barbs`, `arrows`, `isobars`, `seas` and `wave_arrows` glyph layers) |
 | GET | `/api/legends` | readonly | colour ramps for every layer |
 
 **Common parameters.**
@@ -1953,15 +1955,17 @@ The colour layers as 256 × 256 PNG image tiles, for chartplotters that
 draw image tiles (Freeboard-SK's chart layers; the plugin publishes the
 matching chart resources, see [In Freeboard-SK](#in-freeboard-sk)).
 `layer` is one of `wind`, `waves`, `current`, `sea_state`, `precip`,
-`temperature`, `sst`, `tide` (colour layers), `barbs`, `arrows`, `isobars`
-(glyph layers); `z`, `x`, `y` and `?time=` as for the data tile below
+`temperature`, `sst`, `tide` (colour layers), `barbs`, `arrows`, `isobars`,
+`seas`, `wave_arrows` (glyph layers); `z`, `x`, `y` and `?time=` as for the data tile below
 (time rounded to the nearest hour, default now). A colour layer is what
 the web app paints from the data tile: the legend's colour ramp
 (`GET /api/legends`), alpha 0.55, land transparent for the layers that
 mask it, water without model data hatched for currents and tides; the
 tide layer uses its fixed ±3 m scale. A glyph layer draws the web app's
 barbs and arrows from the point tiles of the tile and its eight
-neighbours (so a glyph on a tile edge is whole), and isobars from the
+neighbours (so a glyph on a tile edge is whole; `seas` and `wave_arrows`
+both from the `seas` point tiles, in the heatmaps' colour scales shifted
+15 % darker, outlined), and isobars from the
 joined 0.25° pressure field (`/api/pressure`), without labels. Rendered
 on the server from the saved data tiles and kept in memory (48 MB, least
 recently used first);
