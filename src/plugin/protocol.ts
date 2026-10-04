@@ -230,6 +230,8 @@ export interface RegionalDecodeState {
   decodeMs: number;
   decodedAt: string | null;
   error: string | null;
+  /** Why the source is not decoded or used for routes (not finer than the global forecast), or absent. */
+  skipped?: string;
 }
 
 export type MainToWorker =
