@@ -43,8 +43,8 @@ export function enrichWaypoints(wps: Waypoint[], wind: WindSource, current: Curr
 /**
  * Wind and wave range along each leg, on the waypoint the leg departs
  * from: the leg is sampled about once per hour (both ends included, at
- * most 25 samples) along its constant-bearing line with each sample at
- * its own clock, and the extremes recorded. The shortcut smoother can
+ * most 25 samples) along its great circle with each sample at its own
+ * clock, and the extremes recorded. The shortcut smoother can
  * merge many hours into one leg, and a single end-of-leg sample then
  * reads as the whole leg's conditions; the range is what a briefing
  * card should show beside it.
