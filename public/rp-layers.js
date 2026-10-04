@@ -1875,16 +1875,19 @@ const LAYER_TOGGLES = [
   ['notesToggle', notesLayer, loadNotes, () => notesSource.clear()],
   ['seasRouteToggle', seasRouteLayer],
   ['frontToggle', frontLayer],
-  ['windToggle', windLayer, loadWindOverlay, () => windSource.clear()],
+  // The point sources are refreshed, not cleared, when turned off: clear()
+  // keeps the loaded-extent index, so turning a layer back on at the same
+  // hour and zoom would load nothing (_syncPointSource).
+  ['windToggle', windLayer, loadWindOverlay, () => windSource.refresh()],
   ['windCombinedToggle', windHeatmapLayer, loadWindHeatmap, () => windHeatmapLayer.setSource(null), windStreamlines],
   ['precipToggle', precipHeatmapLayer, loadPrecipHeatmap, () => precipHeatmapLayer.setSource(null)],
   ['temperatureToggle', temperatureLayer, loadTemperature, () => temperatureLayer.setSource(null)],
   ['sstToggle', sstLayer, loadSst, () => sstLayer.setSource(null)],
   ['pressureToggle', pressureLayer, loadPressure, () => pressureSource.clear()],
-  ['currentToggle', currentLayer, loadCurrentOverlay, () => currentSource.clear()],
-  // The two share one source: cleared only when both are off.
-  ['seasArrowsToggle', seasArrowsLayer, loadSeasArrows, () => { if (!waveArrowsLayer.getVisible()) seasSource.clear(); }],
-  ['waveArrowsToggle', waveArrowsLayer, loadWaveArrows, () => { if (!seasArrowsLayer.getVisible()) seasSource.clear(); }],
+  ['currentToggle', currentLayer, loadCurrentOverlay, () => currentSource.refresh()],
+  // The two share one source: refreshed only when both are off.
+  ['seasArrowsToggle', seasArrowsLayer, loadSeasArrows, () => { if (!waveArrowsLayer.getVisible()) seasSource.refresh(); }],
+  ['waveArrowsToggle', waveArrowsLayer, loadWaveArrows, () => { if (!seasArrowsLayer.getVisible()) seasSource.refresh(); }],
   ['currentHeatmapToggle', currentHeatmapLayer, loadCurrentHeatmap, () => currentHeatmapLayer.setSource(null)],
   ['wavesCombinedToggle', waveHeatmapLayer, loadWaveHeatmap, () => waveHeatmapLayer.setSource(null), waveStreamlines],
   ['roughnessToggle', roughnessLayer, loadRoughness, () => roughnessLayer.setSource(null)],

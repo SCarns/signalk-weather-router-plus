@@ -14,6 +14,9 @@ uses [Semantic Versioning](https://semver.org/).
   `environment.time.timezoneOffset`, (-)hhmm), else in the browser's, and
   the departure field is read and written in the same zone. Checked every
   10 minutes; a change redraws the times and keeps the departure's moment.
+  A departure typed in the hour the clocks skip (spring forward) moves on
+  past the gap (02:30 → 03:30), as the browser does with its own zone,
+  and the field shows the time used.
 - **Signal K notes on the map (#20).** Layers → Base → Signal K notes
   (on by default) shows the Resources API's notes that have a position,
   for the map view, as markers; a click shows the note's title, text and
@@ -83,6 +86,14 @@ uses [Semantic Versioning](https://semver.org/).
   carries its date ("Tue 13 Oct 21:58").
 - **"Calculating" instead of "Submitting" (#21)** on the Find Route button
   and in the Freeboard panel while a route is computed.
+
+### Fixed
+
+- **Wind barbs and current arrows came back empty** when turned off and
+  on again without moving the map: turning a point layer off cleared its
+  points but kept OpenLayers' record of the tiles already loaded, so
+  nothing was fetched again. It is now refreshed instead (also for the
+  new sea state and wave arrows, which share one tile source).
 
 ## [0.1.0-beta.8] - 2026-10-03
 
