@@ -1,5 +1,19 @@
 # What's new
 
+## 0.1.0-beta.8
+
+- **Routes across 180° with regional wind no longer fail.** A Tonga → New
+  Zealand route stopped with "Invalid typed array length" when a regional
+  wind source from signalk-grib-downloader lay on the other side of 180°.
+  It now reads the right part of that grid, and a source with nothing in
+  the route area is skipped instead of failing the route.
+- **Regional wind only where it is finer.** A downloader source is now
+  used only when its grid is finer than ECMWF's. A GFS area at 0.25° (the
+  same spacing as ECMWF) used to replace ECMWF's wind wherever it
+  covered; it is now left out, and the header says so. AROME, ARPEGE and
+  ICON-EU work as before. This also saves the time and disk a large GFS
+  area took to decode (about 540 MB on the test box).
+
 ## 0.1.0-beta.7
 
 - **Finer wind where you have it.** Install the signalk-grib-downloader

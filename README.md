@@ -21,7 +21,7 @@ much for a plugin; it lives in the separate
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
 
-**Status: beta** (0.1.0-beta.7). Please report
+**Status: beta** (0.1.0-beta.8). Please report
 problems at https://github.com/motamman/signalk-weather-router-plus/issues.
 
 What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
@@ -640,10 +640,14 @@ Freeboard panel shows the same note. The **Forecast horizon** setting
 reaches.
 
 **Regional wind (optional).** With the signalk-grib-downloader plugin
-installed (AROME, ARPEGE, ICON-EU, GFS), the plugin decodes each of its
-complete runs' 10 m wind and layers it over ECMWF: the regional model
-where it covers the point and the time, blended over five grid cells at
-its border and over its last 3 hours, ECMWF elsewhere; waves stay ECMWF.
+installed (AROME, ARPEGE, ICON-EU, GFS), the plugin decodes the 10 m
+wind of each complete run whose grid is finer than ECMWF's and layers it
+over ECMWF: the regional model where it covers the point and the time,
+blended over five grid cells at its border and over its last 3 hours,
+ECMWF elsewhere; waves stay ECMWF. A source no finer than ECMWF (GFS at
+0.25°, ECMWF's own spacing) is not decoded or used; the header lists it
+as "not used: not finer than the global forecast". A regional grid on
+either side of 180° works for routes across it.
 The job log and the summary's `regional_wind` say which model answered
 how much. `wind_model: "ecmwf"` (or unticking "Regional wind where
 available" in the Plan tab) routes on ECMWF alone. Install only the
