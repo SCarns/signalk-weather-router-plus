@@ -466,6 +466,15 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   turning it on after a run shows the search that was made. The finished
   route's fronts stay, faintly, also for a past route opened from the log.
 - **Settings tab**: the web-app settings below, in the selected units.
+- **While the server gets its forecast** (a first start, or after the
+  forecast settings changed, when the forecast is decoded again): a notice
+  under the header says what it is doing ("Loading the forecast: decoding
+  the 06Z cycle, step 12 of 37"), with a progress bar and, once measured
+  from the decode itself, the time left. The map layers wait quietly
+  meanwhile (no error notes), a route started meanwhile waits for the
+  forecast and its log shows the same progress, and when the forecast is
+  ready every layer and the units load by themselves. The Freeboard panel
+  shows the same in its status line.
 - The page references its scripts with `?v=<tag>`, a tag that changes
   whenever a file in `public/` changes, so browsers and proxies in front
   of Signal K always load the current scripts after an update.
@@ -1752,6 +1761,7 @@ Plugin, forecast, currents, tides and queue status. Access: readonly.
 | `forecast` | null until a decoded run is ready; see below |
 | `process_rss_bytes` | resident memory of the Signal K process, bytes |
 | `forecast_error` | last forecast refresh error, or null |
+| `forecast_loading` | while the data worker gets a forecast: `{phase, why, cycle, done, total, started_at, text}`. `phase`: `checking` (finding the newest ECMWF cycle) or `decoding` (step `done` of `total`, downloading what the GRIB cache lacks); `why`: `first` (no decoded run on disk yet), `redecode` (the runs on disk do not fit the forecast settings or are incomplete) or `update` (a newer cycle while the run in use keeps serving); `text`: the same as one line, e.g. `"loading the forecast: decoding the 06Z cycle, step 12 of 37 (first start)"`. Null when not loading |
 | `currents` | the data worker's current sources in priority order: `{name, priority, resolutionM, bbox, validFrom, validTo}`; the CMEMS SMOC entry adds `smoc` (run, resident and on-demand areas, memory, downloads) |
 | `currents_route_worker` | the same for the route worker |
 | `rtofs_run` | RTOFS run in use, or null |
@@ -1971,7 +1981,11 @@ joined 0.25° pressure field (`/api/pressure`), without labels. Rendered
 on the server from the saved data tiles and kept in memory (48 MB, least
 recently used first);
 `X-Tile-Cache: hit | miss` says which, and `Cache-Control` is as for the
-data tile. Errors: 400 for a bad layer, tile or time, 503 before the
+data tile. While the first forecast loads (no forecast yet, see
+`forecast_loading` in the status) every forecast layer answers at once
+with 503, `Retry-After: 10` and `{error, loading}` (the status's loading
+progress) instead of waiting behind the decode; `land` does not wait.
+Errors: 400 for a bad layer, tile or time, 503 before the
 plugin has started.
 
 #### GET /api/tile/{layer}/{z}/{x}/{y}

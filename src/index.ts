@@ -39,6 +39,7 @@ import { openApiDocument } from './plugin/openapi';
 import { registerWeatherProvider } from './plugin/weather';
 import type {
   DataStatus,
+  ForecastLoading,
   ForecastMemory,
   ForecastRunInfo,
   MainToWorker,
@@ -106,6 +107,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
   /** Current sources last reported by the data worker (name list + RTOFS run), to tell the route worker to reload. */
   let currentsKey = '';
   let forecastError: string | null = null;
+  /** The data worker's forecast loading progress (null when it is not loading one). */
+  let forecastLoading: ForecastLoading | null = null;
   /** Routes since the plugin was loaded whose corridor search failed and ran on the coarse skeleton (decision E). */
   let corridorFallbacks = 0;
   let dataStatus: DataStatus | null = null;
@@ -215,6 +218,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
       if (stopped) return;
       app.error(`${role} worker exited with code ${code}; restarting in 5 s`);
       if (role === 'route') jobs?.failRunning(`worker exited with code ${code}`);
+      // A decode in progress died with it (the restart's refresh reports afresh).
+      if (role === 'data') forecastLoading = null;
       // Only for the start this exit belongs to: after a stop and a new start
       // (whose services may still be waiting for the coastline download) the
       // new start brings up its own workers.
@@ -370,8 +375,35 @@ export = function plugin(app: SkApp): SignalKPlugin {
     } else if (forecastError) {
       app.setPluginError(`forecast unavailable: ${forecastError}`);
     } else {
-      app.setPluginStatus(`loading forecast; ${jobsSummary()}`);
+      app.setPluginStatus(`${forecastWaitText()}; ${jobsSummary()}`);
     }
+  }
+
+  /** "loading the forecast: 06Z, decoding step 12 of 37 (first start)": what a user waits for. */
+  function forecastWaitText(): string {
+    const l = forecastLoading;
+    if (!l) return 'loading the forecast';
+    const why =
+      l.why === 'first'
+        ? ' (first start)'
+        : l.why === 'redecode'
+          ? ' (the forecast on disk does not fit the current settings or is incomplete, so it is decoded again)'
+          : '';
+    if (l.phase === 'checking') return `loading the forecast: finding the newest ECMWF cycle${why}`;
+    const cyc = l.cycle ? `${l.cycle.slice(11, 13)}Z ` : '';
+    const step = l.total ? `step ${l.done} of ${l.total}` : 'starting';
+    return `loading the forecast: decoding the ${cyc}cycle, ${step}${why}`;
+  }
+
+  /**
+   * While no forecast is loaded (and none has failed for good): what the
+   * API answers map and point requests with at once, instead of queueing
+   * them behind the decode. Null once a forecast serves.
+   */
+  function forecastWait(): { error: string; loading: ForecastLoading | null } | null {
+    if (stopped || !jobs || forecastRun) return null;
+    if (!forecastLoading && forecastError) return null;
+    return { error: forecastWaitText(), loading: forecastLoading };
   }
 
   function notify(job: Job, state: 'normal' | 'alert' | 'warn', message: string): void {
@@ -457,6 +489,18 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'forecast-unchanged':
         if (role === 'data') updateStatus();
         return;
+      case 'forecast-loading': {
+        if (role !== 'data') return;
+        const prev = forecastLoading;
+        forecastLoading = msg.loading;
+        updateStatus();
+        // A route waiting for the forecast says how far it is, in the same words
+        // (a new phase, then every 5 steps, not each one).
+        const l = msg.loading;
+        if (waitingForForecast && l && (prev?.phase !== l.phase || l.done % 5 === 0 || l.done === l.total))
+          jobs?.onProgress(waitingForForecast.id, 0, 0, `waiting for the forecast: ${forecastWaitText()}`);
+        return;
+      }
       case 'refresh-error':
         if (role !== 'data') return;
         forecastError = msg.message;
@@ -712,7 +756,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       // rather than downloading its own copy of the same fields alongside.
       if (!forecastRun && !forecastError) {
         waitingForForecast = job;
-        jobs?.onProgress(job.id, 0, 0, 'waiting for the first forecast (downloading and decoding; a few minutes on a first start)');
+        jobs?.onProgress(job.id, 0, 0, `waiting for the forecast: ${forecastWaitText()}`);
         updateStatus();
         return;
       }
@@ -746,6 +790,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     tidesRun = null;
     tiles = null;
     forecastRun = null;
+    forecastLoading = null;
     routeForecastMemory = null;
     smocShared = null;
     harmonicShared = null;
@@ -765,6 +810,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         return jobs;
       },
       notReady: notStartedReason,
+      forecastWait,
       status: () => ({
         plugin: PLUGIN_ID,
         started: !stopped,
@@ -818,6 +864,18 @@ export = function plugin(app: SkApp): SignalKPlugin {
         overlay_tiles: tiles ? { ...tiles.store.stats(), inflight: tiles.inflightCount } : null,
         overlay_prebuild: prebuilder ? prebuilder.status() : null,
         starting: !jobs && !stopped ? notStartedReason() : null,
+        // What the data worker is doing to get a forecast; also while a newer cycle decodes behind the one in use.
+        forecast_loading: forecastLoading
+          ? {
+              phase: forecastLoading.phase,
+              why: forecastLoading.why,
+              cycle: forecastLoading.cycle,
+              done: forecastLoading.done,
+              total: forecastLoading.total,
+              started_at: forecastLoading.startedAt,
+              text: forecastWaitText(),
+            }
+          : null,
         coastline: {
           configured: pluginOptions?.landShapefiles?.trim() ? pluginOptions.landShapefiles : null,
           in_use: config?.landShapefiles ?? null,

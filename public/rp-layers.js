@@ -3,7 +3,7 @@
 // drawn on canvas, or the plugin's PNG tiles), streamlines, pressure, the
 // layer toggles and the legends box. rp-plan.js imports what it uses.
 
-import { _apiErrorText, _fmt, API, authFetch, AuthGate, fmtPressure, fmtWhen, fromClockInput, KT_MS, TACK_COLOR, tackSide, UNIT_MISSING, unitDesc } from './rp-core.js';
+import { _apiError, _apiErrorText, _fmt, API, authFetch, AuthGate, fmtPressure, fmtWhen, forecastWaiting, fromClockInput, KT_MS, TACK_COLOR, tackSide, UNIT_MISSING, unitDesc } from './rp-core.js';
 
 // --- Marker features and route sources (drawn by the layers below, placed by rp-plan.js) ---
 // --- Marker features ---
@@ -432,8 +432,16 @@ function _viewBBox() {
 // box next to the layer that could not load.
 const _overlayNotes = {};
 function _noteOverlay(key, msg) {
+  // While the server gets its first forecast every layer waits: the banner says so, not each legend row.
+  if (msg && forecastWaiting()) return;
   if (msg) _overlayNotes[key] = msg; else delete _overlayNotes[key];
   updateLegends();
+}
+// A layer's load failed: logged and noted on its legend row, unless it is only waiting for the forecast.
+function _overlayFailed(label, keys, err) {
+  if (err.name === 'AbortError' || err.message === 'auth-gate-tripped' || err.waiting || forecastWaiting()) return;
+  console.log(label + ' error: ' + err.message);
+  for (const k of keys) _noteOverlay(k, err.message);
 }
 function _bboxParam(b) { return b.map(v => +v.toFixed(5)).join(','); }
 
@@ -472,7 +480,7 @@ function _pointTileSource(tileLayer, toggleId, toFeature, attributions) {
           success(features);
         })
         .catch(err => {
-          if (err.message !== 'auth-gate-tripped') { console.log(tileLayer + ' tile error: ' + err.message); for (const id of toggles) _noteOverlay(id, err.message); }
+          _overlayFailed(tileLayer + ' tile', toggles, err);
           fail();
         });
     },
@@ -982,7 +990,7 @@ function fetchField(layer, channel) {
   const ext3857 = map.getView().calculateExtent(map.getSize());
   const res = _fieldRes(bbox);
   const url = API + '/field?layer=' + layer + '&bbox=' + _bboxParam(bbox) + '&time=' + encodeURIComponent(_overlayTimeIso()) + '&res=' + res;
-  return authFetch(url, {}, channel).then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+  return authFetch(url, {}, channel).then(r => r.ok ? r.json() : _apiError(r).then(e => Promise.reject(e)))
     .then(g => { if (g && typeof g === 'object') g._ext3857 = ext3857; return g; });
 }
 // Tide-height stops as drawn (auto-scaled), for the legend.
@@ -1010,7 +1018,7 @@ async function _tileFetch(url) {
   if (AuthGate.tripped) throw new Error('auth-gate-tripped');
   const r = await fetch(url, { credentials: 'same-origin' });
   if (r.status === 401) { AuthGate.trip(401); throw new Error('auth 401'); }
-  if (!r.ok) throw new Error(await _apiErrorText(r));
+  if (!r.ok) throw await _apiError(r);
   return r;
 }
 // A tile's JSON body; an empty or unparsable body (a damaged saved tile)
@@ -1149,7 +1157,7 @@ function _colourTileSource(layer, spec, hourIso) {
         canvas.getContext('2d').putImageData(new ImageData(_paintTile(g, spec, mask, ext, x * OVERLAY_TILE_PX, y * OVERLAY_TILE_PX), OVERLAY_TILE_PX, OVERLAY_TILE_PX), 0, 0);
         tile.setImage(canvas);
       }).catch(err => {
-        if (err.message !== 'auth-gate-tripped') { console.log(spec.tileLayer + ' tile error: ' + err.message); _noteOverlay(spec.toggleId, err.message); }
+        _overlayFailed(spec.tileLayer + ' tile', [spec.toggleId], err);
         tile.setState(3);   // TileState.ERROR
       });
     },
@@ -1308,7 +1316,7 @@ function _doLoadPressure() {
   authFetch(url, {}, 'pressure')
     .then(r => {
       if (r.status === 304) return null;
-      if (!r.ok) return _apiErrorText(r).then(t => Promise.reject(new Error(t)));
+      if (!r.ok) return _apiError(r).then(e => Promise.reject(e));
       return r.json();
     })
     .then(fc => {
@@ -1322,7 +1330,7 @@ function _doLoadPressure() {
       });
       pressureSource.addFeatures(features);
     })
-    .catch(err => { if (err.name !== 'AbortError') { console.log('Pressure overlay error: ' + err); _noteOverlay('pressureToggle', err.message); } });
+    .catch(err => _overlayFailed('Pressure overlay', ['pressureToggle'], err));
 }
 
 // ─────────── Streamlines (animated canvas overlay) ───────────
@@ -1394,7 +1402,7 @@ function _streamlines(spec) {
         const N = 1500;
         this.particles = new Array(N);
         for (let i = 0; i < N; i++) this.particles[i] = this._spawn();
-      }).catch(err => { if (err.name !== 'AbortError') console.log(this.spec.label + ':', err.message); })
+      }).catch(err => { if (err.name !== 'AbortError' && !err.waiting && !forecastWaiting()) console.log(this.spec.label + ':', err.message); })
         .finally(() => { this.fetching = false; });
     },
 
@@ -1914,6 +1922,20 @@ for (const [id, layer, load, clear, streamlines, persist = true] of LAYER_TOGGLE
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 }
+// The first forecast is ready (rp-core.js): every visible layer afresh,
+// since their tiles failed or waited meanwhile. Colour layers get a new
+// source, point layers forget the tiles they tried, the legend notes go.
+window.addEventListener('rp:forecast-ready', () => {
+  for (const k of Object.keys(_overlayNotes)) delete _overlayNotes[k];
+  for (const [id, layer, , clear] of LAYER_TOGGLES) {
+    const el = document.getElementById(id);
+    // Notes come from Signal K, not the forecast: they stay.
+    if (id !== 'notesToggle' && el && el.checked && layer && layer.getVisible() && clear) clear();
+  }
+  for (const src of [currentSource, windSource, seasSource]) src.refresh();
+  reloadOverlays({ currents: true, streamlines: true });
+  updateLegends();
+});
 // The Decision lines switch beside Find Route is the same switch as the one
 // in Layers → Base: either drives the other, and the saved state is one.
 {

@@ -84,7 +84,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         get: {
           summary: 'Plugin, forecast (decoded run on disk, memory held), currents, overlay land cache and queue status',
           description:
-            'Top level: plugin, started, workers {data, route}, forecast, forecast_error, currents, currents_route_worker, rtofs_run, overlay_land, overlay_tiles, overlay_prebuild, ' +
+            'Top level: plugin, started, workers {data, route}, forecast, forecast_error, forecast_loading, currents, currents_route_worker, rtofs_run, overlay_land, overlay_tiles, overlay_prebuild, ' +
             'weather_provider_registered, jobs, vessel, polar, land, harmonic_dir, extra_fields, tides, tides_enabled, tides_error, process_rss_bytes. ' +
             '`forecast` (null until a run is ready): {cycle, model, valid_from, valid_to, steps, params, coverage, storage: "decoded-on-disk", loaded_at, has_waves, ' +
             'source: "disk" (a complete decoded run was already on disk, no decode) | "grib" (decoded from the GRIB cache / download), ready_ms, fields_downloaded, ' +
@@ -102,6 +102,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             'point_cache: {entries, bytes, queries, hits}, memory_bytes, last_download, last_point_query: {at, lat, lon, bytes, chunks, downloaded, from_disk, seconds, cached} | null, ' +
             'downloaded_bytes_total, disk_cache_bytes, layouts, mean_window_days}. ' +
             '`starting`: why the plugin is not answering yet (e.g. "starting: downloading the coastline (40 %)"), null once started; 503 answers carry the same text. ' +
+            '`forecast_loading`: while a forecast is fetched and decoded {phase (checking | decoding), why (first | redecode | update), cycle, done, total, started_at, text}, else null; until the first forecast is loaded, map and point requests answer 503 at once with Retry-After and {error, loading}. ' +
             '`overlay_tiles` (null before start): saved map tiles {dir, cap_bytes, files, bytes, hits, misses, writes, not_kept, generations, inflight}. ' +
             '`overlay_prebuild` (null before start): tiles built ahead of time {enabled, workers, workers_ready, paused, areas: [{kind: "view" | "boat", lat, lon, radius_m}], ' +
             'window: {from, to} | null, max_zoom, walk_started_at, seen, built, skipped, not_kept, errors, last_error, at: {area, hour, z} | null, complete, built_total, build_ms_avg}.',

@@ -379,7 +379,8 @@ export async function authFetch(url, opts, channel) {
     await _rateAcquire(ctrl.signal);
     if (AuthGate.tripped) throw new Error('auth-gate-tripped');
     const r = await fetch(url, opts);
-    _rateNote(r.ok || r.status === 400 || r.status === 404 || r.status === 409 || r.status === 422 || r.status === 403);
+    // 503 too: "still loading the forecast" is a prompt answer from a working server, not a failure to back off from.
+    _rateNote(r.ok || r.status === 400 || r.status === 404 || r.status === 409 || r.status === 422 || r.status === 403 || r.status === 503);
     if (r.status === 401) {
       AuthGate.trip(r.status);
       const err = new Error('auth ' + r.status);
@@ -406,6 +407,19 @@ export async function authFetch(url, opts, channel) {
 }
 
 // Error text out of a plugin JSON error body ({error} or {message}).
+/**
+ * The Error for a failed API answer. A 503 that carries `loading` (the
+ * server is still getting its first forecast) is marked `waiting`: it is
+ * not a failure, and it tells the page to check the status now, since a
+ * map tile can get this answer before the page's first status check.
+ */
+export async function _apiError(r) {
+  let d = null;
+  try { d = await r.clone().json(); } catch (_) { /* not JSON */ }
+  const err = new Error(d && (d.error || d.message) ? unitText(String(d.error || d.message)) : 'HTTP ' + r.status);
+  if (r.status === 503 && d && 'loading' in d) { err.waiting = true; _serverWaiting(); }
+  return err;
+}
 export async function _apiErrorText(r) {
   try {
     const d = await r.clone().json();
@@ -1065,7 +1079,9 @@ function _regionalWind(r, area) {
 function _statusLine(s) {
   const f = s.forecast;
   if (s.starting) return '<span class="warn">' + unitTextHtml(s.starting) + '</span>';
-  if (!f) return '<span class="warn">no forecast loaded</span>' + (s.forecast_error ? ': ' + unitTextHtml(s.forecast_error) : ' (loading)');
+  if (!f) return s.forecast_error && !s.forecast_loading
+    ? '<span class="warn">no forecast loaded</span>: ' + unitTextHtml(s.forecast_error)
+    : '<span class="warn">loading the forecast</span> (see below)';
   const area = _area();
   const run = escapeHtml(f.model || 'forecast') + ' <span class="nowrap">' + _shortUtc(f.cycle) + ' → ' + _shortLocal(f.valid_to) + '</span>';
   // Only the current sources that apply to the route or the map view. SMOC
@@ -1088,6 +1104,62 @@ function _statusLine(s) {
     + (s.forecast_error ? '<br><span class="warn">' + unitTextHtml(s.forecast_error) + '</span>' : '');
 }
 let _statusSoon = null;
+
+// ─────────── Waiting for the server (first forecast, coastline) ───────────
+// While the server has no forecast yet (a first start, or a decode after
+// the forecast settings changed) every map layer and route waits on it:
+// one calm banner says what it is doing and how far it is, the layers stay
+// quiet instead of failing one by one, and everything reloads by itself
+// when it is ready ('rp:forecast-ready').
+let _waiting = false;
+let _loadRate = null;   // { cycle, t0, d0 }: the first progress seen, for a measured time left
+/** Is the server still getting its first forecast (or starting)? Layers keep quiet meanwhile. */
+export function forecastWaiting() { return _waiting; }
+function _waitText(s) {
+  if (s.starting) return unitText(s.starting);
+  const l = s.forecast_loading;
+  if (l && l.text) return unitText(l.text.charAt(0).toUpperCase() + l.text.slice(1));
+  return 'Loading the forecast';
+}
+function _showBanner(s) {
+  const el = document.getElementById('loadingBanner');
+  if (!el) return;
+  if (!_waiting) { el.hidden = true; _loadRate = null; return; }
+  const l = !s.starting ? s.forecast_loading : null;
+  let text = _waitText(s);
+  const bar = el.querySelector('.lb-bar'), fill = el.querySelector('.lb-fill');
+  if (l && l.phase === 'decoding' && l.total) {
+    bar.hidden = false;
+    fill.style.width = Math.round((100 * l.done) / l.total) + '%';
+    // Time left from the rate measured here (not a guess): after 3 steps seen.
+    if (!_loadRate || _loadRate.cycle !== l.cycle || l.done < _loadRate.d0) _loadRate = { cycle: l.cycle, t0: Date.now(), d0: l.done };
+    const steps = l.done - _loadRate.d0;
+    // Shown only when it reads as something in the user's time unit (2 minutes is "0.0 hour").
+    const tu = UI_UNITS.time;
+    if (steps >= 3 && tu) {
+      const left = ((Date.now() - _loadRate.t0) / 1000 / steps) * (l.total - l.done);
+      if (tu.fn(left) >= 1) text += ' · about ' + _fmt(left, 'time') + ' left';
+    }
+  } else bar.hidden = true;
+  el.querySelector('.lb-text').textContent = text;
+  el.hidden = false;
+}
+// A "still loading" answer arrived before the status said so: wait now, check the status at once.
+let _waitCheck = null;
+function _serverWaiting() {
+  _waiting = true;
+  if (!_waitCheck) _waitCheck = setTimeout(() => { _waitCheck = null; loadPluginStatus(); }, 200);
+}
+function _noteWaiting(s) {
+  const was = _waiting;
+  _waiting = !!s.starting || (!s.forecast && (!s.forecast_error || !!s.forecast_loading));
+  _showBanner(s);
+  if (was && !_waiting) {
+    // Ready: units may have failed to load in the rush; then every layer afresh.
+    loadUnitPreferences();
+    window.dispatchEvent(new Event('rp:forecast-ready'));
+  }
+}
 // ─────────── Plugin status (header line + Forecast data section) ───────────
 export function loadPluginStatus() {
   const el = document.getElementById('dataStatus');
@@ -1097,9 +1169,10 @@ export function loadPluginStatus() {
     .then(s => {
       _lastStatus = s;
       if (el) el.innerHTML = _statusLine(s);
+      _noteWaiting(s);
       // First start (coastline, first forecast): check again soon, not in 30 s.
       clearTimeout(_statusSoon);
-      if (s.starting || !s.forecast) _statusSoon = setTimeout(loadPluginStatus, 5000);
+      if (_waiting) _statusSoon = setTimeout(loadPluginStatus, 5000);
       if (fi) {
         const f = s.forecast;
         fi.innerHTML = f
@@ -1113,7 +1186,13 @@ export function loadPluginStatus() {
       }
       window.dispatchEvent(new Event('rp:status'));
     })
-    .catch(e => { if (el) el.innerHTML = '<span class="err">status unavailable</span>: ' + e.message; });
+    .catch(e => {
+      // A status request replaced by a newer one is not a failure.
+      if (e.name === 'AbortError' || e.message === 'auth-gate-tripped') return;
+      // While the server is busy getting its forecast a slow answer is expected: keep waiting.
+      if (_waiting) { clearTimeout(_statusSoon); _statusSoon = setTimeout(loadPluginStatus, 5000); return; }
+      if (el) el.innerHTML = '<span class="err">status unavailable</span>: ' + e.message;
+    });
 }
 loadPluginStatus();
 setInterval(loadPluginStatus, 30000);

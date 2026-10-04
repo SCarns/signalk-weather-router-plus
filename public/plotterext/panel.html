@@ -415,14 +415,28 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
 
   // ---- plugin status ------------------------------------------------------
   var statusTimer = null;
+  var waiting = false;      // the server is still getting its first forecast (the web app's banner, in one line)
   function pollStatus() {
     get(API + '/status').then(function (s) {
-      if (s.starting) { setStatus(s.starting); scheduleStatus(5000); return; }
-      if (s.forecast_error && !s.forecast) { setStatus('Forecast: ' + s.forecast_error, 'error'); scheduleStatus(30000); return; }
-      if (!s.forecast) { setStatus('Waiting for the first forecast…'); scheduleStatus(5000); return; }
+      waiting = !!s.starting || (!s.forecast && (!s.forecast_error || !!s.forecast_loading));
+      if (s.starting) { setStatus(s.starting + ' · routes start by themselves when it is ready'); scheduleStatus(5000); return; }
+      if (s.forecast_error && !s.forecast && !s.forecast_loading) { setStatus('Forecast: ' + s.forecast_error, 'error'); scheduleStatus(30000); return; }
+      if (!s.forecast) {
+        var l = s.forecast_loading;
+        var text = l && l.text ? l.text.charAt(0).toUpperCase() + l.text.slice(1) : 'Loading the forecast';
+        if (l && l.phase === 'decoding' && l.total) text += ' (' + Math.round((100 * l.done) / l.total) + ' %)';
+        setStatus(text + ' · routes start by themselves when it is ready');
+        scheduleStatus(5000);
+        return;
+      }
       setStatus('Forecast ' + (s.forecast.cycle ? 'cycle ' + fmtTime(s.forecast.cycle) : 'ready'));
       scheduleStatus(60000);
-    }).catch(function (e) { setStatus('Weather Router Plus: ' + e.message, 'error'); scheduleStatus(15000); });
+    }).catch(function (e) {
+      // A slow answer while the server is busy with its forecast is expected: keep the waiting line.
+      if (waiting) { scheduleStatus(5000); return; }
+      setStatus('Weather Router Plus: ' + e.message, 'error');
+      scheduleStatus(15000);
+    });
   }
   function scheduleStatus(ms) { clearTimeout(statusTimer); statusTimer = setTimeout(pollStatus, ms); }
 

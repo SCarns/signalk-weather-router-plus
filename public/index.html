@@ -343,6 +343,15 @@
   #dataStatus .statusKey { color: var(--tack-starboard); font-weight: 600; }
   #dataStatus .warn { color: var(--warn); font-weight: 600; }
   #dataStatus .err { color: var(--danger); font-weight: 600; }
+  #loadingBanner {
+    margin: 0 0 var(--s-2); padding: var(--s-2) var(--s-3);
+    border: 1px solid var(--border-hard); border-left: 3px solid var(--go); border-radius: 6px;
+    background: var(--surface-2); color: var(--text); font-size: var(--f-xs); line-height: 1.45;
+  }
+  #loadingBanner .lb-text { font-weight: 600; }
+  #loadingBanner .lb-bar { height: 6px; margin: var(--s-1) 0; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+  #loadingBanner .lb-fill { height: 100%; width: 0; background: var(--go); transition: width 0.6s ease; }
+  #loadingBanner .lb-note { color: var(--text-2); }
   .sm-btn {
     background: var(--surface-2); color: var(--text); border: 1px solid var(--border-hard);
     border-radius: var(--r-sm); padding: 4px 10px; font: inherit; font-size: var(--f-xs); cursor: pointer;
@@ -574,6 +583,12 @@
   <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
     <h3 style="margin:0;">Weather Router Plus</h3>
     <div id="dataStatus">loading status…</div>
+  </div>
+  <!-- While the server gets its first forecast (or the coastline): one calm notice instead of failing layers (rp-core.js). -->
+  <div id="loadingBanner" role="status" aria-live="polite" hidden>
+    <div class="lb-text"></div>
+    <div class="lb-bar" hidden><div class="lb-fill"></div></div>
+    <div class="lb-note">Map layers and routes start by themselves when it is ready; there is nothing to do or reload.</div>
   </div>
 
   <div id="tabBar" role="tablist">

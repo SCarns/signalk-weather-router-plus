@@ -118,6 +118,19 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Waiting for the forecast is said once, calmly.** While the server gets
+  its first forecast (a first start, or a decode after the forecast
+  settings changed, e.g. the new gust and cloud cover fields), the web app
+  shows one notice with the progress ("decoding the 06Z cycle, step 12 of
+  37"), a progress bar and the time left measured from the decode; the
+  map layers no longer fail one by one with "query timed out" after
+  120 s, and everything (layers, units) reloads by itself when the
+  forecast is ready. Map and point requests are answered at once with 503,
+  `Retry-After` and the progress; `/api/status` has `forecast_loading`;
+  the Signal K plugin status, a waiting route's log and the Freeboard
+  panel show the same progress. A 503 no longer winds up the web app's
+  request backoff.
+
 - **The shortcut smoother is off by default** (`routing.smoother`). It
   can still be turned on in the settings or per request (`smoother`).
 

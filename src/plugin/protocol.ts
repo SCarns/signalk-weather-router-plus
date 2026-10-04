@@ -188,6 +188,24 @@ export interface LandCacheStatus {
   last_build_ms: number;
 }
 
+/**
+ * What the data worker is doing to get a forecast (null when idle):
+ * finding the cycle, then decoding it step by step (downloading what is
+ * not in the GRIB cache). `why`: no decoded run on disk yet ('first'), the
+ * runs on disk do not fit the settings or are incomplete ('redecode'), or a
+ * newer cycle while a run serves ('update').
+ */
+export interface ForecastLoading {
+  phase: 'checking' | 'decoding';
+  why: 'first' | 'redecode' | 'update';
+  /** The cycle being decoded (ISO), once known. */
+  cycle: string | null;
+  /** Steps decoded and written, and of how many (0 / null until the first step). */
+  done: number;
+  total: number | null;
+  startedAt: string;
+}
+
 export interface DataStatus {
   forecast: {
     cycle: string;
@@ -287,6 +305,8 @@ export type WorkerToMain =
   /** route worker: forecast memory it holds (the corridor store while a route runs). */
   | { type: 'forecast-memory'; memory: ForecastMemory }
   | { type: 'refresh-error'; message: string }
+  /** data worker: forecast loading progress (null when it stops, done or failed). */
+  | { type: 'forecast-loading'; loading: ForecastLoading | null }
   | { type: 'currents'; status: DataStatus['currents']; rtofsRun: string | null }
   | { type: 'data-status'; status: DataStatus }
   /** data worker: SMOC run / resident area changed (SharedArrayBuffer views: relaying shares, not copies). */
