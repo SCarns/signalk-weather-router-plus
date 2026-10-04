@@ -70,7 +70,7 @@ export {
   type PropagatorOptions,
   type Via,
 } from './search/types';
-export { enrichWaypoints } from './search/enrich';
+export { enrichLegRanges, enrichWaypoints } from './search/enrich';
 
 export class OceanPropagator {
   readonly K: number;

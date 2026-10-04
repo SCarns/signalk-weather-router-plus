@@ -22,7 +22,14 @@ import { CorridorError, mergeVias, planCorridor, type ChainVia, type Corridor } 
 import { NoWind, type CurrentSource, type WindSource } from './environment';
 import type { ModePolicy } from './legsim';
 import { legLabel, type LegPlan } from './multileg';
-import { enrichWaypoints, OceanPropagator, RouteCancelled, ViasNotCrossedError, type PropagatorOptions } from './propagator';
+import {
+  enrichLegRanges,
+  enrichWaypoints,
+  OceanPropagator,
+  RouteCancelled,
+  ViasNotCrossedError,
+  type PropagatorOptions,
+} from './propagator';
 import type { ProgressFn } from './progress';
 import { recomputePerWaypointMetadata, type Route, type StageFront } from './route';
 import { rdpSimplify, recomputeTotals, revalidateLand, shortcutSmoother } from './smoother';
@@ -209,6 +216,9 @@ export async function runLegPipeline(
       `${tag}simplified: ${nRdp} waypoint(s) within {length:${inp.simplifyM}} of a straight line, ${nSm} replaced by straight shortcuts; ${r.waypoints.length} left`
     );
   }
+  // The wind/wave range of each leg, for the briefing cards: a smoothed
+  // leg can span many hours, where one end-of-leg sample misleads.
+  enrichLegRanges(r, legWind ?? new NoWind());
   if (legWind) {
     const lastValid = legWind.validRange[1].getTime();
     r.forecastValidToMs = lastValid;
