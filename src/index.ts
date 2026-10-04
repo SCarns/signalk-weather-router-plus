@@ -13,6 +13,7 @@
  * none of it: forecast reads happen in the workers.
  */
 
+import { avoidAreasFromNotes, type AvoidArea } from './geo/avoid';
 import { MINUTE_MS } from './geo/units';
 import * as path from 'node:path';
 import type { IRouter } from 'express';
@@ -73,6 +74,7 @@ interface SkApp {
   }) => void;
   resourcesApi?: {
     setResource: (type: string, id: string, data: Record<string, unknown>, providerId?: string) => Promise<void>;
+    listResources?: (type: string, params: Record<string, unknown>, providerId?: string) => Promise<Record<string, unknown>>;
   };
 }
 
@@ -139,6 +141,34 @@ export = function plugin(app: SkApp): SignalKPlugin {
     return 'starting';
   }
 
+  /**
+   * Send a job to the route worker, with the areas to avoid marked on Signal K
+   * notes (read here: the workers have no Resources API). With avoidance on,
+   * notes that cannot be read fail the job rather than route without them.
+   */
+  async function dispatchRoute(job: Job): Promise<void> {
+    let avoid: AvoidArea[] = [];
+    if (job.request.avoid_areas !== false) {
+      let failure: string | null = null;
+      if (!app.resourcesApi?.listResources) failure = 'this Signal K server has no Resources API to read notes from';
+      else {
+        try {
+          avoid = avoidAreasFromNotes(await app.resourcesApi.listResources('notes', {}));
+        } catch (err) {
+          failure = `the Signal K notes could not be read (${(err as Error).message})`;
+        }
+      }
+      if (failure) {
+        if (!jobs || jobs.runningId !== job.id) return; // cancelled meanwhile
+        jobs.onError(job.id, `${failure}, so the areas to avoid are unknown; try again, or turn off Avoid marked areas`);
+        updateStatus();
+        return;
+      }
+    }
+    if (!jobs || jobs.runningId !== job.id) return; // cancelled meanwhile
+    pool.post('route', { type: 'route', id: job.id, request: job.request, avoid });
+  }
+
   /** Send a job waiting for the first forecast to the route worker. */
   function releaseWaitingJob(note: string): void {
     const job = waitingForForecast;
@@ -147,7 +177,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     // It may have failed meanwhile (route worker crash/exit: failRunning).
     if (!jobs || jobs.runningId !== job.id || jobs.get(job.id)?.status !== 'running') return;
     jobs.onProgress(job.id, 0, 0, note);
-    pool.post('route', { type: 'route', id: job.id, request: job.request });
+    void dispatchRoute(job);
   }
 
   /** The resolved config, with the downloaded coastline when none is configured. */
@@ -686,7 +716,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         updateStatus();
         return;
       }
-      pool.post('route', { type: 'route', id: job.id, request: job.request });
+      void dispatchRoute(job);
       updateStatus();
     });
     for (const role of ['data', 'route'] as MainRole[]) {

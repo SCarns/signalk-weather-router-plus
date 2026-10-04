@@ -195,7 +195,8 @@ export async function prepareSmocForQuery(st: WorkerState, kind: string, args: Q
       coarseOk = a.res >= 0.25;
       break;
     }
-    case 'currents': {
+    case 'currents':
+    case 'sea_points': {
       const a = args as QueryArgs['currents'];
       bbox = a.bbox;
       steps = src.bracketSteps(a.timeMs);

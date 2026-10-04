@@ -307,9 +307,47 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   function fmtLatLon(lat, lon) {
     return Math.abs(lat).toFixed(4) + (lat >= 0 ? '°N ' : '°S ') + Math.abs(lon).toFixed(4) + (lon >= 0 ? '°E' : '°W');
   }
+  // Clock times in the ship's zone when the Signal K server publishes one
+  // (environment.time.timezoneRegion, else timezoneOffset), else the
+  // browser's, as in the web app; with the date when a day or more away.
+  var shipZone = null;   // { tz } | { offsetMin } | null
+  function loadShipTime() {
+    return fetch('/signalk/v1/api/vessels/self/environment/time', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; })
+      .then(function (t) {
+        var val = function (n) { return n && typeof n === 'object' && 'value' in n ? n.value : n; };
+        var region = t ? val(t.timezoneRegion) : null, offset = t ? val(t.timezoneOffset) : null, z = null;
+        if (typeof region === 'string' && region) { try { new Intl.DateTimeFormat([], { timeZone: region }); z = { tz: region }; } catch (_) { z = null; } }
+        if (!z && typeof offset === 'number' && isFinite(offset) && Math.abs(offset) <= 1400) {
+          var a = Math.abs(offset);
+          z = { offsetMin: (offset < 0 ? -1 : 1) * (Math.floor(a / 100) * 60 + (a % 100)) };
+        }
+        shipZone = z;
+      });
+  }
+  function fmtClock(d, opts) {
+    if (shipZone && shipZone.tz) return d.toLocaleString(undefined, Object.assign({}, opts, { timeZone: shipZone.tz }));
+    if (shipZone && shipZone.offsetMin != null) return new Date(d.getTime() + shipZone.offsetMin * 60000).toLocaleString(undefined, Object.assign({}, opts, { timeZone: 'UTC' }));
+    return d.toLocaleString(undefined, opts);
+  }
   function fmtTime(iso) {
     var d = new Date(iso);
-    return isNaN(d) ? '' : d.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+    if (isNaN(d)) return '';
+    var far = Math.abs(d.getTime() - Date.now()) >= LONG_DURATION_S * 1000;
+    return fmtClock(d, far ? { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' } : { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  }
+  // Durations of a day or more as days, hours and minutes (Signal K's
+  // duration-compact, "9d 7h 0m") whatever the time unit: a deliberate
+  // exception to the unit preference, for durations only, as in the web app.
+  var LONG_DURATION_S = 86400;
+  function longDuration(s) {
+    if (!fin(s) || Math.abs(s) < LONG_DURATION_S) return null;
+    // As Signal K's formatDurationCompact (../rp-units.js): only the parts that are not zero.
+    var a = Math.floor(Math.abs(s) / 60), d = Math.floor(a / 1440), h = Math.floor((a % 1440) / 60), m = a % 60, out = [];
+    if (d) out.push(d + 'd');
+    if (h) out.push(h + 'h');
+    if (m || !out.length) out.push(m + 'm');
+    return (s < 0 ? '-' : '') + out.join(' ');
   }
   // ---- units ----------------------------------------------------------------
   // The plugin sends Signal K base units (m, m/s, s, rad, B, ratio; angles
@@ -336,6 +374,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   }
   // A base-unit value in the user's unit, or null when the unit is unresolved.
   function fmtQ(cat, si, sig) {
+    if (cat === 'time' && longDuration(si)) return longDuration(si);
     var c = unitOf(cat);
     if (!c || !fin(si)) return null;
     if (c.text) return c.text(si);
@@ -480,7 +519,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     $('restore').hidden = !(result && result.original);
   }
   function startJob(body, onDone) {
-    $('progress').textContent = 'Submitting…';
+    $('progress').textContent = 'Calculating the route…';
     hideResultForRun();
     refreshRouteIt(); refreshFind();
     return post(API + '/routes', body).then(function (r) {
@@ -684,7 +723,42 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     out.tack = out.mode === 'sailing' ? tackSide(out.cogDeg, out.windDir) : null;
     out.curMs = n.current_ms; out.curDir = n.current_dir_deg;
     out.swh = n.swh_m; out.mwp = n.mwp_s; out.mwd = n.mwd_deg;
+    out.seasSector = n.seas_sector; out.seasSide = n.seas_side; out.encounter = n.encounter_index;
     return out;
+  }
+  // The sea-state bands on the sea-state heatmap's colour scale, as the web
+  // app draws them (rp-layers.js seaBand): from /api/legends, each band in
+  // the stop nearest its middle, shifted 15 % darker. [hi, name, colour].
+  var SEA_BANDS = null;
+  function shade(hex, f) {
+    var n = parseInt(hex.slice(1), 16);
+    function c(sh) { var t = Math.round(((n >> sh) & 255) * (1 - f)).toString(16); return t.length < 2 ? '0' + t : t; }
+    return '#' + c(16) + c(8) + c(0);
+  }
+  function loadSeaBands() {
+    return get(API + '/legends').then(function (d) {
+      var L = d && d.sea_state;
+      if (!L || !L.bands || !L.stops) return;
+      SEA_BANDS = L.bands.map(function (b, i) {
+        var hi = i + 1 < L.bands.length ? L.bands[i + 1][0] : Infinity;
+        var mid = (b[0] + (isFinite(hi) ? hi : L.stops[L.stops.length - 1][0])) / 2;
+        var best = L.stops[0][1], bd = Infinity;
+        L.stops.forEach(function (s) { var dd = Math.abs(s[0] - mid); if (dd < bd) { bd = dd; best = s[1]; } });
+        return [hi, b[1], shade(best, 0.15)];
+      });
+    }).catch(function () {});
+  }
+  function seaBand(idx) {
+    if (!fin(idx) || !SEA_BANDS) return null;
+    for (var i = 0; i < SEA_BANDS.length; i++) if (idx < SEA_BANDS[i][0]) return SEA_BANDS[i];
+    return SEA_BANDS[SEA_BANDS.length - 1];
+  }
+  // "on the port bow · rough (128)": where the waves meet the boat on the leg and the encounter index.
+  function seasText(l) {
+    if (!l.seasSector && !fin(l.encounter)) return null;
+    var where = l.seasSector === 'head' ? 'head seas' : l.seasSector === 'following' ? 'following seas' : l.seasSector ? 'on the ' + (l.seasSide ? l.seasSide + ' ' : '') + l.seasSector : '';
+    var b = seaBand(l.encounter);
+    return [where, b ? b[1] + ' (' + Math.round(l.encounter) + ')' : fin(l.encounter) ? String(Math.round(l.encounter)) : ''].filter(Boolean).join(' · ');
   }
   // [label, value, class?] rows of a leg card, in the host's units; a quantity whose unit the host does not give is left out.
   function legFields(l) {
@@ -711,6 +785,8 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       if (fin(l.mwd)) wv.push('from ' + cardinal(l.mwd) + ' ' + fmtAngle(l.mwd));
       rows.push(['Waves', wv.join(' · ')]);
     }
+    var st = l.last ? null : seasText(l);
+    if (st) rows.push(['Seas', st]);
     return rows;
   }
   // One line per point, for the chartplotter's point descriptions (Info and Points views).
@@ -739,6 +815,12 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   // (wind with the point of sail, current fair or foul, waves). A tap on a
   // card centres the chart on that waypoint.
   var legPoints = [];   // [lon, lat] of each card's waypoint, for following the boat
+  function seasRow(l) {
+    var t = seasText(l), b = seaBand(l.encounter);
+    // An outlined chip in the band's colour (the middle of the scale is too pale for text).
+    var chip = b ? '<span style="display:inline-block;width:9px;height:9px;border-radius:2px;border:1px solid #0f172a;background:' + b[2] + ';margin-right:4px;"></span>' : '';
+    return t ? '<div class="cond"><span class="ck">Seas</span><span>' + chip + esc(t) + '</span></div>' : '';
+  }
   function condRow(label, text, cls) {
     return text ? '<div class="cond' + (cls ? ' ' + cls : '') + '"><span class="ck">' + esc(label) + '</span><span>' + esc(text) + '</span></div>' : '';
   }
@@ -767,7 +849,8 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         + stat(fin(l.sogMs) ? fmtSpeed(l.sogMs) : null, 'SOG')
         + stat(fin(l.cogDeg) ? cardinal(l.cogDeg) + ' ' + fmtAngle(l.cogDeg) : null, 'COG')
         + '</div>')
-      + '<div class="leg-cond">' + condRow('Wind', wind) + condRow('Current', cur, ff) + condRow('Waves', waves) + '</div>'
+      + '<div class="leg-cond">' + condRow('Wind', wind) + condRow('Current', cur, ff) + condRow('Waves', waves)
+        + (l.last ? '' : seasRow(l)) + '</div>'
       + (chips ? '<div class="leg-chips">' + chips + '</div>' : '');
   }
   function renderItinerary(feats, points) {
@@ -1129,6 +1212,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     unitsReady = Promise.all([
       host.has('units') ? host.call('units.get').then(function (r) { units = r.units || null; }).catch(function () {}) : Promise.resolve(),
       loadSkUnits(),
+      loadSeaBands(),
     ]);
     unitsReady.then(loadSailThreshDefault);
     // The host's visible routes: seed from route.list, then follow the events.
@@ -1166,6 +1250,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       if (!vessel && v) setVessel(v.latitude, v.longitude);
     }).catch(function () {});
     if (!host.has('map')) $('useCentre').hidden = true;
+    loadShipTime().then(function () { if (result && result.points) showResult(result.props, result.n); });
     pollStatus();
     loadPolars();
     loadWaypoints();

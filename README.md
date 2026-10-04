@@ -338,7 +338,23 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   saved**. **Publish** in the itinerary bar saves it to Signal K's
   Resources; a published route carries each point's leg (time, mode,
   distance, SOG, COG, wind, current, waves) as the point's description,
-  in your units, which chartplotters show with the point.
+  in your units, which chartplotters show with the point. **GPX** in the
+  same bar downloads the route as a GPX 1.1 file for plotters and apps
+  that import GPX: one route whose points carry their name (Start, WP1 …
+  End), time and leg, and the route's summary as its description.
+- **Units and times.** Every quantity follows the Signal K user's unit
+  preferences, with one deliberate exception: a duration of a day or more
+  (a passage, the sailing or motoring time, a forecast horizon) is written
+  as days, hours and minutes, Signal K's own *duration-compact* format
+  ("9d 7h"), whatever the time unit is set to, as "223.0 hour" reads
+  badly; shorter durations follow the preference. Clock times are shown
+  in **ship's time** when the Signal K server publishes it
+  (`environment.time.timezoneRegion`, an IANA zone such as
+  `Pacific/Tongatapu`, else `environment.time.timezoneOffset`, e.g. `-930`;
+  [signalk-ships-time](https://github.com/meri-imperiumi/signalk-ships-time)
+  sets them), else in the browser's time zone, and the departure field is
+  read in the same zone. A time a day or more away carries its date
+  ("Tue 13 Oct 21:58"), as a weekday alone is ambiguous on a long passage.
 - **Points of sail** in the itinerary come from the route's polar at each
   leg's wind speed: in irons tighter than the polar's no-go angle (the
   tightest angle it gives any speed, with the tightest sailable angle
@@ -365,6 +381,27 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   it), and
   **Waypoint radius** 50–2000 m, default 200 (Approximate only). See
   [Waypoints](#waypoints-legs).
+- **Signal K notes** (Layers → Base, on by default): notes from the
+  Signal K Resources API that have a position (hazards, warnings and
+  remarks, e.g. the area warnings signalk-passage-briefing adds) as
+  markers in the map view. Click one for its title, text, link, who
+  wrote it and when, and its bearing and distance from the boat, with
+  **Edit** and **Delete** (a second press confirms); drag one to move it.
+  **Add note here** in the map's click menu writes a new note at that
+  point. Notes are saved to Signal K's Resources API, so Freeboard and
+  other apps see them; writing needs a Signal K login with write access.
+- **Areas to avoid.** A note can mark the area around it to avoid: tick
+  **Avoid this area** in the note's form and give a radius. The note turns
+  red with a dashed circle, and the router treats the circle as land: no
+  candidate or leg may enter it, and a start, waypoint or destination
+  inside one is refused with a message naming the note. The radius is
+  stored in the note as `properties.avoid.radius_m` (metres), so a note
+  another plugin wrote (a passage briefing's area warning) can be marked
+  too, and other apps can read it. **Avoid marked areas** in the Plan tab
+  (on by default; `avoid_areas` in a request) turns this off for a route;
+  the job log lists the areas used. The land-avoiding corridor that guides
+  the search does not know the areas, so a circle across a narrow passage
+  can leave the search with no way through.
 - **Layers** (Base / Weather / Water): each layer is named for the
   quantity it shows. Colour layers are exclusive (one at a time). Colour
   layers, wind barbs and current arrows are drawn tile by tile from
@@ -380,6 +417,30 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   data".
 
   ![Current speed and direction in the Aegean, cut at the coastline, with "no model data" hatching in the Euboean Gulf](public/screenshots/03-layers.jpg)
+
+- **Seas along the route** (Layers → Base, on by default): an arrow on
+  each leg of the route, pointing the way the waves travel, coloured by
+  the encounter index (the sea as the boat meets it, see
+  [Comfort](#comfort-rough-water)). The leg cards and the Freeboard
+  panel show a **Seas** row for the next leg: where the waves come from
+  ("head seas", "on the starboard bow") and the encounter index's band
+  and value ("rough (112)").
+- **Sea state arrows (waves vs current)** (Layers → Water, off by
+  default): the waves against the current, from `/api/tile/seas`.
+  Arrows along the way the waves travel, coloured by the sea-state index:
+  two heads meeting in the middle where the current runs against the
+  waves (they steepen; drawn larger the more they steepen), a double
+  chevron where it runs with them, a thin arrow where there is little
+  current along them. Glyph colours follow the sea-state heatmap's scale,
+  each band in the colour of its legend swatch, shifted slightly darker
+  and outlined so the glyphs stay visible over the heatmap.
+- **Wave direction (arrows)** (Layers → Water, off by default): an arrow
+  per point along the way the waves travel, from the same
+  `/api/tile/seas` points, coloured by the significant wave height on
+  the wave-height heatmap's scale (shifted darker and outlined, as
+  above) and longer the longer the mean wave period (12 px at 4 s and
+  below to 34 px at 16 s and above), so long swell and short chop read
+  apart.
 
 - **Conditions popup** (shift-click, or the menu): 72-hour charts for
   Wind, Waves, Sea state (index / Beaufort / Douglas), **Tide & current**
@@ -467,7 +528,10 @@ and the panel runs in a sandboxed iframe served from
   (its Settings → Units; wave height follows depth), so nothing changes
   unit from one part of the Freeboard screen to another; angles, times
   and data sizes, which Freeboard has no setting for, follow your Signal
-  K unit preferences; wave periods are in seconds. Freeboard's units can
+  K unit preferences, except that a duration of a day or more is written
+  as days, hours and minutes ("9d 7h"), and clock times are in ship's
+  time when the server publishes it, as in the web app; wave periods are
+  in seconds. Freeboard's units can
   differ from your Signal K preferences, which the web app uses, until
   Freeboard adopts them (PR-8 in `docs/plans/freeboard-sk-integration.md`).
 - **Save route…** opens Freeboard's Route Details dialog and stores the
@@ -569,6 +633,31 @@ water grid:
    as a branch is inside the waypoint's circle); the terminal is chosen
    among those with a clear final leg. If the planned stages run out
    first, up to K/2 more run.
+
+### Comfort (rough water)
+
+The sea-state index describes the water at a point (wind against
+current, swell steepened by an opposing current); it knows nothing of
+the boat. Heading into the waves is harder than running before them, so
+the router weights the index by the angle between the course and the
+direction the waves come from: × 1.3 in head seas, × 1.05 abeam, × 0.8
+in following seas, a cosine between (the **encounter index**,
+`src/engine/seas.ts`). The weights are a judgement, not derived from
+physics, and are kept in one place so they can be tuned.
+
+With a comfort weight above 0 (setting `routing.comfortWeight`, default
+1; request field `comfort_weight`), each second the leg simulator sails
+in water above an encounter index of 75 (the top of the "slight" band:
+with no current the index's wind term alone is 50, which head seas
+weight to 65) counts extra in the search's choices: weight × (index −
+75) / 100 extra seconds per second, at most 2 × weight. With weight 1,
+choppy water at 100 adds 25 %, rough at 125 adds 50 %, extreme at 200
+adds 125 %. The cost is used for pruning, the choice of the terminal,
+and (when it runs) the smoother; the route's times, ETAs and summary
+stay the real times. It needs wave data in the forecast; without it the
+cost is 0. Each waypoint carries the sea on the leg into it
+(`sea_index`, `seas_angle_deg`, `seas_side`, `seas_sector`,
+`encounter_index`).
 
 ### Waypoints (legs)
 
@@ -910,7 +999,7 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 | `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
-| `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (on), shortcut may be slower by (0.05 = 5%), finished routes kept (50), max wind (none), max wave height (none) | applies to the next route |
+| `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (off), comfort weight (1, 0 = off), shortcut may be slower by (0.05 = 5%), finished routes kept (50), max wind (none), max wave height (none) | applies to the next route |
 | `publish` | save to the Resources API (on), route name prefix (`WRP`), notifications (on) | applies to the next route |
 
 **Resource guard.** The decoded forecast is on disk, so the guard
@@ -1236,10 +1325,13 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `simplify_m` | number | m | setting `routing.simplify` | 0..5000; route simplification tolerance, 0 = off |
 | `smoother` | boolean | | setting `routing.smoother` | run the shortcut smoother |
 | `smoother_tolerance` | number | ratio | setting `routing.smootherTolerance` | 0..0.5; how much slower a shortcut may be (0.05 = 5%) |
+| `comfort_weight` | number | | setting `routing.comfortWeight` (1) | 0..3; how much the search avoids rough water as the boat meets it (the encounter index). 0 = off, the fastest route. See [Comfort](#comfort-rough-water) |
 | `name` | string | | `<prefix> <lat>,<lon> → <lat>,<lon>` | name of the Signal K route record (trimmed). The default uses the `publish.routeNamePrefix` setting (`WRP`) and the start and end to two decimals |
 | `publish` | boolean | | setting `publish.toResources` (on) | save the finished route to the Resources API |
 | `no_forecast` | boolean | | false | route with calm wind |
 | `no_currents` | boolean | | false | ignore every current source |
+| `wind_model` | string | | `auto` | `auto`: regional wind from signalk-grib-downloader where finer and covering, ECMWF elsewhere; `ecmwf`: ECMWF only |
+| `avoid_areas` | boolean | | true | treat the areas marked on Signal K notes (`properties.avoid.radius_m` around the note's position) as land |
 | `vessel` | object | | the vessel settings | per-route overrides; absent keys use the settings ([Configuration](#configuration)) |
 | `vessel.name` | string | | | ignored (accepted so older clients still validate); the vessel name is Signal K's `vessels.self.name` |
 | `vessel.motor_speed_ms` | number | m/s | setting (3.087) | 0.01..50 |
@@ -1443,6 +1535,11 @@ Point `properties` (one feature per route point, in order):
 | `current_ms` | number | m/s | current speed |
 | `current_dir_deg` | integer | degrees true | current set (flows TO) |
 | `current_u_ms`, `current_v_ms` | number | m/s | current east and north components |
+| `sea_index` | number | index | sea-state index of the water on the leg into the point (wind, current, swell; one decimal); when wind and wave data were sampled |
+| `seas_angle_deg` | integer | degrees | angle between the leg's course and the direction the waves come from, 0..180 (0 = head seas, 180 = following) |
+| `seas_side` | string or null | | `"port"` or `"starboard"`: the side the waves come from; null dead ahead or astern |
+| `seas_sector` | string | | `head` (0–30°), `bow` (30–60°), `beam` (60–120°), `quarter` (120–150°), `following` (150–180°) |
+| `encounter_index` | number | index | `sea_index` weighted for the angle: × 1.3 in head seas, × 1.05 abeam, × 0.8 in following seas, a cosine between (`src/engine/seas.ts`); the sea as the boat meets it |
 | `leg` | string | | engine that produced the waypoint; always `"ocean"` in this plugin (kept for compatibility with the routePlanning server, which also uses other values) |
 | `role` | string | | `"via"` on the junction point of each request waypoint |
 | `leg_distance_m` | number | m | distance to the next point; absent on the last point |
@@ -1884,7 +1981,7 @@ before its query has started is dropped from the data worker's queue.
 
 | Path / query | Values |
 |---|---|
-| `layer` | `wind`, `waves`, `msl`, `temperature`, `sst`, `precip`, `sea_state`, `current`, `tide` (colour layers), `barbs` (wind barbs), `arrows` (current arrows), `land` (coastline) |
+| `layer` | `wind`, `waves`, `msl`, `temperature`, `sst`, `precip`, `sea_state`, `current`, `tide` (colour layers), `barbs` (wind barbs), `arrows` (current arrows), `seas` (sea state arrows), `land` (coastline) |
 | `z` | 0–18 |
 | `x`, `y` | 0 to 2^z − 1 |
 | `time` | ISO 8601, default now; rounded to the nearest hour. Ignored for `land` |
@@ -1898,7 +1995,14 @@ before its query has started is dropped from the data worker's queue.
   interpolate between samples), spacing = tile width ÷ 64, clamped to 0.002°–2°;
 - `barbs`: as [`/api/wind-points`](#get-apiwind-points), 7 across a tile;
 - `arrows`: as [`/api/currents`](#get-apicurrents), 5 across a tile;
-  for both, points on the tile's east and north edges belong to the
+- `seas`: 5 across a tile, points with wave data only:
+  `[{lon, lat, idx, swh_m, mwp_s, to_deg, rel, steepen}]` — `idx` the
+  sea-state index, `swh_m` the significant wave height, `mwp_s` the mean
+  wave period (null when the forecast has none), `to_deg` the direction the waves travel TO (degrees true), `rel`
+  the current along the waves (`opposing`, `following`, or `none` below
+  0.1 m/s), `steepen` the factor the opposing current steepens them by
+  (1 = none);
+  for all three, points on the tile's east and north edges belong to the
   neighbouring tile;
 - `land`: 256 × 256 bytes, 1 = land, row 0 at the north edge, rows
   evenly spaced in Web Mercator y (the map's own rows), columns evenly

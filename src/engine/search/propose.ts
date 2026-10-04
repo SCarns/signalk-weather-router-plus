@@ -117,6 +117,7 @@ export function propose(
         lat: cLat[i],
         timeMs: par.timeMs + secs * 1000,
         elapsedS: par.elapsedS + secs,
+        costS: par.costS + secs + sc.penalty[c],
         parentIdx: p,
         sogMs: legDist / secs,
         cogDeg: hdg[i],

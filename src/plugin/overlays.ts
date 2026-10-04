@@ -300,6 +300,81 @@ export function currentPoints(src: OverlaySources, bbox: BBox, time: Date, res: 
   return out;
 }
 
+/**
+ * A point of the sea-state glyph layer: the sea-state index, the waves (height,
+ * the way they travel) and how the current meets them. `rel`: 'opposing'
+ * when the current runs against the waves (they steepen), 'following' when
+ * with them (they lengthen), 'none' with little current along them;
+ * `steepen` is the index's own steepening factor (1 = none).
+ */
+export interface SeaPoint {
+  lon: number;
+  lat: number;
+  idx: number;
+  swh_m: number;
+  /** Mean wave period, seconds; null when the forecast has none. */
+  mwp_s: number | null;
+  /** The way the waves travel, degrees true (their direction FROM + 180). */
+  to_deg: number;
+  rel: 'opposing' | 'following' | 'none';
+  steepen: number;
+}
+
+/** Current along the waves below this (m/s) counts as none for the glyph. */
+const SEA_REL_MIN_MS = 0.1;
+
+export function seaPoints(src: OverlaySources, bbox: BBox, time: Date, res: number): SeaPoint[] {
+  const s = src.forecast;
+  if (!s || !s.hasWaves) return [];
+  const { lons, lats, res: r } = lattice(bbox, res, 20_000);
+  const lm = src.land ? src.land.forBBox(bbox, r) : null;
+  const out: SeaPoint[] = [];
+  for (const lat of lats) {
+    for (const lon of lons) {
+      if (lm && lm.isLand(lon, lat)) continue;
+      const w = s.wavesAt(lon, lat, time);
+      if (!w || !Number.isFinite(w.swh) || !Number.isFinite(w.mwd)) continue;
+      const [ws, wd] = s.at(lon, lat, time);
+      let C = 0;
+      let cTo = 0;
+      if (src.currents) {
+        const [u, v] = src.currents.at(lon, lat, time);
+        if (Number.isFinite(u) && Number.isFinite(v)) {
+          C = Math.hypot(u, v);
+          cTo = norm360((Math.atan2(u, v) * 180) / Math.PI);
+        }
+      }
+      const { idx } = roughnessIndex(
+        Number.isFinite(ws) ? ws : 0,
+        C,
+        Number.isFinite(wd) ? wd : 0,
+        cTo,
+        w.swh,
+        Number.isFinite(w.mwp) ? w.mwp : 5,
+        w.mwd
+      );
+      // The current along the waves' travel (as the index computes it), and its steepening.
+      const to = norm360(w.mwd + 180);
+      let phi = Math.abs(to - cTo);
+      if (phi > 180) phi = 360 - phi;
+      const uAlong = C * Math.cos((phi * Math.PI) / 180);
+      const cg = (9.80665 * Math.max(Number.isFinite(w.mwp) ? w.mwp : 5, 2)) / (4 * Math.PI);
+      const steepen = 1 / Math.max(0.3, 1 - (2 * Math.max(-uAlong, 0)) / cg);
+      out.push({
+        lon: Math.round(lon * 1e6) / 1e6,
+        lat: Math.round(lat * 1e6) / 1e6,
+        idx: Math.round(idx * 10) / 10,
+        swh_m: Math.round(w.swh * 100) / 100,
+        mwp_s: Number.isFinite(w.mwp) ? Math.round(w.mwp * 10) / 10 : null,
+        to_deg: Math.round(to),
+        rel: uAlong <= -SEA_REL_MIN_MS ? 'opposing' : uAlong >= SEA_REL_MIN_MS ? 'following' : 'none',
+        steepen: Math.round(steepen * 1000) / 1000,
+      });
+    }
+  }
+  return out;
+}
+
 export interface WindPoint {
   lon: number;
   lat: number;

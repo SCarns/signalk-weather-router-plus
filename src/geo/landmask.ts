@@ -28,6 +28,7 @@ import type { BBox } from './geodesy';
 import { wrapLon, unwrapLonNear } from './angles';
 import { bboxHeight, bboxWidth, lonOffsetFromWest, slerpSamples, haversineDistanceM } from './geodesy';
 import { pointInShape, readShapefilePolygons, type ShapePolygon } from './shapefile';
+import { avoidAt, legHitsAvoid, type AvoidArea } from './avoid';
 
 export interface SerializedLandRaster {
   bbox: BBox;
@@ -635,6 +636,35 @@ export class LandMask {
   }
 
   /** Fraction of raster cells that are land (diagnostics). */
+  /**
+   * This mask with areas to avoid (circles on Signal K notes) answering as
+   * land: the four checks the router makes (isLand, isLandExact,
+   * legCrossesLandExact, legsCrossLandBulk) also say "land" inside a circle
+   * or for a leg through one. A view over this mask (its raster, patches and
+   * shapes are shared, nothing is copied), made per route, so a mask held in
+   * a cache is never changed. No areas: this mask itself.
+   */
+  withAvoid(areas: readonly AvoidArea[]): LandMask {
+    if (!areas.length) return this;
+    // The arrows below keep `this`: the underlying mask answers first.
+    const view = Object.create(this) as LandMask;
+    view.isLand = (lon: number, lat: number): boolean => this.isLand(lon, lat) || avoidAt(areas, lon, lat) !== null;
+    view.isLandExact = (lon: number, lat: number): boolean => this.isLandExact(lon, lat) || avoidAt(areas, lon, lat) !== null;
+    view.legCrossesLandExact = (lonA: number, latA: number, lonB: number, latB: number): boolean =>
+      this.legCrossesLandExact(lonA, latA, lonB, latB) || legHitsAvoid(areas, lonA, latA, lonB, latB) !== null;
+    view.legsCrossLandBulk = (
+      lonsA: ArrayLike<number>,
+      latsA: ArrayLike<number>,
+      lonsB: ArrayLike<number>,
+      latsB: ArrayLike<number>
+    ): Uint8Array => {
+      const out = this.legsCrossLandBulk(lonsA, latsA, lonsB, latsB);
+      for (let k = 0; k < out.length; k++) if (!out[k] && legHitsAvoid(areas, lonsA[k], latsA[k], lonsB[k], latsB[k])) out[k] = 1;
+      return out;
+    };
+    return view;
+  }
+
   landFraction(): number {
     let c = 0;
     for (let i = 0; i < this.raster.length; i++) c += this.raster[i];

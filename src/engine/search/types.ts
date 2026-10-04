@@ -91,6 +91,8 @@ export interface ComputeRouteArgs {
   /** Wind speed (m/s) and significant wave height (m) a leg must not exceed; candidates over them are not allowed. */
   maxWindMs?: number;
   maxSwhM?: number;
+  /** Comfort weight (0 or absent: off): the search prefers calmer water, as the boat meets it, at some cost in time (engine/seas.ts). */
+  comfortWeight?: number;
   /** The forecast's last valid step (ms); conditions after it are held at that step. Named in a boxed-in search's error. */
   forecastEndMs?: number;
   /** Called after every stage with its front and the best path so far (display only). */
@@ -108,6 +110,8 @@ export interface Candidate {
   lat: number;
   timeMs: number;
   elapsedS: number;
+  /** The search's cost to here: elapsedS plus the comfort cost of rough water (engine/seas.ts); equals elapsedS without a comfort weight. Used only to compare candidates; times stay real. */
+  costS: number;
   parentIdx: number;
   sogMs: number;
   cogDeg: number;

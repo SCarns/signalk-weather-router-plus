@@ -115,6 +115,24 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
   const tol = 1 + a.tolerance;
   let drops = 0;
   let anchor = wps.length - 1;
+  // With a comfort weight the shortcut is judged on time plus comfort cost,
+  // as the search chose the legs, so it never cuts back through the rough
+  // water the search went round. legPenalty[k]: the comfort cost of the leg
+  // into waypoint k.
+  const comfort = (a.sim.comfortWeight ?? 0) > 0;
+  const legPenalty = new Float64Array(wps.length);
+  if (comfort) {
+    for (let k = 1; k < wps.length; k++) {
+      const p = wps[k - 1];
+      const r = simulateLegTime(p.lon, p.lat, p.time, wps[k].lon, wps[k].lat, a.vessel, a.polar, a.wind, a.current, a.sim);
+      legPenalty[k] = Number.isFinite(r.penaltySeconds) ? r.penaltySeconds : 0;
+    }
+  }
+  const penaltyBetween = (i: number, j: number): number => {
+    let t = 0;
+    for (let k = i + 1; k <= j; k++) t += legPenalty[k];
+    return t;
+  };
   while (anchor > 0) {
     let examined = anchor - 2;
     let failedAt: number | null = null;
@@ -131,7 +149,9 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
       }
       const sim = simulateLegTime(A.lon, A.lat, A.time, C.lon, C.lat, a.vessel, a.polar, a.wind, a.current, a.sim);
       const origS = (C.time.getTime() - A.time.getTime()) / 1000;
-      if (!Number.isFinite(sim.seconds) || sim.seconds > tol * origS) {
+      const origCost = origS + (comfort ? penaltyBetween(examined, anchor) : 0);
+      const simCost = sim.seconds + (comfort ? sim.penaltySeconds : 0);
+      if (!Number.isFinite(sim.seconds) || simCost > tol * origCost) {
         failedAt = examined;
         break;
       }
@@ -149,6 +169,13 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
       C.mode = sim.dominantMode === 'sailing' ? 'sailing' : 'motoring';
       C.arrivingSplit = [sim.sailingSeconds, sim.motoringSeconds];
       drops += anchor - examined - 1;
+      if (comfort) {
+        // The new leg A→C carries the shortcut's comfort cost; the legs it replaced go.
+        const kept = Array.from(legPenalty);
+        kept.splice(examined + 1, anchor - examined, sim.penaltySeconds);
+        legPenalty.fill(0);
+        legPenalty.set(kept.slice(0, legPenalty.length));
+      }
       wps.splice(examined + 1, anchor - examined - 1);
       anchor = examined + 1;
       examined -= 1;

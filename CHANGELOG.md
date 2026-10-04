@@ -6,6 +6,84 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Ship's time (#19).** Clock times in the web app and the Freeboard
+  panel are shown in the ship's time zone when the Signal K server
+  publishes one (`environment.time.timezoneRegion`, an IANA zone, else
+  `environment.time.timezoneOffset`, (-)hhmm), else in the browser's, and
+  the departure field is read and written in the same zone. Checked every
+  10 minutes; a change redraws the times and keeps the departure's moment.
+- **Signal K notes on the map (#20).** Layers → Base → Signal K notes
+  (on by default) shows the Resources API's notes that have a position,
+  for the map view, as markers; a click shows the note's title, text and
+  link, who wrote it and when, and its bearing and distance from the
+  boat, with **Edit** and **Delete** (a second press confirms); a note
+  can be dragged to a new position. **Add note here** in the map's click
+  menu writes a new note (title, text) at that point. Notes are ordinary Signal K resources (`POST`, `PUT`, `DELETE`
+  `/signalk/v2/api/resources/notes`; an edit keeps the note's other
+  fields), so Freeboard and other apps see them; writing needs a Signal K
+  login with write access.
+- **Areas to avoid.** A note can mark a circle around it to avoid (its
+  form's "Avoid this area" and a radius, stored as
+  `properties.avoid.radius_m`). The router treats every such circle as
+  land: candidates and legs inside one are dropped, and a route point
+  inside one is refused with a message naming the note. Plan tab "Avoid
+  marked areas" (on by default) and the request field `avoid_areas`; the
+  job log lists the areas used. The main thread reads the notes from the
+  Resources API at each job's start; the land mask gets a per-route view
+  with the circles (`LandMask.withAvoid`), the cached mask unchanged.
+- **GPX export (#22).** The itinerary bar's GPX button downloads the route
+  on the map as a GPX 1.1 route: each point with its name (Start, WP1 …
+  End), time and leg description in the user's units, and the route's
+  summary as its description.
+- **Comfort: routing around rough water.** The router weights the
+  sea-state index by the angle of the waves to the course (× 1.3 in head
+  seas, × 1.05 abeam, × 0.8 following, a cosine between: the "encounter
+  index", `src/engine/seas.ts`), and with a comfort weight each second
+  sailed above an encounter index of 75 counts extra in the search's
+  choices (weight × (index − 75) / 100, at most 2 × weight; with 1,
+  choppy water adds 25 %, rough 50 %, extreme 125 %). Setting
+  `routing.comfortWeight` (0–3, default 1, 0 = off) and request field
+  `comfort_weight`. The cost steers pruning, the terminal choice and the
+  smoother; the route's times stay real. Needs wave data.
+- **The sea on each leg.** Route points carry `sea_index`,
+  `seas_angle_deg`, `seas_side`, `seas_sector` and `encounter_index` for
+  the leg into them. The leg cards and the Freeboard panel show a
+  **Seas** row (where the waves come from and the encounter index's
+  band); Layers → Base → **Seas along the route** (on by default) draws
+  an arrow on each leg along the waves' travel, coloured by the encounter
+  index.
+- **Sea state arrows (waves vs current).** Layers → Water (off by
+  default), from the new point tile layer `/api/tile/seas`: arrows along
+  the waves' travel, coloured by the sea-state index; heads meeting in
+  the middle where the current opposes the waves (larger the more it
+  steepens them), a double chevron where it runs with them, a thin arrow
+  with little current.
+  All seas glyphs (these arrows, the route arrows, the Seas row's chip)
+  use the sea-state heatmap's colour scale, shifted slightly darker and
+  outlined.
+- **Wave direction (arrows).** Layers → Water (off by default): an arrow
+  per point along the waves' travel, coloured by the significant wave
+  height on the wave-height heatmap's scale, longer for a longer mean
+  period. The `seas` tile points now carry `mwp_s`.
+
+### Changed
+
+- **The shortcut smoother is off by default** (`routing.smoother`). It
+  can still be turned on in the settings or per request (`smoother`).
+
+- **Durations of a day or more read as days, hours and minutes (#24).**
+  "223.0 hour" is now "9d 7h": a duration of 24 h or more is written in
+  Signal K's duration-compact format whatever the user's time unit, in
+  the web app, the Freeboard panel and the plugin's messages; shorter
+  durations follow the time unit as before. A deliberate, documented
+  exception to following the Signal K unit preferences (Signal K has one
+  time unit for every duration). A clock time a day or more away now
+  carries its date ("Tue 13 Oct 21:58").
+- **"Calculating" instead of "Submitting" (#21)** on the Find Route button
+  and in the Freeboard panel while a route is computed.
+
 ## [0.1.0-beta.8] - 2026-10-03
 
 ### Fixed

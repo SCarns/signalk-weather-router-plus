@@ -4,7 +4,7 @@
 // picker and diagram, the plugin status line. rp-layers.js, rp-plan.js
 // and rp-settings.js import what they use from here.
 
-import { CATEGORY_PATH, fetchDisplayUnits, fetchPresetUnits, unitFromDisplayUnits } from './rp-units.js';
+import { CATEGORY_PATH, DURATION_FORMATS, fetchDisplayUnits, fetchPresetUnits, unitFromDisplayUnits } from './rp-units.js';
 
 // ─── Slider label wiring / display units ─────────────────────────────
 // Display units come from the Signal K user's unit preferences, never
@@ -90,8 +90,18 @@ function applyDisplayUnits() {
 }
 
 // Format helpers — null-safe, return null if input is null.
+// Durations of a day or more are written as days, hours and minutes
+// (Signal K's own duration-compact format, "9d 7h 0m") whatever the user's
+// time unit: a passage of "223.0 hour" reads badly. A deliberate exception
+// to following the Signal K unit preference, for durations only; shorter
+// ones follow the preference as everything else does.
+export const LONG_DURATION_S = 86400;
+export function longDurationText(s) {
+  return Number.isFinite(s) && Math.abs(s) >= LONG_DURATION_S ? DURATION_FORMATS.formatDurationCompact(s) : null;
+}
 export function _fmt(siValue, key) {
   if (siValue == null) return null;
+  if (key === 'time') { const long = longDurationText(siValue); if (long) return long; }
   const c = UI_UNITS[key];
   if (!c) return UNIT_MISSING;
   if (c.text) return c.text(siValue);
@@ -118,6 +128,7 @@ const TOKEN_QUANTITY = {
   dataSize: 'data_size', speed: 'speed', angle: 'angle', percentage: 'ratio',
 };
 export function unitQuantityText(cat, si) {
+  if (cat === 'time') { const long = longDurationText(si); if (long) return long; }
   const c = UI_UNITS[TOKEN_QUANTITY[cat]];
   if (!c || !Number.isFinite(si)) return UNIT_MISSING;
   if (c.text) return c.text(si);
@@ -411,6 +422,7 @@ const _pad = n => String(n).padStart(2, '0');
 document.getElementById('departure').value =
     `${now.getFullYear()}-${_pad(now.getMonth() + 1)}-${_pad(now.getDate())}` +
     `T${_pad(now.getHours())}:${_pad(now.getMinutes())}`;
+// (Rewritten in the ship's zone by loadShipTime once that is known.)
 
 // ─────────── Polar picker (GET /api/polars) ───────────
 let _polarItems = [];
@@ -633,7 +645,7 @@ document.getElementById('polarSelect').addEventListener('change', function() {
     'mode', 'sailThresh', 'stages', 'arrivalRadiusM', 'precision',
     'publishSel', 'proximityRadiusM', 'xteThresholdM', 'xteSustainSec',
   ];
-  const CHECK_IDS = ['noCurrents', 'noForecast', 'regionalWind'];
+  const CHECK_IDS = ['noCurrents', 'noForecast', 'regionalWind', 'avoidAreas'];
   // The sail-speed slider held knots until 2026-10; it holds m/s now under a new key.
   try {
     const old = localStorage.getItem('routeVar:sailThresh');
@@ -856,9 +868,111 @@ loadPolarList();
 })();
 
 // A time as "Thu 06:00 PM" in the browser's locale; '' when missing or invalid.
+// A clock time in the ship's zone: weekday and time, with the date too when
+// the time is a day or more away (on a long passage "Tue 21:58" could be
+// any Tuesday).
 export function fmtWhen(iso) {
   const d = iso ? new Date(iso) : null;
-  return d && !isNaN(d) ? d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+  if (!d || isNaN(d)) return '';
+  const far = Math.abs(d.getTime() - Date.now()) >= LONG_DURATION_S * 1000;
+  return fmtClock(d, far ? { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' } : { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+// ─────────── Ship's time ───────────
+// Clock times are shown in the ship's time zone when the Signal K server
+// publishes one (environment.time.timezoneRegion, an IANA zone such as
+// "Pacific/Tongatapu", else environment.time.timezoneOffset, (-)hhmm east
+// of Greenwich), else in the browser's. The departure field is read and
+// written in the same zone, so what is typed is what is shown.
+let _shipZone = null;   // { tz } | { offsetMin } | null = the browser's zone
+export function shipZone() { return _shipZone; }
+function _skValue(n) { return n && typeof n === 'object' && 'value' in n ? n.value : n; }
+export function loadShipTime() {
+  // 404: the server publishes no ship's time, so the browser's zone. Any other
+  // failure (network, other HTTP status) keeps the zone already in use.
+  const KEEP = {};
+  return authFetch('/signalk/v1/api/vessels/self/environment/time', { cache: 'no-store' }, null)
+    .then(r => (r.ok ? r.json() : r.status === 404 ? null : KEEP))
+    .catch(() => KEEP)
+    .then(t => {
+      if (t === KEEP) return _shipZone;
+      let z = null;
+      const region = t ? _skValue(t.timezoneRegion) : null;
+      const offset = t ? _skValue(t.timezoneOffset) : null;
+      if (typeof region === 'string' && region) {
+        try { new Intl.DateTimeFormat([], { timeZone: region }); z = { tz: region }; } catch (_) { /* not a zone this browser knows */ }
+      }
+      if (!z && typeof offset === 'number' && Number.isFinite(offset) && Math.abs(offset) <= 1400) {
+        const a = Math.abs(offset);
+        z = { offsetMin: Math.sign(offset) * (Math.floor(a / 100) * 60 + (a % 100)) };
+      }
+      const changed = JSON.stringify(z) !== JSON.stringify(_shipZone);
+      // The departure field keeps its moment: read in the old zone, written in the new.
+      const dep = document.getElementById('departure');
+      const at = changed && dep ? fromClockInput(dep.value) : null;
+      _shipZone = z;
+      if (at) dep.value = toClockInput(at);
+      if (changed) window.dispatchEvent(new Event('rp:units'));   // everything that shows times redraws
+      return z;
+    });
+}
+/** The zone in words, for a label: "Pacific/Tongatapu", "UTC+13:00", or null (the browser's zone). */
+export function shipZoneLabel() {
+  if (!_shipZone) return null;
+  if (_shipZone.tz) return _shipZone.tz;
+  const m = _shipZone.offsetMin, a = Math.abs(m);
+  return 'UTC' + (m < 0 ? '−' : '+') + String(Math.floor(a / 60)).padStart(2, '0') + ':' + String(a % 60).padStart(2, '0');
+}
+/** A time as text in the ship's zone (Intl options as for toLocaleString). */
+export function fmtClock(t, opts = {}) {
+  const d = t instanceof Date ? t : new Date(t);
+  if (isNaN(d)) return '';
+  const z = _shipZone;
+  if (z && z.tz) return d.toLocaleString([], { ...opts, timeZone: z.tz });
+  if (z && z.offsetMin != null) {
+    const { timeZoneName, ...rest } = opts;
+    const txt = new Date(d.getTime() + z.offsetMin * 60000).toLocaleString([], { ...rest, timeZone: 'UTC' });
+    return timeZoneName ? txt + ' ' + shipZoneLabel() : txt;
+  }
+  return d.toLocaleString([], opts);
+}
+/** Year, month (1–12), day, hour, minute and weekday (0 = Sunday) of a time in the ship's zone. */
+export function clockParts(t) {
+  const d = t instanceof Date ? t : new Date(t);
+  const z = _shipZone;
+  if (z && z.tz) {
+    const p = {};
+    for (const x of new Intl.DateTimeFormat('en-US', { timeZone: z.tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', weekday: 'short' }).formatToParts(d)) p[x.type] = x.value;
+    return { y: +p.year, mo: +p.month, d: +p.day, h: +p.hour % 24, mi: +p.minute, wd: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(p.weekday) };
+  }
+  if (z && z.offsetMin != null) {
+    const u = new Date(d.getTime() + z.offsetMin * 60000);
+    return { y: u.getUTCFullYear(), mo: u.getUTCMonth() + 1, d: u.getUTCDate(), h: u.getUTCHours(), mi: u.getUTCMinutes(), wd: u.getUTCDay() };
+  }
+  return { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(), wd: d.getDay() };
+}
+const _p2 = n => String(n).padStart(2, '0');
+/** A time as a datetime-local value ("YYYY-MM-DDTHH:MM") in the ship's zone. */
+export function toClockInput(t) {
+  const c = clockParts(t);
+  return c.y + '-' + _p2(c.mo) + '-' + _p2(c.d) + 'T' + _p2(c.h) + ':' + _p2(c.mi);
+}
+/** A datetime-local value read as the ship's zone wall time; null when not a time. */
+export function fromClockInput(v) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(v || '');
+  if (!m) return null;
+  const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  const z = _shipZone;
+  if (z && z.offsetMin != null) return new Date(wall - z.offsetMin * 60000);
+  if (z && z.tz) {
+    // The zone's offset at that wall time: guess, then correct once (a DST change in between).
+    const off = ms => { const c = clockParts(ms); return (Date.UTC(c.y, c.mo - 1, c.d, c.h, c.mi) - Math.floor(ms / 60000) * 60000) / 60000; };
+    let t = wall - off(wall) * 60000;
+    t = wall - off(t) * 60000;
+    return new Date(t);
+  }
+  const d = new Date(v);
+  return isNaN(d) ? null : d;
 }
 
 /** Text for innerHTML: escapes &, <, >, " and '. */
@@ -905,7 +1019,8 @@ function _shortUtc(v) {
 function _shortLocal(iso) {
   const d = iso ? new Date(iso) : null;
   if (!d || isNaN(d)) return escapeHtml(iso || '');
-  const local = d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+  const far = Math.abs(d.getTime() - Date.now()) >= LONG_DURATION_S * 1000;
+  const local = fmtClock(d, far ? { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' } : { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
   return '<span title="' + escapeHtml(d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC') + '">' + escapeHtml(local) + '</span>';
 }
 
@@ -986,6 +1101,8 @@ export function loadPluginStatus() {
 }
 loadPluginStatus();
 setInterval(loadPluginStatus, 30000);
+loadShipTime();
+setInterval(loadShipTime, 600000);
 document.getElementById('refreshForecast').addEventListener('click', function() {
   const st = document.getElementById('refreshForecastStatus');
   st.textContent = 'requesting…';

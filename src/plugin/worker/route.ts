@@ -36,6 +36,7 @@ import { extraParams, readWindow, releaseWindow } from './forecast';
 import { landMaskFor } from './landgrid';
 import { rebuildStack } from './currents';
 import { GLOBAL_DLON_DEG, isFinerThanGlobal } from './regional';
+import { avoidAt, type AvoidArea } from '../../geo/avoid';
 import type { WorkerState } from './state';
 
 /** The request as the API validated it; a job that slipped past (another caller) is refused the same way. */
@@ -60,7 +61,7 @@ const ROUTE_PARAMS = ['10u', '10v', 'swh', 'mwp', 'mwd'];
  */
 const ROUTE_FORECAST_MARGIN_DEG = 5;
 
-export async function route(st: WorkerState, id: string, request: RouteRequest): Promise<void> {
+export async function route(st: WorkerState, id: string, request: RouteRequest, avoidAreas: AvoidArea[] = []): Promise<void> {
   const { config: cfg, client: cl } = requireInit(st);
   Atomics.store(st.cancelFlag, 0, 0);
   const shouldCancel = (): boolean => Atomics.load(st.cancelFlag, 0) === 1;
@@ -77,6 +78,29 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
     ];
     const multi = stops.length > 2;
     const stages = request.stages ?? cfg.routing.stages;
+    // Areas to avoid marked on Signal K notes: land to the search. A route
+    // point inside one cannot be reached, so it is an error that names both.
+    const avoid = request.avoid_areas === false ? [] : avoidAreas;
+    if (avoid.length) {
+      progress(
+        0,
+        0,
+        `avoid areas: ${avoid.length} marked on Signal K notes, treated as land (${avoid.map(a => `"${a.title}" {distance:${a.radiusM}}`).join(', ')})`
+      );
+      for (let i = 0; i < stops.length; i++) {
+        const a = avoidAt(avoid, stops[i].lon, stops[i].lat);
+        if (!a) continue;
+        const who =
+          i === 0
+            ? 'The start point'
+            : i === stops.length - 1
+              ? 'The destination'
+              : `Your point ${i + 1} of ${stops.length} (waypoint ${i})`;
+        throw new Error(
+          `${who} is inside the area to avoid "${a.title}" (a Signal K note, radius {distance:${a.radiusM}}); move it out, or turn off Avoid marked areas`
+        );
+      }
+    }
     // A point on land according to the exact coastline polygons (a drawn
     // point a few metres inside the shore, a pier), or closer than
     // SNAP_CLEAR_M to the shore, is moved to the nearest point with that
@@ -337,7 +361,7 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
     const pipeline: LegPipelineInputs = {
       waterGrid: st.waterGrid,
       allowCanals: cfg.routing.allowCanals,
-      landFor: b => landMaskFor(st, b, cfg.routing.landRasterMaxCells, cfg.landShapefiles),
+      landFor: b => landMaskFor(st, b, cfg.routing.landRasterMaxCells, cfg.landShapefiles).withAvoid(avoid),
       stages,
       propagator: {
         subsectors: cfg.routing.subsectors,
@@ -352,6 +376,7 @@ export async function route(st: WorkerState, id: string, request: RouteRequest):
         simStepM: cfg.routing.simStepM,
         maxWindMs: request.max_wind_ms ?? cfg.routing.maxWindMs ?? undefined,
         maxSwhM: request.max_swh_m ?? cfg.routing.maxSwhM ?? undefined,
+        comfortWeight: request.comfort_weight ?? cfg.routing.comfortWeight,
       },
       simplifyM: request.simplify_m ?? cfg.routing.simplifyM,
       smoother: request.smoother ?? cfg.routing.smoother,

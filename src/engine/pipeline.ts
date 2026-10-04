@@ -42,7 +42,7 @@ export interface LegPipelineInputs {
   propagator: Omit<PropagatorOptions, 'stages'>;
   vessel: VesselParams;
   polar: PolarDiagram | null;
-  sim: { modePolicy: ModePolicy; sailThreshMs: number; simStepM: number; maxWindMs?: number; maxSwhM?: number };
+  sim: { modePolicy: ModePolicy; sailThreshMs: number; simStepM: number; maxWindMs?: number; maxSwhM?: number; comfortWeight?: number };
   /** RDP tolerance, metres (0 = off); the shortcut smoother and its time tolerance (ratio). */
   simplifyM: number;
   smoother: boolean;
@@ -146,6 +146,7 @@ export async function runLegPipeline(
     sailThreshMs: inp.sim.sailThreshMs,
     maxWindMs: inp.sim.maxWindMs,
     maxSwhM: inp.sim.maxSwhM,
+    comfortWeight: inp.sim.comfortWeight,
     forecastEndMs: legWind ? legWind.validRange[1].getTime() : undefined,
     simStepM: inp.sim.simStepM,
     vias: vias.length ? vias : undefined,
@@ -192,6 +193,7 @@ export async function runLegPipeline(
           simStepM: legArgs.simStepM,
           maxWindMs: legArgs.maxWindMs,
           maxSwhM: legArgs.maxSwhM,
+          comfortWeight: legArgs.comfortWeight,
         },
         tolerance: inp.smootherTolerance,
       })

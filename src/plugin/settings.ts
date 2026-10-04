@@ -66,6 +66,7 @@ export interface AppSettings {
     maxWind: number | null;
     /** A leg is not allowed where the significant wave height (m) exceeds this; null = no limit. */
     maxSwh: number | null;
+    comfortWeight: number;
     simStep: number;
     landRasterMaxCells: number;
     /** Let routes use known ship canals (Corinth, Cape Cod, Kiel, Suez, …) where the coastline data shows them as water. */
@@ -494,6 +495,17 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     reload: 'next_job',
   },
   {
+    key: 'routing.comfortWeight',
+    group: 'routing',
+    label: 'Comfort weight',
+    type: 'number',
+    min: 0,
+    max: 3,
+    default: 1,
+    help: 'How much the router avoids rough water, as the boat meets it (the sea-state index weighted for the angle of the waves to the course: head seas count more, following seas less). Above the "slight" band each hour sailed counts extra in the search\'s choices: with 1, choppy water adds up to 25 %, rough 50 %, extreme 125 %. 0 = off (the fastest route). The times shown stay the real times. Needs wave data in the forecast. A route request can override it.',
+    reload: 'next_job',
+  },
+  {
     key: 'routing.simStep',
     group: 'routing',
     label: 'Leg simulation step',
@@ -544,7 +556,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     group: 'routing',
     label: 'Shortcut smoother',
     type: 'boolean',
-    default: true,
+    default: false,
     help: 'Replace runs of waypoints with one straight leg when it is clear of land and not much slower. Your own waypoints are always kept.',
     reload: 'next_job',
   },

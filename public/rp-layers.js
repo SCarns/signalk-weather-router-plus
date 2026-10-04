@@ -3,7 +3,7 @@
 // drawn on canvas, or the plugin's PNG tiles), streamlines, pressure, the
 // layer toggles and the legends box. rp-plan.js imports what it uses.
 
-import { _apiErrorText, _fmt, API, authFetch, AuthGate, fmtPressure, fmtWhen, KT_MS, TACK_COLOR, tackSide, UNIT_MISSING, unitDesc } from './rp-core.js';
+import { _apiErrorText, _fmt, API, authFetch, AuthGate, fmtPressure, fmtWhen, fromClockInput, KT_MS, TACK_COLOR, tackSide, UNIT_MISSING, unitDesc } from './rp-core.js';
 
 // --- Marker features and route sources (drawn by the layers below, placed by rp-plan.js) ---
 // --- Marker features ---
@@ -412,7 +412,8 @@ export function timeOverride() { return _currentTimeOverride; }
 export function _overlayTimeIso() {
   if (_currentTimeOverride) return _currentTimeOverride;
   const depEl = document.getElementById('departure');
-  return depEl.value ? new Date(depEl.value).toISOString() : new Date().toISOString();
+  const dep = fromClockInput(depEl.value);
+  return (dep || new Date()).toISOString();
 }
 // Viewport as [w, s, e, n] in degrees, latitudes clamped to ±85 and a
 // dateline-crossing view expressed with e > 180 (the plugin accepts
@@ -573,6 +574,127 @@ const currentLayer = new ol.layer.Vector({
 function loadCurrentOverlay() {
   if (!currentLayer.getVisible()) return;
   _syncPointSource(currentSource);
+}
+
+// ─────────── Sea state arrows: the waves against the current ───────────
+// A glyph per point (point tiles 'seas'): drawn along the way the waves
+// travel, coloured by the sea-state index. Where the current runs against
+// the waves (they steepen) two heads meet in the middle, larger the more
+// the current steepens them; with the waves, a double chevron; with
+// little current along them, a single thin arrow.
+const seasSource = _pointTileSource('seas', 'seasArrowsToggle', p => {
+  const f = new ol.Feature({ geometry: new ol.geom.Point(ol.proj.fromLonLat([p.lon, p.lat])) });
+  f.set('idx', p.idx);
+  f.set('to_deg', p.to_deg);
+  f.set('rel', p.rel);
+  f.set('steepen', p.steepen);
+  f.set('swh_m', p.swh_m);
+  return f;
+});
+// The glyph, drawn pointing up (the waves travel north); the map rotates it
+// to their direction. Also drawn in the legend.
+function _seasGlyphSvg(rel, colour, outline = SEA_GLYPH_OUTLINE) {
+  // The paths twice: wider in the outline colour underneath, then in the band's colour.
+  const paths = (colour, extra) => {
+    const w = x => (x + extra).toFixed(1);
+    return rel === 'opposing'
+      // Heads meeting in the middle: →← along the axis.
+      ? '<path d="M11 1 L11 8" stroke="' + colour + '" stroke-width="' + w(2.4) + '"/><path d="M6 6 L11 11 L16 6" fill="none" stroke="' + colour + '" stroke-width="' + w(2.6) + '" stroke-linejoin="round"/>'
+        + '<path d="M11 21 L11 14" stroke="' + colour + '" stroke-width="' + w(2.4) + '"/><path d="M6 16 L11 11 L16 16" fill="none" stroke="' + colour + '" stroke-width="' + w(2.6) + '" stroke-linejoin="round"/>'
+      : rel === 'following'
+        // Running together: a shaft with a double chevron at its head.
+        ? '<path d="M11 21 L11 4" stroke="' + colour + '" stroke-width="' + w(2) + '"/><path d="M6 8 L11 3 L16 8 M6 13 L11 8 L16 13" fill="none" stroke="' + colour + '" stroke-width="' + w(2) + '" stroke-linejoin="round"/>'
+        // Little current along the waves: a single thin arrow.
+        : '<path d="M11 21 L11 4" stroke="' + colour + '" stroke-width="' + w(1.5) + '"/><path d="M7 8 L11 3 L15 8" fill="none" stroke="' + colour + '" stroke-width="' + w(1.5) + '" stroke-linejoin="round"/>';
+  };
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">'
+    + (outline ? paths(outline, 1.6) : '') + paths(colour, 0) + '</svg>';
+}
+const _seasGlyphStyles = new Map();
+function _seasGlyphStyle(f) {
+  const colour = seaBandColour(f.get('idx'));
+  if (!colour) return null;
+  const rel = f.get('rel');
+  const big = rel === 'opposing' ? Math.min(1.6, Math.max(1, f.get('steepen') || 1)) : 1;
+  const rot = Math.round(f.get('to_deg') / 5) * 5;
+  const key = colour + rel + rot + big.toFixed(1);
+  let st = _seasGlyphStyles.get(key);
+  if (!st) {
+    const svg = _seasGlyphSvg(rel, colour);
+    st = new ol.style.Style({ image: new ol.style.Icon({ src: 'data:image/svg+xml;utf8,' + encodeURIComponent(svg), rotation: rot * Math.PI / 180, rotateWithView: true, scale: big }) });
+    _seasGlyphStyles.set(key, st);
+  }
+  return st;
+}
+const seasArrowsLayer = new ol.layer.Vector({ source: seasSource, visible: false, style: _seasGlyphStyle, zIndex: 8 });
+function loadSeasArrows() {
+  if (!seasArrowsLayer.getVisible()) return;
+  _syncPointSource(seasSource);
+}
+
+// ─────────── Wave arrows ───────────
+// An arrow per point (the same 'seas' point tiles) along the way the waves
+// travel, coloured on the wave-height heatmap's scale (/api/legends waves,
+// the ramp's colour at the point's height, shifted slightly darker and
+// outlined like the seas glyphs), longer the longer the wave period: long
+// swell reads as a long arrow, short chop as a short one.
+const waveArrowSource = _pointTileSource('seas', 'waveArrowsToggle', p => {
+  const f = new ol.Feature({ geometry: new ol.geom.Point(ol.proj.fromLonLat([p.lon, p.lat])) });
+  f.set('swh_m', p.swh_m);
+  f.set('mwp_s', p.mwp_s);
+  f.set('to_deg', p.to_deg);
+  return f;
+});
+// The wave-height ramp's colour at a height (m), shifted like the seas glyphs; null until the legends are loaded.
+function waveHeightColour(m) {
+  const S = _LEGENDS && _LEGENDS.waves && _LEGENDS.waves.stops;
+  if (!S || !S.length || !Number.isFinite(m)) return null;
+  if (m <= S[0][0]) return _shade(S[0][1], SEA_GLYPH_SHADE);
+  for (let i = 1; i < S.length; i++) {
+    if (m <= S[i][0]) {
+      const t = (m - S[i - 1][0]) / ((S[i][0] - S[i - 1][0]) || 1);
+      const a = parseInt(S[i - 1][1].slice(1), 16), b = parseInt(S[i][1].slice(1), 16);
+      const mix = sh => Math.round(((a >> sh) & 255) + t * (((b >> sh) & 255) - ((a >> sh) & 255)));
+      return _shade('#' + ((1 << 24) | (mix(16) << 16) | (mix(8) << 8) | mix(0)).toString(16).slice(1), SEA_GLYPH_SHADE);
+    }
+  }
+  return _shade(S[S.length - 1][1], SEA_GLYPH_SHADE);
+}
+// Arrow length (px) for a period: 4 s and below → 12 px, 16 s and above → 34 px; no period → 20 px.
+const WAVE_ARROW_MIN_PX = 12, WAVE_ARROW_MAX_PX = 34, WAVE_ARROW_T0 = 4, WAVE_ARROW_T1 = 16;
+function _waveArrowLength(mwp) {
+  if (mwp == null || !Number.isFinite(mwp)) return 20;
+  const t = Math.max(0, Math.min(1, (mwp - WAVE_ARROW_T0) / (WAVE_ARROW_T1 - WAVE_ARROW_T0)));
+  return Math.round(WAVE_ARROW_MIN_PX + t * (WAVE_ARROW_MAX_PX - WAVE_ARROW_MIN_PX));
+}
+// The arrow, pointing up (the waves travel north), `len` px long; outlined unless outline is null.
+function _waveArrowSvg(colour, len, outline = SEA_GLYPH_OUTLINE) {
+  const h = len + 4;
+  const top = 2, bot = h - 2;
+  const path = (c, extra) => '<path d="M7 ' + bot + ' L7 ' + (top + 1) + '" stroke="' + c + '" stroke-width="' + (2 + extra) + '" stroke-linecap="round"/>'
+    + '<path d="M3 ' + (top + 5) + ' L7 ' + top + ' L11 ' + (top + 5) + '" fill="none" stroke="' + c + '" stroke-width="' + (2 + extra) + '" stroke-linecap="round" stroke-linejoin="round"/>';
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="' + h + '" viewBox="0 0 14 ' + h + '">'
+    + (outline ? path(outline, 1.6) : '') + path(colour, 0) + '</svg>';
+}
+const _waveArrowStyles = new Map();
+function _waveArrowStyle(f) {
+  // Heights to 0.1 m, lengths to 2 px and directions to 5° for the style cache.
+  const colour = waveHeightColour(Math.round(f.get('swh_m') * 10) / 10);
+  if (!colour) return null;
+  const len = Math.round(_waveArrowLength(f.get('mwp_s')) / 2) * 2;
+  const rot = Math.round(f.get('to_deg') / 5) * 5;
+  const key = colour + len + ':' + rot;
+  let st = _waveArrowStyles.get(key);
+  if (!st) {
+    st = new ol.style.Style({ image: new ol.style.Icon({ src: 'data:image/svg+xml;utf8,' + encodeURIComponent(_waveArrowSvg(colour, len)), rotation: rot * Math.PI / 180, rotateWithView: true }) });
+    _waveArrowStyles.set(key, st);
+  }
+  return st;
+}
+const waveArrowsLayer = new ol.layer.Vector({ source: waveArrowSource, visible: false, style: _waveArrowStyle, zIndex: 8 });
+function loadWaveArrows() {
+  if (!waveArrowsLayer.getVisible()) return;
+  _syncPointSource(waveArrowSource);
 }
 
 // Refresh currents when departure time changes
@@ -1359,6 +1481,157 @@ const windStreamlines = _streamlines({
   stepDeg: v => 0.001 + 0.00012 * v,
 });
 
+// --- Seas along the route ---
+// One arrow per leg, at its middle, pointing the way the waves travel,
+// coloured by the leg's encounter index (the sea-state index weighted for
+// the waves' angle to the course): the sea as the boat meets it.
+// The seas glyphs are on the sea-state heatmap's colour scale: each band in
+// the colour the heatmap's legend gives it (the stop nearest the band's
+// middle, /api/legends sea_state), shifted slightly darker and outlined so a
+// glyph stays visible over the heatmap. Null until the legends are loaded.
+const SEA_GLYPH_SHADE = 0.15;
+function _shade(hex, f) {
+  const n = parseInt(hex.slice(1), 16);
+  const c = sh => Math.round(((n >> sh) & 255) * (1 - f)).toString(16).padStart(2, '0');
+  return '#' + c(16) + c(8) + c(0);
+}
+let _seaBandList = null;   // [{ lo, hi, name, colour }]
+function _seaBands() {
+  const L = _LEGENDS && _LEGENDS.sea_state;
+  if (!L || !L.bands || !L.stops) return null;
+  if (!_seaBandList) {
+    _seaBandList = L.bands.map(([lo, name], i) => {
+      const hi = i + 1 < L.bands.length ? L.bands[i + 1][0] : Infinity;
+      const mid = (lo + (Number.isFinite(hi) ? hi : L.stops[L.stops.length - 1][0])) / 2;
+      let best = L.stops[0][1], bd = Infinity;
+      for (const [v, c] of L.stops) { const d = Math.abs(v - mid); if (d < bd) { bd = d; best = c; } }
+      return { lo, hi, name, colour: _shade(best, SEA_GLYPH_SHADE) };
+    });
+  }
+  return _seaBandList;
+}
+/** The sea-state band of an index: { name, colour }, or null (no index, legends not loaded). */
+export function seaBand(idx) {
+  const B = _seaBands();
+  if (!B || idx == null || !Number.isFinite(idx)) return null;
+  return B.find(b => idx < b.hi) || B[B.length - 1];
+}
+export function seaBandColour(idx) { const b = seaBand(idx); return b ? b.colour : null; }
+/** Outline drawn under every seas glyph. */
+const SEA_GLYPH_OUTLINE = '#0f172a';
+const _seasArrowStyles = new Map();
+function _seasArrowStyle(colour, travelDeg) {
+  const rot = Math.round(travelDeg / 5) * 5;
+  const key = colour + rot;
+  let st = _seasArrowStyles.get(key);
+  if (!st) {
+    // A wave arrow: shaft and head, drawn pointing up (north), rotated to the travel direction.
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">'
+      + '<path d="M11 2 L17 10 L13 10 L13 20 L9 20 L9 10 L5 10 Z" fill="' + colour + '" stroke="' + SEA_GLYPH_OUTLINE + '" stroke-width="1.2" stroke-linejoin="round"/></svg>';
+    st = new ol.style.Style({ image: new ol.style.Icon({ src: 'data:image/svg+xml;utf8,' + encodeURIComponent(svg), rotation: rot * Math.PI / 180, rotateWithView: true }) });
+    _seasArrowStyles.set(key, st);
+  }
+  return st;
+}
+const seasRouteSource = new ol.source.Vector();
+export const seasRouteLayer = new ol.layer.Vector({
+  source: seasRouteSource,
+  visible: true,
+  style: f => { const c = seaBandColour(f.get('idx')); return c ? _seasArrowStyle(c, f.get('travelDeg')) : null; },
+});
+function _rebuildSeasArrows() {
+  seasRouteSource.clear();
+  const pts = routeSource.getFeatures()
+    .filter(f => f.getGeometry() && f.getGeometry().getType() === 'Point' && f.get('time'))
+    .sort((a, b) => Date.parse(a.get('time')) - Date.parse(b.get('time')));
+  for (let i = 0; i + 1 < pts.length; i++) {
+    const n = pts[i + 1].getProperties();   // a waypoint's values are those of the leg into it
+    if (n.mwd_deg == null || n.encounter_index == null) continue;
+    const a = ol.proj.toLonLat(pts[i].getGeometry().getCoordinates());
+    const b = ol.proj.toLonLat(pts[i + 1].getGeometry().getCoordinates());
+    let dLon = b[0] - a[0];
+    if (dLon > 180) dLon -= 360; else if (dLon < -180) dLon += 360;
+    seasRouteSource.addFeature(new ol.Feature({
+      geometry: new ol.geom.Point(ol.proj.fromLonLat([a[0] + dLon / 2, (a[1] + b[1]) / 2])),
+      idx: n.encounter_index,
+      travelDeg: (n.mwd_deg + 180) % 360,
+    }));
+  }
+  updateLegends();
+}
+let _seasTimer = null;
+routeSource.on('change', () => { clearTimeout(_seasTimer); _seasTimer = setTimeout(_rebuildSeasArrows, 150); });
+
+// --- Signal K notes ---
+// Notes from the Signal K Resources API (hazards, warnings, remarks; e.g.
+// signalk-passage-briefing's area warnings) as markers, for weighing a
+// route against them. Loaded for the map view while the layer is on (Layers
+// → Base, on by default); a click shows the note (rp-plan.js).
+const notesSource = new ol.source.Vector();
+const NOTE_STYLE = new ol.style.Style({
+  image: new ol.style.Circle({ radius: 8, fill: new ol.style.Fill({ color: '#f9a825' }), stroke: new ol.style.Stroke({ color: '#5d4037', width: 1.5 }) }),
+  text: new ol.style.Text({ text: '!', font: 'bold 11px sans-serif', fill: new ol.style.Fill({ color: '#3e2723' }) }),
+  zIndex: 2,
+});
+// A note marked "avoid this area": red marker, and its circle (the router treats it as land).
+const NOTE_AVOID_STYLE = new ol.style.Style({
+  image: new ol.style.Circle({ radius: 8, fill: new ol.style.Fill({ color: '#e53935' }), stroke: new ol.style.Stroke({ color: '#7f0000', width: 1.5 }) }),
+  text: new ol.style.Text({ text: '!', font: 'bold 11px sans-serif', fill: new ol.style.Fill({ color: '#fff' }) }),
+  zIndex: 2,
+});
+const AVOID_RING_STYLE = new ol.style.Style({
+  fill: new ol.style.Fill({ color: 'rgba(229,57,53,0.10)' }),
+  stroke: new ol.style.Stroke({ color: '#e53935', width: 2, lineDash: [8, 5] }),
+  zIndex: 1,
+});
+export const notesLayer = new ol.layer.Vector({
+  source: notesSource,
+  visible: true,
+  style: f => (f.get('kind') === 'avoid' ? AVOID_RING_STYLE : f.get('avoidM') > 0 ? NOTE_AVOID_STYLE : NOTE_STYLE),
+});
+/** The circle of a note's avoid area, as a map polygon (true radius on the sphere). */
+export function avoidRing(lonLat, radiusM) {
+  return ol.geom.Polygon.circular(lonLat, radiusM, 96).transform('EPSG:4326', 'EPSG:3857');
+}
+let _notesSeq = 0;
+export function loadNotes() {
+  if (!notesLayer.getVisible()) return;
+  const seq = ++_notesSeq;
+  const [w, s0, e, n] = ol.proj.transformExtent(map.getView().calculateExtent(map.getSize()), 'EPSG:3857', 'EPSG:4326');
+  // A view of a normal width in the main world: the notes in it; else (the
+  // whole world, or a view across 180°) all notes, filtered by the map.
+  const q = e - w < 360 && w >= -180 && e <= 180
+    ? '?bbox=' + encodeURIComponent('[' + [w, Math.max(-90, s0), e, Math.min(90, n)].map(v => v.toFixed(4)).join(',') + ']')
+    : '';
+  authFetch('/signalk/v2/api/resources/notes' + q, { cache: 'no-store' }, 'notes')
+    .then(r => (r.ok ? r.json() : {}))
+    .then(col => {
+      if (seq !== _notesSeq) return;
+      notesSource.clear();
+      for (const [id, note] of Object.entries(col || {})) {
+        const pos = note && note.position;
+        const lat = pos && (pos.latitude ?? pos[1]);
+        const lon = pos && (pos.longitude ?? pos[0]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;   // a note on a region only has no point to show
+        const avoidM = note.properties && note.properties.avoid && Number.isFinite(note.properties.avoid.radius_m) ? note.properties.avoid.radius_m : 0;
+        notesSource.addFeature(new ol.Feature({
+          geometry: new ol.geom.Point(ol.proj.fromLonLat([lon, lat])),
+          kind: 'note',
+          noteId: id,
+          // Signal K notes carry a `title`; some older writers used `name`.
+          title: note.title || note.name || 'Note',
+          description: note.description || '',
+          url: typeof note.url === 'string' ? note.url : '',
+          timestamp: note.timestamp || '',
+          source: note.$source || '',
+          avoidM,
+        }));
+        if (avoidM > 0) notesSource.addFeature(new ol.Feature({ geometry: avoidRing([lon, lat], avoidM), kind: 'avoid', noteId: id }));
+      }
+    })
+    .catch(() => {});
+}
+
 // --- Map ---
 const _DEFAULT_LONLAT = [-71.7, 41.25];
 let _SAVED_VIEW = null;
@@ -1370,7 +1643,7 @@ try {
 
 export const map = new ol.Map({
   target: 'map',
-  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, windLayer, frontLayer, skeletonLayer, pastRouteLayer, trackLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, ringLayer, markerLayer, condMarkerLayer],
+  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, seasArrowsLayer, waveArrowsLayer, windLayer, frontLayer, skeletonLayer, pastRouteLayer, trackLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, notesLayer, seasRouteLayer, ringLayer, markerLayer, condMarkerLayer],
   view: new ol.View({
     // Last view this browser had (saved on every move), else Block
     // Island Sound at zoom 11. On a first visit the first Signal K
@@ -1426,6 +1699,8 @@ export function centreOnVesselOnce(coord) {
 // their own moveend listener in setEnabled, so the view change skips them).
 export function reloadOverlays({ currents = true, streamlines = false } = {}) {
   if (currents) loadCurrentOverlay();
+  loadSeasArrows();
+  loadWaveArrows();
   loadWindOverlay();
   loadWindHeatmap();
   loadCurrentHeatmap();
@@ -1454,12 +1729,19 @@ map.on('moveend', function() {
 let _LEGENDS = null, _legendsReq = null;
 // Resolves when the legends are loaded (or the request failed); the
 // heatmaps wait for it, there is no fallback copy of the ramps.
+// The seas glyphs wait for the legends' colours: draw them once they are in.
+function _seasColoursReady() {
+  seasArrowsLayer.changed();
+  seasRouteLayer.changed();
+  waveArrowsLayer.changed();
+  window.dispatchEvent(new Event('rp:seacolours'));
+}
 function _loadLegends() {
   if (_LEGENDS) return Promise.resolve();
   if (_legendsReq) return _legendsReq;
   _legendsReq = authFetch(API + '/legends', {}, null)
     .then(r => r.ok ? r.json() : null)
-    .then(d => { if (d) { _LEGENDS = d; updateLegends(); } })
+    .then(d => { if (d) { _LEGENDS = d; _seaBandList = null; updateLegends(); _seasColoursReady(); } })
     .catch(() => {})
     .finally(() => { _legendsReq = null; });
   return _legendsReq;
@@ -1522,6 +1804,17 @@ function _noteRow(id) {
   const m = _overlayNotes[id];
   return m ? '<div class="lg-note" style="color:var(--danger);">unavailable: ' + m + '</div>' : '';
 }
+// The sea-state bands in the colours the seas glyphs are drawn in (seaBand).
+function _seaBandsRow(title) {
+  const cells = (_seaBands() || []).map(b => '<div><i style="background:' + b.colour + ';border-color:' + SEA_GLYPH_OUTLINE + ';"></i>' + b.name + '</div>').join('');
+  return '<div class="lg-row"><div class="lg-title">' + title + '</div><div class="lg-classes">' + cells + '</div></div>';
+}
+function _seasGlyphKey() {
+  const g = rel => '<span style="display:inline-block;width:14px;height:14px;vertical-align:middle;margin-right:3px;">'
+    + _seasGlyphSvg(rel, 'currentColor', null).replace('width="22" height="22"', 'width="14" height="14"') + '</span>';
+  return '<div class="lg-note">' + g('opposing') + 'current against the waves (steeper; larger the more) · '
+    + g('following') + 'current with them · ' + g('none') + 'little current · points the way the waves travel</div>';
+}
 function updateLegends() {
   const box = document.getElementById('legendBox');
   if (!box) return;
@@ -1536,6 +1829,15 @@ function updateLegends() {
   if (_on('currentHeatmapToggle') && G.current) rows.push(_gradientRow(G.current) + '<div class="lg-note"><span style="display:inline-block;width:14px;height:9px;vertical-align:middle;margin-right:4px;border:1px solid #bbb;background:repeating-linear-gradient(135deg,rgba(96,96,96,.6) 0 1px,transparent 1px 5px);"></span>no model data: water narrower than the model grid (about ' + _fmt(9000, 'distance') + ')</div>' + _noteRow('currentHeatmapToggle'));
   if (_on('wavesCombinedToggle') && G.waves) rows.push(_gradientRow(G.waves) + _noteRow('wavesCombinedToggle'));
   if (_on('roughnessToggle') && G.sea_state) rows.push(_bandsRow(G.sea_state) + _noteRow('roughnessToggle'));
+  if (_on('waveArrowsToggle') && G.waves) {
+    // Arrows of 5, 10 and 15 s, drawn as the map draws them (unrotated).
+    const key = [5, 10, 15].map(t => '<span style="display:inline-block;vertical-align:bottom;margin-right:2px;">'
+      + _waveArrowSvg('currentColor', _waveArrowLength(t), null) + '</span>' + _fmt(t, 'wave_period')).join(' ');
+    rows.push(_gradientRow(Object.assign({}, G.waves, { title: 'Wave arrows: height', stops: G.waves.stops.map(([v, c]) => [v, _shade(c, SEA_GLYPH_SHADE)]) }))
+      + '<div class="lg-note">points the way the waves travel · length by mean period: ' + key + '</div>' + _noteRow('waveArrowsToggle'));
+  }
+  if (_on('seasArrowsToggle') && G.sea_state) rows.push(_seaBandsRow('Sea state arrows (waves vs current)') + _seasGlyphKey() + _noteRow('seasArrowsToggle'));
+  if (_on('seasRouteToggle') && G.sea_state && seasRouteSource.getFeatures().length) rows.push(_seaBandsRow('Seas along the route, as the boat meets them') + '<div class="lg-note">sea-state index × 1.3 in head seas, × 0.8 following · arrow points the way the waves travel</div>');
   if (_on('precipToggle') && G.precip) rows.push(_gradientRow(G.precip) + _noteRow('precipToggle'));
   if (_on('temperatureToggle') && G.temperature) rows.push(_gradientRow(G.temperature) + _noteRow('temperatureToggle'));
   if (_on('sstToggle') && G.sst) rows.push(_gradientRow(G.sst) + _noteRow('sstToggle'));
@@ -1557,6 +1859,9 @@ window.addEventListener('load', updateLegends);
 AuthGate.onStop(() => map.render());
 window.addEventListener('rp:units', updateLegends);
 
+let _notesTimer = null;
+map.on('moveend', () => { clearTimeout(_notesTimer); _notesTimer = setTimeout(loadNotes, 300); });
+
 // ─────────── Layer toggles ───────────
 // One row per checkbox in the Layers tab: the layer it shows, how to
 // load it when switched on, how to drop its data when switched off, and
@@ -1567,6 +1872,8 @@ const LAYER_TOGGLES = [
   ['osmToggle', osmLayer],
   ['seamarkToggle', seamarkLayer],
   ['vesselToggle', vesselMarkerLayer],
+  ['notesToggle', notesLayer, loadNotes, () => notesSource.clear()],
+  ['seasRouteToggle', seasRouteLayer],
   ['frontToggle', frontLayer],
   ['windToggle', windLayer, loadWindOverlay, () => windSource.clear()],
   ['windCombinedToggle', windHeatmapLayer, loadWindHeatmap, () => windHeatmapLayer.setSource(null), windStreamlines],
@@ -1575,6 +1882,8 @@ const LAYER_TOGGLES = [
   ['sstToggle', sstLayer, loadSst, () => sstLayer.setSource(null)],
   ['pressureToggle', pressureLayer, loadPressure, () => pressureSource.clear()],
   ['currentToggle', currentLayer, loadCurrentOverlay, () => currentSource.clear()],
+  ['seasArrowsToggle', seasArrowsLayer, loadSeasArrows, () => seasSource.clear()],
+  ['waveArrowsToggle', waveArrowsLayer, loadWaveArrows, () => waveArrowSource.clear()],
   ['currentHeatmapToggle', currentHeatmapLayer, loadCurrentHeatmap, () => currentHeatmapLayer.setSource(null)],
   ['wavesCombinedToggle', waveHeatmapLayer, loadWaveHeatmap, () => waveHeatmapLayer.setSource(null), waveStreamlines],
   ['roughnessToggle', roughnessLayer, loadRoughness, () => roughnessLayer.setSource(null)],

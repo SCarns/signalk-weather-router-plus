@@ -66,7 +66,7 @@ export default [
           'window', 'document', 'console', 'navigator', 'localStorage', 'fetch', 'alert', 'confirm',
           'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'requestAnimationFrame', 'cancelAnimationFrame',
           'encodeURIComponent', 'AbortController', 'CustomEvent', 'DOMException', 'Event', 'EventSource', 'ImageData',
-          'MutationObserver', 'ResizeObserver', 'Uint8Array', 'Uint8ClampedArray', 'ol',
+          'MutationObserver', 'ResizeObserver', 'Uint8Array', 'Uint8ClampedArray', 'Blob', 'URL', 'ol',
         ].map(g => [g, 'readonly'])
       ),
     },
