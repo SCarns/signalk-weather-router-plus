@@ -442,7 +442,10 @@ function _bboxParam(b) { return b.map(v => +v.toFixed(5)).join(','); }
 // keeps the tiles of one zoom level and one hour: a new level or hour
 // starts afresh, so zooming out never shows the denser deeper-level points.
 const _POINT_TILE_GRID = ol.tilegrid.createXYZ({ tileSize: 256, maxZoom: 18 });
+// `toggleId`: the layer toggle a tile error is noted under, or a list of
+// them for a source several layers share.
 function _pointTileSource(tileLayer, toggleId, toFeature, attributions) {
+  const toggles = Array.isArray(toggleId) ? toggleId : [toggleId];
   const src = new ol.source.Vector({
     attributions,
     strategy: ol.loadingstrategy.tile(_POINT_TILE_GRID),
@@ -465,11 +468,11 @@ function _pointTileSource(tileLayer, toggleId, toFeature, attributions) {
           if (src._hour !== hour || src._z !== level || z !== level) { fail(); return; }
           const features = (Array.isArray(points) ? points : []).map(toFeature);
           src.addFeatures(features);
-          _noteOverlay(toggleId, null);
+          for (const id of toggles) _noteOverlay(id, null);
           success(features);
         })
         .catch(err => {
-          if (err.message !== 'auth-gate-tripped') { console.log(tileLayer + ' tile error: ' + err.message); _noteOverlay(toggleId, err.message); }
+          if (err.message !== 'auth-gate-tripped') { console.log(tileLayer + ' tile error: ' + err.message); for (const id of toggles) _noteOverlay(id, err.message); }
           fail();
         });
     },
@@ -582,13 +585,17 @@ function loadCurrentOverlay() {
 // the waves (they steepen) two heads meet in the middle, larger the more
 // the current steepens them; with the waves, a double chevron; with
 // little current along them, a single thin arrow.
-const seasSource = _pointTileSource('seas', 'seasArrowsToggle', p => {
+// One source for the 'seas' point tiles, shared by this layer and the wave
+// arrows below (each draws its own glyph from the same points), so a tile
+// is fetched once with both layers on.
+const seasSource = _pointTileSource('seas', ['seasArrowsToggle', 'waveArrowsToggle'], p => {
   const f = new ol.Feature({ geometry: new ol.geom.Point(ol.proj.fromLonLat([p.lon, p.lat])) });
   f.set('idx', p.idx);
   f.set('to_deg', p.to_deg);
   f.set('rel', p.rel);
   f.set('steepen', p.steepen);
   f.set('swh_m', p.swh_m);
+  f.set('mwp_s', p.mwp_s);
   return f;
 });
 // The glyph, drawn pointing up (the waves travel north); the map rotates it
@@ -633,18 +640,11 @@ function loadSeasArrows() {
 }
 
 // ─────────── Wave arrows ───────────
-// An arrow per point (the same 'seas' point tiles) along the way the waves
+// An arrow per point (the shared 'seas' source above) along the way the waves
 // travel, coloured on the wave-height heatmap's scale (/api/legends waves,
 // the ramp's colour at the point's height, shifted slightly darker and
 // outlined like the seas glyphs), longer the longer the wave period: long
 // swell reads as a long arrow, short chop as a short one.
-const waveArrowSource = _pointTileSource('seas', 'waveArrowsToggle', p => {
-  const f = new ol.Feature({ geometry: new ol.geom.Point(ol.proj.fromLonLat([p.lon, p.lat])) });
-  f.set('swh_m', p.swh_m);
-  f.set('mwp_s', p.mwp_s);
-  f.set('to_deg', p.to_deg);
-  return f;
-});
 // The wave-height ramp's colour at a height (m), shifted like the seas glyphs; null until the legends are loaded.
 function waveHeightColour(m) {
   const S = _LEGENDS && _LEGENDS.waves && _LEGENDS.waves.stops;
@@ -691,10 +691,10 @@ function _waveArrowStyle(f) {
   }
   return st;
 }
-const waveArrowsLayer = new ol.layer.Vector({ source: waveArrowSource, visible: false, style: _waveArrowStyle, zIndex: 8 });
+const waveArrowsLayer = new ol.layer.Vector({ source: seasSource, visible: false, style: _waveArrowStyle, zIndex: 8 });
 function loadWaveArrows() {
   if (!waveArrowsLayer.getVisible()) return;
-  _syncPointSource(waveArrowSource);
+  _syncPointSource(seasSource);
 }
 
 // Refresh currents when departure time changes
@@ -1882,8 +1882,9 @@ const LAYER_TOGGLES = [
   ['sstToggle', sstLayer, loadSst, () => sstLayer.setSource(null)],
   ['pressureToggle', pressureLayer, loadPressure, () => pressureSource.clear()],
   ['currentToggle', currentLayer, loadCurrentOverlay, () => currentSource.clear()],
-  ['seasArrowsToggle', seasArrowsLayer, loadSeasArrows, () => seasSource.clear()],
-  ['waveArrowsToggle', waveArrowsLayer, loadWaveArrows, () => waveArrowSource.clear()],
+  // The two share one source: cleared only when both are off.
+  ['seasArrowsToggle', seasArrowsLayer, loadSeasArrows, () => { if (!waveArrowsLayer.getVisible()) seasSource.clear(); }],
+  ['waveArrowsToggle', waveArrowsLayer, loadWaveArrows, () => { if (!seasArrowsLayer.getVisible()) seasSource.clear(); }],
   ['currentHeatmapToggle', currentHeatmapLayer, loadCurrentHeatmap, () => currentHeatmapLayer.setSource(null)],
   ['wavesCombinedToggle', waveHeatmapLayer, loadWaveHeatmap, () => waveHeatmapLayer.setSource(null), waveStreamlines],
   ['roughnessToggle', roughnessLayer, loadRoughness, () => roughnessLayer.setSource(null)],

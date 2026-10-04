@@ -6,6 +6,7 @@
  * marked too.
  */
 
+import { wrapLon } from './angles';
 import { haversineDistanceM, slerpSamples } from './geodesy';
 
 export interface AvoidArea {
@@ -48,12 +49,6 @@ export function avoidAt(areas: readonly AvoidArea[], lon: number, lat: number): 
   return null;
 }
 
-/** Longitude difference b − a the short way, degrees in (−180, 180]. */
-function dLonDeg(a: number, b: number): number {
-  const d = ((((b - a) % 360) + 540) % 360) - 180;
-  return d === -180 ? 180 : d;
-}
-
 /** Leg pieces are at most this long for the flat test (the projection is centred on the circle). */
 const PIECE_M = 50_000;
 
@@ -78,7 +73,7 @@ export function legHitsAvoid(areas: readonly AvoidArea[], lonA: number, latA: nu
     if (dA > a.radiusM + legM) continue;
     const kx = Math.cos((a.lat * Math.PI) / 180) * 111_320;
     const ky = 110_540;
-    const px = (lon: number): number => dLonDeg(a.lon, lon) * kx;
+    const px = (lon: number): number => wrapLon(lon - a.lon) * kx;
     const py = (lat: number): number => (lat - a.lat) * ky;
     for (let i = 0; i < n; i++) {
       const x0 = px(lons[i]);

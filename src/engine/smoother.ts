@@ -152,8 +152,7 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
       // The time tolerance holds on elapsed time; with a comfort weight the
       // shortcut must also not cost more in time plus comfort.
       const tooSlow = sim.seconds > tol * origS;
-      const tooRough =
-        comfort && sim.seconds + sim.penaltySeconds > tol * (origS + penaltyBetween(examined, anchor));
+      const tooRough = comfort && sim.seconds + sim.penaltySeconds > tol * (origS + penaltyBetween(examined, anchor));
       if (!Number.isFinite(sim.seconds) || tooSlow || tooRough) {
         failedAt = examined;
         break;

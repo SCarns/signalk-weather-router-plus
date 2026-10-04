@@ -635,7 +635,6 @@ export class LandMask {
     return false;
   }
 
-  /** Fraction of raster cells that are land (diagnostics). */
   /**
    * This mask with areas to avoid (circles on Signal K notes) answering as
    * land: the four checks the router makes (isLand, isLandExact,
@@ -665,6 +664,7 @@ export class LandMask {
     return view;
   }
 
+  /** Fraction of raster cells that are land (diagnostics). */
   landFraction(): number {
     let c = 0;
     for (let i = 0; i < this.raster.length; i++) c += this.raster[i];

@@ -969,10 +969,25 @@ export function fromClockInput(v) {
     const off = ms => { const c = clockParts(ms); return (Date.UTC(c.y, c.mo - 1, c.d, c.h, c.mi) - Math.floor(ms / 60000) * 60000) / 60000; };
     let t = wall - off(wall) * 60000;
     t = wall - off(t) * 60000;
+    // A wall time the clocks skip (spring forward) has no instant: the
+    // guess lands either side of the gap. Keep the one after it, as the
+    // browser does with its own zone (02:30 → 03:30).
+    const c = clockParts(t);
+    const shown = Date.UTC(c.y, c.mo - 1, c.d, c.h, c.mi);
+    if (shown < wall) t += wall - shown;
     return new Date(t);
   }
   const d = new Date(v);
   return isNaN(d) ? null : d;
+}
+// The departure field shows the time actually used: a skipped wall time
+// (fromClockInput) is rewritten to the moved one before anything reads it.
+const _depField = typeof document !== 'undefined' ? document.getElementById('departure') : null;
+if (_depField) {
+  _depField.addEventListener('change', () => {
+    const t = fromClockInput(_depField.value);
+    if (t) { const v = toClockInput(t); if (v !== _depField.value.slice(0, 16)) _depField.value = v; }
+  });
 }
 
 /** Text for innerHTML: escapes &, <, >, " and '. */
