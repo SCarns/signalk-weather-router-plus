@@ -26,7 +26,8 @@ uses [Semantic Versioning](https://semver.org/).
   menu writes a new note (title, text) at that point. Notes are ordinary Signal K resources (`POST`, `PUT`, `DELETE`
   `/signalk/v2/api/resources/notes`; an edit keeps the note's other
   fields), so Freeboard and other apps see them; writing needs a Signal K
-  login with write access.
+  login with write access. A failed notes request keeps the notes already
+  shown (logged to the console) instead of emptying the layer.
 - **Areas to avoid.** A note can mark a circle around it to avoid (its
   form's "Avoid this area" and a radius, stored as
   `properties.avoid.radius_m`). The router treats every such circle as

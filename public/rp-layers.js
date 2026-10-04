@@ -1604,7 +1604,8 @@ export function loadNotes() {
     ? '?bbox=' + encodeURIComponent('[' + [w, Math.max(-90, s0), e, Math.min(90, n)].map(v => v.toFixed(4)).join(',') + ']')
     : '';
   authFetch('/signalk/v2/api/resources/notes' + q, { cache: 'no-store' }, 'notes')
-    .then(r => (r.ok ? r.json() : {}))
+    // A failed request is not an empty collection: keep the notes shown.
+    .then(r => { if (!r.ok) throw new Error('notes: ' + r.status); return r.json(); })
     .then(col => {
       if (seq !== _notesSeq) return;
       notesSource.clear();
@@ -1629,7 +1630,7 @@ export function loadNotes() {
         if (avoidM > 0) notesSource.addFeature(new ol.Feature({ geometry: avoidRing([lon, lat], avoidM), kind: 'avoid', noteId: id }));
       }
     })
-    .catch(() => {});
+    .catch(err => { if (err.name !== 'AbortError' && err.message !== 'auth-gate-tripped') console.log(err.message); });
 }
 
 // --- Map ---
