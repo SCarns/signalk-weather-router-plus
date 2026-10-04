@@ -636,6 +636,11 @@ function _seasGlyphSvg(rel, colour, outline = SEA_GLYPH_OUTLINE) {
 // COMFORT_FREE_INDEX): small waves steepened are still a calm sea.
 const SEAS_RIP_MIN_STEEPEN = 1.10;
 const SEAS_RIP_MIN_INDEX = 75;
+// The mark by how rough the sea is (the sea-state bands' lower bounds,
+// plugin/legends.ts SEA_STATE_BANDS): choppy, the tide-rip lines; rough, a
+// breaking wave; extreme, a breaking wave with spray.
+const SEAS_BREAK_MIN_INDEX = 100;
+const SEAS_SPRAY_MIN_INDEX = 150;
 let SEAS_STYLE = 'A';
 try { if (localStorage.getItem('rp:seasStyle') === 'B') SEAS_STYLE = 'B'; } catch (_) { /* no storage: A */ }
 // Three short wavy lines, 22 × 22; outlined unless outline is null.
@@ -644,6 +649,24 @@ function _seasRipSvg(colour, outline = SEA_GLYPH_OUTLINE) {
   return '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">'
     + (outline ? lines(outline, 3.6) : '') + lines(colour, 2) + '</svg>';
 }
+// A wave crest curling over, on a base line, 22 × 22; `spray`: two drops
+// thrown off the crest (extreme). Outlined unless outline is null.
+function _seasBreakSvg(colour, spray, outline = SEA_GLYPH_OUTLINE) {
+  const d = 'M2 18 C5 18 7 15 9 11 C11 7 15 5 18 7 C20 8.5 19.5 11.5 17 11.5 C15.5 11.5 15 10 16 9';
+  const strokes = (c, w) => '<path d="' + d + '" fill="none" stroke="' + c + '" stroke-width="' + w + '" stroke-linecap="round" stroke-linejoin="round"/>'
+    + '<path d="M2 19.5 L20 19.5" fill="none" stroke="' + c + '" stroke-width="' + w + '" stroke-linecap="round"/>';
+  const drops = spray
+    ? [[20.5, 4], [13, 3.5]].map(([x, y]) => '<circle cx="' + x + '" cy="' + y + '" r="1.6" fill="' + colour + '"' + (outline ? ' stroke="' + outline + '" stroke-width="0.8"' : '') + '/>').join('')
+    : '';
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">'
+    + (outline ? strokes(outline, 3.6) : '') + strokes(colour, 2) + drops + '</svg>';
+}
+// The B mark's SVG for a sea-state index (choppy or rougher).
+function _seasMarkSvg(idx, colour, outline) {
+  if (idx >= SEAS_SPRAY_MIN_INDEX) return _seasBreakSvg(colour, true, outline);
+  if (idx >= SEAS_BREAK_MIN_INDEX) return _seasBreakSvg(colour, false, outline);
+  return _seasRipSvg(colour, outline);
+}
 const _seasGlyphStyles = new Map();
 function _seasGlyphStyle(f) {
   const colour = seaBandColour(f.get('idx'));
@@ -651,11 +674,13 @@ function _seasGlyphStyle(f) {
   if (SEAS_STYLE === 'B') {
     const steep = f.get('steepen') || 1;
     if (f.get('rel') !== 'opposing' || steep < SEAS_RIP_MIN_STEEPEN || !(f.get('idx') >= SEAS_RIP_MIN_INDEX)) return null;
+    const idx = f.get('idx');
+    const kind = idx >= SEAS_SPRAY_MIN_INDEX ? 'spray' : idx >= SEAS_BREAK_MIN_INDEX ? 'break' : 'rip';
     const size = Math.min(1.6, Math.max(1, steep));
-    const keyB = 'B' + colour + size.toFixed(1);
+    const keyB = 'B' + kind + colour + size.toFixed(1);
     let sb = _seasGlyphStyles.get(keyB);
     if (!sb) {
-      sb = new ol.style.Style({ image: new ol.style.Icon({ src: 'data:image/svg+xml;utf8,' + encodeURIComponent(_seasRipSvg(colour)), scale: size }) });
+      sb = new ol.style.Style({ image: new ol.style.Icon({ src: 'data:image/svg+xml;utf8,' + encodeURIComponent(_seasMarkSvg(idx, colour)), scale: size }) });
       _seasGlyphStyles.set(keyB, sb);
     }
     return sb;
@@ -1862,10 +1887,11 @@ function _seaBandsRow(title) {
 }
 function _seasGlyphKey() {
   if (SEAS_STYLE === 'B') {
-    const rip = '<span style="display:inline-block;width:14px;height:14px;vertical-align:middle;margin-right:3px;">'
-      + _seasRipSvg('currentColor', null).replace('width="22" height="22"', 'width="14" height="14"') + '</span>';
-    return '<div class="lg-note">' + rip + 'current against the waves, steepening them by '
-      + Math.round((SEAS_RIP_MIN_STEEPEN - 1) * 100) + ' % or more, in a choppy or rougher sea (larger: steeper) · nothing drawn elsewhere</div>';
+    const g = idx => '<span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:3px;">'
+      + _seasMarkSvg(idx, 'currentColor', null).replace('width="22" height="22"', 'width="16" height="16"') + '</span>';
+    return '<div class="lg-note">Where the current against the waves steepens them by '
+      + Math.round((SEAS_RIP_MIN_STEEPEN - 1) * 100) + ' % or more (larger: steeper): '
+      + g(SEAS_RIP_MIN_INDEX) + 'choppy · ' + g(SEAS_BREAK_MIN_INDEX) + 'rough · ' + g(SEAS_SPRAY_MIN_INDEX) + 'extreme · nothing drawn in calmer water</div>';
   }
   const g = rel => '<span style="display:inline-block;width:14px;height:14px;vertical-align:middle;margin-right:3px;">'
     + _seasGlyphSvg(rel, 'currentColor', null).replace('width="22" height="22"', 'width="14" height="14"') + '</span>';
