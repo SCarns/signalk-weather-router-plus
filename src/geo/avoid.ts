@@ -71,6 +71,8 @@ export function legHitsAvoid(areas: readonly AvoidArea[], lonA: number, latA: nu
     const dA = haversineDistanceM(a.lon, a.lat, lonA, latA);
     if (dA <= a.radiusM) return a;
     if (dA > a.radiusM + legM) continue;
+    // Both ends exactly: the flat test below drifts from the true distance far from the centre at high latitude.
+    if (haversineDistanceM(a.lon, a.lat, lonB, latB) <= a.radiusM) return a;
     const kx = Math.cos((a.lat * Math.PI) / 180) * 111_320;
     const ky = 110_540;
     const px = (lon: number): number => wrapLon(lon - a.lon) * kx;

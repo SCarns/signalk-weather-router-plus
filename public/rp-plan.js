@@ -1046,7 +1046,9 @@ function _noteForm(coordinate, lonLat, note) {
     ev.stopPropagation();
     if (!title.value.trim()) { msg.textContent = 'A title is needed.'; title.focus(); return; }
     let avoidM = 0;
-    if (avoidOn.checked) {
+    // Without a distance unit the avoid control is disabled: keep the note's radius as it is.
+    if (avoidOn.disabled) avoidM = note && note.avoidM > 0 ? note.avoidM : 0;
+    else if (avoidOn.checked) {
       const c = UI_UNITS.distance, v = parseFloat(avoidR.value);
       if (!c || !(v > 0)) { msg.textContent = 'Give the radius of the area to avoid.'; avoidR.focus(); return; }
       avoidM = Math.round(c.inv(v));

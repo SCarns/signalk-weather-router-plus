@@ -45,6 +45,14 @@ test('a point inside, a leg through, a leg past, and across 180°', () => {
   assert.equal(legHitsAvoid([dateline], 179.5, -19, -179.5, -19), null);
 });
 
+test('a leg ending just inside a large circle at high latitude is caught (the end checked exactly)', () => {
+  // 70°N, a 500 km circle: 13.14° east along the parallel is 498.8 km away
+  // (great circle) but 500.3 km in the flat projection the pieces are tested in.
+  const area = { id: 'h', title: 'H', lon: 0, lat: 70, radiusM: 500_000 };
+  assert.ok(haversineDistanceM(0, 70, 13.14, 70) < area.radiusM);
+  assert.ok(legHitsAvoid([area], 20, 70, 13.14, 70));
+});
+
 test('a leg is tested along its great circle, not the lat/lon straight line', () => {
   // 30°W to 30°E along 60°N: the great circle bows north to about 63.4°N at
   // 0°, some 200 nm from the 60°N parallel.
