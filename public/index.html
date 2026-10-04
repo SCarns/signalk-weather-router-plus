@@ -343,6 +343,10 @@
   #dataStatus .statusKey { color: var(--tack-starboard); font-weight: 600; }
   #dataStatus .warn { color: var(--warn); font-weight: 600; }
   #dataStatus .err { color: var(--danger); font-weight: 600; }
+  /* The sea state arrows' A/B style selector: one line under its checkbox (overrides #panel label / input). */
+  #panel #seasStyleRow { display: flex; align-items: center; gap: var(--s-2); margin: 0 0 var(--s-1) 22px; font-size: 11px; color: var(--text-2); }
+  #panel #seasStyleRow label { display: inline-flex; align-items: center; margin: 0; font-size: 11px; cursor: pointer; }
+  #panel #seasStyleRow input { width: auto; margin: 0 3px 0 0; padding: 0; }
   #loadingBanner {
     margin: 0 0 var(--s-2); padding: var(--s-2) var(--s-3);
     border: 1px solid var(--border-hard); border-left: 3px solid var(--go); border-radius: 6px;
@@ -856,6 +860,12 @@
     <div class="layer-group" data-group="water">
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="currentToggle" style="width:auto;margin-right:4px;" checked>Current direction (arrows)</label>
     <label style="display:block;font-size:11px;cursor:pointer;" title="The waves against the current: arrows along the way the waves travel, coloured by the sea-state index. Two heads meeting in the middle where the current runs against the waves (they steepen; larger the more they steepen); a double chevron where it runs with them; a thin arrow with little current."><input type="checkbox" id="seasArrowsToggle" style="width:auto;margin-right:4px;">Sea state arrows (waves vs current)</label>
+    <!-- A/B test of two ways to draw it (rp-layers.js SEAS_STYLE); remembered per browser. -->
+    <div id="seasStyleRow" title="A: a glyph at every point (direction and how the current meets the waves). B: only a tide-rip mark where the current against the waves steepens a choppy or rougher sea; nothing elsewhere.">
+      Style:
+      <label><input type="radio" name="seasStyle" value="A">A arrows</label>
+      <label><input type="radio" name="seasStyle" value="B">B tide rips</label>
+    </div>
     <label style="display:block;font-size:11px;cursor:pointer;" title="An arrow per point along the way the waves travel, coloured by the significant wave height on the wave-height colour scale; longer arrows for a longer mean period (long swell, short chop)."><input type="checkbox" id="waveArrowsToggle" style="width:auto;margin-right:4px;">Wave direction (arrows)</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="currentHeatmapToggle" style="width:auto;margin-right:4px;">Current speed (colour)</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="wavesCombinedToggle" style="width:auto;margin-right:4px;">Wave height (colour) + direction lines</label>

@@ -625,10 +625,41 @@ function _seasGlyphSvg(rel, colour, outline = SEA_GLYPH_OUTLINE) {
   return '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">'
     + (outline ? paths(outline, 1.6) : '') + paths(colour, 0) + '</svg>';
 }
+// A/B test of the layer's look. A: the glyph above at every point. B: only
+// a tide-rip mark (the short wavy lines nautical charts use for overfalls
+// and tide rips) where the current against the waves steepens them by at
+// least SEAS_RIP_MIN_STEEPEN, nothing elsewhere; no direction (the wave and
+// current arrows carry that). 1.10 marked about 4 % of the points in a
+// sample of 168 (brain, Coral Sea, 2026-10-04 18Z): a starting value.
+// Only where the sea is choppy or rougher (SEAS_RIP_MIN_INDEX, the top of
+// the "slight" band and the comfort cost's free limit, src/engine/seas.ts
+// COMFORT_FREE_INDEX): small waves steepened are still a calm sea.
+const SEAS_RIP_MIN_STEEPEN = 1.10;
+const SEAS_RIP_MIN_INDEX = 75;
+let SEAS_STYLE = 'A';
+try { if (localStorage.getItem('rp:seasStyle') === 'B') SEAS_STYLE = 'B'; } catch (_) { /* no storage: A */ }
+// Three short wavy lines, 22 × 22; outlined unless outline is null.
+function _seasRipSvg(colour, outline = SEA_GLYPH_OUTLINE) {
+  const lines = (c, w) => [5, 11, 17].map(y => '<path d="M3 ' + y + ' q2 -3 4 0 t4 0 t4 0 t4 0" fill="none" stroke="' + c + '" stroke-width="' + w + '" stroke-linecap="round"/>').join('');
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">'
+    + (outline ? lines(outline, 3.6) : '') + lines(colour, 2) + '</svg>';
+}
 const _seasGlyphStyles = new Map();
 function _seasGlyphStyle(f) {
   const colour = seaBandColour(f.get('idx'));
   if (!colour) return null;
+  if (SEAS_STYLE === 'B') {
+    const steep = f.get('steepen') || 1;
+    if (f.get('rel') !== 'opposing' || steep < SEAS_RIP_MIN_STEEPEN || !(f.get('idx') >= SEAS_RIP_MIN_INDEX)) return null;
+    const size = Math.min(1.6, Math.max(1, steep));
+    const keyB = 'B' + colour + size.toFixed(1);
+    let sb = _seasGlyphStyles.get(keyB);
+    if (!sb) {
+      sb = new ol.style.Style({ image: new ol.style.Icon({ src: 'data:image/svg+xml;utf8,' + encodeURIComponent(_seasRipSvg(colour)), scale: size }) });
+      _seasGlyphStyles.set(keyB, sb);
+    }
+    return sb;
+  }
   const rel = f.get('rel');
   const big = rel === 'opposing' ? Math.min(1.6, Math.max(1, f.get('steepen') || 1)) : 1;
   const rot = Math.round(f.get('to_deg') / 5) * 5;
@@ -642,6 +673,17 @@ function _seasGlyphStyle(f) {
   return st;
 }
 const seasArrowsLayer = new ol.layer.Vector({ source: seasSource, visible: false, style: _seasGlyphStyle, zIndex: 8 });
+// The A/B selector (index.html seasStyleRow): redraw and relabel at once.
+for (const r of document.querySelectorAll('input[name="seasStyle"]')) {
+  r.checked = r.value === SEAS_STYLE;
+  r.addEventListener('change', () => {
+    if (!r.checked) return;
+    SEAS_STYLE = r.value;
+    try { localStorage.setItem('rp:seasStyle', SEAS_STYLE); } catch (_) { /* not remembered */ }
+    seasArrowsLayer.changed();
+    updateLegends();
+  });
+}
 function loadSeasArrows() {
   if (!seasArrowsLayer.getVisible()) return;
   _syncPointSource(seasSource);
@@ -1819,6 +1861,12 @@ function _seaBandsRow(title) {
   return '<div class="lg-row"><div class="lg-title">' + title + '</div><div class="lg-classes">' + cells + '</div></div>';
 }
 function _seasGlyphKey() {
+  if (SEAS_STYLE === 'B') {
+    const rip = '<span style="display:inline-block;width:14px;height:14px;vertical-align:middle;margin-right:3px;">'
+      + _seasRipSvg('currentColor', null).replace('width="22" height="22"', 'width="14" height="14"') + '</span>';
+    return '<div class="lg-note">' + rip + 'current against the waves, steepening them by '
+      + Math.round((SEAS_RIP_MIN_STEEPEN - 1) * 100) + ' % or more, in a choppy or rougher sea (larger: steeper) · nothing drawn elsewhere</div>';
+  }
   const g = rel => '<span style="display:inline-block;width:14px;height:14px;vertical-align:middle;margin-right:3px;">'
     + _seasGlyphSvg(rel, 'currentColor', null).replace('width="22" height="22"', 'width="14" height="14"') + '</span>';
   return '<div class="lg-note">' + g('opposing') + 'current against the waves (steeper; larger the more) · '
