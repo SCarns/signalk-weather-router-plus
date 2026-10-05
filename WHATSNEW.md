@@ -1,5 +1,12 @@
 # What's new
 
+## 0.1.1
+
+- **A regular release.** Everything from 0.1.0-beta.9 below, now
+  published outside the beta channel.
+- **Fix.** In style B of *Current against the waves*, the colour key
+  lists only the sea states B draws (choppy, rough, extreme).
+
 ## 0.1.0-beta.9
 
 - **Routing around rough water.** The router now weighs how rough the sea

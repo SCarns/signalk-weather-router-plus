@@ -6,6 +6,20 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-05
+
+### Changed
+
+- **Published as a regular release, outside the beta channel.** 0.1.1
+  carries everything in 0.1.0-beta.9 (below) plus the fix that follows.
+
+### Fixed
+
+- **Style B's legend lists only the sea states it draws.** "Current
+  against the waves" in style B marks only a choppy or rougher sea, but
+  its colour key showed all six bands; it now shows choppy, rough and
+  extreme. Styles A and C, which draw at every point, keep all six.
+
 ## [0.1.0-beta.9] - 2026-10-04
 
 ### Added
@@ -1067,7 +1081,8 @@ builds before this release, with their measurements, is in
   loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.9...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.9...v0.1.1
 [0.1.0-beta.9]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.8...v0.1.0-beta.9
 [0.1.0-beta.8]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.7...v0.1.0-beta.8
 [0.1.0-beta.7]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.6...v0.1.0-beta.7
