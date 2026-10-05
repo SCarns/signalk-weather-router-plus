@@ -21,7 +21,7 @@ much for a plugin; it lives in the separate
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
 
-**Status: beta** (0.1.0-beta.8). Please report
+**Status: beta** (0.1.0-beta.9). Please report
 problems at https://github.com/motamman/signalk-weather-router-plus/issues.
 
 What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
@@ -426,15 +426,36 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   panel show a **Seas** row for the next leg: where the waves come from
   ("head seas", "on the starboard bow") and the encounter index's band
   and value ("rough (112)").
-- **Sea state arrows (waves vs current)** (Layers → Water, off by
-  default): the waves against the current, from `/api/tile/seas`.
-  Arrows along the way the waves travel, coloured by the sea-state index:
-  two heads meeting in the middle where the current runs against the
-  waves (they steepen; drawn larger the more they steepen), a double
-  chevron where it runs with them, a thin arrow where there is little
-  current along them. Glyph colours follow the sea-state heatmap's scale,
-  each band in the colour of its legend swatch, shifted slightly darker
-  and outlined so the glyphs stay visible over the heatmap.
+- **Current against the waves** (Layers → Water, off by default): what
+  the current does to the sea, from `/api/tile/seas`, coloured by the
+  sea state there (the sea-state heatmap's scale, each band in the colour
+  of its legend swatch, shifted slightly darker and outlined so the
+  glyphs stay visible over the heatmap). Three styles, chosen under the
+  layer's checkbox and remembered in the browser (a trial, to settle on
+  one):
+  - **A arrows:** an arrow at every point along the way the waves
+    travel: two heads meeting in the middle where the current runs
+    against the waves (drawn larger the more it steepens them), a double
+    chevron where it runs with them, a thin arrow where there is little
+    current along them.
+  - **B rips & breakers:** a mark only where the current against the
+    waves steepens a choppy or rougher sea (index 75 or more): the short
+    wavy lines charts use for tide rips when the waves are 10–25 %
+    steeper, a breaking wave at 25–50 %, a breaking wave with spray from
+    50 %. Nothing elsewhere, and no direction (the wave and current
+    arrows carry that).
+  - **C wind, waves, current:** three arrows from each point, each
+    pointing where it is going: wind thin with a feather at the tail,
+    waves wavy, current thick and solid. Where two point at each other
+    the sea is rough, and the glyph shows which pair (wind against
+    current, waves against current, or wind against waves). Arms within
+    20° are spread apart; an arm is left out below 1 m/s of wind, 0.1 m
+    of waves or 0.1 m/s of current.
+
+  A and B choose their glyph from the waves against the current only;
+  wind against current is in the sea state (the colour) but not in their
+  glyph. C shows all three. The thresholds are named constants in
+  `public/rp-layers.js`.
 - **Wave direction (arrows)** (Layers → Water, off by default): an arrow
   per point along the way the waves travel, from the same
   `/api/tile/seas` points, coloured by the significant wave height on
@@ -569,13 +590,13 @@ the web app's layer legend (`GET /api/legends`). The tide layer uses its
 fixed ±3 m scale here. Five glyph layers come with them: **Wind barbs**,
 **Current arrows**, **Isobars** (4 hPa, bold every 20 hPa; highs and
 lows as blue and red dots; no pressure labels, as the server has no
-font), **Sea state arrows** (the waves against the current, as the web
-app's layer) and **Wave arrows** (coloured by wave height, longer for a
+font), **Current against the waves** (the web app's layer in style A)
+and **Wave arrows** (coloured by wave height, longer for a
 longer period); the last two need wave data. The layers are also organised as Freeboard **Groups** (resources
 menu → Groups), one colour layer each with the glyphs that belong with
 it, shown in one tap: *Wind* (speed, barbs), *Waves* (height, wave arrows),
 *Currents* (speed, arrows), *Pressure* (isobars, barbs), *Sea state*
-(index, sea state arrows), *Tide* (height, arrows), *Rain* (precipitation,
+(index, current against the waves), *Tide* (height, arrows), *Rain* (precipitation,
 isobars), *Air temperature* and *Sea temperature* (with isobars and
 arrows). Two colour layers over each other are unreadable, so no group
 has more than one. A group holds the layers whose data is there and is
@@ -650,7 +671,13 @@ water grid:
 
 The sea-state index describes the water at a point (wind against
 current, swell steepened by an opposing current); it knows nothing of
-the boat. Heading into the waves is harder than running before them, so
+the boat. It is the sum of a wind term (50 in any breeze without a
+current, more where wind and current oppose) and a wave term,
+`10 × swh² × 5/max(period, 5) × steepening` (`SWELL_COEFF`,
+`src/plugin/conditions.ts`), on the bands smooth < 35 ≤ good < 50 ≤
+slight < 75 ≤ choppy < 100 ≤ rough < 150 ≤ extreme: a 2 m wind sea is
+choppy, 3.5 m rough, 5 m and more extreme, and long swell reads milder
+than a wind sea of the same height. Heading into the waves is harder than running before them, so
 the router weights the index by the angle between the course and the
 direction the waves come from: × 1.3 in head seas, × 1.05 abeam, × 0.8
 in following seas, a cosine between (the **encounter index**,
@@ -2002,7 +2029,7 @@ before its query has started is dropped from the data worker's queue.
 
 | Path / query | Values |
 |---|---|
-| `layer` | `wind`, `waves`, `msl`, `temperature`, `sst`, `precip`, `sea_state`, `current`, `tide` (colour layers), `barbs` (wind barbs), `arrows` (current arrows), `seas` (sea state arrows), `land` (coastline) |
+| `layer` | `wind`, `waves`, `msl`, `temperature`, `sst`, `precip`, `sea_state`, `current`, `tide` (colour layers), `barbs` (wind barbs), `arrows` (current arrows), `seas` (the points for current against the waves and wave arrows), `land` (coastline) |
 | `z` | 0–18 |
 | `x`, `y` | 0 to 2^z − 1 |
 | `time` | ISO 8601, default now; rounded to the nearest hour. Ignored for `land` |
@@ -2022,7 +2049,9 @@ before its query has started is dropped from the data worker's queue.
   wave period (null when the forecast has none), `to_deg` the direction the waves travel TO (degrees true), `rel`
   the current along the waves (`opposing`, `following`, or `none` below
   0.1 m/s), `steepen` the factor the opposing current steepens them by
-  (1 = none);
+  (1 = none), `wind_ms` and `wind_to_deg` the wind and the way it blows
+  TO (null without wind data), `cur_ms` and `cur_to_deg` the current and
+  its set (0 and null without a current source);
   for all three, points on the tile's east and north edges belong to the
   neighbouring tile;
 - `land`: 256 × 256 bytes, 1 = land, row 0 at the north edge, rows

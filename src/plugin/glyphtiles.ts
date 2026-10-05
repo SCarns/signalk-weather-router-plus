@@ -49,9 +49,9 @@ export const GLYPH_LAYER_SPECS: Record<GlyphLayer, GlyphLayerSpec> = {
   },
   seas: {
     chartId: 'wrp-sea-state-arrows',
-    name: 'Sea state arrows',
+    name: 'Current against the waves',
     description:
-      'The waves against the current: arrows along the way the waves travel, coloured by the sea-state index; heads meeting where the current opposes the waves (larger the more it steepens them), a double chevron where it runs with them. By the hour.',
+      'What the current does to the waves: arrows along the way the waves travel, coloured by the sea state there; heads meeting where the current opposes the waves (larger the more it steepens them), a double chevron where it runs with them. By the hour.',
   },
   wave_arrows: {
     chartId: 'wrp-wave-arrows',

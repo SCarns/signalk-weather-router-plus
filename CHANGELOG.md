@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0-beta.9] - 2026-10-04
+
 ### Added
 
 - **Cloud cover and wind gust in the Weather API.** With the extra
@@ -95,12 +97,19 @@ uses [Semantic Versioning](https://semver.org/).
   band); Layers → Base → **Seas along the route** (on by default) draws
   an arrow on each leg along the waves' travel, coloured by the encounter
   index.
-- **Sea state arrows (waves vs current).** Layers → Water (off by
-  default), from the new point tile layer `/api/tile/seas`: arrows along
-  the waves' travel, coloured by the sea-state index; heads meeting in
-  the middle where the current opposes the waves (larger the more it
-  steepens them), a double chevron where it runs with them, a thin arrow
-  with little current.
+- **Current against the waves.** Layers → Water (off by default), from
+  the new point tile layer `/api/tile/seas` (points with the sea-state
+  index, waves, wind and current), coloured by the sea state there. Three
+  styles to compare, chosen under the layer's checkbox: **A** an arrow
+  at every point along the waves' travel (heads meeting where the
+  current opposes the waves, larger the more it steepens them, a double
+  chevron where it runs with them, a thin arrow with little current);
+  **B** a mark only where the current against the waves steepens a
+  choppy or rougher sea (tide-rip lines from 10 % steeper, a breaking
+  wave from 25 %, with spray from 50 %); **C** three arrows from each
+  point, wind, waves and current, each pointing where it is going, so a
+  pair pointing at each other shows what makes the sea rough. The
+  legend shows each glyph over its meaning.
   All seas glyphs (these arrows, the route arrows, the Seas row's chip)
   use the sea-state heatmap's colour scale, shifted slightly darker and
   outlined.
@@ -109,12 +118,12 @@ uses [Semantic Versioning](https://semver.org/).
   height on the wave-height heatmap's scale, longer for a longer mean
   period. The `seas` tile points now carry `mwp_s`.
 - **Sea state and wave arrows in Freeboard.** Two new chart layers, drawn
-  on the server as the web app draws them: "Sea state arrows" and "Wave
-  arrows" (Weather Router Plus), PNG glyph layers `seas` and
+  on the server as the web app draws them: "Current against the waves"
+  (style A) and "Wave arrows" (Weather Router Plus), PNG glyph layers `seas` and
   `wave_arrows` (`/api/tile/<layer>/{z}/{x}/{y}.png`), listed while the
   forecast has wave data. The Freeboard groups now pair each colour layer
   with its own glyphs: *Waves* shows wave arrows (was wind barbs) and
-  *Sea state* shows sea state arrows (was current arrows).
+  *Sea state* shows the current against the waves (was current arrows).
 
 - **Leg cards show the wind and wave range of the leg, not just its end
   point.** The shortcut smoother can merge many hours of routing into one
@@ -138,10 +147,26 @@ uses [Semantic Versioning](https://semver.org/).
   12 s — scored over 150 and landed in the `extreme` band even in light
   wind and slack current. The swell term is now scaled by
   `5 / max(mwp, 5)`, which leaves steep short-period coastal seas (period
-  5 s or less, and the missing-wave-data default of 5 s) at their original
-  values and cuts a 12 s swell to 5/12, shifting standard trade swells
-  back into the `slight`/`good` bands. The band cuts themselves (35 / 50 /
-  75 / 100 / 150) are unchanged.
+  5 s or less, and the missing-wave-data default of 5 s) undamped and
+  cuts a 12 s swell to 5/12, shifting standard trade swells back into
+  the `slight`/`good` bands. The band cuts themselves (35 / 50 / 75 /
+  100 / 150) are unchanged.
+- **The sea-state index no longer calls a moderate wind sea extreme.**
+  Even with the period damping, the wave term `30 × swh²` put any sea of
+  about 2.2 m or more in the `extreme` band: off the US east coast on
+  2026-10-04 (2–2.4 m at 6–7 s in 15 kn, Douglas 4 "moderate") the map
+  was extreme throughout. Its weight is now 10 (`SWELL_COEFF`) at every
+  period, so seas of 5 s or less score lower than before too; it is
+  calibrated on twelve seas pinned by a test: a 2 m wind sea is
+  `choppy`, 3.5 m `rough`, 5 m and more `extreme`, long swell milder than
+  a wind sea of the same height, and strong current against the waves
+  (a tide race, the Gulf Stream against 2 m seas) still `rough`. The band
+  cuts are unchanged. Everything that reads the index follows: the sea
+  state colours and arrows, the route Seas rows, and the comfort cost in
+  routing (its limits 75 and 100 are index values, so routes keep away
+  from rough water less often in moderate seas). Saved sea-state tiles
+  and point answers made with the old index are dropped at once (cache
+  revision `ss3` and point answers rev 3).
 
 - **Waiting for the forecast is said once, calmly.** While the server gets
   its first forecast (a first start, or a decode after the forecast
@@ -1042,7 +1067,8 @@ builds before this release, with their measurements, is in
   loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.8...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.9...HEAD
+[0.1.0-beta.9]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.8...v0.1.0-beta.9
 [0.1.0-beta.8]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.7...v0.1.0-beta.8
 [0.1.0-beta.7]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.6...v0.1.0-beta.7
 [0.1.0-beta.6]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.5...v0.1.0-beta.6

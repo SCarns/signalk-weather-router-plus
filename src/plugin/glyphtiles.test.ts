@@ -111,7 +111,21 @@ test('glyph tiles: sea state arrows point the way the waves travel, in the band 
   const b = tileBBox(Z, X, Y);
   const lon = (b.west + b.east) / 2;
   const lat = (b.north + b.south) / 2;
-  const pt = (o: Partial<SeaPoint>): SeaPoint => ({ lon, lat, idx: 120, swh_m: 2, mwp_s: 8, to_deg: 0, rel: 'none', steepen: 1, ...o });
+  const pt = (o: Partial<SeaPoint>): SeaPoint => ({
+    lon,
+    lat,
+    idx: 120,
+    swh_m: 2,
+    mwp_s: 8,
+    to_deg: 0,
+    rel: 'none',
+    steepen: 1,
+    wind_ms: null,
+    wind_to_deg: null,
+    cur_ms: 0,
+    cur_to_deg: null,
+    ...o,
+  });
   const none = decodePng(renderSeasPng(Z, X, Y, [pt({})])).rgba;
   const p = painted(none);
   assert.ok(p.count > 20, `${p.count} pixels`);
@@ -147,7 +161,21 @@ test('glyph tiles: wave arrows are coloured by height and longer for a longer pe
   const b = tileBBox(Z, X, Y);
   const lon = (b.west + b.east) / 2;
   const lat = (b.north + b.south) / 2;
-  const pt = (o: Partial<SeaPoint>): SeaPoint => ({ lon, lat, idx: 60, swh_m: 3, mwp_s: 8, to_deg: 90, rel: 'none', steepen: 1, ...o });
+  const pt = (o: Partial<SeaPoint>): SeaPoint => ({
+    lon,
+    lat,
+    idx: 60,
+    swh_m: 3,
+    mwp_s: 8,
+    to_deg: 90,
+    rel: 'none',
+    steepen: 1,
+    wind_ms: null,
+    wind_to_deg: null,
+    cur_ms: 0,
+    cur_to_deg: null,
+    ...o,
+  });
   assert.equal(waveArrowLength(4), 12);
   assert.equal(waveArrowLength(16), 34);
   assert.equal(waveArrowLength(null), 20);
