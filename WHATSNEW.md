@@ -1,5 +1,45 @@
 # What's new
 
+## 0.1.0-beta.9
+
+- **Routing around rough water.** The router now weighs how rough the sea
+  is as the boat meets it: head seas count more than following seas, and
+  above "slight" each hour in rough water counts extra, so routes go round
+  heavy seas when it costs little time. The times shown stay the real
+  times. Settings → Routing → Comfort weight (default 1, 0 for the fastest
+  route).
+- **A sea state you can believe.** The sea state index was far too harsh:
+  a moderate 2 m wind sea showed as "extreme". It is recalibrated, so a
+  2 m wind sea is choppy, 3.5 m rough and 5 m extreme, and long ocean
+  swell reads milder than a wind sea of the same height. Strong current
+  against the waves still shows as rough.
+- **The sea along your route.** Each leg card and the Freeboard panel show
+  a Seas row (head seas, on the starboard bow… and how rough), an arrow on
+  each leg shows the waves on the map, and each leg shows the range of
+  wind and waves along it ("Wind 8–18 kn"), not just one point, so a long
+  leg no longer reads as 5 kn of boat speed in 3 kn of wind.
+- **New water layers.** *Wave direction* arrows, coloured by wave height
+  and longer for long swell, and *Current against the waves*, with three
+  styles to try: A arrows at every point; B tide-rip and breaking-wave
+  marks only where a current steepens the sea; C three arrows (wind,
+  waves, current) so you can see which pair is fighting. Freeboard gets
+  both as charts, and its Waves and Sea state groups use them.
+- **Notes on the map, and areas to avoid.** Signal K notes show on the
+  map; add, edit, move or delete them from the map. A note can mark a
+  circle to avoid, and routes go round it.
+- **More from the forecast.** Wind gust and cloud cover in the Weather
+  API; optional solar, thermal radiation, snowfall and instability fields
+  (off by default; they roughly double the download).
+- **Smaller things.** Times in the ship's time zone when Signal K has one;
+  GPX download of a route; durations of a day or more as "9d 7h"; while
+  the server loads its first forecast, one notice with a progress bar
+  instead of layers failing one by one; the shortcut smoother is off by
+  default.
+- **Fixes.** Wind barbs and current arrows came back empty after being
+  turned off and on; the gust at the forecast's first hour read 0; a
+  failed notes request emptied the notes layer; a departure in the hour
+  the clocks skip was sent an hour early.
+
 ## 0.1.0-beta.8
 
 - **Routes across 180° with regional wind no longer fail.** A Tonga → New
