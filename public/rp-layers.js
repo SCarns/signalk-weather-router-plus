@@ -1956,8 +1956,9 @@ function _noteRow(id) {
   return m ? '<div class="lg-note" style="color:var(--danger);">unavailable: ' + m + '</div>' : '';
 }
 // The sea-state bands in the colours the seas glyphs are drawn in (seaBand).
-function _seaBandsRow(title) {
-  const cells = (_seaBands() || []).map(b => '<div><i style="background:' + b.colour + ';border-color:' + SEA_GLYPH_OUTLINE + ';"></i>' + b.name + '</div>').join('');
+// `minIdx`: only the bands from that index up (style B draws nothing calmer than choppy).
+function _seaBandsRow(title, minIdx = -Infinity) {
+  const cells = (_seaBands() || []).filter(b => b.hi > minIdx).map(b => '<div><i style="background:' + b.colour + ';border-color:' + SEA_GLYPH_OUTLINE + ';"></i>' + b.name + '</div>').join('');
   return '<div class="lg-row"><div class="lg-title">' + title + '</div><div class="lg-classes">' + cells + '</div></div>';
 }
 // The layer's key: three cells, each glyph drawn as on the map (in the
@@ -2010,7 +2011,7 @@ function updateLegends() {
     // The colour is the sea state: said in one line when that layer's own legend is shown, else with its bands.
     const colour = _on('roughnessToggle')
       ? '<div class="lg-note">Colour: the sea state there (as the Sea state layer).</div>'
-      : '<div class="lg-note">Colour: the sea state there:</div>' + _seaBandsRow('').replace('<div class="lg-title"></div>', '');
+      : '<div class="lg-note">Colour: the sea state there:</div>' + _seaBandsRow('', SEAS_STYLE === 'B' ? SEAS_RIP_MIN_INDEX : -Infinity).replace('<div class="lg-title"></div>', '');
     rows.push('<div class="lg-row"><div class="lg-title">Current against the waves</div>' + _seasGlyphKey() + colour + '</div>' + _noteRow('seasArrowsToggle'));
   }
   if (_on('seasRouteToggle') && G.sea_state && seasRouteSource.getFeatures().length) rows.push(_seaBandsRow('Seas along the route, as the boat meets them') + '<div class="lg-note">sea-state index × 1.3 in head seas, × 0.8 following · arrow points the way the waves travel</div>');
