@@ -138,10 +138,26 @@ uses [Semantic Versioning](https://semver.org/).
   12 s — scored over 150 and landed in the `extreme` band even in light
   wind and slack current. The swell term is now scaled by
   `5 / max(mwp, 5)`, which leaves steep short-period coastal seas (period
-  5 s or less, and the missing-wave-data default of 5 s) at their original
-  values and cuts a 12 s swell to 5/12, shifting standard trade swells
-  back into the `slight`/`good` bands. The band cuts themselves (35 / 50 /
-  75 / 100 / 150) are unchanged.
+  5 s or less, and the missing-wave-data default of 5 s) undamped and
+  cuts a 12 s swell to 5/12, shifting standard trade swells back into
+  the `slight`/`good` bands. The band cuts themselves (35 / 50 / 75 /
+  100 / 150) are unchanged.
+- **The sea-state index no longer calls a moderate wind sea extreme.**
+  Even with the period damping, the wave term `30 × swh²` put any sea of
+  about 2.2 m or more in the `extreme` band: off the US east coast on
+  2026-10-04 (2–2.4 m at 6–7 s in 15 kn, Douglas 4 "moderate") the map
+  was extreme throughout. Its weight is now 10 (`SWELL_COEFF`) at every
+  period, so seas of 5 s or less score lower than before too; it is
+  calibrated on twelve seas pinned by a test: a 2 m wind sea is
+  `choppy`, 3.5 m `rough`, 5 m and more `extreme`, long swell milder than
+  a wind sea of the same height, and strong current against the waves
+  (a tide race, the Gulf Stream against 2 m seas) still `rough`. The band
+  cuts are unchanged. Everything that reads the index follows: the sea
+  state colours and arrows, the route Seas rows, and the comfort cost in
+  routing (its limits 75 and 100 are index values, so routes keep away
+  from rough water less often in moderate seas). Saved sea-state tiles
+  and point answers made with the old index are dropped at once (cache
+  revision `ss3` and point answers rev 3).
 
 - **Waiting for the forecast is said once, calmly.** While the server gets
   its first forecast (a first start, or a decode after the forecast

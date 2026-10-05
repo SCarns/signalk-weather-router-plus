@@ -75,7 +75,7 @@ const CHART_GROUPS: { id: string; name: string; description: string; layers: (Pn
   {
     id: 'c2b7e6a0-5d1c-4abc-9000-000000000005',
     name: 'Sea state (Weather Router Plus)',
-    description: 'Wind-against-current sea state with sea state arrows (the waves against the current), by the hour.',
+    description: 'Wind-against-current sea state with the current against the waves, by the hour.',
     layers: ['sea_state', 'seas'],
   },
   {

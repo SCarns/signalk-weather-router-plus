@@ -650,7 +650,13 @@ water grid:
 
 The sea-state index describes the water at a point (wind against
 current, swell steepened by an opposing current); it knows nothing of
-the boat. Heading into the waves is harder than running before them, so
+the boat. It is the sum of a wind term (50 in any breeze without a
+current, more where wind and current oppose) and a wave term,
+`10 × swh² × 5/max(period, 5) × steepening` (`SWELL_COEFF`,
+`src/plugin/conditions.ts`), on the bands smooth < 35 ≤ good < 50 ≤
+slight < 75 ≤ choppy < 100 ≤ rough < 150 ≤ extreme: a 2 m wind sea is
+choppy, 3.5 m rough, 5 m and more extreme, and long swell reads milder
+than a wind sea of the same height. Heading into the waves is harder than running before them, so
 the router weights the index by the angle between the course and the
 direction the waves come from: × 1.3 in head seas, × 1.05 abeam, × 0.8
 in following seas, a cosine between (the **encounter index**,

@@ -167,6 +167,11 @@
   .lg-glyph { display: block; height: 22px; margin-bottom: 1px; }
   .lg-glyph svg { width: 14px; height: 22px; display: block; margin: 0 auto; }
   .lg-note { color: var(--text-2); }
+  /* Glyph keys (current against the waves): a large symbol over its meaning, one cell each. */
+  .lg-cells { display: flex; gap: var(--s-2); margin: 2px 0 3px; }
+  .lg-cells > div { flex: 1; text-align: center; color: var(--text); line-height: 1.25; }
+  .lg-cells .lg-sym { display: block; height: 28px; margin-bottom: 2px; }
+  .lg-cells .lg-sym svg { width: 28px; height: 28px; display: block; margin: 0 auto; }
   /* Click menu on the map. */
   .map-menu {
     background: var(--surface); color: var(--text);
@@ -859,12 +864,13 @@
     </div>
     <div class="layer-group" data-group="water">
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="currentToggle" style="width:auto;margin-right:4px;" checked>Current direction (arrows)</label>
-    <label style="display:block;font-size:11px;cursor:pointer;" title="The waves against the current: arrows along the way the waves travel, coloured by the sea-state index. Two heads meeting in the middle where the current runs against the waves (they steepen; larger the more they steepen); a double chevron where it runs with them; a thin arrow with little current."><input type="checkbox" id="seasArrowsToggle" style="width:auto;margin-right:4px;">Sea state arrows (waves vs current)</label>
-    <!-- A/B test of two ways to draw it (rp-layers.js SEAS_STYLE); remembered per browser. -->
-    <div id="seasStyleRow" title="A: a glyph at every point (direction and how the current meets the waves). B: a mark only where the current against the waves steepens a choppy or rougher sea (tide-rip lines when choppy, a breaking wave when rough, with spray when extreme); nothing elsewhere.">
+    <label style="display:block;font-size:11px;cursor:pointer;" title="What the current does to the waves, coloured by the sea state there. A: an arrow along the way the waves travel at every point (heads meeting where the current runs against them, a double chevron where it runs with them). B: a mark only where the current against the waves steepens a choppy or rougher sea (tide-rip lines from 10 %, a breaking wave from 25 %, with spray from 50 %). C: three arrows, for the way the wind, the waves and the current are going; where two point against each other the sea is rough."><input type="checkbox" id="seasArrowsToggle" style="width:auto;margin-right:4px;">Current against the waves</label>
+    <!-- Three ways to draw it, A, B and C (rp-layers.js SEAS_STYLE); remembered per browser. -->
+    <div id="seasStyleRow" title="A: a glyph at every point (direction and how the current meets the waves). B: a mark only where the current against the waves steepens a choppy or rougher sea (tide-rip lines from 10 % steeper, a breaking wave from 25 %, with spray from 50 %); nothing elsewhere. C: three arrows, for the way the wind, the waves and the current are going; where two point against each other the sea is rough.">
       Style:
       <label><input type="radio" name="seasStyle" value="A">A arrows</label>
       <label><input type="radio" name="seasStyle" value="B">B rips &amp; breakers</label>
+      <label><input type="radio" name="seasStyle" value="C">C wind, waves, current</label>
     </div>
     <label style="display:block;font-size:11px;cursor:pointer;" title="An arrow per point along the way the waves travel, coloured by the significant wave height on the wave-height colour scale; longer arrows for a longer mean period (long swell, short chop)."><input type="checkbox" id="waveArrowsToggle" style="width:auto;margin-right:4px;">Wave direction (arrows)</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="currentHeatmapToggle" style="width:auto;margin-right:4px;">Current speed (colour)</label>

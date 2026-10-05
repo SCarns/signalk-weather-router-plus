@@ -604,6 +604,10 @@ const seasSource = _pointTileSource('seas', ['seasArrowsToggle', 'waveArrowsTogg
   f.set('steepen', p.steepen);
   f.set('swh_m', p.swh_m);
   f.set('mwp_s', p.mwp_s);
+  f.set('wind_ms', p.wind_ms);
+  f.set('wind_to_deg', p.wind_to_deg);
+  f.set('cur_ms', p.cur_ms);
+  f.set('cur_to_deg', p.cur_to_deg);
   return f;
 });
 // The glyph, drawn pointing up (the waves travel north); the map rotates it
@@ -636,13 +640,68 @@ function _seasGlyphSvg(rel, colour, outline = SEA_GLYPH_OUTLINE) {
 // COMFORT_FREE_INDEX): small waves steepened are still a calm sea.
 const SEAS_RIP_MIN_STEEPEN = 1.10;
 const SEAS_RIP_MIN_INDEX = 75;
-// The mark by how rough the sea is (the sea-state bands' lower bounds,
-// plugin/legends.ts SEA_STATE_BANDS): choppy, the tide-rip lines; rough, a
-// breaking wave; extreme, a breaking wave with spray.
-const SEAS_BREAK_MIN_INDEX = 100;
-const SEAS_SPRAY_MIN_INDEX = 150;
+// The mark by how much the current steepens the waves (what this layer is
+// about; the colour gives the sea state): the tide-rip lines from 10 %, a
+// breaking wave from 25 %, a breaking wave with spray from 50 %. Opposing
+// points sampled on 2026-10-04 had a median steepening of 1.06 and a 90th
+// percentile of 1.25 (Coral Sea); the Gulf Stream reached 1.4–2.8.
+const SEAS_BREAK_MIN_STEEPEN = 1.25;
+const SEAS_SPRAY_MIN_STEEPEN = 1.50;
 let SEAS_STYLE = 'A';
-try { if (localStorage.getItem('rp:seasStyle') === 'B') SEAS_STYLE = 'B'; } catch (_) { /* no storage: A */ }
+try { const v = localStorage.getItem('rp:seasStyle'); if (v === 'B' || v === 'C') SEAS_STYLE = v; } catch (_) { /* no storage: A */ }
+
+// Style C: three arrows from each point, each pointing where it is going:
+// wind (thin, a feather at the tail), waves (wavy), current (thick,
+// solid), in the sea-state colour, outlined. Where two oppose each other
+// the sea is rough, and the glyph shows which pair. Below these the arm
+// is left out: wind SEAS_C_MIN_WIND_MS, waves SEAS_C_MIN_SWH_M, current
+// SEA_REL (0.1 m/s, as the A arrows' "little current").
+const SEAS_C_MIN_WIND_MS = 1;
+const SEAS_C_MIN_SWH_M = 0.1;
+const SEAS_C_MIN_CUR_MS = 0.1;
+const SEAS_C_PX = 34;
+// Two arms within this angle are spread apart so they do not lie on top of each other.
+const SEAS_C_SPREAD_DEG = 20;
+function _seasArm(kind, toDeg, colour, outline) {
+  const c = SEAS_C_PX / 2, L = 14;
+  const r = d => { const a = d * Math.PI / 180; return (x, y) => [c + x * Math.cos(a) - y * Math.sin(a), c + x * Math.sin(a) + y * Math.cos(a)]; };
+  const R = r(toDeg);
+  const pts = arr => arr.map(([x, y]) => R(x, y).map(v => v.toFixed(1)).join(',')).join(' ');
+  const line = (arr, col, w) => '<polyline points="' + pts(arr) + '" fill="none" stroke="' + col + '" stroke-width="' + w + '" stroke-linecap="round" stroke-linejoin="round"/>';
+  let out = '';
+  if (kind === 'current') {
+    const shaft = [[0, 0], [0, -L + 5]], head = [[-4, -L + 6], [0, -L], [4, -L + 6]];
+    if (outline) out += line(shaft, outline, 5.2);
+    out += line(shaft, colour, 3.4);
+    out += '<polygon points="' + pts(head) + '" fill="' + colour + '"' + (outline ? ' stroke="' + outline + '" stroke-width="1"' : '') + ' stroke-linejoin="round"/>';
+  } else if (kind === 'waves') {
+    const wave = [];
+    for (let t = 0; t <= L - 2; t += 0.5) wave.push([1.8 * Math.sin(t / 2.2), -t]);
+    const head = [[-3.5, -L + 5], [0, -L + 0.5], [3.5, -L + 5]];
+    for (const [col, w] of outline ? [[outline, 3.8], [colour, 2]] : [[colour, 2]]) out += line(wave, col, w) + line(head, col, w);
+  } else {
+    const shaft = [[0, 0], [0, -L]], head = [[-3, -L + 4.5], [0, -L], [3, -L + 4.5]], feather = [[0, -1.5], [-3.5, 1.5]];
+    for (const [col, w] of outline ? [[outline, 3.4], [colour, 1.8]] : [[colour, 1.8]]) out += line(shaft, col, w) + line(head, col, w) + line(feather, col, w);
+  }
+  return out;
+}
+// The three-arrow glyph; `arms`: [{kind, deg}] (absent arms left out).
+function _seasThreeSvg(arms, colour, outline = SEA_GLYPH_OUTLINE) {
+  const c = SEAS_C_PX / 2;
+  return '<svg xmlns="http://www.w3.org/2000/svg" width="' + SEAS_C_PX + '" height="' + SEAS_C_PX + '" viewBox="0 0 ' + SEAS_C_PX + ' ' + SEAS_C_PX + '">'
+    + arms.map(a => _seasArm(a.kind, a.deg, colour, outline)).join('')
+    + '<circle cx="' + c + '" cy="' + c + '" r="1.6" fill="' + (outline || colour) + '"/></svg>';
+}
+// Spread arms that point (nearly) the same way, in order wind, waves, current.
+function _seasSpread(arms) {
+  for (let i = 0; i < arms.length; i++) {
+    for (let j = 0; j < i; j++) {
+      let d = ((arms[i].deg - arms[j].deg + 540) % 360) - 180;
+      if (Math.abs(d) < SEAS_C_SPREAD_DEG) arms[i].deg = arms[j].deg + (d >= 0 ? 1 : -1) * SEAS_C_SPREAD_DEG;
+    }
+  }
+  return arms;
+}
 // Three short wavy lines, 22 × 22; outlined unless outline is null.
 function _seasRipSvg(colour, outline = SEA_GLYPH_OUTLINE) {
   const lines = (c, w) => [5, 11, 17].map(y => '<path d="M3 ' + y + ' q2 -3 4 0 t4 0 t4 0 t4 0" fill="none" stroke="' + c + '" stroke-width="' + w + '" stroke-linecap="round"/>').join('');
@@ -661,26 +720,42 @@ function _seasBreakSvg(colour, spray, outline = SEA_GLYPH_OUTLINE) {
   return '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">'
     + (outline ? strokes(outline, 3.6) : '') + strokes(colour, 2) + drops + '</svg>';
 }
-// The B mark's SVG for a sea-state index (choppy or rougher).
-function _seasMarkSvg(idx, colour, outline) {
-  if (idx >= SEAS_SPRAY_MIN_INDEX) return _seasBreakSvg(colour, true, outline);
-  if (idx >= SEAS_BREAK_MIN_INDEX) return _seasBreakSvg(colour, false, outline);
+// The B mark's SVG for a steepening factor (1.10 or more).
+function _seasMarkSvg(steep, colour, outline) {
+  if (steep >= SEAS_SPRAY_MIN_STEEPEN) return _seasBreakSvg(colour, true, outline);
+  if (steep >= SEAS_BREAK_MIN_STEEPEN) return _seasBreakSvg(colour, false, outline);
   return _seasRipSvg(colour, outline);
 }
 const _seasGlyphStyles = new Map();
 function _seasGlyphStyle(f) {
   const colour = seaBandColour(f.get('idx'));
   if (!colour) return null;
+  if (SEAS_STYLE === 'C') {
+    const arms = [];
+    const q = d => Math.round(d / 10) * 10;
+    if (f.get('wind_to_deg') != null && f.get('wind_ms') >= SEAS_C_MIN_WIND_MS) arms.push({ kind: 'wind', deg: q(f.get('wind_to_deg')) });
+    if (f.get('to_deg') != null && f.get('swh_m') >= SEAS_C_MIN_SWH_M) arms.push({ kind: 'waves', deg: q(f.get('to_deg')) });
+    if (f.get('cur_to_deg') != null && f.get('cur_ms') >= SEAS_C_MIN_CUR_MS) arms.push({ kind: 'current', deg: q(f.get('cur_to_deg')) });
+    if (!arms.length) return null;
+    _seasSpread(arms);
+    const keyC = 'C' + colour + arms.map(a => a.kind[0] + a.deg).join('');
+    let sc = _seasGlyphStyles.get(keyC);
+    if (!sc) {
+      // The map turns with the view; the arms are drawn in true bearings, so the icon turns with it.
+      sc = new ol.style.Style({ image: new ol.style.Icon({ src: 'data:image/svg+xml;utf8,' + encodeURIComponent(_seasThreeSvg(arms, colour)), rotateWithView: true }) });
+      _seasGlyphStyles.set(keyC, sc);
+    }
+    return sc;
+  }
   if (SEAS_STYLE === 'B') {
     const steep = f.get('steepen') || 1;
     if (f.get('rel') !== 'opposing' || steep < SEAS_RIP_MIN_STEEPEN || !(f.get('idx') >= SEAS_RIP_MIN_INDEX)) return null;
-    const idx = f.get('idx');
-    const kind = idx >= SEAS_SPRAY_MIN_INDEX ? 'spray' : idx >= SEAS_BREAK_MIN_INDEX ? 'break' : 'rip';
-    const size = Math.min(1.6, Math.max(1, steep));
-    const keyB = 'B' + kind + colour + size.toFixed(1);
+    // The mark carries the steepening; one size (it no longer grows with it as well).
+    const kind = steep >= SEAS_SPRAY_MIN_STEEPEN ? 'spray' : steep >= SEAS_BREAK_MIN_STEEPEN ? 'break' : 'rip';
+    const keyB = 'B' + kind + colour;
     let sb = _seasGlyphStyles.get(keyB);
     if (!sb) {
-      sb = new ol.style.Style({ image: new ol.style.Icon({ src: 'data:image/svg+xml;utf8,' + encodeURIComponent(_seasMarkSvg(idx, colour)), scale: size }) });
+      sb = new ol.style.Style({ image: new ol.style.Icon({ src: 'data:image/svg+xml;utf8,' + encodeURIComponent(_seasMarkSvg(steep, colour)), scale: 1.15 }) });
       _seasGlyphStyles.set(keyB, sb);
     }
     return sb;
@@ -1885,18 +1960,29 @@ function _seaBandsRow(title) {
   const cells = (_seaBands() || []).map(b => '<div><i style="background:' + b.colour + ';border-color:' + SEA_GLYPH_OUTLINE + ';"></i>' + b.name + '</div>').join('');
   return '<div class="lg-row"><div class="lg-title">' + title + '</div><div class="lg-classes">' + cells + '</div></div>';
 }
+// The layer's key: three cells, each glyph drawn as on the map (in the
+// "rough" colour, outlined) with what it means under it.
 function _seasGlyphKey() {
-  if (SEAS_STYLE === 'B') {
-    const g = idx => '<span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:3px;">'
-      + _seasMarkSvg(idx, 'currentColor', null).replace('width="22" height="22"', 'width="16" height="16"') + '</span>';
-    return '<div class="lg-note">Where the current against the waves steepens them by '
-      + Math.round((SEAS_RIP_MIN_STEEPEN - 1) * 100) + ' % or more (larger: steeper): '
-      + g(SEAS_RIP_MIN_INDEX) + 'choppy · ' + g(SEAS_BREAK_MIN_INDEX) + 'rough · ' + g(SEAS_SPRAY_MIN_INDEX) + 'extreme · nothing drawn in calmer water</div>';
+  const colour = seaBandColour(125) || '#cc5636';
+  const cell = (svg, label) => '<div><span class="lg-sym">' + svg + '</span>' + label + '</div>';
+  if (SEAS_STYLE === 'C') {
+    const one = kind => _seasThreeSvg([{ kind, deg: 45 }], colour);
+    return '<div class="lg-cells">' + cell(one('wind'), 'wind') + cell(one('waves'), 'waves') + cell(one('current'), 'current') + '</div>'
+      + '<div class="lg-note">Each arrow points where it is going. Where two point against each other the sea is rough: wind against current, waves against current, or wind against waves.</div>';
   }
-  const g = rel => '<span style="display:inline-block;width:14px;height:14px;vertical-align:middle;margin-right:3px;">'
-    + _seasGlyphSvg(rel, 'currentColor', null).replace('width="22" height="22"', 'width="14" height="14"') + '</span>';
-  return '<div class="lg-note">' + g('opposing') + 'current against the waves (steeper; larger the more) · '
-    + g('following') + 'current with them · ' + g('none') + 'little current · points the way the waves travel</div>';
+  if (SEAS_STYLE === 'B') {
+    const p = x => Math.round((x - 1) * 100);
+    return '<div class="lg-cells">'
+      + cell(_seasMarkSvg(SEAS_RIP_MIN_STEEPEN, colour), p(SEAS_RIP_MIN_STEEPEN) + '–' + p(SEAS_BREAK_MIN_STEEPEN) + ' % steeper')
+      + cell(_seasMarkSvg(SEAS_BREAK_MIN_STEEPEN, colour), p(SEAS_BREAK_MIN_STEEPEN) + '–' + p(SEAS_SPRAY_MIN_STEEPEN) + ' % steeper')
+      + cell(_seasMarkSvg(SEAS_SPRAY_MIN_STEEPEN, colour), p(SEAS_SPRAY_MIN_STEEPEN) + ' % or more')
+      + '</div><div class="lg-note">Waves steepened by a current running against them; only where the sea is choppy or rougher.</div>';
+  }
+  return '<div class="lg-cells">'
+    + cell(_seasGlyphSvg('opposing', colour), 'current against the waves')
+    + cell(_seasGlyphSvg('following', colour), 'current with the waves')
+    + cell(_seasGlyphSvg('none', colour), 'little current')
+    + '</div><div class="lg-note">Each arrow points the way the waves travel; larger where the current steepens them.</div>';
 }
 function updateLegends() {
   const box = document.getElementById('legendBox');
@@ -1919,7 +2005,14 @@ function updateLegends() {
     rows.push(_gradientRow(Object.assign({}, G.waves, { title: 'Wave arrows: height', stops: G.waves.stops.map(([v, c]) => [v, _shade(c, SEA_GLYPH_SHADE)]) }))
       + '<div class="lg-note">points the way the waves travel · length by mean period: ' + key + '</div>' + _noteRow('waveArrowsToggle'));
   }
-  if (_on('seasArrowsToggle') && G.sea_state) rows.push(_seaBandsRow('Sea state arrows (waves vs current)') + _seasGlyphKey() + _noteRow('seasArrowsToggle'));
+  // What the current does to the waves; the colour is the sea state there (its own legend row says the bands).
+  if (_on('seasArrowsToggle') && G.sea_state) {
+    // The colour is the sea state: said in one line when that layer's own legend is shown, else with its bands.
+    const colour = _on('roughnessToggle')
+      ? '<div class="lg-note">Colour: the sea state there (as the Sea state layer).</div>'
+      : '<div class="lg-note">Colour: the sea state there:</div>' + _seaBandsRow('').replace('<div class="lg-title"></div>', '');
+    rows.push('<div class="lg-row"><div class="lg-title">Current against the waves</div>' + _seasGlyphKey() + colour + '</div>' + _noteRow('seasArrowsToggle'));
+  }
   if (_on('seasRouteToggle') && G.sea_state && seasRouteSource.getFeatures().length) rows.push(_seaBandsRow('Seas along the route, as the boat meets them') + '<div class="lg-note">sea-state index × 1.3 in head seas, × 0.8 following · arrow points the way the waves travel</div>');
   if (_on('precipToggle') && G.precip) rows.push(_gradientRow(G.precip) + _noteRow('precipToggle'));
   if (_on('temperatureToggle') && G.temperature) rows.push(_gradientRow(G.temperature) + _noteRow('temperatureToggle'));

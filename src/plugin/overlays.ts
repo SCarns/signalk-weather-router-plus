@@ -318,6 +318,12 @@ export interface SeaPoint {
   to_deg: number;
   rel: 'opposing' | 'following' | 'none';
   steepen: number;
+  /** Wind speed (m/s) and the way it blows TO (degrees true); null without wind data. */
+  wind_ms: number | null;
+  wind_to_deg: number | null;
+  /** Current speed (m/s) and set (flows TO, degrees true); 0 and null without a current source. */
+  cur_ms: number;
+  cur_to_deg: number | null;
 }
 
 /** Current along the waves below this (m/s) counts as none for the glyph. */
@@ -369,6 +375,10 @@ export function seaPoints(src: OverlaySources, bbox: BBox, time: Date, res: numb
         to_deg: Math.round(to),
         rel: uAlong <= -SEA_REL_MIN_MS ? 'opposing' : uAlong >= SEA_REL_MIN_MS ? 'following' : 'none',
         steepen: Math.round(steepen * 1000) / 1000,
+        wind_ms: Number.isFinite(ws) ? Math.round(ws * 100) / 100 : null,
+        wind_to_deg: Number.isFinite(wd) ? Math.round(norm360(wd + 180)) : null,
+        cur_ms: Math.round(C * 100) / 100,
+        cur_to_deg: C > 0 ? Math.round(cTo) : null,
       });
     }
   }
