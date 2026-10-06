@@ -526,7 +526,15 @@ export class TileStore {
       if (this.gens[g] === null) continue; // not known yet (startup): keep until it is
       const dir = path.join(this.root, n);
       const gone = this.totals ? await this.count(dir) : null;
-      await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => undefined);
+      // Subtracted only when the directory is really gone: a failed removal leaves its files in the store.
+      const ok = await fs.promises.rm(dir, { recursive: true, force: true }).then(
+        () => true,
+        (err: Error) => {
+          this.log(`overlay tiles: could not remove ${dir}: ${err.message}`);
+          return false;
+        }
+      );
+      if (!ok) continue;
       if (this.totals && gone) {
         this.totals.files = Math.max(0, this.totals.files - gone.files);
         this.totals.bytes = Math.max(0, this.totals.bytes - gone.bytes);

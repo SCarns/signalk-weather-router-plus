@@ -405,6 +405,38 @@ map.on('moveend', redrawStatusLine);
 routeSource.on('change', redrawStatusLine);
 { const rw = document.getElementById('regionalWind'); if (rw) rw.addEventListener('change', redrawStatusLine); }
 
+// Zoom to the displayed route's extent with padding so the map frames the
+// entire track beside the panel (not under it). The extent is taken over
+// the route's points with unwrapped longitudes: a route across the
+// antimeridian has points near -180 and +180, and the plain extent of
+// those is the whole world. Used when a saved route is loaded and when a
+// computed route arrives.
+function _fitRouteInView() {
+  const routePts = routeSource.getFeatures().filter(f => f.getGeometry() && f.getGeometry().getType() === 'Point' && f.get('time'));
+  const ext = routePts.length
+    ? ol.extent.boundingExtent(unwrapLonLats(routePts.map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()))).map(c => ol.proj.fromLonLat(c)))
+    : routeSource.getExtent();
+  // Keep the view in the main world: an unwrapped extent can sit past
+  // ±180°, and a view centred there showed no route at all (the route's
+  // own features are stored in the main world).
+  const W = 2 * 20037508.342789244;
+  const cx = (ext[0] + ext[2]) / 2;
+  const shift = cx > W / 2 ? -W : cx < -W / 2 ? W : 0;
+  if (shift) { ext[0] += shift; ext[2] += shift; }
+  if (!ext || !ext.every(Number.isFinite)) return;
+  map.getView().fit(ext, {
+    padding: _mapFitPadding(),
+    duration: 400,
+    maxZoom: 14,
+    // The panel padding can still push the centre past ±180°; bring it
+    // back into the main world once the animation ends.
+    callback: () => {
+      const v = map.getView(), c = v.getCenter();
+      if (c && Math.abs(c[0]) > W / 2) v.setCenter([c[0] - Math.sign(c[0]) * W, c[1]]);
+    },
+  });
+}
+
 function _loadRouteJob(id) {
   if (!id) return;
   const job = routeHistoryItems.find(j => j.id === id);
@@ -442,35 +474,7 @@ function _loadRouteJob(id) {
       _routeStale = false;
       updatePlanHint();
       _askRecompute(job);
-      // Zoom to the loaded route's extent with padding so the map
-      // frames the entire track beside the panel (not under it). The
-      // extent is taken over the route's points with unwrapped longitudes:
-      // a route across the antimeridian has points near -180 and +180, and
-      // the plain extent of those is the whole world.
-      const routePts = routeSource.getFeatures().filter(f => f.getGeometry() && f.getGeometry().getType() === 'Point' && f.get('time'));
-      const ext = routePts.length
-        ? ol.extent.boundingExtent(unwrapLonLats(routePts.map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()))).map(c => ol.proj.fromLonLat(c)))
-        : routeSource.getExtent();
-      // Keep the view in the main world: an unwrapped extent can sit past
-      // ±180°, and a view centred there showed no route at all (the route's
-      // own features are stored in the main world).
-      const W = 2 * 20037508.342789244;
-      const cx = (ext[0] + ext[2]) / 2;
-      const shift = cx > W / 2 ? -W : cx < -W / 2 ? W : 0;
-      if (shift) { ext[0] += shift; ext[2] += shift; }
-      if (ext && ext.every(Number.isFinite)) {
-        map.getView().fit(ext, {
-          padding: _mapFitPadding(),
-          duration: 400,
-          maxZoom: 14,
-          // The panel padding can still push the centre past ±180°; bring it
-          // back into the main world once the animation ends.
-          callback: () => {
-            const v = map.getView(), c = v.getCenter();
-            if (c && Math.abs(c[0]) > W / 2) v.setCenter([c[0] - Math.sign(c[0]) * W, c[1]]);
-          },
-        });
-      }
+      _fitRouteInView();
       showTab('itinerarySection');
     })
     .catch(err => {
@@ -774,6 +778,8 @@ let _suppressClickUntil = 0;
       return false;  // already a draggable marker — nothing to do
     }
     const lonlat = ol.proj.toLonLat(geom.getCoordinates());
+    const prev = waypointCoords.length ? waypointCoords[waypointCoords.length - 1] : startCoord;
+    if (!_confirmFarWaypoint(prev, [lonlat[0], lonlat[1]], geom.getCoordinates(), () => pinRouteWaypoint(feature))) return true;
     waypointCoords.push([lonlat[0], lonlat[1]]);
     _rebuildWaypointFeatures();
     // Brief visual confirmation via the status line.
@@ -925,6 +931,7 @@ function _placeOrAdd(coords, coordinate) {
   } else {
     // Extend the course: the current destination becomes the last
     // waypoint and the new point is the destination.
+    if (!_confirmFarWaypoint(endCoord, coords, coordinate, () => _placeOrAdd(coords, coordinate))) return;
     waypointCoords.push(endCoord);
     endCoord = coords;
     endFeature.setGeometry(new ol.geom.Point(coordinate));
@@ -933,6 +940,36 @@ function _placeOrAdd(coords, coordinate) {
     markRouteStale();
   }
   updateButton();
+}
+// A waypoint further than this from the one before it is probably a
+// slip (a click meant for another part of the world): ask first. SI
+// here; the prompt shows the distances in the user's units.
+const FAR_WAYPOINT_M = 500_000;
+let _farWaypointOk = false;   // the prompt's "Add waypoint" re-runs the add once without asking again
+// True when the add may go ahead now; false when the prompt is up (its
+// "Add waypoint" calls `retry`, which must take the same path again).
+function _confirmFarWaypoint(prev, next, coordinate, retry) {
+  if (_farWaypointOk) { _farWaypointOk = false; return true; }
+  if (!prev || !next) return true;
+  const d = _haversineM(prev, next);
+  if (!(d > FAR_WAYPOINT_M)) return true;
+  const el = mapMenu.getElement();
+  el.classList.remove('note-card');
+  el.innerHTML = '<div class="map-menu-pos">' + escapeHtml((fmtDist(d) || UNIT_MISSING) + ' from the previous waypoint (more than ' + (fmtDist(FAR_WAYPOINT_M) || UNIT_MISSING) + ')') + '</div>'
+    + '<button type="button" data-act="add">Add waypoint</button>'
+    + '<button type="button" data-act="new">Clear route and start new here</button>'
+    + '<button type="button" class="map-menu-cancel" data-act="cancel">Cancel</button>';
+  el.querySelectorAll('button').forEach(b => {
+    b.onclick = ev => {
+      ev.stopPropagation();
+      hideMapMenu();
+      const act = b.dataset.act;
+      if (act === 'add') { _farWaypointOk = true; retry(); }
+      else if (act === 'new') { _clearRoute(); _setStart(ol.proj.toLonLat(coordinate), coordinate); }
+    };
+  });
+  mapMenu.setPosition(coordinate);
+  return false;
 }
 function _setStart(coords, coordinate) {
   startCoord = coords; startFeature.setGeometry(new ol.geom.Point(coordinate));
@@ -1226,6 +1263,11 @@ function _savePlan() {
 document.getElementById('resetBtn').addEventListener('click', function() {
   _hideRecompute();
   if (routeActive && !confirm('Clear the route and all markers?')) return;
+  _clearRoute();
+});
+// The route and every marker gone (the Reset button, and "Clear route and start new" in the far-waypoint prompt).
+function _clearRoute() {
+  _hideRecompute();
   startCoord = null;
   endCoord = null;
   waypointCoords = [];
@@ -1253,7 +1295,7 @@ document.getElementById('resetBtn').addEventListener('click', function() {
   _lastRouteProps = null;
   if (timeOverride()) { setTimeOverride(null); _reloadTimedOverlays(); }
   updateButton();
-});
+}
 
 // --- Clear single endpoints ---
 document.getElementById('clearStart').addEventListener('click', function() {
@@ -2185,6 +2227,7 @@ function _jobOnDone(job, d) {
       _loadFronts(id);
       loadRouteHistory();
       RouteProgress.hide();
+      _fitRouteInView();
       showTab('itinerarySection');
     })
     .catch(err => appendLog('Failed to load route: ' + err.message, 'error'));
