@@ -186,6 +186,8 @@ export interface LandCacheStatus {
   builds: number;
   hits: number;
   last_build_ms: number;
+  /** The thread's decoded-polygon cache (geo/polygoncache.ts). */
+  polygons?: { entries: number; bytes: number; budget_bytes: number; hits: number; decodes: number; evictions: number };
 }
 
 /**

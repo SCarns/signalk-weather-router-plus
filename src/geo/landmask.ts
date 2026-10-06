@@ -27,7 +27,8 @@
 import type { BBox } from './geodesy';
 import { wrapLon, unwrapLonNear } from './angles';
 import { bboxHeight, bboxWidth, lonOffsetFromWest, slerpSamples, haversineDistanceM } from './geodesy';
-import { pointInShape, readShapefilePolygons, type ShapePolygon } from './shapefile';
+import { pointInShape, type ShapePolygon } from './shapefile';
+import { polygonCache } from './polygoncache';
 import { avoidAt, legHitsAvoid, type AvoidArea } from './avoid';
 
 export interface SerializedLandRaster {
@@ -118,7 +119,9 @@ export class LandMask {
 
   /**
    * Load every polygon from the given shapefiles that intersects `bbox`
-   * (plus `bufferDeg` margin) and rasterise it.
+   * (plus `bufferDeg` margin) and rasterise it. The polygons come from the
+   * thread's polygon cache (polygoncache.ts): a route's legs and stops, or
+   * a re-routed corridor box, decode each record once.
    */
   static fromShapefiles(paths: string[], bbox: BBox, opts: LandMaskOptions = {}): LandMask {
     const resolutionDeg = opts.resolutionDeg ?? 0.002;
@@ -131,8 +134,7 @@ export class LandMask {
       south: Math.max(-90, bbox.south - buffer),
       north: Math.min(90, bbox.north + buffer),
     };
-    const shapes: ShapePolygon[] = [];
-    for (const p of paths) shapes.push(...readShapefilePolygons(p, padded));
+    const shapes: ShapePolygon[] = polygonCache.read(paths, padded);
     return new LandMask(shapes, padded, resolutionDeg);
   }
 
