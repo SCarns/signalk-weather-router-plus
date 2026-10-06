@@ -97,19 +97,46 @@ export function chunkLength(meta: ZarrArrayMeta): number {
 }
 
 /**
+ * Buffers a caller lends to decodeChunk so consecutive chunks reuse the same
+ * memory (the decompressed bytes and the decoded values) instead of
+ * allocating two chunk-sized arrays per chunk. The returned view is only
+ * valid until the next call with the same scratch, so the caller must have
+ * copied what it needs before decoding another chunk. One per thread
+ * (data/arco.ts loadRegion); without one, decodeChunk allocates as before.
+ */
+export interface ChunkScratch {
+  raw: Uint8Array | null;
+  out: Float32Array | Float64Array | null;
+}
+
+/**
  * Decode one chunk's stored bytes (null = chunk absent = all fill) into
  * a Float32Array (float32 and the small integer types) or Float64Array
  * (float64), full padded chunk size, C order, fill value → NaN.
  */
-export function decodeChunk(meta: ZarrArrayMeta, stored: Uint8Array | null): Float32Array | Float64Array {
+export function decodeChunk(meta: ZarrArrayMeta, stored: Uint8Array | null, scratch?: ChunkScratch): Float32Array | Float64Array {
   const n = chunkLength(meta);
   const info = dtypeInfo(meta.dtype);
-  const out = info.kind === 'f' && info.size === 8 ? new Float64Array(n) : new Float32Array(n);
+  const f64 = info.kind === 'f' && info.size === 8;
+  let out: Float32Array | Float64Array;
+  if (!scratch) out = f64 ? new Float64Array(n) : new Float32Array(n);
+  else {
+    const have = scratch.out;
+    if (!have || have.length < n || have instanceof Float64Array !== f64) scratch.out = f64 ? new Float64Array(n) : new Float32Array(n);
+    out = scratch.out!.subarray(0, n);
+  }
   if (stored === null) {
     out.fill(NaN);
     return out;
   }
-  const raw = meta.compressor ? bloscDecompress(stored) : stored;
+  let raw: Uint8Array;
+  if (!meta.compressor) raw = stored;
+  else if (!scratch) raw = bloscDecompress(stored);
+  else {
+    const need = n * info.size;
+    if (!scratch.raw || scratch.raw.length < need) scratch.raw = new Uint8Array(need);
+    raw = bloscDecompress(stored, scratch.raw);
+  }
   if (raw.length !== n * info.size) throw new ZarrError(`chunk decoded to ${raw.length} bytes, want ${n * info.size}`);
   const fill = meta.fillValue;
   const fillIsNaN = Number.isNaN(fill);
