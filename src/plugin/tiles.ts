@@ -276,18 +276,25 @@ export class TileStore {
     this.saveTimer.unref?.();
   }
 
-  private async saveTotals(): Promise<void> {
-    if (!this.totals || !this.totalsDirty) return;
-    this.totalsDirty = false;
-    const f = path.join(this.root, TOTALS_FILE);
-    const tmp = `${f}.tmp-${process.pid}`;
-    try {
-      await fs.promises.mkdir(this.root, { recursive: true });
-      await fs.promises.writeFile(tmp, JSON.stringify({ ...this.totals, savedAt: new Date().toISOString() }));
-      await fs.promises.rename(tmp, f);
-    } catch (err) {
-      this.log(`overlay tiles: could not save the totals: ${(err as Error).message}`);
-    }
+  /** Saves run one after another (a timer save and a stop flush may overlap). */
+  private saving: Promise<void> = Promise.resolve();
+
+  private saveTotals(): Promise<void> {
+    this.saving = this.saving.then(async () => {
+      if (!this.totals || !this.totalsDirty) return;
+      this.totalsDirty = false;
+      const f = path.join(this.root, TOTALS_FILE);
+      const tmp = `${f}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+      try {
+        await fs.promises.mkdir(this.root, { recursive: true });
+        await fs.promises.writeFile(tmp, JSON.stringify({ ...this.totals, savedAt: new Date().toISOString() }));
+        await fs.promises.rename(tmp, f);
+      } catch (err) {
+        this.totalsDirty = true; // tried again at the next save
+        this.log(`overlay tiles: could not save the totals: ${(err as Error).message}`);
+      }
+    });
+    return this.saving;
   }
 
   /** Save changed totals now (plugin stop). */
@@ -402,11 +409,21 @@ export class TileStore {
       await fs.promises.mkdir(path.dirname(f), { recursive: true });
       const tmp = `${f}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
       await fs.promises.writeFile(tmp, gz);
+      // A tile written again (after a corrupt read, or built by the prebuilder
+      // and a page miss at once) replaces its file: the totals take the difference.
+      let replaced = -1;
+      if (this.totals) {
+        try {
+          replaced = (await fs.promises.stat(f)).size;
+        } catch {
+          // new tile
+        }
+      }
       await fs.promises.rename(tmp, f);
       this.writes++;
       if (this.totals) {
-        this.totals.files++;
-        this.totals.bytes += gz.length;
+        if (replaced < 0) this.totals.files++;
+        this.totals.bytes = Math.max(0, this.totals.bytes + gz.length - Math.max(0, replaced));
         this.scheduleSave();
         if (this.totals.bytes > this.capBytes) void this.prune();
       }

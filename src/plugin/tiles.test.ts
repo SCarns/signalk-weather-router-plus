@@ -191,11 +191,22 @@ test('tile store: totals are kept running, saved, and reloaded without a walk', 
   const store = new TileStore({ root, capBytes: 1e9 });
   store.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
   const g = store.generation('wx');
-  // No saved totals: a count walk learns them (empty store: 0).
-  for (let i = 0; i < 50 && store.stats().files === 0 && !fs.existsSync(path.join(root, '.totals.json')); i++)
-    await new Promise(r => setTimeout(r, 10));
+  // No saved totals: a count walk learns them (empty store: 0) and the first flush saves them.
+  const totalsFile = path.join(root, '.totals.json');
+  let counted = false;
+  for (let i = 0; i < 500 && !counted; i++) {
+    store.stats(); // starts the count when the totals are unknown
+    await store.flushTotals();
+    counted = fs.existsSync(totalsFile);
+    if (!counted) await new Promise(r => setTimeout(r, 10));
+  }
+  assert.ok(counted, 'initial count did not complete');
   const body = Buffer.alloc(1000, 1);
-  for (let i = 0; i < 5; i++) await store.write({ ...T, x: i }, body, g);
+  // A tile written again replaces its file: counted once, bytes by the difference.
+  await store.write({ ...T, x: 0 }, Buffer.alloc(400, 1), g);
+  await store.write({ ...T, x: 0 }, body, g);
+  assert.deepEqual([store.stats().files, store.stats().bytes], [1, 1000]);
+  for (let i = 1; i < 5; i++) await store.write({ ...T, x: i }, body, g);
   assert.equal(store.stats().files, 5);
   assert.equal(store.stats().bytes, 5000);
   await store.flushTotals();
