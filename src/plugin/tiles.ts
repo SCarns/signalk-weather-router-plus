@@ -238,10 +238,11 @@ export class TileStore {
   private saveTimer: NodeJS.Timeout | null = null;
   private counting: Promise<void> | null = null;
   /**
-   * Writes and removals while a count-only walk runs. The walk may or may
-   * not have passed them, so they are added to its result: the totals then
-   * err on the high side (the cap is enforced early, never late) until the
-   * next daily count.
+   * Writes while a count-only walk runs. The walk may or may not have
+   * passed them, so they are added to its result; removals during the walk
+   * are not subtracted (the walk may already have skipped them). Either way
+   * the totals err on the high side, never low (the cap is enforced early,
+   * never late), until the next daily count sets them exactly.
    */
   private countDelta: { files: number; bytes: number } | null = null;
   private pruning: Promise<void> | null = null;
@@ -380,10 +381,6 @@ export class TileStore {
           this.totals.bytes = Math.max(0, this.totals.bytes - buf.length);
           this.scheduleSave();
         }
-        if (this.countDelta) {
-          this.countDelta.files--;
-          this.countDelta.bytes -= buf.length;
-        }
         return null;
       }
       this.hits++;
@@ -439,8 +436,9 @@ export class TileStore {
         if (this.totals.bytes > this.capBytes) void this.prune();
       }
       if (this.countDelta) {
+        // A replacement adds only its growth; a shrink is not subtracted (see countDelta).
         if (replaced < 0) this.countDelta.files++;
-        this.countDelta.bytes += gz.length - Math.max(0, replaced);
+        this.countDelta.bytes += Math.max(0, gz.length - Math.max(0, replaced));
       }
       this.ensureTotals(); // unknown or old totals: counted in the background (and the cap enforced after)
     } catch (err) {
@@ -527,16 +525,12 @@ export class TileStore {
       const g = n.slice(0, n.indexOf('-')) as TileGroup;
       if (this.gens[g] === null) continue; // not known yet (startup): keep until it is
       const dir = path.join(this.root, n);
-      const gone = this.totals || this.countDelta ? await this.count(dir) : null;
+      const gone = this.totals ? await this.count(dir) : null;
       await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => undefined);
       if (this.totals && gone) {
         this.totals.files = Math.max(0, this.totals.files - gone.files);
         this.totals.bytes = Math.max(0, this.totals.bytes - gone.bytes);
         this.scheduleSave();
-      }
-      if (this.countDelta && gone) {
-        this.countDelta.files -= gone.files;
-        this.countDelta.bytes -= gone.bytes;
       }
       removed++;
     }
