@@ -794,6 +794,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     prebuilder?.stop();
     prebuilder = null;
     tidesRun = null;
+    void tiles?.store.flushTotals();
     tiles = null;
     forecastRun = null;
     forecastLoading = null;
