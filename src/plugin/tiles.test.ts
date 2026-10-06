@@ -93,7 +93,9 @@ test('tile service: the query is cancelled when every requester has gone', async
   const c2 = new AbortController();
   const p1 = svc.get(T, c1.signal).catch(e => e as Error);
   const p2 = svc.get(T, c2.signal).catch(e => e as Error);
-  for (let i = 0; i < 100 && !seen; i++) await new Promise(r => setTimeout(r, 2));
+  // Both requesters must have missed the store and joined the one query before the first leaves.
+  for (let i = 0; i < 500 && svc.waiters(T) < 2; i++) await new Promise(r => setTimeout(r, 2));
+  assert.equal(svc.waiters(T), 2, 'both requesters joined the query');
   c1.abort();
   assert.equal(seen?.aborted, false, 'one requester is still waiting');
   c2.abort();

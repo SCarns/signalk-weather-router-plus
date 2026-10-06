@@ -237,6 +237,13 @@ export class TileStore {
   private totalsDirty = false;
   private saveTimer: NodeJS.Timeout | null = null;
   private counting: Promise<void> | null = null;
+  /**
+   * Writes and removals while a count-only walk runs. The walk may or may
+   * not have passed them, so they are added to its result: the totals then
+   * err on the high side (the cap is enforced early, never late) until the
+   * next daily count.
+   */
+  private countDelta: { files: number; bytes: number } | null = null;
   private pruning: Promise<void> | null = null;
   private hits = 0;
   private misses = 0;
@@ -373,6 +380,10 @@ export class TileStore {
           this.totals.bytes = Math.max(0, this.totals.bytes - buf.length);
           this.scheduleSave();
         }
+        if (this.countDelta) {
+          this.countDelta.files--;
+          this.countDelta.bytes -= buf.length;
+        }
         return null;
       }
       this.hits++;
@@ -412,7 +423,7 @@ export class TileStore {
       // A tile written again (after a corrupt read, or built by the prebuilder
       // and a page miss at once) replaces its file: the totals take the difference.
       let replaced = -1;
-      if (this.totals) {
+      if (this.totals || this.countDelta) {
         try {
           replaced = (await fs.promises.stat(f)).size;
         } catch {
@@ -426,6 +437,10 @@ export class TileStore {
         this.totals.bytes = Math.max(0, this.totals.bytes + gz.length - Math.max(0, replaced));
         this.scheduleSave();
         if (this.totals.bytes > this.capBytes) void this.prune();
+      }
+      if (this.countDelta) {
+        if (replaced < 0) this.countDelta.files++;
+        this.countDelta.bytes += gz.length - Math.max(0, replaced);
       }
       this.ensureTotals(); // unknown or old totals: counted in the background (and the cap enforced after)
     } catch (err) {
@@ -480,13 +495,17 @@ export class TileStore {
   private recount(): Promise<void> {
     if (this.counting) return this.counting;
     this.counting = (async () => {
+      this.countDelta = { files: 0, bytes: 0 };
       const c = await this.count(this.root);
-      this.totals = c;
+      const d = this.countDelta;
+      this.countDelta = null;
+      this.totals = { files: Math.max(0, c.files + d.files), bytes: Math.max(0, c.bytes + d.bytes) };
       this.staleTotals = false;
       this.scheduleSave();
-      if (c.bytes > this.capBytes) await this.prune();
+      if (this.totals.bytes > this.capBytes) await this.prune();
     })().finally(() => {
       this.counting = null;
+      this.countDelta = null;
     });
     return this.counting;
   }
@@ -508,12 +527,16 @@ export class TileStore {
       const g = n.slice(0, n.indexOf('-')) as TileGroup;
       if (this.gens[g] === null) continue; // not known yet (startup): keep until it is
       const dir = path.join(this.root, n);
-      const gone = this.totals ? await this.count(dir) : null;
+      const gone = this.totals || this.countDelta ? await this.count(dir) : null;
       await fs.promises.rm(dir, { recursive: true, force: true }).catch(() => undefined);
       if (this.totals && gone) {
         this.totals.files = Math.max(0, this.totals.files - gone.files);
         this.totals.bytes = Math.max(0, this.totals.bytes - gone.bytes);
         this.scheduleSave();
+      }
+      if (this.countDelta && gone) {
+        this.countDelta.files -= gone.files;
+        this.countDelta.bytes -= gone.bytes;
       }
       removed++;
     }
@@ -724,5 +747,10 @@ export class TileService {
   /** Tile queries waiting or running. */
   get inflightCount(): number {
     return this.inflight.size;
+  }
+
+  /** Requesters waiting on a tile's in-flight query (0 when none is in flight; tests). */
+  waiters(t: TileId): number {
+    return this.inflight.get(tileKey(t))?.waiters ?? 0;
   }
 }
