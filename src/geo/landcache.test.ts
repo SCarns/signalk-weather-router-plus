@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { pointInShape, readShapefilePolygons, ShapefileIndex } from './shapefile';
 import { LandMask } from './landmask';
 import { chooseOverlayResolution, OnDemandLand, snapBBox } from './landcache';
+import { PolygonCache, polygonBytes } from './polygoncache';
 
 /** Write a minimal polygon shapefile (type 5); each polygon is a list of rings of [lon, lat]. */
 function writeShp(file: string, polys: number[][][][]): void {
@@ -231,3 +232,62 @@ test(
     );
   }
 );
+
+test('PolygonCache.forEach lists what a full scan lists, decoding each record once', () => {
+  const file = fixture();
+  const cache = new PolygonCache();
+  const boxes = [
+    { west: -72, south: 40, east: -69, north: 43 },
+    { west: 170, south: -20, east: -170, north: 0 },
+    { west: -180, south: -90, east: 180, north: 90 },
+    { west: 0, south: 0, east: 1, north: 1 },
+    { west: 9, south: 49, east: 13, north: 53 },
+  ];
+  for (const b of boxes) {
+    const a = readShapefilePolygons(file, b);
+    const c = cache.read([file], b);
+    assert.deepEqual(
+      c.map(s => s.recordNumber),
+      a.map(s => s.recordNumber),
+      JSON.stringify(b)
+    );
+    c.forEach((s, i) =>
+      assert.deepEqual(
+        s.rings.map(r => Array.from(r.coords)),
+        a[i].rings.map(r => Array.from(r.coords))
+      )
+    );
+  }
+  // Four records in the file: decoded once each, every later listing a hit.
+  const st = cache.stats();
+  assert.equal(st.decodes, 4);
+  assert.equal(st.entries, 4);
+  assert.ok(st.hits > 0);
+  assert.equal(st.evictions, 0);
+  // The same object is handed out again (no copy).
+  const first = cache.read([file], boxes[0])[0];
+  assert.equal(cache.read([file], boxes[0])[0], first);
+});
+
+test('PolygonCache stays under its budget and still lists everything', () => {
+  const file = fixture();
+  const one = polygonBytes(readShapefilePolygons(file)[0]);
+  const cache = new PolygonCache(2 * one + 10); // room for two of the four
+  const world = { west: -180, south: -90, east: 180, north: 90 };
+  const a = readShapefilePolygons(file, world).map(s => s.recordNumber);
+  for (let round = 0; round < 3; round++) {
+    assert.deepEqual(
+      cache.read([file], world).map(s => s.recordNumber),
+      a
+    );
+    assert.ok(cache.stats().bytes <= cache.budgetBytes);
+  }
+  assert.ok(cache.stats().evictions > 0);
+  // Streamed rasterisation through the cache equals rasterising a full scan.
+  const res = 0.25;
+  const all = LandMask.fromPolygons(readShapefilePolygons(file, world), world, res);
+  const streamed = LandMask.rasterStreamed(world, res, add => {
+    cache.forEach(file, world, add);
+  });
+  assert.deepEqual(streamed.raster, all.raster);
+});

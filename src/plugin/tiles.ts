@@ -208,13 +208,43 @@ export interface TileStoreStats {
   generations: Record<TileGroup, string | null>;
 }
 
-/** Tile answers on disk (see the file comment). */
+/** Where the store's running totals are kept between starts. */
+const TOTALS_FILE = '.totals.json';
+/** Saved totals older than this are used but checked by a background count. */
+const TOTALS_MAX_AGE_MS = 24 * HOUR_MS;
+/** How long changed totals wait before they are saved (one write per burst of tiles). */
+const TOTALS_SAVE_DELAY_MS = 5000;
+
+/**
+ * Tile answers on disk (see the file comment).
+ *
+ * Totals (files, bytes) are kept running and saved to TOTALS_FILE, so a
+ * start does not walk the store: brain (2026-10-06) held 950 k tiles and
+ * the walk built one entry per file on Signal K's main thread, 300 MB of
+ * heap after every plugin start and every retired generation, taken back
+ * only by a later major GC. When the totals are unknown they are counted
+ * without a list; the sorted list is built only when the store is over
+ * its cap, the one time it is needed (prune).
+ */
 export class TileStore {
   readonly root: string;
   private capBytes: number;
   private readonly log: (msg: string) => void;
   private gens: Record<TileGroup, string | null> = { wx: null, cur: null, tide: null, land: null, pt: null };
   private totals: { files: number; bytes: number } | null = null;
+  /** Saved totals were old: count once in the background to check them. */
+  private staleTotals = false;
+  private totalsDirty = false;
+  private saveTimer: NodeJS.Timeout | null = null;
+  private counting: Promise<void> | null = null;
+  /**
+   * Writes while a count-only walk runs. The walk may or may not have
+   * passed them, so they are added to its result; removals during the walk
+   * are not subtracted (the walk may already have skipped them). Either way
+   * the totals err on the high side, never low (the cap is enforced early,
+   * never late), until the next daily count sets them exactly.
+   */
+  private countDelta: { files: number; bytes: number } | null = null;
   private pruning: Promise<void> | null = null;
   private hits = 0;
   private misses = 0;
@@ -225,6 +255,69 @@ export class TileStore {
     this.root = opts.root;
     this.capBytes = opts.capBytes;
     this.log = opts.log ?? (() => undefined);
+    this.loadTotals();
+  }
+
+  private loadTotals(): void {
+    try {
+      const t = JSON.parse(fs.readFileSync(path.join(this.root, TOTALS_FILE), 'utf8')) as {
+        files?: unknown;
+        bytes?: unknown;
+        savedAt?: unknown;
+      };
+      if (!Number.isInteger(t.files) || (t.files as number) < 0 || !Number.isFinite(t.bytes) || (t.bytes as number) < 0) return;
+      this.totals = { files: t.files as number, bytes: t.bytes as number };
+      const age = Date.now() - Date.parse(String(t.savedAt ?? ''));
+      this.staleTotals = !(age >= 0 && age < TOTALS_MAX_AGE_MS);
+    } catch {
+      // none saved yet (first start, or an older version): counted on first use
+    }
+  }
+
+  private scheduleSave(): void {
+    this.totalsDirty = true;
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      void this.saveTotals();
+    }, TOTALS_SAVE_DELAY_MS);
+    this.saveTimer.unref?.();
+  }
+
+  /** Saves run one after another (a timer save and a stop flush may overlap). */
+  private saving: Promise<void> = Promise.resolve();
+
+  private saveTotals(): Promise<void> {
+    this.saving = this.saving.then(async () => {
+      if (!this.totals || !this.totalsDirty) return;
+      this.totalsDirty = false;
+      const f = path.join(this.root, TOTALS_FILE);
+      const tmp = `${f}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+      try {
+        await fs.promises.mkdir(this.root, { recursive: true });
+        await fs.promises.writeFile(tmp, JSON.stringify({ ...this.totals, savedAt: new Date().toISOString() }));
+        await fs.promises.rename(tmp, f);
+      } catch (err) {
+        this.totalsDirty = true; // tried again at the next save
+        this.log(`overlay tiles: could not save the totals: ${(err as Error).message}`);
+      }
+    });
+    return this.saving;
+  }
+
+  /** Save changed totals now (plugin stop). */
+  async flushTotals(): Promise<void> {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    await this.saveTotals();
+  }
+
+  /** A count-only walk is running or starts now when the totals are unknown or old. */
+  private ensureTotals(): void {
+    if (this.counting || this.pruning) return;
+    if (!this.totals || this.staleTotals) void this.recount();
   }
 
   setCap(bytes: number): void {
@@ -283,6 +376,11 @@ export class TileStore {
         this.corrupt++;
         this.misses++;
         fs.promises.rm(f, { force: true }).catch(() => undefined);
+        if (this.totals) {
+          this.totals.files = Math.max(0, this.totals.files - 1);
+          this.totals.bytes = Math.max(0, this.totals.bytes - buf.length);
+          this.scheduleSave();
+        }
         return null;
       }
       this.hits++;
@@ -319,13 +417,30 @@ export class TileStore {
       await fs.promises.mkdir(path.dirname(f), { recursive: true });
       const tmp = `${f}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
       await fs.promises.writeFile(tmp, gz);
+      // A tile written again (after a corrupt read, or built by the prebuilder
+      // and a page miss at once) replaces its file: the totals take the difference.
+      let replaced = -1;
+      if (this.totals || this.countDelta) {
+        try {
+          replaced = (await fs.promises.stat(f)).size;
+        } catch {
+          // new tile
+        }
+      }
       await fs.promises.rename(tmp, f);
       this.writes++;
       if (this.totals) {
-        this.totals.files++;
-        this.totals.bytes += gz.length;
+        if (replaced < 0) this.totals.files++;
+        this.totals.bytes = Math.max(0, this.totals.bytes + gz.length - Math.max(0, replaced));
+        this.scheduleSave();
         if (this.totals.bytes > this.capBytes) void this.prune();
-      } else void this.prune(); // totals unknown (startup, generation change): scan and enforce the cap
+      }
+      if (this.countDelta) {
+        // A replacement adds only its growth; a shrink is not subtracted (see countDelta).
+        if (replaced < 0) this.countDelta.files++;
+        this.countDelta.bytes += Math.max(0, gz.length - Math.max(0, replaced));
+      }
+      this.ensureTotals(); // unknown or old totals: counted in the background (and the cap enforced after)
     } catch (err) {
       this.log(`overlay tiles: could not save ${f}: ${(err as Error).message}`);
     }
@@ -335,34 +450,65 @@ export class TileStore {
     this.notKept++;
   }
 
-  /** Walk the store: every saved file with size and last use. */
-  private async scan(): Promise<{ f: string; size: number; t: number }[]> {
-    const out: { f: string; size: number; t: number }[] = [];
-    const walk = async (dir: string): Promise<void> => {
-      let ents: fs.Dirent[];
-      try {
-        ents = await fs.promises.readdir(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const e of ents) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) await walk(p);
-        else if (e.name.endsWith('.gz')) {
-          try {
-            const st = await fs.promises.stat(p);
-            out.push({ f: p, size: st.size, t: st.mtimeMs });
-          } catch {
-            // gone since readdir
-          }
+  /** Walk a directory tree, visiting every saved tile (nothing is kept). */
+  private async walk(dir: string, visit: (f: string, size: number, mtimeMs: number) => void): Promise<void> {
+    let ents: fs.Dirent[];
+    try {
+      ents = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) await this.walk(p, visit);
+      else if (e.name.endsWith('.gz')) {
+        try {
+          const st = await fs.promises.stat(p);
+          visit(p, st.size, st.mtimeMs);
+        } catch {
+          // gone since readdir
         }
       }
-    };
-    await walk(this.root);
+    }
+  }
+
+  /** Files and bytes below `dir`, counted while walking (no list). */
+  private async count(dir: string): Promise<{ files: number; bytes: number }> {
+    const c = { files: 0, bytes: 0 };
+    await this.walk(dir, (_f, size) => {
+      c.files++;
+      c.bytes += size;
+    });
+    return c;
+  }
+
+  /** Every saved tile with size and last use: only for a prune over the cap. */
+  private async list(): Promise<{ f: string; size: number; t: number }[]> {
+    const out: { f: string; size: number; t: number }[] = [];
+    await this.walk(this.root, (f, size, t) => out.push({ f, size, t }));
     return out;
   }
 
-  /** Remove directories of generations no longer current. */
+  /** Learn the totals with a count-only walk (one at a time), then enforce the cap. */
+  private recount(): Promise<void> {
+    if (this.counting) return this.counting;
+    this.counting = (async () => {
+      this.countDelta = { files: 0, bytes: 0 };
+      const c = await this.count(this.root);
+      const d = this.countDelta;
+      this.countDelta = null;
+      this.totals = { files: Math.max(0, c.files + d.files), bytes: Math.max(0, c.bytes + d.bytes) };
+      this.staleTotals = false;
+      this.scheduleSave();
+      if (this.totals.bytes > this.capBytes) await this.prune();
+    })().finally(() => {
+      this.counting = null;
+      this.countDelta = null;
+    });
+    return this.counting;
+  }
+
+  /** Remove directories of generations no longer current (their files are subtracted from the totals). */
   private async removeStale(): Promise<void> {
     let names: string[];
     try {
@@ -378,20 +524,39 @@ export class TileStore {
       if (!TILE_GROUPS.some(g => n.startsWith(`${g}-`))) continue;
       const g = n.slice(0, n.indexOf('-')) as TileGroup;
       if (this.gens[g] === null) continue; // not known yet (startup): keep until it is
-      await fs.promises.rm(path.join(this.root, n), { recursive: true, force: true }).catch(() => undefined);
+      const dir = path.join(this.root, n);
+      const gone = this.totals ? await this.count(dir) : null;
+      // Subtracted only when the directory is really gone: a failed removal leaves its files in the store.
+      const ok = await fs.promises.rm(dir, { recursive: true, force: true }).then(
+        () => true,
+        (err: Error) => {
+          this.log(`overlay tiles: could not remove ${dir}: ${err.message}`);
+          return false;
+        }
+      );
+      if (!ok) continue;
+      if (this.totals && gone) {
+        this.totals.files = Math.max(0, this.totals.files - gone.files);
+        this.totals.bytes = Math.max(0, this.totals.bytes - gone.bytes);
+        this.scheduleSave();
+      }
       removed++;
     }
-    if (removed) {
-      this.log(`overlay tiles: removed ${removed} superseded generation(s)`);
-      this.totals = null;
-    }
+    if (removed) this.log(`overlay tiles: removed ${removed} superseded generation(s)`);
   }
 
-  /** Remove least recently used tiles until under 90 % of the cap. */
+  /** Remove least recently used tiles until under 90 % of the cap (the file list is built only then). */
   prune(): Promise<void> {
     if (this.pruning) return this.pruning;
     this.pruning = (async () => {
-      const files = await this.scan();
+      const known = this.totals ?? (await this.count(this.root));
+      if (known.bytes <= this.capBytes) {
+        this.totals = known;
+        this.staleTotals = false;
+        this.scheduleSave();
+        return;
+      }
+      const files = await this.list();
       let total = files.reduce((a, x) => a + x.size, 0);
       let count = files.length;
       if (total > this.capBytes) {
@@ -406,15 +571,17 @@ export class TileStore {
         this.log(`overlay tiles: pruned to ${(total / 1e9).toFixed(2)} GB (cap ${(this.capBytes / 1e9).toFixed(2)} GB)`);
       }
       this.totals = { files: count, bytes: total };
+      this.staleTotals = false;
+      this.scheduleSave();
     })().finally(() => {
       this.pruning = null;
     });
     return this.pruning;
   }
 
-  /** Status; the first call starts a scan for the totals. */
+  /** Status; unknown (or old) totals start a background count. */
   stats(): TileStoreStats {
-    if (!this.totals && !this.pruning) void this.prune();
+    this.ensureTotals();
     return {
       dir: this.root,
       cap_bytes: this.capBytes,
@@ -582,5 +749,10 @@ export class TileService {
   /** Tile queries waiting or running. */
   get inflightCount(): number {
     return this.inflight.size;
+  }
+
+  /** Requesters waiting on a tile's in-flight query (0 when none is in flight; tests). */
+  waiters(t: TileId): number {
+    return this.inflight.get(tileKey(t))?.waiters ?? 0;
   }
 }

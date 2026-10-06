@@ -30,6 +30,7 @@ import * as path from 'node:path';
 import { bboxWidth, type BBox } from '../geo/geodesy';
 import { sharedFloat32 } from './forecast';
 import {
+  type ChunkScratch,
   chunkKey,
   decodeChunk,
   httpGet,
@@ -790,6 +791,14 @@ export interface LoadAreaOptions {
 }
 
 /**
+ * Decode buffers shared by every loadRegion on this thread (each worker has
+ * its own module instance). A chunk is decoded and copied into the area in
+ * one synchronous stretch, so one scratch suffices; it stays at the largest
+ * chunk size seen (timeChunked: 4 MB of bytes + 4 MB of values).
+ */
+const chunkScratch: ChunkScratch = { raw: null, out: null };
+
+/**
  * Fetch (disk cache or network), decode and crop the chunks covering
  * `region` at the given store time indices into one Float32Array per
  * variable, [step][row][col].
@@ -849,7 +858,8 @@ export async function loadRegion(
       const stored = await client.chunk(run, layout, variable, idx, stats);
       if (stored === null) return; // all fill: the area stays NaN there
       const td = Date.now();
-      const vals = decodeChunk(level.meta[variable], stored);
+      // Decoded into the shared scratch and copied out below before the next await.
+      const vals = decodeChunk(level.meta[variable], stored, chunkScratch);
       const dst = data[variable];
       const rowLo = Math.max(region.row0, j0.rc * cr);
       const rowHi = Math.min(region.row0 + region.nRows - 1, j0.rc * cr + cr - 1, grid.nLat - 1);

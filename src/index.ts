@@ -779,7 +779,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     log(`${PLUGIN_ID} started; data dir ${dataDir}`);
   }
 
-  function stop(): void {
+  async function stop(): Promise<void> {
     stopped = true;
     startGen++;
     coast.abort();
@@ -794,6 +794,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
     prebuilder?.stop();
     prebuilder = null;
     tidesRun = null;
+    // Awaited: Signal K waits for stop() before a restart's start(), whose store reads the saved totals.
+    await tiles?.store.flushTotals();
     tiles = null;
     forecastRun = null;
     forecastLoading = null;
