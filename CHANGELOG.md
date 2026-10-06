@@ -14,6 +14,245 @@ uses [Semantic Versioning](https://semver.org/).
   Lake Michigan is water and routable while Michigan remains land, with
   regression coverage including the beta.6 `wrp-route` full pipeline.
 
+## [0.1.1] - 2026-10-05
+
+### Changed
+
+- **Published as a regular release, outside the beta channel.** 0.1.1
+  carries everything in 0.1.0-beta.9 (below) plus the fix that follows.
+
+### Fixed
+
+- **Style B's legend lists only the sea states it draws.** "Current
+  against the waves" in style B marks only a choppy or rougher sea, but
+  its colour key showed all six bands; it now shows choppy, rough and
+  extreme. Styles A and C, which draw at every point, keep all six.
+
+## [0.1.0-beta.9] - 2026-10-04
+
+### Added
+
+- **Cloud cover and wind gust in the Weather API.** With the extra
+  fields on (the default) the plugin also fetches ECMWF's total cloud
+  cover `tcc` and 10 m wind gust `10fg` with every forecast, and point
+  forecasts and observations carry `outside.cloudCover` (ratio 0..1)
+  and `wind.gust` (m/s), the two fields the Signal K Weather API schema
+  defines and consumers such as energy predictors and stow advisories
+  read. Without the extra fields the run decodes as before and the two
+  fields stay left out. A decoded run made for the previous extra-field
+  set no longer matches the settings, so the first update after this
+  change decodes the current cycle again: the nine existing fields come
+  from the GRIB cache and only the two new fields' messages are
+  downloaded (HTTP byte ranges, tens of MB); one extra-field step is
+  54.0 MB on disk instead of 45.7 MB (about 1.35 GB per 72 h run
+  instead of 1.14 GB).
+- **Solar, thermal radiation, snowfall and instability fields, behind
+  their own setting (off by default).** Settings → Forecast → "Solar,
+  thermal radiation, snowfall and instability" fetches ECMWF's total
+  precipitation `tp`, surface solar radiation `ssrd`, snowfall `sf`,
+  surface thermal radiation down and net `strd`/`str`, and most-unstable
+  CAPE `mucape`. The five accumulated fields (everything but `mucape`)
+  are published as totals since the forecast start; the decode now runs
+  a step-subtraction pass that turns each into its per-interval value —
+  a depth in m for `tp` and `sf`, an average W/m² over the interval for
+  the three fluxes — and each step carries its interval length (3 h to
+  144 h, 6 h past it; step 0's range is empty and holds no interval
+  values). `tp` finally fills the Weather API's `outside.precipitationVolume`
+  (the interval depth ending at each point forecast; an observation's
+  interval has not ended, so it is left out there). The rest go through
+  the plugin's own API and the conditions popup, which gains an Energy
+  tab (solar and infrared fluxes), a depth line in the Precip tab, a gust
+  line in the Wind tab and cloud, solar and gust columns in the Raw
+  table. The setting is off by default: the six fields roughly double
+  the download (about +177 MB per 72 h cycle) and add about 830 MB of
+  decoded data on disk, so a metered connection only pays for them on
+  purpose. The memory and disk guard knows the new field set and suggests
+  turning the setting off when a run would not fit.
+
+- **Ship's time (#19).** Clock times in the web app and the Freeboard
+  panel are shown in the ship's time zone when the Signal K server
+  publishes one (`environment.time.timezoneRegion`, an IANA zone, else
+  `environment.time.timezoneOffset`, (-)hhmm), else in the browser's, and
+  the departure field is read and written in the same zone. Checked every
+  10 minutes; a change redraws the times and keeps the departure's moment.
+  A departure typed in the hour the clocks skip (spring forward) moves on
+  past the gap (02:30 → 03:30), as the browser does with its own zone,
+  and the field shows the time used.
+- **Signal K notes on the map (#20).** Layers → Base → Signal K notes
+  (on by default) shows the Resources API's notes that have a position,
+  for the map view, as markers; a click shows the note's title, text and
+  link, who wrote it and when, and its bearing and distance from the
+  boat, with **Edit** and **Delete** (a second press confirms); a note
+  can be dragged to a new position. **Add note here** in the map's click
+  menu writes a new note (title, text) at that point. Notes are ordinary Signal K resources (`POST`, `PUT`, `DELETE`
+  `/signalk/v2/api/resources/notes`; an edit keeps the note's other
+  fields), so Freeboard and other apps see them; writing needs a Signal K
+  login with write access. A failed notes request keeps the notes already
+  shown (logged to the console) instead of emptying the layer.
+- **Areas to avoid.** A note can mark a circle around it to avoid (its
+  form's "Avoid this area" and a radius, stored as
+  `properties.avoid.radius_m`). The router treats every such circle as
+  land: candidates and legs inside one are dropped, and a route point
+  inside one is refused with a message naming the note. Plan tab "Avoid
+  marked areas" (on by default) and the request field `avoid_areas`; the
+  job log lists the areas used. The main thread reads the notes from the
+  Resources API at each job's start; the land mask gets a per-route view
+  with the circles (`LandMask.withAvoid`), the cached mask unchanged.
+- **GPX export (#22).** The itinerary bar's GPX button downloads the route
+  on the map as a GPX 1.1 route: each point with its name (Start, WP1 …
+  End), time and leg description in the user's units, and the route's
+  summary as its description.
+- **Comfort: routing around rough water.** The router weights the
+  sea-state index by the angle of the waves to the course (× 1.3 in head
+  seas, × 1.05 abeam, × 0.8 following, a cosine between: the "encounter
+  index", `src/engine/seas.ts`), and with a comfort weight each second
+  sailed above an encounter index of 75 counts extra in the search's
+  choices (weight × (index − 75) / 100, at most 2 × weight; with 1,
+  choppy water adds 25 %, rough 50 %, extreme 125 %). Setting
+  `routing.comfortWeight` (0–3, default 1, 0 = off) and request field
+  `comfort_weight`. The cost steers pruning, the terminal choice and the
+  smoother; the route's times stay real. Needs wave data.
+- **The sea on each leg.** Route points carry `sea_index`,
+  `seas_angle_deg`, `seas_side`, `seas_sector` and `encounter_index` for
+  the leg into them. The leg cards and the Freeboard panel show a
+  **Seas** row (where the waves come from and the encounter index's
+  band); Layers → Base → **Seas along the route** (on by default) draws
+  an arrow on each leg along the waves' travel, coloured by the encounter
+  index.
+- **Current against the waves.** Layers → Water (off by default), from
+  the new point tile layer `/api/tile/seas` (points with the sea-state
+  index, waves, wind and current), coloured by the sea state there. Three
+  styles to compare, chosen under the layer's checkbox: **A** an arrow
+  at every point along the waves' travel (heads meeting where the
+  current opposes the waves, larger the more it steepens them, a double
+  chevron where it runs with them, a thin arrow with little current);
+  **B** a mark only where the current against the waves steepens a
+  choppy or rougher sea (tide-rip lines from 10 % steeper, a breaking
+  wave from 25 %, with spray from 50 %); **C** three arrows from each
+  point, wind, waves and current, each pointing where it is going, so a
+  pair pointing at each other shows what makes the sea rough. The
+  legend shows each glyph over its meaning.
+  All seas glyphs (these arrows, the route arrows, the Seas row's chip)
+  use the sea-state heatmap's colour scale, shifted slightly darker and
+  outlined.
+- **Wave direction (arrows).** Layers → Water (off by default): an arrow
+  per point along the waves' travel, coloured by the significant wave
+  height on the wave-height heatmap's scale, longer for a longer mean
+  period. The `seas` tile points now carry `mwp_s`.
+- **Sea state and wave arrows in Freeboard.** Two new chart layers, drawn
+  on the server as the web app draws them: "Current against the waves"
+  (style A) and "Wave arrows" (Weather Router Plus), PNG glyph layers `seas` and
+  `wave_arrows` (`/api/tile/<layer>/{z}/{x}/{y}.png`), listed while the
+  forecast has wave data. The Freeboard groups now pair each colour layer
+  with its own glyphs: *Waves* shows wave arrows (was wind barbs) and
+  *Sea state* shows the current against the waves (was current arrows).
+
+- **Leg cards show the wind and wave range of the leg, not just its end
+  point.** The shortcut smoother can merge many hours of routing into one
+  leg, and the itinerary card then presented a single end-of-leg wind
+  sample (say 2.9 kn) beside the leg's average speed over ground — a
+  38-hour leg sailed mostly in a fresh breeze could read as an impossible
+  5 kn in light air. Each leg is now sampled about once per hour along
+  its track (both ends included, at most 25 samples) and the extremes
+  are published on the departing point as `leg_wind_min_ms` /
+  `leg_wind_max_ms` and `leg_swh_min_m` / `leg_swh_max_m` (Signal K
+  route `coordinatesMeta` included). The webapp itinerary card, the
+  Freeboard leg descriptions and the Freeboard panel cards show these
+  as a range (e.g. "Wind 2.9–18.4 kn from NE") whenever the leg's ends
+  differ; single-sample legs are unchanged.
+
+### Changed
+
+- **The sea-state index no longer flags ordinary long-period ocean swell as
+  extreme.** The swell term was a plain quadratic in wave height, so any
+  open-ocean cell above about 2.23 m — a routine 2.25 m trade swell at
+  12 s — scored over 150 and landed in the `extreme` band even in light
+  wind and slack current. The swell term is now scaled by
+  `5 / max(mwp, 5)`, which leaves steep short-period coastal seas (period
+  5 s or less, and the missing-wave-data default of 5 s) undamped and
+  cuts a 12 s swell to 5/12, shifting standard trade swells back into
+  the `slight`/`good` bands. The band cuts themselves (35 / 50 / 75 /
+  100 / 150) are unchanged.
+- **The sea-state index no longer calls a moderate wind sea extreme.**
+  Even with the period damping, the wave term `30 × swh²` put any sea of
+  about 2.2 m or more in the `extreme` band: off the US east coast on
+  2026-10-04 (2–2.4 m at 6–7 s in 15 kn, Douglas 4 "moderate") the map
+  was extreme throughout. Its weight is now 10 (`SWELL_COEFF`) at every
+  period, so seas of 5 s or less score lower than before too; it is
+  calibrated on twelve seas pinned by a test: a 2 m wind sea is
+  `choppy`, 3.5 m `rough`, 5 m and more `extreme`, long swell milder than
+  a wind sea of the same height, and strong current against the waves
+  (a tide race, the Gulf Stream against 2 m seas) still `rough`. The band
+  cuts are unchanged. Everything that reads the index follows: the sea
+  state colours and arrows, the route Seas rows, and the comfort cost in
+  routing (its limits 75 and 100 are index values, so routes keep away
+  from rough water less often in moderate seas). Saved sea-state tiles
+  and point answers made with the old index are dropped at once (cache
+  revision `ss3` and point answers rev 3).
+
+- **Waiting for the forecast is said once, calmly.** While the server gets
+  its first forecast (a first start, or a decode after the forecast
+  settings changed, e.g. the new gust and cloud cover fields), the web app
+  shows one notice with the progress ("decoding the 06Z cycle, step 12 of
+  37"), a progress bar and the time left measured from the decode; the
+  map layers no longer fail one by one with "query timed out" after
+  120 s, and everything (layers, units) reloads by itself when the
+  forecast is ready. Map and point requests are answered at once with 503,
+  `Retry-After` and the progress; `/api/status` has `forecast_loading`;
+  the Signal K plugin status, a waiting route's log and the Freeboard
+  panel show the same progress. A 503 no longer winds up the web app's
+  request backoff.
+
+- **The shortcut smoother is off by default** (`routing.smoother`). It
+  can still be turned on in the settings or per request (`smoother`).
+
+- **Durations of a day or more read as days, hours and minutes (#24).**
+  "223.0 hour" is now "9d 7h": a duration of 24 h or more is written in
+  Signal K's duration-compact format whatever the user's time unit, in
+  the web app, the Freeboard panel and the plugin's messages; shorter
+  durations follow the time unit as before. A deliberate, documented
+  exception to following the Signal K unit preferences (Signal K has one
+  time unit for every duration). A clock time a day or more away now
+  carries its date ("Tue 13 Oct 21:58").
+- **"Calculating" instead of "Submitting" (#21)** on the Find Route button
+  and in the Freeboard panel while a route is computed.
+
+### Fixed
+
+- **Wind barbs and current arrows came back empty** when turned off and
+  on again without moving the map: turning a point layer off cleared its
+  points but kept OpenLayers' record of the tiles already loaded, so
+  nothing was fetched again. It is now refreshed instead (also for the
+  new sea state and wave arrows, which share one tile source).
+
+- **The step-0 wind gust is no longer published as 0 m/s.** ECMWF codes
+  the gust's step 0 (an empty maximum-over-time range) as 0 everywhere,
+  which is not a real value; the step is decoded without a gust field and
+  the first three hours answer without one. From step 3 on every step
+  carries the real maximum over the past interval.
+
+
+## [0.1.0-beta.8] - 2026-10-03
+
+### Fixed
+
+- **Regional wind is used only where it is finer than ECMWF.** Every
+  signalk-grib-downloader source was layered over ECMWF at full weight
+  wherever it covered, so a GFS 0.25° area (the same spacing as ECMWF's
+  open data) replaced ECMWF's wind over the whole area. A source is now
+  decoded and used for routes only when its grid is finer than the global
+  forecast's; the others are listed with "not used: not finer than the
+  global forecast".
+
+- **A route across 180° failed with "Invalid typed array length" when a
+  regional wind source lay on the other side of 180°** (a Tonga → New
+  Zealand route with a downloader source around Tonga). The check that a
+  regional grid meets the route area compared longitudes the short way,
+  but the columns read were worked out the long way, which gave a
+  negative number of columns. Both now take the short way, and a source
+  whose grid has no cells in the area is skipped with a line in the job
+  log instead of failing the route.
+
 ## [0.1.0-beta.7] - 2026-10-03
 
 ### Added
@@ -191,6 +430,7 @@ uses [Semantic Versioning](https://semver.org/).
   check and the warning-to-leg match measured across 180° the long way:
   all take longitude differences the short way now; the Freeboard panel fits a box that crosses 180° as
   west > east, as the Plotter Extensions API defines.
+
 
 ## [0.1.0-beta.6] - 2026-10-02
 
@@ -849,7 +1089,10 @@ builds before this release, with their measurements, is in
   loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.7...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.9...v0.1.1
+[0.1.0-beta.9]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.8...v0.1.0-beta.9
+[0.1.0-beta.8]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.7...v0.1.0-beta.8
 [0.1.0-beta.7]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.6...v0.1.0-beta.7
 [0.1.0-beta.6]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.5...v0.1.0-beta.6
 [0.1.0-beta.5]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.4...v0.1.0-beta.5

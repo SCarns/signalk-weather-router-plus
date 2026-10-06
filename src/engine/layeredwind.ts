@@ -174,10 +174,36 @@ export class LayeredWind implements WindSource {
     return Float64Array.from(lons, (lon, k) => this.base.wavesAt(lon, lats[k], time)?.swh ?? NaN);
   }
 
+  wavesFullAtManyAt(
+    lons: Float64Array,
+    lats: Float64Array,
+    timesMs: Float64Array
+  ): { swh: Float64Array; mwp: Float64Array; mwd: Float64Array } {
+    if (this.base.wavesFullAtManyAt) return this.base.wavesFullAtManyAt(lons, lats, timesMs);
+    return wavesFullFallback(this.base, lons, lats, timesMs);
+  }
+
   wavesAtManyAt(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): Float64Array {
     if (this.base.wavesAtManyAt) return this.base.wavesAtManyAt(lons, lats, timesMs);
     return Float64Array.from(lons, (lon, k) => this.base.wavesAt(lon, lats[k], new Date(timesMs[k]))?.swh ?? NaN);
   }
+}
+
+function wavesFullFallback(
+  w: WindSource,
+  lons: Float64Array,
+  lats: Float64Array,
+  timesMs: Float64Array
+): { swh: Float64Array; mwp: Float64Array; mwd: Float64Array } {
+  const n = lons.length;
+  const swh = new Float64Array(n).fill(NaN);
+  const mwp = new Float64Array(n).fill(NaN);
+  const mwd = new Float64Array(n).fill(NaN);
+  for (let k = 0; k < n; k++) {
+    const v = w.wavesAt(lons[k], lats[k], new Date(timesMs[k]));
+    if (v) [swh[k], mwp[k], mwd[k]] = [v.swh, v.mwp, v.mwd];
+  }
+  return { swh, mwp, mwd };
 }
 
 function sampleAt(

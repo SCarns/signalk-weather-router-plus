@@ -32,6 +32,8 @@ export interface AppSettings {
     refreshInterval: number;
     keepCycles: number;
     extraFields: boolean;
+    /** Also tp, ssrd, sf, strd, str, mucape, for energy modelling (off by default: about doubles the download). */
+    energyFields: boolean;
     /** Bytes that must stay free after the forecast loads (memory guard). */
     memoryHeadroom: number;
     /** Folder of signalk-grib-downloader's runs; empty = find it (its config, else ~/.signalk/gribs). */
@@ -66,6 +68,7 @@ export interface AppSettings {
     maxWind: number | null;
     /** A leg is not allowed where the significant wave height (m) exceeds this; null = no limit. */
     maxSwh: number | null;
+    comfortWeight: number;
     simStep: number;
     landRasterMaxCells: number;
     /** Let routes use known ship canals (Corinth, Cape Cod, Kiel, Suez, …) where the coastline data shows them as water. */
@@ -195,7 +198,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     max: 360 * HOUR_S,
     multipleOf: HOUR_S,
     default: 72 * HOUR_S,
-    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to {time:1296000}, 06z/18z runs to {time:518400}, so above {time:518400} only 00z/12z runs are used). Changing it decodes the forecast again; the decoded run on disk grows with it (about {dataSize:1.1e9} for {time:259200} and {dataSize:3.9e9} for {time:1296000} with the extra fields), memory does not.',
+    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to {time:1296000}, 06z/18z runs to {time:518400}, so above {time:518400} only 00z/12z runs are used). Changing it decodes the forecast again; the decoded run on disk grows with it (about {dataSize:1.35e9} for {time:259200} and {dataSize:4.6e9} for {time:1296000} with the extra fields), memory does not.',
     reload: 'forecast',
   },
   {
@@ -226,10 +229,19 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
   {
     key: 'forecast.extraFields',
     group: 'forecast',
-    label: 'Temperature, precipitation, SST, humidity',
+    label: 'Temperature, precipitation, SST, humidity, cloud cover',
     type: 'boolean',
     default: true,
-    help: 'Also fetch 2t, tprate, skt, 2d and ptype (the temperature, SST and precipitation layers and the full conditions). Changing it reloads the forecast.',
+    help: 'Also fetch 2t, tprate, skt, 2d, ptype, tcc and 10fg (the temperature, SST and precipitation layers, total cloud cover, wind gust and the full conditions). Changing it reloads the forecast.',
+    reload: 'forecast',
+  },
+  {
+    key: 'forecast.energyFields',
+    group: 'forecast',
+    label: 'Solar, thermal radiation, snowfall and instability',
+    type: 'boolean',
+    default: false,
+    help: 'Also fetch tp, ssrd, sf, strd, str and mucape (total precipitation, surface solar radiation, snowfall, surface thermal radiation down and net, and convective instability) for energy modelling: roughly doubles the download (about +127 MB per 72 h cycle) and adds about 620 MB of decoded data on disk. Off by default, so a metered connection only pays for it on purpose. Changing it reloads the forecast.',
     reload: 'forecast',
   },
   {
@@ -494,6 +506,17 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     reload: 'next_job',
   },
   {
+    key: 'routing.comfortWeight',
+    group: 'routing',
+    label: 'Comfort weight',
+    type: 'number',
+    min: 0,
+    max: 3,
+    default: 1,
+    help: 'How much the router avoids rough water, as the boat meets it (the sea-state index weighted for the angle of the waves to the course: head seas count more, following seas less). Above the "slight" band each hour sailed counts extra in the search\'s choices: with 1, choppy water adds up to 25 %, rough 50 %, extreme 125 %. 0 = off (the fastest route). The times shown stay the real times. Needs wave data in the forecast. A route request can override it.',
+    reload: 'next_job',
+  },
+  {
     key: 'routing.simStep',
     group: 'routing',
     label: 'Leg simulation step',
@@ -544,7 +567,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     group: 'routing',
     label: 'Shortcut smoother',
     type: 'boolean',
-    default: true,
+    default: false,
     help: 'Replace runs of waypoints with one straight leg when it is clear of land and not much slower. Your own waypoints are always kept.',
     reload: 'next_job',
   },
@@ -783,6 +806,7 @@ export function migrateLegacy(legacy: LegacyPluginConfig | undefined): { values:
   set(src.forecast, 'refreshInterval', num(f.refreshMinutes, 60));
   set(src.forecast, 'keepCycles', num(f.keepCycles));
   set(src.forecast, 'extraFields', f.extraFields);
+  set(src.forecast, 'energyFields', f.energyFields);
   const c = l.currents ?? {};
   set(src.currents, 'rtofsEnabled', c.rtofsEnabled);
   set(src.currents, 'rtofsRegion', typeof c.rtofsRegion === 'string' ? c.rtofsRegion.trim() : c.rtofsRegion);

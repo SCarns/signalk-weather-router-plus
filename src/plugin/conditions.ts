@@ -88,6 +88,17 @@ export function seaStateBand(idx: number | null): string | null {
 const G = 9.80665;
 const WIND_FADE_MS = 2.572222;
 const SWH_FADE_M = 0.5;
+/**
+ * Weight of the wave term, `SWELL_COEFF × swh² × periodScale × steepen`.
+ * The wind term is 50 in any breeze without a current, so this sets how
+ * rough the index calls a sea. It was 30 (from the routing server's
+ * roughness.py), which put a 2.24 m sea in the "extreme" band by itself:
+ * moderate wind seas (Douglas 4, 2–2.4 m at 6–7 s) read extreme. 10 is
+ * calibrated on twelve cases (conditions.test.ts): 2 m wind sea choppy,
+ * 3.5 m rough, 5 m and more extreme, long swell milder than a wind sea of
+ * the same height, a tide race or the Gulf Stream against 2 m seas rough.
+ */
+export const SWELL_COEFF = 10;
 
 /**
  * Combined wind-vs-current + swell-vs-current roughness index and the
@@ -119,8 +130,12 @@ export function roughnessIndex(
   const uOpp = Math.max(-uAlong, 0);
   const cg = (G * Math.max(mwp, 2)) / (4 * Math.PI);
   const steepen = 1 / Math.max(0.3, 1 - (2 * uOpp) / cg);
+  // Long-period swell rides easier than the steep short-period wind sea the
+  // index was tuned on: damp the swell term by 5/max(mwp, 5). Periods of
+  // 5 s or less (and the missing-data default of 5 s) are not damped.
+  const periodScale = 5 / Math.max(mwp, 5);
   const swhSafe = Number.isFinite(swh) && swh > 0 ? swh : 0;
-  const idxSwell = 30 * swhSafe * swhSafe * steepen;
+  const idxSwell = SWELL_COEFF * swhSafe * swhSafe * periodScale * steepen;
   let idx = idxWind + idxSwell;
   if (!Number.isFinite(idx)) idx = 0;
   const signal = Math.max(Math.max(0, Math.min(1, W / WIND_FADE_MS)), Math.max(0, Math.min(1, swhSafe / SWH_FADE_M)));

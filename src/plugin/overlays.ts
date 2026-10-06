@@ -300,6 +300,91 @@ export function currentPoints(src: OverlaySources, bbox: BBox, time: Date, res: 
   return out;
 }
 
+/**
+ * A point of the sea-state glyph layer: the sea-state index, the waves (height,
+ * the way they travel) and how the current meets them. `rel`: 'opposing'
+ * when the current runs against the waves (they steepen), 'following' when
+ * with them (they lengthen), 'none' with little current along them;
+ * `steepen` is the index's own steepening factor (1 = none).
+ */
+export interface SeaPoint {
+  lon: number;
+  lat: number;
+  idx: number;
+  swh_m: number;
+  /** Mean wave period, seconds; null when the forecast has none. */
+  mwp_s: number | null;
+  /** The way the waves travel, degrees true (their direction FROM + 180). */
+  to_deg: number;
+  rel: 'opposing' | 'following' | 'none';
+  steepen: number;
+  /** Wind speed (m/s) and the way it blows TO (degrees true); null without wind data. */
+  wind_ms: number | null;
+  wind_to_deg: number | null;
+  /** Current speed (m/s) and set (flows TO, degrees true); 0 and null without a current source. */
+  cur_ms: number;
+  cur_to_deg: number | null;
+}
+
+/** Current along the waves below this (m/s) counts as none for the glyph. */
+const SEA_REL_MIN_MS = 0.1;
+
+export function seaPoints(src: OverlaySources, bbox: BBox, time: Date, res: number): SeaPoint[] {
+  const s = src.forecast;
+  if (!s || !s.hasWaves) return [];
+  const { lons, lats, res: r } = lattice(bbox, res, 20_000);
+  const lm = src.land ? src.land.forBBox(bbox, r) : null;
+  const out: SeaPoint[] = [];
+  for (const lat of lats) {
+    for (const lon of lons) {
+      if (lm && lm.isLand(lon, lat)) continue;
+      const w = s.wavesAt(lon, lat, time);
+      if (!w || !Number.isFinite(w.swh) || !Number.isFinite(w.mwd)) continue;
+      const [ws, wd] = s.at(lon, lat, time);
+      let C = 0;
+      let cTo = 0;
+      if (src.currents) {
+        const [u, v] = src.currents.at(lon, lat, time);
+        if (Number.isFinite(u) && Number.isFinite(v)) {
+          C = Math.hypot(u, v);
+          cTo = norm360((Math.atan2(u, v) * 180) / Math.PI);
+        }
+      }
+      const { idx } = roughnessIndex(
+        Number.isFinite(ws) ? ws : 0,
+        C,
+        Number.isFinite(wd) ? wd : 0,
+        cTo,
+        w.swh,
+        Number.isFinite(w.mwp) ? w.mwp : 5,
+        w.mwd
+      );
+      // The current along the waves' travel (as the index computes it), and its steepening.
+      const to = norm360(w.mwd + 180);
+      let phi = Math.abs(to - cTo);
+      if (phi > 180) phi = 360 - phi;
+      const uAlong = C * Math.cos((phi * Math.PI) / 180);
+      const cg = (9.80665 * Math.max(Number.isFinite(w.mwp) ? w.mwp : 5, 2)) / (4 * Math.PI);
+      const steepen = 1 / Math.max(0.3, 1 - (2 * Math.max(-uAlong, 0)) / cg);
+      out.push({
+        lon: Math.round(lon * 1e6) / 1e6,
+        lat: Math.round(lat * 1e6) / 1e6,
+        idx: Math.round(idx * 10) / 10,
+        swh_m: Math.round(w.swh * 100) / 100,
+        mwp_s: Number.isFinite(w.mwp) ? Math.round(w.mwp * 10) / 10 : null,
+        to_deg: Math.round(to),
+        rel: uAlong <= -SEA_REL_MIN_MS ? 'opposing' : uAlong >= SEA_REL_MIN_MS ? 'following' : 'none',
+        steepen: Math.round(steepen * 1000) / 1000,
+        wind_ms: Number.isFinite(ws) ? Math.round(ws * 100) / 100 : null,
+        wind_to_deg: Number.isFinite(wd) ? Math.round(norm360(wd + 180)) : null,
+        cur_ms: Math.round(C * 100) / 100,
+        cur_to_deg: C > 0 ? Math.round(cTo) : null,
+      });
+    }
+  }
+  return out;
+}
+
 export interface WindPoint {
   lon: number;
   lat: number;
@@ -332,6 +417,8 @@ export interface ConditionsRow {
   time: string;
   wind_ms: number | null;
   wind_dir_deg: number | null;
+  /** 10 m wind gust, m/s (extra fields; absent at step 0, whose range is empty). */
+  gust_ms: number | null;
   swh_m: number | null;
   mwp_s: number | null;
   mwd_deg: number | null;
@@ -344,6 +431,22 @@ export interface ConditionsRow {
   precip_rate_ms: number | null;
   precip_type: number | null;
   precip_type_label: string | null;
+  /** Total precipitation depth in m over `interval_h`, the interval containing the sample time (energy fields). */
+  precip_m: number | null;
+  /** Snowfall water-equivalent depth in m over the same interval (energy fields). */
+  snowfall_m: number | null;
+  /** Average surface solar radiation, W/m², over the same interval (energy fields; ECMWF ssrd). */
+  ssrd_wm2: number | null;
+  /** Average downward surface thermal radiation, W/m², over the same interval (energy fields; ECMWF strd). */
+  strd_wm2: number | null;
+  /** Average net surface thermal radiation, W/m², over the same interval (energy fields; ECMWF str). */
+  str_wm2: number | null;
+  /** Hours the interval fields of this row cover (3 below 144 h, 6 past; null when none are loaded). */
+  interval_h: number | null;
+  /** Total cloud cover, ratio 0..1 (extra fields). */
+  cloud_cover: number | null;
+  /** Most-unstable convective available potential energy, J/kg (energy fields). */
+  mucape_jkg: number | null;
   dewpoint_k: number | null;
   /** Relative humidity as a ratio 0..1 (Signal K unit). */
   rh: number | null;
@@ -361,7 +464,9 @@ export interface ConditionsRow {
 
 /**
  * One sample row at a position and time. Everything is SI or
- * dimensionless: `precip_rate_ms` in m/s, `rh` a ratio 0..1.
+ * dimensionless: `precip_rate_ms` in m/s, `rh` a ratio 0..1. The interval
+ * fields (`precip_m`, `snowfall_m`, the fluxes) are the values of the
+ * interval containing the sample time, `interval_h` hours long.
  */
 export function sampleConditions(src: OverlaySources, lon: number, lat: number, time: Date): ConditionsRow {
   const f = src.forecast;
@@ -377,6 +482,15 @@ export function sampleConditions(src: OverlaySources, lon: number, lat: number, 
   let tprate: number | null = null;
   let d2m: number | null = null;
   let ptypeCode: number | null = null;
+  let gust: number | null = null;
+  let cloud: number | null = null;
+  let mucape: number | null = null;
+  let precipM: number | null = null;
+  let snowM: number | null = null;
+  let ssrd: number | null = null;
+  let strd: number | null = null;
+  let str: number | null = null;
+  let intervalH: number | null = null;
   if (f && f.covers(lon, lat)) {
     const [ws, wd] = f.at(lon, lat, time);
     wind = finiteOr(ws);
@@ -395,6 +509,22 @@ export function sampleConditions(src: OverlaySources, lon: number, lat: number, 
     if (f.has('tprate')) tprate = finiteOr(f.paramAt('tprate', lon, lat, time));
     if (f.has('2d')) d2m = finiteOr(f.paramAt('2d', lon, lat, time));
     if (f.has('ptype')) ptypeCode = finiteOr(f.paramAt('ptype', lon, lat, time));
+    if (f.hasAny('10fg')) gust = finiteOr(f.paramAt('10fg', lon, lat, time));
+    if (f.has('tcc')) cloud = finiteOr(f.paramAt('tcc', lon, lat, time));
+    if (f.hasAny('mucape')) mucape = finiteOr(f.paramAt('mucape', lon, lat, time));
+    // The accumulated fields: the interval containing the sample time, not
+    // interpolated (see ForecastStore.intervalAt); they share the interval.
+    for (const p of ['tp', 'sf', 'ssrd', 'strd', 'str'] as const) {
+      if (!f.hasAny(p)) continue;
+      const iv = f.intervalAt(p, lon, lat, time);
+      if (!iv || !Number.isFinite(iv.value)) continue;
+      if (p === 'tp') precipM = iv.value;
+      else if (p === 'sf') snowM = iv.value;
+      else if (p === 'ssrd') ssrd = iv.value;
+      else if (p === 'strd') strd = iv.value;
+      else str = iv.value;
+      intervalH = iv.intervalHours;
+    }
   }
   let current: number | null = null;
   let currentDir: number | null = null;
@@ -417,6 +547,7 @@ export function sampleConditions(src: OverlaySources, lon: number, lat: number, 
     time: time.toISOString(),
     wind_ms: rnd(wind, 2),
     wind_dir_deg: rnd(windDir, 0),
+    gust_ms: rnd(gust, 2),
     swh_m: rnd(swh, 2),
     mwp_s: rnd(mwp, 1),
     mwd_deg: rnd(mwd, 0),
@@ -428,6 +559,14 @@ export function sampleConditions(src: OverlaySources, lon: number, lat: number, 
     precip_rate_ms: rnd(tprate, 10),
     precip_type: pt.code,
     precip_type_label: pt.label,
+    precip_m: rnd(precipM, 5),
+    snowfall_m: rnd(snowM, 5),
+    ssrd_wm2: rnd(ssrd, 1),
+    strd_wm2: rnd(strd, 1),
+    str_wm2: rnd(str, 1),
+    interval_h: intervalH,
+    cloud_cover: rnd(cloud, 3),
+    mucape_jkg: rnd(mucape, 0),
     dewpoint_k: rnd(d2m, 2),
     rh: rnd(rh, 2),
     feels_like_k: rnd(fl.k, 2),

@@ -58,6 +58,7 @@ export interface LegacyPluginConfig {
     refreshMinutes?: number;
     keepCycles?: number;
     extraFields?: boolean;
+    energyFields?: boolean;
   };
   currents?: {
     rtofsEnabled?: boolean;
@@ -96,8 +97,10 @@ export interface ResolvedConfig {
     refreshIntervalS: number;
     mirror: 'ecmwf' | 'aws' | 'google';
     keepCycles: number;
-    /** Also fetch 2t, tprate, skt, 2d, ptype (temperature, precipitation, SST, humidity, precip type). */
+    /** Also fetch 2t, tprate, skt, 2d, ptype, tcc, 10fg (temperature, precipitation, SST, humidity, precip type, cloud cover, gust). */
     extraFields: boolean;
+    /** Also fetch tp, ssrd, sf, strd, str, mucape (precipitation depth, solar and thermal radiation, snowfall, convective instability), for energy modelling. */
+    energyFields: boolean;
     /** Memory guard: bytes that must remain free after a forecast load. */
     memoryHeadroomBytes: number;
     /** signalk-grib-downloader's folder; empty = find it. */
@@ -130,6 +133,7 @@ export interface ResolvedConfig {
     noGoMinAngleDeg: number;
     maxWindMs: number | null;
     maxSwhM: number | null;
+    comfortWeight: number;
     simStepM: number;
     landRasterMaxCells: number;
     /** Open the known canals' edges in the global water grid. */
@@ -323,6 +327,7 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       mirror,
       keepCycles: f.keepCycles,
       extraFields: f.extraFields,
+      energyFields: f.energyFields,
       memoryHeadroomBytes: f.memoryHeadroom,
       regionalGribs: f.regionalGribs ?? '',
     },
@@ -351,6 +356,7 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       noGoMinAngleDeg: r.noGoMinAngle ?? 0,
       maxWindMs: r.maxWind ?? null,
       maxSwhM: r.maxSwh ?? null,
+      comfortWeight: r.comfortWeight ?? 0,
       simStepM: r.simStep,
       landRasterMaxCells: r.landRasterMaxCells,
       allowCanals: r.allowCanals,

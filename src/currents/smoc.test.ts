@@ -25,7 +25,7 @@ import { CurrentStack } from './stack';
 import { FILL_RADIUS_CELLS, filledCell, sampleFieldPairFilled } from './coastfill';
 import { RtofsCurrentSource } from './rtofs';
 import type { CurrentSourceLike } from './types';
-import { decodeChunk, parseArrayMeta, parseCfTimeUnits, parseConsolidated } from '../data/zarr';
+import { type ChunkScratch, decodeChunk, parseArrayMeta, parseCfTimeUnits, parseConsolidated } from '../data/zarr';
 import { sampleField, type FieldGrid } from '../data/forecast';
 
 // ───────────── synthetic Zarr v2 store (uncompressed chunks) ─────────────
@@ -271,6 +271,22 @@ test('zarr: a real blosc chunk decodes to float32 with the fill value mapped to 
   // An absent chunk is all fill.
   const empty = decodeChunk(meta, null);
   assert.ok(Number.isNaN(empty[0]) && Number.isNaN(empty[empty.length - 1]));
+  // Decoding into a lent scratch gives the same values; the scratch is reused by the next call.
+  const scratch: ChunkScratch = { raw: null, out: null };
+  const viaScratch = decodeChunk(meta, new Uint8Array(fs.readFileSync(path.join(dir, 'smoc_utotal_51780.0.3.2.blosc'))), scratch);
+  assert.equal(viaScratch.length, vals.length);
+  const copied = Float32Array.from(viaScratch);
+  for (let i = 0; i < vals.length; i++) {
+    if (Number.isNaN(vals[i])) assert.ok(Number.isNaN(copied[i]));
+    else assert.equal(copied[i], vals[i]);
+  }
+  const rawBefore = scratch.raw;
+  const outBefore = scratch.out;
+  const again = decodeChunk(meta, null, scratch);
+  assert.equal(scratch.raw, rawBefore);
+  assert.equal(scratch.out, outBefore);
+  assert.ok(Number.isNaN(again[0]) && Number.isNaN(again[again.length - 1]));
+  assert.equal(copied[0], vals[0]); // the copy taken before the second decode is intact
 });
 
 // ───────────── probe / run / time ─────────────

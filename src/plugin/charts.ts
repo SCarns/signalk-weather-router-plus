@@ -57,8 +57,8 @@ const CHART_GROUPS: { id: string; name: string; description: string; layers: (Pn
   {
     id: 'c2b7e6a0-5d1c-4abc-9000-000000000002',
     name: 'Waves (Weather Router Plus)',
-    description: 'Wave height with wind barbs, by the hour.',
-    layers: ['waves', 'barbs'],
+    description: 'Wave height with wave arrows (longer for a longer period), by the hour.',
+    layers: ['waves', 'wave_arrows'],
   },
   {
     id: 'c2b7e6a0-5d1c-4abc-9000-000000000003',
@@ -75,8 +75,8 @@ const CHART_GROUPS: { id: string; name: string; description: string; layers: (Pn
   {
     id: 'c2b7e6a0-5d1c-4abc-9000-000000000005',
     name: 'Sea state (Weather Router Plus)',
-    description: 'Wind-against-current sea state with current arrows, by the hour.',
-    layers: ['sea_state', 'arrows'],
+    description: 'Wind-against-current sea state with the current against the waves, by the hour.',
+    layers: ['sea_state', 'seas'],
   },
   {
     id: 'c2b7e6a0-5d1c-4abc-9000-000000000006',
@@ -135,7 +135,12 @@ export class ChartsProvider {
     if (!forecastRun) return false;
     if (layer === 'tide') return this.deps.tidesEnabled() && !!tidesRun;
     if (layer === 'current' || layer === 'arrows') return (dataStatus?.currents.length ?? 0) > 0;
-    if ((layer === 'waves' || layer === 'sea_state') && dataStatus?.forecast && !dataStatus.forecast.hasWaves) return false;
+    if (
+      (layer === 'waves' || layer === 'sea_state' || layer === 'seas' || layer === 'wave_arrows') &&
+      dataStatus?.forecast &&
+      !dataStatus.forecast.hasWaves
+    )
+      return false;
     const params = forecastRun.index.request.params;
     return (LAYER_PARAMS[layer] ?? []).every(p => params.includes(p));
   }

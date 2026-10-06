@@ -93,7 +93,9 @@ test('tile service: the query is cancelled when every requester has gone', async
   const c2 = new AbortController();
   const p1 = svc.get(T, c1.signal).catch(e => e as Error);
   const p2 = svc.get(T, c2.signal).catch(e => e as Error);
-  for (let i = 0; i < 100 && !seen; i++) await new Promise(r => setTimeout(r, 2));
+  // Both requesters must have missed the store and joined the one query before the first leaves.
+  for (let i = 0; i < 500 && svc.waiters(T) < 2; i++) await new Promise(r => setTimeout(r, 2));
+  assert.equal(svc.waiters(T), 2, 'both requesters joined the query');
   c1.abort();
   assert.equal(seen?.aborted, false, 'one requester is still waiting');
   c2.abort();
@@ -183,5 +185,57 @@ test('tile store: an empty or non-gzip saved file is a miss and is removed (what
   const ok = await store.read(T);
   assert.ok(ok && zlib.gunzipSync(ok).toString() === '2', 'a real tile reads back');
   assert.equal(store.corrupt, 2);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('tile store: totals are kept running, saved, and reloaded without a walk', async () => {
+  const root = tmp();
+  const store = new TileStore({ root, capBytes: 1e9 });
+  store.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
+  const g = store.generation('wx');
+  // No saved totals: a count walk learns them (empty store: 0) and the first flush saves them.
+  const totalsFile = path.join(root, '.totals.json');
+  let counted = false;
+  for (let i = 0; i < 500 && !counted; i++) {
+    store.stats(); // starts the count when the totals are unknown
+    await store.flushTotals();
+    counted = fs.existsSync(totalsFile);
+    if (!counted) await new Promise(r => setTimeout(r, 10));
+  }
+  assert.ok(counted, 'initial count did not complete');
+  const body = Buffer.alloc(1000, 1);
+  // A tile written again replaces its file: counted once, bytes by the difference.
+  await store.write({ ...T, x: 0 }, Buffer.alloc(400, 1), g);
+  await store.write({ ...T, x: 0 }, body, g);
+  assert.deepEqual([store.stats().files, store.stats().bytes], [1, 1000]);
+  for (let i = 1; i < 5; i++) await store.write({ ...T, x: i }, body, g);
+  assert.equal(store.stats().files, 5);
+  assert.equal(store.stats().bytes, 5000);
+  await store.flushTotals();
+  const saved = JSON.parse(fs.readFileSync(path.join(root, '.totals.json'), 'utf8')) as { files: number; bytes: number; savedAt: string };
+  assert.equal(saved.files, 5);
+  assert.equal(saved.bytes, 5000);
+  // A new store on the same root answers from the saved totals at once.
+  const again = new TileStore({ root, capBytes: 1e9 });
+  assert.deepEqual([again.stats().files, again.stats().bytes], [5, 5000]);
+  // A retired generation is subtracted, not forgotten.
+  again.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
+  again.setGenerations({ wx: 'b', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
+  for (let i = 0; i < 100 && again.stats().files !== 0; i++) await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual([again.stats().files, again.stats().bytes], [0, 0]);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('tile store: a root without saved totals is counted in the background', async () => {
+  const root = tmp();
+  const a = new TileStore({ root, capBytes: 1e9 });
+  a.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
+  const g = a.generation('wx');
+  for (let i = 0; i < 3; i++) await a.write({ ...T, x: i }, Buffer.alloc(100, 1), g);
+  fs.rmSync(path.join(root, '.totals.json'), { force: true });
+  const b = new TileStore({ root, capBytes: 1e9 });
+  assert.equal(b.stats().files, 0, 'unknown until counted');
+  for (let i = 0; i < 100 && b.stats().files !== 3; i++) await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual([b.stats().files, b.stats().bytes], [3, 300]);
   fs.rmSync(root, { recursive: true, force: true });
 });

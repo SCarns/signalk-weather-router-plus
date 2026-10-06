@@ -84,7 +84,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         get: {
           summary: 'Plugin, forecast (decoded run on disk, memory held), currents, overlay land cache and queue status',
           description:
-            'Top level: plugin, started, workers {data, route}, forecast, forecast_error, currents, currents_route_worker, rtofs_run, overlay_land, overlay_tiles, overlay_prebuild, ' +
+            'Top level: plugin, started, workers {data, route}, forecast, forecast_error, forecast_loading, currents, currents_route_worker, rtofs_run, overlay_land, overlay_tiles, overlay_prebuild, ' +
             'weather_provider_registered, jobs, vessel, polar, land, harmonic_dir, extra_fields, tides, tides_enabled, tides_error, process_rss_bytes. ' +
             '`forecast` (null until a run is ready): {cycle, model, valid_from, valid_to, steps, params, coverage, storage: "decoded-on-disk", loaded_at, has_waves, ' +
             'source: "disk" (a complete decoded run was already on disk, no decode) | "grib" (decoded from the GRIB cache / download), ready_ms, fields_downloaded, ' +
@@ -102,6 +102,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             'point_cache: {entries, bytes, queries, hits}, memory_bytes, last_download, last_point_query: {at, lat, lon, bytes, chunks, downloaded, from_disk, seconds, cached} | null, ' +
             'downloaded_bytes_total, disk_cache_bytes, layouts, mean_window_days}. ' +
             '`starting`: why the plugin is not answering yet (e.g. "starting: downloading the coastline (40 %)"), null once started; 503 answers carry the same text. ' +
+            '`forecast_loading`: while a forecast is fetched and decoded {phase (checking | decoding), why (first | redecode | update), cycle, done, total, started_at, text}, else null; until the first forecast is loaded, map and point requests answer 503 at once with Retry-After and {error, loading}. ' +
             '`overlay_tiles` (null before start): saved map tiles {dir, cap_bytes, files, bytes, hits, misses, writes, not_kept, generations, inflight}. ' +
             '`overlay_prebuild` (null before start): tiles built ahead of time {enabled, workers, workers_ready, paused, areas: [{kind: "view" | "boat", lat, lon, radius_m}], ' +
             'window: {from, to} | null, max_zoom, walk_started_at, seen, built, skipped, not_kept, errors, last_error, at: {area, hour, z} | null, complete, built_total, build_ms_avg}.',
@@ -294,7 +295,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           summary:
             'Hourly point series of every conditions field, plus tide height, total water level and surge with the high and low waters',
           description:
-            'Rows: every conditions field (wind_ms, wind_dir_deg, swh_m, mwp_s, mwd_deg, current_ms, current_dir_deg, msl_pa, t2m_k, skt_k, precip_rate_ms, precip_type, precip_type_label, dewpoint_k, rh, feels_like_k, feels_like_basis, wind_chill_k, heat_index_k, beaufort, douglas, douglas_label, sea_state_index, sea_state, sea_state_partial) (current_ms and current_dir_deg are null where no current source has data: not slack water) plus `time` and the tide fields `tide_m` (tide height above mean sea level, m; Copernicus Marine ocean_tide, FES2014), ' +
+            'Rows: every conditions field (wind_ms, gust_ms, wind_dir_deg, swh_m, mwp_s, mwd_deg, current_ms, current_dir_deg, msl_pa, t2m_k, skt_k, precip_rate_ms, precip_type, precip_type_label, precip_m, snowfall_m, ssrd_wm2, strd_wm2, str_wm2, interval_h, cloud_cover, mucape_jkg, dewpoint_k, rh, feels_like_k, feels_like_basis, wind_chill_k, heat_index_k, beaufort, douglas, douglas_label, sea_state_index, sea_state, sea_state_partial) (current_ms and current_dir_deg are null where no current source has data: not slack water; gust_ms, precip_m, snowfall_m, the fluxes and interval_h are null when the extra or energy fields are off — precip_m/snowfall_m and the W/m² fluxes are the values of the interval_h-hour interval containing the sample time, 3 h to 144 h and 6 h past it) plus `time` and the tide fields `tide_m` (tide height above mean sea level, m; Copernicus Marine ocean_tide, FES2014), ' +
             '`water_level_m` (total water level above local mean sea level, m = total_sea_level − local mean), `surge_m` (non-tidal residual = water level − tide, m), ' +
             '`tide_extrapolated` (a bilinear corner is model land and took the value of valid cells within 2 cells, ~18 km), `tide_tendency` (rising / falling / steady within ±2 cm/h). ' +
             'Tide fields are null when tides are off or there is no model water within 2 cells. ' +
@@ -424,7 +425,21 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               required: true,
               schema: {
                 type: 'string',
-                enum: ['wind', 'waves', 'current', 'sea_state', 'precip', 'temperature', 'sst', 'tide', 'barbs', 'arrows', 'isobars'],
+                enum: [
+                  'wind',
+                  'waves',
+                  'current',
+                  'sea_state',
+                  'precip',
+                  'temperature',
+                  'sst',
+                  'tide',
+                  'barbs',
+                  'arrows',
+                  'isobars',
+                  'seas',
+                  'wave_arrows',
+                ],
               },
             },
             { name: 'z', in: 'path', required: true, schema: { type: 'integer', minimum: 0, maximum: 18 } },
@@ -459,7 +474,21 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               required: true,
               schema: {
                 type: 'string',
-                enum: ['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current', 'tide', 'barbs', 'arrows', 'land'],
+                enum: [
+                  'wind',
+                  'waves',
+                  'msl',
+                  'temperature',
+                  'sst',
+                  'precip',
+                  'sea_state',
+                  'current',
+                  'tide',
+                  'barbs',
+                  'arrows',
+                  'seas',
+                  'land',
+                ],
               },
             },
             { name: 'z', in: 'path', required: true, schema: { type: 'integer', minimum: 0, maximum: 18 } },

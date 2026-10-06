@@ -4,9 +4,9 @@
 // result strip, itinerary, route library, waypoint and conditions popups,
 // Live mode with the Signal K vessel.
 
-import { _apiErrorText, _fmt, _polarAngles, fetchPolarAngles, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
+import { _apiErrorText, _fmt, _polarAngles, fetchPolarAngles, fmtClock, clockParts, toClockInput, fromClockInput, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
 import { createLiveTriggers, createPassageTracker, createRouteSimulator, createTrackRecorder, haversineM, VESSEL_STALE_MS } from './rp-live.js';
-import { _overlayTimeIso, centreOnVesselOnce, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
+import { _overlayTimeIso, centreOnVesselOnce, seaBand, notesLayer, loadNotes, avoidRing, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
 // The limit inputs and the quantity of each (used by _limitSI, below). Declared
@@ -207,6 +207,11 @@ function _drawRouteLegs(pts) {
     prev.set('next_swh_m', curr.get('swh_m'));
     prev.set('next_mwp_s', curr.get('mwp_s'));
     prev.set('next_mwd_deg', curr.get('mwd_deg'));
+    prev.set('next_sea_index', curr.get('sea_index'));
+    prev.set('next_encounter_index', curr.get('encounter_index'));
+    prev.set('next_seas_angle_deg', curr.get('seas_angle_deg'));
+    prev.set('next_seas_side', curr.get('seas_side'));
+    prev.set('next_seas_sector', curr.get('seas_sector'));
     // The leg ends after the forecast's last step: drawn dashed, the point
     // flagged for the itinerary card and the saved description.
     const beyond = !!curr.get('beyond_forecast');
@@ -348,7 +353,7 @@ function _jobLabel(j) {
 }
 function _jobSub(j) {
   const parts = [];
-  if (j.created_at) parts.push(new Date(j.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }));
+  if (j.created_at) parts.push(fmtClock(j.created_at, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }));
   if (j.summary) {
     if (j.summary.total_distance_m != null) parts.push(fmtDist(j.summary.total_distance_m));
     if (j.summary.total_time_s != null) parts.push(fmtTime(j.summary.total_time_s));
@@ -367,7 +372,7 @@ function _askRecompute(job) {
   if (!banner) return;
   const t = job && (job.finished_at || job.created_at);
   const when = t ? new Date(t) : null;
-  document.getElementById('recomputeText').textContent = 'Saved route' + (when ? ', computed ' + when.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '')
+  document.getElementById('recomputeText').textContent = 'Saved route' + (when ? ', computed ' + fmtClock(when, { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '')
     + '. Recompute it with the current forecast and the Plan settings?';
   banner.hidden = false;
 }
@@ -399,6 +404,38 @@ setStatusArea(() => {
 map.on('moveend', redrawStatusLine);
 routeSource.on('change', redrawStatusLine);
 { const rw = document.getElementById('regionalWind'); if (rw) rw.addEventListener('change', redrawStatusLine); }
+
+// Zoom to the displayed route's extent with padding so the map frames the
+// entire track beside the panel (not under it). The extent is taken over
+// the route's points with unwrapped longitudes: a route across the
+// antimeridian has points near -180 and +180, and the plain extent of
+// those is the whole world. Used when a saved route is loaded and when a
+// computed route arrives.
+function _fitRouteInView() {
+  const routePts = routeSource.getFeatures().filter(f => f.getGeometry() && f.getGeometry().getType() === 'Point' && f.get('time'));
+  const ext = routePts.length
+    ? ol.extent.boundingExtent(unwrapLonLats(routePts.map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()))).map(c => ol.proj.fromLonLat(c)))
+    : routeSource.getExtent();
+  // Keep the view in the main world: an unwrapped extent can sit past
+  // ±180°, and a view centred there showed no route at all (the route's
+  // own features are stored in the main world).
+  const W = 2 * 20037508.342789244;
+  const cx = (ext[0] + ext[2]) / 2;
+  const shift = cx > W / 2 ? -W : cx < -W / 2 ? W : 0;
+  if (shift) { ext[0] += shift; ext[2] += shift; }
+  if (!ext || !ext.every(Number.isFinite)) return;
+  map.getView().fit(ext, {
+    padding: _mapFitPadding(),
+    duration: 400,
+    maxZoom: 14,
+    // The panel padding can still push the centre past ±180°; bring it
+    // back into the main world once the animation ends.
+    callback: () => {
+      const v = map.getView(), c = v.getCenter();
+      if (c && Math.abs(c[0]) > W / 2) v.setCenter([c[0] - Math.sign(c[0]) * W, c[1]]);
+    },
+  });
+}
 
 function _loadRouteJob(id) {
   if (!id) return;
@@ -437,35 +474,7 @@ function _loadRouteJob(id) {
       _routeStale = false;
       updatePlanHint();
       _askRecompute(job);
-      // Zoom to the loaded route's extent with padding so the map
-      // frames the entire track beside the panel (not under it). The
-      // extent is taken over the route's points with unwrapped longitudes:
-      // a route across the antimeridian has points near -180 and +180, and
-      // the plain extent of those is the whole world.
-      const routePts = routeSource.getFeatures().filter(f => f.getGeometry() && f.getGeometry().getType() === 'Point' && f.get('time'));
-      const ext = routePts.length
-        ? ol.extent.boundingExtent(unwrapLonLats(routePts.map(f => ol.proj.toLonLat(f.getGeometry().getCoordinates()))).map(c => ol.proj.fromLonLat(c)))
-        : routeSource.getExtent();
-      // Keep the view in the main world: an unwrapped extent can sit past
-      // ±180°, and a view centred there showed no route at all (the route's
-      // own features are stored in the main world).
-      const W = 2 * 20037508.342789244;
-      const cx = (ext[0] + ext[2]) / 2;
-      const shift = cx > W / 2 ? -W : cx < -W / 2 ? W : 0;
-      if (shift) { ext[0] += shift; ext[2] += shift; }
-      if (ext && ext.every(Number.isFinite)) {
-        map.getView().fit(ext, {
-          padding: _mapFitPadding(),
-          duration: 400,
-          maxZoom: 14,
-          // The panel padding can still push the centre past ±180°; bring it
-          // back into the main world once the animation ends.
-          callback: () => {
-            const v = map.getView(), c = v.getCenter();
-            if (c && Math.abs(c[0]) > W / 2) v.setCenter([c[0] - Math.sign(c[0]) * W, c[1]]);
-          },
-        });
-      }
+      _fitRouteInView();
       showTab('itinerarySection');
     })
     .catch(err => {
@@ -650,6 +659,20 @@ applyVesselType(getVesselType());
   const status = document.getElementById('routeNameStatus');
   const pubBtn = document.getElementById('routePublish');
   const delBtn = document.getElementById('routeDelete');
+  const gpxBtn = document.getElementById('routeGpx');
+  if (gpxBtn) gpxBtn.addEventListener('click', () => {
+    if (!_itineraryFeatures.length) { status.textContent = '(no route loaded)'; return; }
+    const name = (input && input.value.trim()) || _currentRouteName || 'Weather route';
+    const blob = new Blob([_routeGpx(name)], { type: 'application/gpx+xml' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name.replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) + '.gpx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    appendLog('GPX file downloaded: ' + a.download, 'done');
+  });
   const input = document.getElementById('routeNameInput');
   if (pubBtn) {
     pubBtn.addEventListener('click', () => {
@@ -681,6 +704,8 @@ applyVesselType(getVesselType());
 })();
 
 // Display units changed (rp-core.js applyDisplayUnits): re-render what this file draws.
+// The sea-state colours arrive with the legends (rp-layers): redraw the Seas rows.
+window.addEventListener('rp:seacolours', () => { if (_itineraryFeatures.length) populateItinerary(_itineraryFeatures); });
 window.addEventListener('rp:units', () => {
   if (_lastRouteProps) renderResultStrip(_lastRouteProps, _lastNavWarns);
   if (_itineraryFeatures.length) populateItinerary(_itineraryFeatures);
@@ -753,6 +778,8 @@ let _suppressClickUntil = 0;
       return false;  // already a draggable marker — nothing to do
     }
     const lonlat = ol.proj.toLonLat(geom.getCoordinates());
+    const prev = waypointCoords.length ? waypointCoords[waypointCoords.length - 1] : startCoord;
+    if (!_confirmFarWaypoint(prev, [lonlat[0], lonlat[1]], geom.getCoordinates(), () => pinRouteWaypoint(feature))) return true;
     waypointCoords.push([lonlat[0], lonlat[1]]);
     _rebuildWaypointFeatures();
     // Brief visual confirmation via the status line.
@@ -904,6 +931,7 @@ function _placeOrAdd(coords, coordinate) {
   } else {
     // Extend the course: the current destination becomes the last
     // waypoint and the new point is the destination.
+    if (!_confirmFarWaypoint(endCoord, coords, coordinate, () => _placeOrAdd(coords, coordinate))) return;
     waypointCoords.push(endCoord);
     endCoord = coords;
     endFeature.setGeometry(new ol.geom.Point(coordinate));
@@ -912,6 +940,36 @@ function _placeOrAdd(coords, coordinate) {
     markRouteStale();
   }
   updateButton();
+}
+// A waypoint further than this from the one before it is probably a
+// slip (a click meant for another part of the world): ask first. SI
+// here; the prompt shows the distances in the user's units.
+const FAR_WAYPOINT_M = 500_000;
+let _farWaypointOk = false;   // the prompt's "Add waypoint" re-runs the add once without asking again
+// True when the add may go ahead now; false when the prompt is up (its
+// "Add waypoint" calls `retry`, which must take the same path again).
+function _confirmFarWaypoint(prev, next, coordinate, retry) {
+  if (_farWaypointOk) { _farWaypointOk = false; return true; }
+  if (!prev || !next) return true;
+  const d = _haversineM(prev, next);
+  if (!(d > FAR_WAYPOINT_M)) return true;
+  const el = mapMenu.getElement();
+  el.classList.remove('note-card');
+  el.innerHTML = '<div class="map-menu-pos">' + escapeHtml((fmtDist(d) || UNIT_MISSING) + ' from the previous waypoint (more than ' + (fmtDist(FAR_WAYPOINT_M) || UNIT_MISSING) + ')') + '</div>'
+    + '<button type="button" data-act="add">Add waypoint</button>'
+    + '<button type="button" data-act="new">Clear route and start new here</button>'
+    + '<button type="button" class="map-menu-cancel" data-act="cancel">Cancel</button>';
+  el.querySelectorAll('button').forEach(b => {
+    b.onclick = ev => {
+      ev.stopPropagation();
+      hideMapMenu();
+      const act = b.dataset.act;
+      if (act === 'add') { _farWaypointOk = true; retry(); }
+      else if (act === 'new') { _clearRoute(); _setStart(ol.proj.toLonLat(coordinate), coordinate); }
+    };
+  });
+  mapMenu.setPosition(coordinate);
+  return false;
 }
 function _setStart(coords, coordinate) {
   startCoord = coords; startFeature.setGeometry(new ol.geom.Point(coordinate));
@@ -935,12 +993,14 @@ const mapMenu = new ol.Overlay({
 map.addOverlay(mapMenu);
 function hideMapMenu() { mapMenu.setPosition(undefined); }
 function _showMapMenu(coordinate, pixel) {
+  mapMenu.getElement().classList.remove('note-card');
   const coords = ol.proj.toLonLat(coordinate);
   const items = [];
   items.push([startCoord ? 'Move start here' : 'Set start here', () => _setStart(coords, coordinate)]);
   if (startCoord) items.push([endCoord ? 'Move destination here' : 'Set destination here', () => _setEnd(coords, coordinate)]);
   if (startCoord && endCoord) items.push(['Add waypoint here', () => _placeOrAdd(coords, coordinate)]);
   items.push(['Conditions here', () => openConditionsAt(coordinate, pixel)]);
+  items.push(['Add note here', () => _noteForm(coordinate, coords, null)]);
   const el = mapMenu.getElement();
   el.innerHTML = '<div class="map-menu-pos">' + coords[1].toFixed(4) + ', ' + coords[0].toFixed(4) + '</div>'
     + items.map((it, i) => '<button type="button" data-i="' + i + '">' + it[0] + '</button>').join('')
@@ -956,9 +1016,192 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') hideMapMenu(
 // on touch devices.
 map.getViewport().addEventListener('contextmenu', e => e.preventDefault());
 
+// ─────────── Signal K notes: read, add, edit, delete ───────────
+// Notes are Signal K resources (Resources API, /signalk/v2/api/resources/
+// notes; a note is { title, description, mimeType, url, properties } with a
+// `position` { latitude, longitude } or an `href`). A new note is POSTed
+// (the server gives it its id), an edit PUTs the note back with its own
+// fields kept, a delete DELETEs it. Writing needs a login with write access.
+const NOTES_API = '/signalk/v2/api/resources/notes';
+function _noteWriteError(r) {
+  if (r.status === 401 || r.status === 403) return Promise.reject(new Error('saving notes needs a Signal K login with write access'));
+  return _apiErrorText(r).then(t => Promise.reject(new Error(t)));
+}
+function _notesShown() {
+  // After a write: the notes layer on (and remembered on, as its switch would), then reloaded.
+  const t = document.getElementById('notesToggle');
+  if (t && !t.checked) { t.checked = true; t.dispatchEvent(new Event('change', { bubbles: true })); }
+  else loadNotes();
+}
+// Read a note, change some of its fields, write it back with the rest kept
+// (position, url, properties written by others…). `change(note)` edits the copy.
+function _updateNote(id, change) {
+  const url = NOTES_API + '/' + encodeURIComponent(id);
+  return authFetch(url, { cache: 'no-store' }, null)
+    .then(r => (r.ok ? r.json() : _noteWriteError(r)))
+    .then(cur => {
+      const note = { ...(cur || {}) };
+      delete note.timestamp;   // the server's own response fields, not part of a note
+      delete note.$source;
+      change(note);
+      return authFetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(note) }, null);
+    })
+    .then(r => (r.ok ? r : _noteWriteError(r)));
+}
+function _noteCard(html, coordinate) {
+  const el = mapMenu.getElement();
+  el.classList.add('note-card');
+  el.innerHTML = html;
+  mapMenu.setPosition(coordinate);
+  return el;
+}
+// The avoid radius in the user's distance unit (no unit known: the field is disabled, as everywhere).
+function _avoidRadiusField(radiusM) {
+  const c = UI_UNITS.distance;
+  const v = c && radiusM > 0 ? String(+c.fn(radiusM).toFixed(1)) : c ? String(+c.fn(10 * 1852).toFixed(1)) : '';
+  return '<label class="note-avoid-row"><input type="checkbox" class="note-avoid-on"' + (radiusM > 0 ? ' checked' : '') + (c ? '' : ' disabled') + '>'
+    + 'Avoid this area, within <input type="number" class="note-avoid-r" min="0" step="0.5" value="' + v + '"' + (c ? '' : ' disabled') + '> '
+    + escapeHtml(c ? c.unit : UNIT_MISSING) + '</label>';
+}
+// The form: a new note at `lonLat`, or an edit of `note` ({ id, title, description, avoidM }).
+function _noteForm(coordinate, lonLat, note) {
+  const el = _noteCard(
+    '<div class="note-head"><div class="note-title">' + (note ? 'Edit note' : 'New note') + '</div></div>'
+    + '<input type="text" class="note-in-title" maxlength="200" placeholder="Title">'
+    + '<textarea class="note-in-text" rows="4" placeholder="Text (optional)"></textarea>'
+    + _avoidRadiusField(note ? note.avoidM : 0)
+    + '<div class="note-meta">An area to avoid is land to the router: no route goes through it.</div>'
+    + '<div class="note-msg"></div>'
+    + '<div class="note-actions"><button type="button" class="note-save">Save</button><button type="button" class="note-cancel">Cancel</button></div>',
+    coordinate);
+  const title = el.querySelector('.note-in-title'), text = el.querySelector('.note-in-text'), msg = el.querySelector('.note-msg');
+  const avoidOn = el.querySelector('.note-avoid-on'), avoidR = el.querySelector('.note-avoid-r');
+  title.value = note ? note.title || '' : '';
+  text.value = note ? note.description || '' : '';
+  el.querySelector('.note-cancel').onclick = ev => { ev.stopPropagation(); hideMapMenu(); };
+  el.querySelector('.note-save').onclick = ev => {
+    ev.stopPropagation();
+    if (!title.value.trim()) { msg.textContent = 'A title is needed.'; title.focus(); return; }
+    let avoidM = 0;
+    // Without a distance unit the avoid control is disabled: keep the note's radius as it is.
+    if (avoidOn.disabled) avoidM = note && note.avoidM > 0 ? note.avoidM : 0;
+    else if (avoidOn.checked) {
+      const c = UI_UNITS.distance, v = parseFloat(avoidR.value);
+      if (!c || !(v > 0)) { msg.textContent = 'Give the radius of the area to avoid.'; avoidR.focus(); return; }
+      avoidM = Math.round(c.inv(v));
+    }
+    msg.textContent = 'Saving…';
+    const setAvoid = n => {
+      const props = { ...(n.properties || {}) };
+      if (avoidM > 0) props.avoid = { radius_m: avoidM }; else delete props.avoid;
+      if (Object.keys(props).length) n.properties = props; else delete n.properties;
+    };
+    const req = note
+      ? _updateNote(note.id, n => { n.title = title.value.trim(); n.description = text.value.trim(); setAvoid(n); })
+      : (() => {
+          const n = { title: title.value.trim(), description: text.value.trim(), mimeType: 'text/plain', position: { latitude: +lonLat[1].toFixed(6), longitude: +lonLat[0].toFixed(6) } };
+          setAvoid(n);
+          return authFetch(NOTES_API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(n) }, null)
+            .then(r => (r.ok ? r : _noteWriteError(r)));
+        })();
+    req.then(() => { hideMapMenu(); _notesShown(); })
+      .catch(err => { msg.textContent = 'Not saved: ' + err.message; });
+  };
+  setTimeout(() => title.focus(), 0);
+}
+// Initial great-circle bearing a → b, degrees true.
+function _bearingDeg(a, b) {
+  const r = Math.PI / 180, f1 = a[1] * r, f2 = b[1] * r, dl = (b[0] - a[0]) * r;
+  return ((Math.atan2(Math.sin(dl) * Math.cos(f2), Math.cos(f1) * Math.sin(f2) - Math.sin(f1) * Math.cos(f2) * Math.cos(dl)) / r) + 360) % 360;
+}
+function _haversineM(a, b) {
+  const r = Math.PI / 180, dLat = (b[1] - a[1]) * r, dLon = (b[0] - a[0]) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a[1] * r) * Math.cos(b[1] * r) * Math.sin(dLon / 2) ** 2;
+  return 2 * 6371008.8 * Math.asin(Math.sqrt(h));
+}
+// A note under the click: title (with its avoid radius), text, who and when, bearing and distance from the boat, Edit / Delete / Close.
+function _showNote(f, coordinate) {
+  const url = f.get('url'), ts = f.get('timestamp'), src = f.get('source'), avoidM = f.get('avoidM') || 0;
+  const lonLat = ol.proj.toLonLat(f.getGeometry().getCoordinates());
+  const el = _noteCard(
+    '<div class="note-head"><div class="note-title">' + escapeHtml(f.get('title')) + '</div>'
+      + (avoidM > 0 ? '<span class="note-avoid" title="The router treats this area as land">Avoid · ' + escapeHtml(fmtDist(avoidM) || UNIT_MISSING) + '</span>' : '') + '</div>'
+    + (f.get('description') ? '<div class="note-body">' + escapeHtml(f.get('description')) + '</div>' : '')
+    + (/^https?:\/\//.test(url) ? '<div><a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">More…</a></div>' : '')
+    + ((ts || src) ? '<div class="note-meta">' + (ts ? 'Updated ' + escapeHtml(fmtWhen(ts)) : '') + (src ? (ts ? ' by ' : 'By ') + escapeHtml(src) : '') + '</div>' : '')
+    + '<div class="note-nav"></div>'
+    + '<div class="note-msg"></div>'
+    + '<div class="note-actions"><button type="button" class="note-edit">Edit</button><button type="button" class="note-delete">Delete</button><button type="button" class="note-close">Close</button></div>',
+    coordinate);
+  const msg = el.querySelector('.note-msg');
+  // From the boat (Signal K position), when there is one.
+  authFetch('/signalk/v1/api/vessels/self/navigation/position', { cache: 'no-store' }, null)
+    .then(r => (r.ok ? r.json() : null))
+    .then(p => {
+      const v = p && (p.value || p);
+      if (!v || !Number.isFinite(v.latitude) || !Number.isFinite(v.longitude)) return;
+      const boat = [v.longitude, v.latitude];
+      const nav = el.querySelector('.note-nav');
+      if (nav) nav.textContent = 'From the boat: ' + (fmtAngleDeg(_bearingDeg(boat, lonLat)) || UNIT_MISSING) + ' T · ' + (fmtDist(_haversineM(boat, lonLat)) || UNIT_MISSING);
+    })
+    .catch(() => {});
+  el.querySelector('.note-close').onclick = ev => { ev.stopPropagation(); hideMapMenu(); };
+  el.querySelector('.note-edit').onclick = ev => {
+    ev.stopPropagation();
+    _noteForm(coordinate, null, { id: f.get('noteId'), title: f.get('title'), description: f.get('description'), avoidM });
+  };
+  const del = el.querySelector('.note-delete');
+  del.onclick = ev => {
+    ev.stopPropagation();
+    // A second press confirms: no browser dialog.
+    if (!del.classList.contains('armed')) { del.classList.add('armed'); del.textContent = 'Delete: sure?'; msg.textContent = 'This removes the note from Signal K for every app.'; return; }
+    msg.textContent = 'Deleting…';
+    authFetch(NOTES_API + '/' + encodeURIComponent(f.get('noteId')), { method: 'DELETE' }, null)
+      .then(r => (r.ok ? r : _noteWriteError(r)))
+      .then(() => { hideMapMenu(); loadNotes(); })
+      .catch(err => { msg.textContent = 'Not deleted: ' + err.message; del.classList.remove('armed'); del.textContent = 'Delete'; });
+  };
+}
+
+// Notes can be dragged: the new position is written to Signal K (the note's
+// other fields kept); its avoid circle follows; a failed write puts it back.
+{
+  const drag = new ol.interaction.Translate({
+    layers: [notesLayer],
+    filter: f => f.get('kind') === 'note',
+    hitTolerance: 6,
+  });
+  let from = null;
+  const ringOf = f => notesLayer.getSource().getFeatures().find(x => x.get('kind') === 'avoid' && x.get('noteId') === f.get('noteId'));
+  const followRing = f => {
+    const ring = ringOf(f);
+    if (ring && f.get('avoidM') > 0) ring.setGeometry(avoidRing(ol.proj.toLonLat(f.getGeometry().getCoordinates()), f.get('avoidM')));
+  };
+  drag.on('translatestart', e => { hideMapMenu(); const f = e.features.item(0); from = f ? f.getGeometry().getCoordinates().slice() : null; });
+  drag.on('translating', e => { const f = e.features.item(0); if (f) followRing(f); });
+  drag.on('translateend', e => {
+    const f = e.features.item(0);
+    if (!f || !from) return;
+    const was = from;
+    from = null;
+    const [lon, lat] = ol.proj.toLonLat(f.getGeometry().getCoordinates());
+    const lonW = ((lon + 540) % 360) - 180;
+    _updateNote(f.get('noteId'), n => { n.position = { ...(n.position || {}), latitude: +lat.toFixed(6), longitude: +lonW.toFixed(6) }; })
+      .then(() => appendLog('Note "' + f.get('title') + '" moved to ' + lat.toFixed(4) + ', ' + lonW.toFixed(4), 'done'))
+      .catch(err => {
+        f.getGeometry().setCoordinates(was);
+        followRing(f);
+        document.getElementById('status').textContent = 'Note not moved: ' + err.message;
+      });
+  });
+  map.addInteraction(drag);
+}
+
 map.on('singleclick', function(e) {
   if (e.originalEvent.shiftKey) return;  // shift-click = conditions popup
   if (Date.now() < _suppressClickUntil) return;
+  const note = map.forEachFeatureAtPixel(e.pixel, f => (f.get('kind') === 'note' ? f : undefined), { layerFilter: l => l === notesLayer, hitTolerance: 6 });
+  if (note) { _showNote(note, e.coordinate); return; }
   const onThing = map.hasFeatureAtPixel(e.pixel, {
     layerFilter: l => l === markerLayer || l === routeLayer, hitTolerance: 8 });
   if (onThing) { hideMapMenu(); return; }
@@ -1007,8 +1250,7 @@ function updateButton() {
 // window, starts from it. Saved on every change; restored once on load.
 function _savePlan() {
   if (!_planRestored) return;   // start-up events must not overwrite the saved plan before it is read
-  const dep = document.getElementById('departure').value;
-  const t = dep ? new Date(dep) : null;
+  const t = fromClockInput(document.getElementById('departure').value);
   const plan = {
     start: startCoord, end: endCoord,
     waypoints: waypointCoords, radii: waypointRadii,
@@ -1021,6 +1263,11 @@ function _savePlan() {
 document.getElementById('resetBtn').addEventListener('click', function() {
   _hideRecompute();
   if (routeActive && !confirm('Clear the route and all markers?')) return;
+  _clearRoute();
+});
+// The route and every marker gone (the Reset button, and "Clear route and start new" in the far-waypoint prompt).
+function _clearRoute() {
+  _hideRecompute();
   startCoord = null;
   endCoord = null;
   waypointCoords = [];
@@ -1048,7 +1295,7 @@ document.getElementById('resetBtn').addEventListener('click', function() {
   _lastRouteProps = null;
   if (timeOverride()) { setTimeOverride(null); _reloadTimedOverlays(); }
   updateButton();
-});
+}
 
 // --- Clear single endpoints ---
 document.getElementById('clearStart').addEventListener('click', function() {
@@ -1093,11 +1340,10 @@ function _restorePlan() {
     const dep = typeof plan.departure === 'string' ? new Date(plan.departure) : null;
     if (dep && Number.isFinite(dep.getTime())) {
       if (dep.getTime() > Date.now()) {
-        const p2 = n => String(n).padStart(2, '0');
-        document.getElementById('departure').value = `${dep.getFullYear()}-${p2(dep.getMonth() + 1)}-${p2(dep.getDate())}T${p2(dep.getHours())}:${p2(dep.getMinutes())}`;
+        document.getElementById('departure').value = toClockInput(dep);
         document.getElementById('departure').dispatchEvent(new Event('change'));
       } else if (startCoord || endCoord) {
-        document.getElementById('status').textContent = 'The saved departure (' + dep.toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ') has passed; departure set to now.';
+        document.getElementById('status').textContent = 'The saved departure (' + fmtClock(dep, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ') has passed; departure set to now.';
       }
     }
   }
@@ -1384,6 +1630,37 @@ function _plainFairFoul(cog, currentDir) {
   const diff = Math.abs(((((currentDir - cog + 180) % 360) + 360) % 360) - 180);
   return diff < 80 ? 'fair' : diff > 100 ? 'foul' : 'cross';
 }
+// The route on screen as GPX 1.1: one <rte> whose points carry their name
+// (Start, WP1 … End, as in the saved route), time and leg in the user's
+// units, as the saved route's point descriptions do; the route's summary as
+// its description. For plotters and apps that import GPX.
+function _routeGpx(name) {
+  const x = v => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+  const feats = _itineraryFeatures;
+  const pts = feats.map((f, i) => {
+    const p = f.getProperties();
+    const [lon, lat] = ol.proj.toLonLat(f.getGeometry().getCoordinates());
+    const label = i === 0 ? 'Start' : i === feats.length - 1 ? 'End' : 'WP' + i;
+    const desc = _legDescription(p, i === feats.length - 1);
+    return '    <rtept lat="' + lat.toFixed(6) + '" lon="' + (((lon + 540) % 360) - 180).toFixed(6) + '">'
+      + (p.time ? '<time>' + x(new Date(p.time).toISOString()) + '</time>' : '')
+      + '<name>' + x(label) + '</name>' + (desc ? '<desc>' + x(desc) + '</desc>' : '') + '</rtept>';
+  });
+  const summary = _lastRouteProps ? _routeDescription(_lastRouteProps, feats.length) : '';
+  return '<?xml version="1.0" encoding="UTF-8"?>\n'
+    + '<gpx version="1.1" creator="Weather Router Plus" xmlns="http://www.topografix.com/GPX/1/1">\n'
+    + '  <metadata><name>' + x(name) + '</name><time>' + new Date().toISOString() + '</time></metadata>\n'
+    + '  <rte>\n    <name>' + x(name) + '</name>' + (summary ? '\n    <desc>' + x(summary) + '</desc>' : '') + '\n'
+    + pts.join('\n') + '\n  </rte>\n</gpx>\n';
+}
+// "2.9 kn–18.4 kn" reads better as "2.9–18.4 kn": drop the first end's
+// unit when both ends format with the same suffix. Null when either end
+// is missing or they format the same (a range needs two distinct ends).
+function _fmtRange(minStr, maxStr) {
+  if (minStr == null || maxStr == null || minStr === maxStr) return null;
+  const m = /^(.*) ([^ ]+)$/.exec(minStr);
+  return m && maxStr.endsWith(' ' + m[2]) ? m[1] + '–' + maxStr : minStr + '–' + maxStr;
+}
 function _legDescription(p, isArrival) {
   const parts = [fmtWhen(p.time)];
   const mode = isArrival ? 'arrival' : (p.next_mode || null);
@@ -1402,7 +1679,12 @@ function _legDescription(p, isArrival) {
   const windMs = isArrival ? p.wind_ms : p.next_wind_ms, windDir = isArrival ? p.wind_dir_deg : p.next_wind_dir_deg;
   if (windMs != null && fmtSpeed(windMs)) {
     const pos = !isArrival ? pointOfSail(p.next_twa_deg, windMs) : null;
-    add('Wind', fmtSpeed(windMs) + (windDir != null ? ' from ' + degToCardinal(windDir) + ' (' + fmtAngleDeg(windDir) + ')' : '') + (pos ? ' · ' + pos : ''));
+    // The leg's wind range (sampled along it) when the leg has one: on a
+    // smoothed multi-hour leg the end-of-leg wind alone misleads.
+    const speed = !isArrival
+      ? (_fmtRange(fmtSpeed(p.leg_wind_min_ms), fmtSpeed(p.leg_wind_max_ms)) ?? fmtSpeed(windMs))
+      : fmtSpeed(windMs);
+    add('Wind', speed + (windDir != null ? ' from ' + degToCardinal(windDir) + ' (' + fmtAngleDeg(windDir) + ')' : '') + (pos ? ' · ' + pos : ''));
   }
   if (!isArrival && p.next_twa_deg != null) add('TWA', fmtAngleDeg(p.next_twa_deg));
   const curMs = isArrival ? p.current_ms : p.next_current_ms, curDir = isArrival ? p.current_dir_deg : p.next_current_dir_deg;
@@ -1412,11 +1694,18 @@ function _legDescription(p, isArrival) {
   }
   const swh = isArrival ? p.swh_m : (p.next_swh_m != null ? p.next_swh_m : p.swh_m);
   if (swh != null && fmtSwh(swh)) {
-    const w = [fmtSwh(swh)];
+    const w = [!isArrival
+      ? (_fmtRange(fmtSwh(p.leg_swh_min_m), fmtSwh(p.leg_swh_max_m)) ?? fmtSwh(swh))
+      : fmtSwh(swh)];
     const mwp = isArrival ? p.mwp_s : p.next_mwp_s, mwd = isArrival ? p.mwd_deg : p.next_mwd_deg;
     if (mwp != null && fmtWavePeriod(mwp)) w.push(fmtWavePeriod(mwp));
     if (mwd != null) w.push('from ' + degToCardinal(mwd) + ' ' + fmtAngleDeg(mwd));
     add('Waves', w.join(' · '));
+  }
+  // Seas as the boat meets them on this leg (not at the arrival).
+  if (!isArrival) {
+    const seas = _seasHtml(p.next_seas_sector, p.next_seas_side, p.next_encounter_index);
+    if (seas) add('Seas', seas.replace(/<[^>]+>/g, ''));
   }
   return parts.filter(Boolean).join(' · ');
 }
@@ -1517,6 +1806,19 @@ function _itineraryWarnings(lonlats) {
 // One itinerary card: the waypoint's time, the leg leaving it (next-*
 // fields; the arrival card falls back to its own), formatted in the
 // user's units, with warning / beyond-forecast / moved chips.
+// "on the port bow · rough (128)" for a leg: the waves' angle to the course and the encounter index.
+function _seasHtml(sector, side, enc) {
+  if (!sector && enc == null) return null;
+  const where = sector === 'head' ? 'head seas' : sector === 'following' ? 'following seas'
+    : sector ? 'on the ' + (side ? side + ' ' : '') + sector : '';
+  // The band on the sea-state heatmap's colour scale (rp-layers seaBand): an
+  // outlined chip, as the middle of the scale is too pale for text.
+  const b = seaBand(enc);
+  const band = b ? '<span style="display:inline-block;width:9px;height:9px;border-radius:2px;border:1px solid #0f172a;background:' + b.colour + ';vertical-align:baseline;margin-right:3px;"></span>'
+    + '<span style="font-weight:600;">' + b.name + '</span> (' + Math.round(enc) + ')'
+    : enc != null ? String(Math.round(enc)) : '';
+  return [escapeHtml(where), band].filter(Boolean).join(' · ');
+}
 function _legCardHtml(f, i, cw) {
   const p = f.getProperties();
   const isArrival = p.next_mode == null && p.next_sog_ms == null;
@@ -1559,7 +1861,7 @@ function _legCardHtml(f, i, cw) {
             ? `${degToCardinal(cogDeg)} ${fmtAngleDeg(cogDeg)}` : null;
   const pos = pointOfSail(twa, windMs);
   const wind = windMs != null
-             ? `${fmtSpeed(windMs)} from ${degToCardinal(windDir)} (${fmtAngleDeg(windDir || 0)})`
+             ? `${_fmtRange(fmtSpeed(p.leg_wind_min_ms), fmtSpeed(p.leg_wind_max_ms)) ?? fmtSpeed(windMs)} from ${degToCardinal(windDir)} (${fmtAngleDeg(windDir || 0)})`
                + (pos ? ` · ${pos}` : '')
              : null;
   const twaStr = twa != null ? fmtAngleDeg(twa) : null;
@@ -1578,11 +1880,15 @@ function _legCardHtml(f, i, cw) {
   // Waves
   let wavesStr = null;
   if (swhM != null) {
-    const parts = [fmtSwh(swhM)];
+    const parts = [_fmtRange(fmtSwh(p.leg_swh_min_m), fmtSwh(p.leg_swh_max_m)) ?? fmtSwh(swhM)];
     if (mwpS != null) parts.push(fmtWavePeriod(mwpS));
     if (mwdDeg != null) parts.push(`from ${degToCardinal(mwdDeg)} ${fmtAngleDeg(mwdDeg)}`);
     wavesStr = parts.join(' · ');
   }
+
+  // Seas: where the waves meet the boat on this leg and the sea-state
+  // index weighted for that angle (the encounter index), by band.
+  const seasStr = _seasHtml(p.next_seas_sector, p.next_seas_side, p.next_encounter_index);
 
   // Depth: the plugin has no bathymetry, so `depth_m` is null and the
   // card shows "—".
@@ -1613,6 +1919,7 @@ function _legCardHtml(f, i, cw) {
     _kv('Tack', tack ? (tack === 'port' ? 'Port' : 'Starboard') : null),
     _kv('Current', curStr),
     _kv('Waves', wavesStr),
+    _kv('Seas', seasStr),
     `<span class="kv"><span class="k">Depth</span><span class="v">${depth}</span></span>`,
   ].filter(Boolean).join('');
 
@@ -1714,7 +2021,7 @@ function buildRoutePayload(overrides) {
   if (maxWindMs !== null) body.max_wind_ms = maxWindMs;
   if (maxSwhM !== null) body.max_swh_m = maxSwhM;
   if (overrides.departure !== undefined) body.departure = overrides.departure;
-  else if (depVal && !Number.isNaN(new Date(depVal).getTime())) body.departure = new Date(depVal).toISOString();
+  else if (fromClockInput(depVal)) body.departure = fromClockInput(depVal).toISOString();
   const stages = parseInt(document.getElementById('stages').value, 10);
   if (stages > 0) body.stages = Math.max(4, Math.min(200, stages));
   const name = (document.getElementById('routeName').value || '').trim();
@@ -1724,6 +2031,8 @@ function buildRoutePayload(overrides) {
   if (document.getElementById('noCurrents').checked) body.no_currents = true;
   const rw = document.getElementById('regionalWind');
   if (rw && !rw.checked) body.wind_model = 'ecmwf';
+  const av = document.getElementById('avoidAreas');
+  if (av && !av.checked) body.avoid_areas = false;
   if (document.getElementById('noForecast').checked) body.no_forecast = true;
   const vessel = {};
   // Vessel-type override. Power mode forces mode=motor, drops polar,
@@ -1827,7 +2136,7 @@ function attachToJob(id, jobRow) {
   const btn = document.getElementById('findRoute');
   const statusEl = document.getElementById('status');
   btn.disabled = true;
-  btn.textContent = 'Computing...';
+  btn.textContent = 'Calculating…';
   statusEl.textContent = 'Computing route...';
   showModal();
   appendLog('job ' + id);
@@ -1918,6 +2227,7 @@ function _jobOnDone(job, d) {
       _loadFronts(id);
       loadRouteHistory();
       RouteProgress.hide();
+      _fitRouteInView();
       showTab('itinerarySection');
     })
     .catch(err => appendLog('Failed to load route: ' + err.message, 'error'));
@@ -1972,8 +2282,8 @@ document.getElementById('findRoute').addEventListener('click', function() {
   const infoEl = document.getElementById('routeInfo');
 
   btn.disabled = true;
-  btn.textContent = 'Submitting...';
-  statusEl.textContent = 'Submitting route...';
+  btn.textContent = 'Calculating…';
+  statusEl.textContent = 'Calculating the route…';
   infoEl.innerHTML = '';
   _routeComputing = true;
 
@@ -1991,9 +2301,9 @@ document.getElementById('findRoute').addEventListener('click', function() {
     })
     .catch(err => {
       showModal();
-      appendLog('Submit failed: ' + err.message, 'error');
+      appendLog('Could not start the route calculation: ' + err.message, 'error');
       statusEl.textContent = 'Error: ' + err.message;
-      RouteProgress.fail('Submit failed');
+      RouteProgress.fail('Could not start the calculation');
       _computeUiIdle();
       showTab('logSection');
     });
@@ -2089,7 +2399,7 @@ function pointOfSail(twa, windMs) {
 // A clock time (24 h) in the browser's locale; '—' when missing.
 function formatTime(iso) {
   if (!iso) return '—';
-  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  return fmtClock(iso, { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 function fairFoul(cog, currentDir) {
@@ -2176,13 +2486,15 @@ function _fmtDegC(k)   { return fmtTemp(k) || '—'; }
 function _fmtMmH(rate) { return fmtPrecip(rate) || '—'; }
 function _fmtDir(deg)  { return deg == null ? '' : ' ' + degToCardinal(deg) + ' (' + fmtAngleDeg(deg) + ')'; }
 function _rowCells(r) {
-  return '<td>' + (fmtSpeed(r.wind_ms) || '—') + _fmtDir(r.wind_dir_deg) + '</td>'
+  return '<td>' + (fmtSpeed(r.wind_ms) || '—') + (r.gust_ms != null ? ' / ' + fmtSpeed(r.gust_ms) : '') + _fmtDir(r.wind_dir_deg) + '</td>'
        + '<td>' + (r.swh_m == null ? '—' : (fmtSwh(r.swh_m) + (r.mwp_s != null ? ' / ' + fmtWavePeriod(r.mwp_s) : '') + _fmtDir(r.mwd_deg))) + '</td>'
        + '<td>' + (r.current_ms == null ? '—' : (fmtSpeed(r.current_ms) + _fmtDir(r.current_dir_deg))) + '</td>'
        + '<td>' + _fmtHpa(r.msl_pa) + '</td>'
        + '<td>' + _fmtDegC(r.t2m_k) + ' / ' + ((_cond && _cond.isLand) ? '—' : _fmtDegC(r.skt_k)) + '</td>'
-       + '<td>' + _fmtMmH(r.precip_rate_ms) + '</td>'
+       + '<td>' + _fmtMmH(r.precip_rate_ms) + (r.precip_m != null ? ' / ' + fmtDepth(r.precip_m) : '') + '</td>'
        + '<td>' + (r.precip_type_label || '—') + '</td>'
+       + '<td>' + (r.ssrd_wm2 == null ? '—' : r.ssrd_wm2.toFixed(0) + ' W/m²') + '</td>'
+       + '<td>' + (r.cloud_cover == null ? '—' : _fmt(r.cloud_cover, 'ratio')) + '</td>'
        + '<td>' + _fmtDegC(r.feels_like_k) + (r.feels_like_basis && r.feels_like_basis !== 'air' ? ' (' + r.feels_like_basis.replace('_', ' ') + ')' : '') + '</td>'
        + '<td>' + (r.rh == null ? '—' : (r.rh * 100).toFixed(0) + ' %') + '</td>'
        + '<td>' + (r.beaufort == null ? '—' : 'F' + r.beaufort) + '</td>'
@@ -2199,7 +2511,7 @@ function _fmtTideH(m) {
   const t = u.fn(m).toFixed(u.p);
   return (t.startsWith('-') && Number(t) === 0 ? t.slice(1) : t) + ' ' + u.u;
 }
-const _COND_HEAD = '<tr><th>time</th><th>wind</th><th>waves (h / T)</th><th>current (set)</th><th>press.</th><th>air / water</th><th>rain</th><th>type</th><th>feels like</th><th>RH</th><th>Bft</th><th>Douglas</th><th>sea state</th><th>tide / level / surge</th></tr>';
+const _COND_HEAD = '<tr><th>time</th><th>wind / gust</th><th>waves (h / T)</th><th>current (set)</th><th>press.</th><th>air / water</th><th>rain (rate / depth)</th><th>type</th><th>solar</th><th>cloud</th><th>feels like</th><th>RH</th><th>Bft</th><th>Douglas</th><th>sea state</th><th>tide / level / surge</th></tr>';
 
 // Display-unit scale for a SI value.
 
@@ -2216,9 +2528,11 @@ const _PRECIP_COLORS = {
 };
 const _COND_TABS = [
   { id: 'wind',  label: 'Wind', overlays: [['windToggle', 'Barbs'], ['windCombinedToggle', 'Wind speed']],
-    lines: [{ key: 'wind_ms', unit: () => unitDesc('speed'), color: '#1565c0', name: 'wind' }],
+    lines: [{ key: 'wind_ms', unit: () => unitDesc('speed'), color: '#1565c0', name: 'wind' },
+            { key: 'gust_ms', unit: () => unitDesc('speed'), color: '#90a4ae', name: 'gust', dash: [4, 3] }],
     dir: { key: 'wind_dir_deg', sense: 'from' },
-    hover: r => r.beaufort == null ? '' : ' · Beaufort ' + r.beaufort },
+    hover: r => (r.beaufort == null ? '' : ' · Beaufort ' + r.beaufort)
+              + (r.cloud_cover == null ? '' : ' · cloud ' + _fmt(r.cloud_cover, 'ratio')) },
   { id: 'waves', label: 'Waves', marine: true, overlays: [['wavesCombinedToggle', 'Wave height']],
     lines: [{ key: 'swh_m', unit: () => unitDesc('wave_height'), color: '#00838f', name: 'height' }],
     dir: { key: 'mwd_deg', sense: 'from' },
@@ -2270,9 +2584,21 @@ const _COND_TABS = [
     hover: r => (r.rh == null ? '' : ' · RH ' + (r.rh * 100).toFixed(0) + ' %')
               + (r.dewpoint_k == null ? '' : ' · dew point ' + _fmtDegC(r.dewpoint_k)) },
   { id: 'precip', label: 'Precip', overlays: [['precipToggle', 'Precip']],
-    lines: [{ key: 'precip_rate_ms', unit: () => unitDesc('precip'), color: '#2e7d32', name: 'rate' }],
+    lines: [{ key: 'precip_rate_ms', unit: () => unitDesc('precip'), color: '#2e7d32', name: 'rate' },
+            { key: 'precip_m', unit: () => unitDesc('depth'), color: '#7cb342', name: 'depth per interval', axis: 'right' },
+            { key: 'snowfall_m', unit: () => unitDesc('depth'), color: '#546e7a', name: 'snow (water eq.)', dash: [4, 3], axis: 'right' }],
     colorBy: { key: 'precip_type_label', colors: _PRECIP_COLORS },
-    hover: r => r.precip_type_label && r.precip_type_label !== 'none' ? ' · ' + r.precip_type_label : '' },
+    hover: r => (r.precip_type_label && r.precip_type_label !== 'none' ? ' · ' + r.precip_type_label : '')
+              + (r.interval_h != null ? ' · depth over ' + r.interval_h + ' h' : '') },
+  // Surface fluxes from the energy fields (off by default): average solar
+  // and thermal radiation over each step's interval (the tab hides when
+  // they carry no data), with instability in the readout.
+  { id: 'energy', label: 'Energy',
+    lines: [{ key: 'ssrd_wm2', unit: () => ({ fn: v => v, u: 'W/m²', p: 0 }), color: '#f9a825', name: 'solar' },
+            { key: 'strd_wm2', unit: () => ({ fn: v => v, u: 'W/m²', p: 0 }), color: '#ef6c00', name: 'IR down', dash: [4, 3] },
+            { key: 'str_wm2', unit: () => ({ fn: v => v, u: 'W/m²', p: 0 }), color: '#6d4c41', name: 'IR net', dash: [2, 3] }],
+    hover: r => (r.interval_h != null ? ' · average over ' + r.interval_h + ' h' : '')
+              + (r.mucape_jkg == null ? '' : ' · MUCAPE ' + r.mucape_jkg.toFixed(0) + ' J/kg') },
   { id: 'raw', label: 'Raw' },
 ];
 let _condTab = 'wind';
@@ -2348,13 +2674,13 @@ function _chartFrame(canvas, tab, series) {
 }
 
 // Value ranges in display units (padded; a fixed `tab.range` wins), the
-// lines on the left axis and those on the right (tide & current), and
-// the value → y mappings. False (after writing "No data") when empty.
+// lines on the left axis and those on the right (tide & current, precip
+// depth), and the value → y mappings. False (after writing "No data") when empty.
 function _chartScales(g, tab, series, instant) {
   const { ctx, x0, y0, y1 } = g;
   // Value range across all lines (display units), padded.
   const allLines = tab.lines.map(l => ({ ...l, u: l.unit(), vals: series.map(r => _condDisplay(r[l.key], l.unit())) }));
-  // Lines on a right-hand axis get their own range and scale (tide & current).
+  // Lines on a right-hand axis get their own range and scale (tide & current, precip depth).
   const rightLines = allLines.filter(l => l.axis === 'right' && l.vals.some(v => v != null));
   let lines = allLines.filter(l => l.axis !== 'right');
   if (!lines.some(l => l.vals.some(v => v != null)) && rightLines.length) lines = [];
@@ -2420,16 +2746,16 @@ function _chartAxes(g, tab) {
     ctx.setLineDash([]);
   }
 
-  // X ticks: every 6 h local, day name at local midnight.
+  // X ticks: every 6 h of ship's time (the browser's when the ship has none), the day's name at midnight.
   ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-  const first = new Date(t0); first.setMinutes(0, 0, 0);
-  for (let d = new Date(first); d.getTime() <= tN; d.setHours(d.getHours() + 1)) {
-    const h = d.getHours(); if (h % 6) continue;
-    const x = xOf(d.getTime());
+  const c0 = clockParts(t0);
+  for (let t = Math.floor(t0 / 60000) * 60000 + ((60 - c0.mi) % 60) * 60000; t <= tN; t += 3600000) {
+    const h = clockParts(t).h; if (h % 6) continue;
+    const x = xOf(t);
     ctx.strokeStyle = h === 0 ? '#bbb' : '#eee';
     ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke();
     ctx.fillStyle = '#555';
-    ctx.fillText(h === 0 ? d.toLocaleDateString([], { weekday: 'short' }) : String(h).padStart(2, '0'), x, y1 + 4);
+    ctx.fillText(h === 0 ? fmtClock(t, { weekday: 'short' }) : String(h).padStart(2, '0'), x, y1 + 4);
   }
   ctx.strokeStyle = '#999'; ctx.beginPath(); ctx.moveTo(x0, y1); ctx.lineTo(x1, y1); ctx.stroke();
 }
@@ -2519,7 +2845,7 @@ function _chartMarkers(g, tab, series, hourIso, instant, hoverIdx) {
       else { ctx.moveTo(x, y + 7); ctx.lineTo(x - 4, y + 1); ctx.lineTo(x + 4, y + 1); }
       ctx.closePath(); ctx.fill();
       ctx.fillStyle = '#333'; ctx.textAlign = 'center'; ctx.textBaseline = up ? 'bottom' : 'top';
-      ctx.fillText(new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), x, up ? y - 8 : y + 8);
+      ctx.fillText(fmtClock(t, { hour: '2-digit', minute: '2-digit' }), x, up ? y - 8 : y + 8);
     };
     for (const e of _cond.tides.highs || []) mark(e, true);
     for (const e of _cond.tides.lows || []) mark(e, false);
@@ -3421,7 +3747,7 @@ popup.on('change:position', () => {
     const oldProps = _lastRouteProps || {};
     const distOld = oldProps.total_distance_m, distNew = newProps.total_distance_m;
     const arrivalOld = oldProps.arrival, arrivalNew = newProps.arrival;
-    const fmtArr = s => s == null ? '—' : new Date(s).toLocaleString();
+    const fmtArr = s => s == null ? '—' : fmtClock(s);
     const fmtDistOrDash = m => m == null ? '—' : fmtDist(m);
     summaryEl.innerHTML =
       `<span style="color:#ffcf7a">${escapeHtml(reason)}</span>` +

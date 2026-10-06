@@ -13,6 +13,7 @@
  * none of it: forecast reads happen in the workers.
  */
 
+import { avoidAreasFromNotes, type AvoidArea } from './geo/avoid';
 import { MINUTE_MS } from './geo/units';
 import * as path from 'node:path';
 import type { IRouter } from 'express';
@@ -38,6 +39,7 @@ import { openApiDocument } from './plugin/openapi';
 import { registerWeatherProvider } from './plugin/weather';
 import type {
   DataStatus,
+  ForecastLoading,
   ForecastMemory,
   ForecastRunInfo,
   MainToWorker,
@@ -73,6 +75,7 @@ interface SkApp {
   }) => void;
   resourcesApi?: {
     setResource: (type: string, id: string, data: Record<string, unknown>, providerId?: string) => Promise<void>;
+    listResources?: (type: string, params: Record<string, unknown>, providerId?: string) => Promise<Record<string, unknown>>;
   };
 }
 
@@ -104,6 +107,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
   /** Current sources last reported by the data worker (name list + RTOFS run), to tell the route worker to reload. */
   let currentsKey = '';
   let forecastError: string | null = null;
+  /** The data worker's forecast loading progress (null when it is not loading one). */
+  let forecastLoading: ForecastLoading | null = null;
   /** Routes since the plugin was loaded whose corridor search failed and ran on the coarse skeleton (decision E). */
   let corridorFallbacks = 0;
   let dataStatus: DataStatus | null = null;
@@ -139,6 +144,34 @@ export = function plugin(app: SkApp): SignalKPlugin {
     return 'starting';
   }
 
+  /**
+   * Send a job to the route worker, with the areas to avoid marked on Signal K
+   * notes (read here: the workers have no Resources API). With avoidance on,
+   * notes that cannot be read fail the job rather than route without them.
+   */
+  async function dispatchRoute(job: Job): Promise<void> {
+    let avoid: AvoidArea[] = [];
+    if (job.request.avoid_areas !== false) {
+      let failure: string | null = null;
+      if (!app.resourcesApi?.listResources) failure = 'this Signal K server has no Resources API to read notes from';
+      else {
+        try {
+          avoid = avoidAreasFromNotes(await app.resourcesApi.listResources('notes', {}));
+        } catch (err) {
+          failure = `the Signal K notes could not be read (${(err as Error).message})`;
+        }
+      }
+      if (failure) {
+        if (!jobs || jobs.runningId !== job.id) return; // cancelled meanwhile
+        jobs.onError(job.id, `${failure}, so the areas to avoid are unknown; try again, or turn off Avoid marked areas`);
+        updateStatus();
+        return;
+      }
+    }
+    if (!jobs || jobs.runningId !== job.id) return; // cancelled meanwhile
+    pool.post('route', { type: 'route', id: job.id, request: job.request, avoid });
+  }
+
   /** Send a job waiting for the first forecast to the route worker. */
   function releaseWaitingJob(note: string): void {
     const job = waitingForForecast;
@@ -147,7 +180,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     // It may have failed meanwhile (route worker crash/exit: failRunning).
     if (!jobs || jobs.runningId !== job.id || jobs.get(job.id)?.status !== 'running') return;
     jobs.onProgress(job.id, 0, 0, note);
-    pool.post('route', { type: 'route', id: job.id, request: job.request });
+    void dispatchRoute(job);
   }
 
   /** The resolved config, with the downloaded coastline when none is configured. */
@@ -185,6 +218,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
       if (stopped) return;
       app.error(`${role} worker exited with code ${code}; restarting in 5 s`);
       if (role === 'route') jobs?.failRunning(`worker exited with code ${code}`);
+      // A decode in progress died with it (the restart's refresh reports afresh).
+      if (role === 'data') forecastLoading = null;
       // Only for the start this exit belongs to: after a stop and a new start
       // (whose services may still be waiting for the coastline download) the
       // new start brings up its own workers.
@@ -264,14 +299,20 @@ export = function plugin(app: SkApp): SignalKPlugin {
       ? `${coast}|${forecastRun.index.cycleTimeMs}|${forecastRun.index.request.params.join(',')}|${dataSettingsRev}`
       : null;
     const smoc = smocShared ? `${smocShared.run.key}|${smocShared.run.settled}` : 'off';
-    const cur = wx && dataStatus ? `${wx}|${currentsKey}|${smoc}|${cfg.currents.harmonicDir ?? ''}` : null;
+    // SEA_STATE_REV: bumped when the sea-state index's formula changes (the
+    // `cur` group holds the sea_state and seas tiles), so tiles saved with
+    // the old index are not served (2: wave-period damping and SWELL_COEFF 10;
+    // 3: seas points carry wind and current).
+    const SEA_STATE_REV = 3;
+    const cur = wx && dataStatus ? `${wx}|${currentsKey}|${smoc}|${cfg.currents.harmonicDir ?? ''}|ss${SEA_STATE_REV}` : null;
     const t = dataStatus?.tides;
     const tide = !cfg.tides.enabled ? `${coast}|off` : t ? `${coast}|${t.run}|${t.settled}|${dataSettingsRev}` : null;
     // Point answers (conditions, Weather API) read forecast, currents and tides.
     // POINT_ANSWER_REV: bumped when the answer's content changes for the same
-    // data (2: current_ms null where no current source has data), so answers
-    // saved by an older version are not served.
-    const POINT_ANSWER_REV = 2;
+    // data (2: current_ms null where no current source has data; 3: the
+    // recalibrated sea-state index), so answers saved by an older version
+    // are not served.
+    const POINT_ANSWER_REV = 3;
     const pt = cur && tide ? `${cur}|${tide}|rev${POINT_ANSWER_REV}` : null;
     const g: Record<TileGroup, string | null> = { wx, cur, tide, land: coast, pt };
     tiles.store.setGenerations(g);
@@ -340,8 +381,35 @@ export = function plugin(app: SkApp): SignalKPlugin {
     } else if (forecastError) {
       app.setPluginError(`forecast unavailable: ${forecastError}`);
     } else {
-      app.setPluginStatus(`loading forecast; ${jobsSummary()}`);
+      app.setPluginStatus(`${forecastWaitText()}; ${jobsSummary()}`);
     }
+  }
+
+  /** "loading the forecast: 06Z, decoding step 12 of 37 (first start)": what a user waits for. */
+  function forecastWaitText(): string {
+    const l = forecastLoading;
+    if (!l) return 'loading the forecast';
+    const why =
+      l.why === 'first'
+        ? ' (first start)'
+        : l.why === 'redecode'
+          ? ' (the forecast on disk does not fit the current settings or is incomplete, so it is decoded again)'
+          : '';
+    if (l.phase === 'checking') return `loading the forecast: finding the newest ECMWF cycle${why}`;
+    const cyc = l.cycle ? `${l.cycle.slice(11, 13)}Z ` : '';
+    const step = l.total ? `step ${l.done} of ${l.total}` : 'starting';
+    return `loading the forecast: decoding the ${cyc}cycle, ${step}${why}`;
+  }
+
+  /**
+   * While no forecast is loaded (and none has failed for good): what the
+   * API answers map and point requests with at once, instead of queueing
+   * them behind the decode. Null once a forecast serves.
+   */
+  function forecastWait(): { error: string; loading: ForecastLoading | null } | null {
+    if (stopped || !jobs || forecastRun) return null;
+    if (!forecastLoading && forecastError) return null;
+    return { error: forecastWaitText(), loading: forecastLoading };
   }
 
   function notify(job: Job, state: 'normal' | 'alert' | 'warn', message: string): void {
@@ -427,6 +495,18 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'forecast-unchanged':
         if (role === 'data') updateStatus();
         return;
+      case 'forecast-loading': {
+        if (role !== 'data') return;
+        const prev = forecastLoading;
+        forecastLoading = msg.loading;
+        updateStatus();
+        // A route waiting for the forecast says how far it is, in the same words
+        // (a new phase, then every 5 steps, not each one).
+        const l = msg.loading;
+        if (waitingForForecast && l && (prev?.phase !== l.phase || l.done % 5 === 0 || l.done === l.total))
+          jobs?.onProgress(waitingForForecast.id, 0, 0, `waiting for the forecast: ${forecastWaitText()}`);
+        return;
+      }
       case 'refresh-error':
         if (role !== 'data') return;
         forecastError = msg.message;
@@ -682,11 +762,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
       // rather than downloading its own copy of the same fields alongside.
       if (!forecastRun && !forecastError) {
         waitingForForecast = job;
-        jobs?.onProgress(job.id, 0, 0, 'waiting for the first forecast (downloading and decoding; a few minutes on a first start)');
+        jobs?.onProgress(job.id, 0, 0, `waiting for the forecast: ${forecastWaitText()}`);
         updateStatus();
         return;
       }
-      pool.post('route', { type: 'route', id: job.id, request: job.request });
+      void dispatchRoute(job);
       updateStatus();
     });
     for (const role of ['data', 'route'] as MainRole[]) {
@@ -699,7 +779,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     log(`${PLUGIN_ID} started; data dir ${dataDir}`);
   }
 
-  function stop(): void {
+  async function stop(): Promise<void> {
     stopped = true;
     startGen++;
     coast.abort();
@@ -714,8 +794,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
     prebuilder?.stop();
     prebuilder = null;
     tidesRun = null;
+    // Awaited: Signal K waits for stop() before a restart's start(), whose store reads the saved totals.
+    await tiles?.store.flushTotals();
     tiles = null;
     forecastRun = null;
+    forecastLoading = null;
     routeForecastMemory = null;
     smocShared = null;
     harmonicShared = null;
@@ -735,6 +818,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         return jobs;
       },
       notReady: notStartedReason,
+      forecastWait,
       status: () => ({
         plugin: PLUGIN_ID,
         started: !stopped,
@@ -788,6 +872,18 @@ export = function plugin(app: SkApp): SignalKPlugin {
         overlay_tiles: tiles ? { ...tiles.store.stats(), inflight: tiles.inflightCount } : null,
         overlay_prebuild: prebuilder ? prebuilder.status() : null,
         starting: !jobs && !stopped ? notStartedReason() : null,
+        // What the data worker is doing to get a forecast; also while a newer cycle decodes behind the one in use.
+        forecast_loading: forecastLoading
+          ? {
+              phase: forecastLoading.phase,
+              why: forecastLoading.why,
+              cycle: forecastLoading.cycle,
+              done: forecastLoading.done,
+              total: forecastLoading.total,
+              started_at: forecastLoading.startedAt,
+              text: forecastWaitText(),
+            }
+          : null,
         coastline: {
           configured: pluginOptions?.landShapefiles?.trim() ? pluginOptions.landShapefiles : null,
           in_use: config?.landShapefiles ?? null,
@@ -803,6 +899,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         land: config?.landShapefiles,
         harmonic_dir: config?.currents.harmonicDir,
         extra_fields: config?.forecast.extraFields,
+        energy_fields: config?.forecast.energyFields,
       }),
       forecastInfo: async (lat, lon) => {
         if (!forecastRun) throw new Error(forecastError ? `forecast unavailable: ${forecastError}` : 'forecast not loaded yet');
@@ -845,9 +942,14 @@ export = function plugin(app: SkApp): SignalKPlugin {
         // (memory for one decode step, disk for the decoded run), before
         // saving, so the running forecast and settings stay as they are.
         const prospective = mergeSettings(settings.values, partial);
-        if (prospective.changed.some(k => k === 'forecast.horizon' || k === 'forecast.extraFields' || k === 'forecast.memoryHeadroom')) {
+        if (
+          prospective.changed.some(
+            k =>
+              k === 'forecast.horizon' || k === 'forecast.extraFields' || k === 'forecast.energyFields' || k === 'forecast.memoryHeadroom'
+          )
+        ) {
           const f = prospective.values.forecast;
-          const mem = checkDecodeResources(f.horizon, f.extraFields, f.memoryHeadroom, app.getDataDirPath());
+          const mem = checkDecodeResources(f.horizon, f.extraFields, f.energyFields, f.memoryHeadroom, app.getDataDirPath());
           if (!mem.ok) {
             const key = prospective.changed.find(k => k.startsWith('forecast.')) ?? 'forecast.horizon';
             throw new SettingsValidationError({ [key]: mem.message });

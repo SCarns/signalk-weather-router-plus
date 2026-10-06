@@ -240,7 +240,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       if (msg.reload.forecast && st.role === 'data') {
         st.log(
           'info',
-          `forecast settings changed (horizon ${prev.forecast.horizonS / HOUR_S} → ${st.config.forecast.horizonS / HOUR_S} h, extra fields ${prev.forecast.extraFields} → ${st.config.forecast.extraFields}); reloading`
+          `forecast settings changed (horizon ${prev.forecast.horizonS / HOUR_S} → ${st.config.forecast.horizonS / HOUR_S} h, extra fields ${prev.forecast.extraFields} → ${st.config.forecast.extraFields}, solar and radiation fields ${prev.forecast.energyFields} → ${st.config.forecast.energyFields}); reloading`
         );
         await refreshForecast(st, false);
       }
@@ -252,7 +252,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
         st.send({ type: 'error', id: msg.id, message: 'route sent to the data worker' });
         return;
       }
-      await route(st, msg.id, msg.request);
+      await route(st, msg.id, msg.request, msg.avoid ?? []);
       sendCurrents(st);
       return;
     case 'query':

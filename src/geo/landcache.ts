@@ -28,6 +28,7 @@ import type { BBox } from './geodesy';
 import { bboxWidth } from './geodesy';
 import { LandMask } from './landmask';
 import { ShapefileIndex } from './shapefile';
+import { polygonCache } from './polygoncache';
 
 export interface LandLookup {
   isLand(lon: number, lat: number): boolean;
@@ -277,12 +278,13 @@ export class OnDemandLand implements OverlayLand {
     }
     const t = Date.now();
     // Stream the polygons into the raster one at a time and keep only the
-    // raster: a whole-world view touches ~180 k GSHHG records (150 MB of
-    // coordinates) that are never held together.
+    // raster. They come from the thread's polygon cache (polygoncache.ts),
+    // so the rasters of nearby boxes and other resolutions reuse the same
+    // decoded records; a whole-world view (~180 k GSHHG records, 150 MB of
+    // coordinates) exceeds the cache budget and streams through it.
     let polygons = 0;
-    const indexes = this.index();
     const mask = LandMask.rasterStreamed(snapped, res, add => {
-      for (const ix of indexes) polygons += ix.forEach(snapped, add);
+      for (const p of this.paths) polygons += polygonCache.forEach(p, snapped, add);
     });
     this.lastBuildMs = Date.now() - t;
     this.builds++;
@@ -317,12 +319,15 @@ export class OnDemandLand implements OverlayLand {
     disk_hits: number;
     disk_writes: number;
     disk: { dir: string | null; files: number; bytes: number };
+    /** The thread's decoded-polygon cache (polygoncache.ts). */
+    polygons: { entries: number; bytes: number; budget_bytes: number; hits: number; decodes: number; evictions: number };
   } {
     const cells = this.entries.reduce((a, e) => a + e.mask.nx * e.mask.ny, 0);
     return {
       disk_hits: this.diskHits,
       disk_writes: this.diskWrites,
       disk: this.diskStats(),
+      polygons: polygonCache.stats(),
       entries: this.entries.length,
       cells,
       bytes: cells,

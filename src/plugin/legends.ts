@@ -135,6 +135,56 @@ export const SEA_STATE_BANDS: [number, string][] = [
   [150, 'extreme'],
 ];
 
+/**
+ * Glyph colours on the heatmaps' scales, as the web app draws the seas and
+ * wave arrows (public/rp-layers.js seaBand, waveHeightColour): a sea-state
+ * band in the stop nearest the band's middle, a wave height in the ramp's
+ * colour at that height, each shifted GLYPH_SHADE darker so the glyph stays
+ * visible over its own heatmap.
+ */
+export const GLYPH_SHADE = 0.15;
+function shadeHex(hex: string, f: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const c = (sh: number): string =>
+    Math.round(((n >> sh) & 255) * (1 - f))
+      .toString(16)
+      .padStart(2, '0');
+  return '#' + c(16) + c(8) + c(0);
+}
+const SEA_BAND_GLYPH: { hi: number; colour: string }[] = SEA_STATE_BANDS.map(([lo], i) => {
+  const hi = i + 1 < SEA_STATE_BANDS.length ? SEA_STATE_BANDS[i + 1][0] : Infinity;
+  const mid = (lo + (Number.isFinite(hi) ? hi : SEA_STATE_STOPS[SEA_STATE_STOPS.length - 1][0])) / 2;
+  let best = SEA_STATE_STOPS[0][1];
+  let bd = Infinity;
+  for (const [v, c] of SEA_STATE_STOPS) {
+    const d = Math.abs(v - mid);
+    if (d < bd) {
+      bd = d;
+      best = c;
+    }
+  }
+  return { hi, colour: shadeHex(best, GLYPH_SHADE) };
+});
+/** The glyph colour (hex) of a sea-state index's band. */
+export function seaBandGlyphColour(idx: number): string {
+  return (SEA_BAND_GLYPH.find(b => idx < b.hi) ?? SEA_BAND_GLYPH[SEA_BAND_GLYPH.length - 1]).colour;
+}
+/** The glyph colour (hex) of a significant wave height (m) on the wave-height ramp. */
+export function waveGlyphColour(m: number): string {
+  const S = WAVE_STOPS;
+  if (!(m > S[0][0])) return shadeHex(S[0][1], GLYPH_SHADE);
+  for (let i = 1; i < S.length; i++) {
+    if (m <= S[i][0]) {
+      const t = (m - S[i - 1][0]) / (S[i][0] - S[i - 1][0] || 1);
+      const a = parseInt(S[i - 1][1].slice(1), 16);
+      const b = parseInt(S[i][1].slice(1), 16);
+      const mix = (sh: number): number => Math.round(((a >> sh) & 255) + t * (((b >> sh) & 255) - ((a >> sh) & 255)));
+      return shadeHex('#' + ((1 << 24) | (mix(16) << 16) | (mix(8) << 8) | mix(0)).toString(16).slice(1), GLYPH_SHADE);
+    }
+  }
+  return shadeHex(S[S.length - 1][1], GLYPH_SHADE);
+}
+
 export function buildLegends(): Record<string, LegendEntry> {
   return {
     wind: { title: 'Wind', quantity: 'speed', category: 'speed', si_unit: 'm/s', kind: 'gradient', stops: WIND_STOPS },

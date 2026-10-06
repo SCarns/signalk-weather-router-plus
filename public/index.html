@@ -167,6 +167,11 @@
   .lg-glyph { display: block; height: 22px; margin-bottom: 1px; }
   .lg-glyph svg { width: 14px; height: 22px; display: block; margin: 0 auto; }
   .lg-note { color: var(--text-2); }
+  /* Glyph keys (current against the waves): a large symbol over its meaning, one cell each. */
+  .lg-cells { display: flex; gap: var(--s-2); margin: 2px 0 3px; }
+  .lg-cells > div { flex: 1; text-align: center; color: var(--text); line-height: 1.25; }
+  .lg-cells .lg-sym { display: block; height: 28px; margin-bottom: 2px; }
+  .lg-cells .lg-sym svg { width: 28px; height: 28px; display: block; margin: 0 auto; }
   /* Click menu on the map. */
   .map-menu {
     background: var(--surface); color: var(--text);
@@ -181,6 +186,23 @@
   }
   .map-menu button:hover { background: var(--surface-2); }
   .map-menu button.map-menu-cancel { color: var(--text-muted); border-top: 1px solid var(--border); border-radius: 0; margin-top: 2px; }
+  /* A Signal K note in the map menu: title, text, who and when, distance, actions. */
+  .map-menu.note-card { max-width: 300px; padding: 10px 12px; gap: 6px; }
+  .note-card .note-head { display: flex; align-items: flex-start; gap: 8px; }
+  .note-card .note-title { font-weight: 700; font-size: var(--f-md, 14px); line-height: 1.25; flex: 1; }
+  .note-card .note-avoid { flex: none; font-size: 11px; font-weight: 700; color: #fff; background: #e53935; border-radius: 10px; padding: 1px 7px; white-space: nowrap; }
+  .note-card .note-body { white-space: pre-wrap; line-height: 1.4; max-height: 220px; overflow: auto; }
+  .note-card .note-meta { font-size: var(--f-xs); color: var(--text-muted); }
+  .note-card .note-nav { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--f-xs); color: var(--text); }
+  .note-card .note-actions { display: flex; gap: 6px; border-top: 1px solid var(--border); padding-top: 8px; }
+  .note-card .note-actions button { flex: 1; text-align: center; border: 1px solid var(--border-hard); padding: 5px 8px; }
+  .note-card .note-actions button.note-delete { color: var(--danger); border-color: var(--danger); }
+  .note-card .note-actions button.note-delete.armed { background: var(--danger); color: #fff; }
+  .note-card .note-actions button.note-save { background: var(--go); color: #fff; border-color: var(--go); }
+  .note-card .note-msg { font-size: var(--f-xs); color: var(--warn); }
+  .note-card input[type="text"], .note-card textarea, .note-card input[type="number"] { width: 100%; box-sizing: border-box; font: inherit; }
+  .note-card .note-avoid-row { display: flex; align-items: center; gap: 6px; font-size: var(--f-xs); }
+  .note-card .note-avoid-row input[type="number"] { width: 80px; }
   @media (max-width: 768px) {
     #legendBox {
       left: 10px; bottom: auto; top: 80px; max-width: 58vw;
@@ -326,6 +348,19 @@
   #dataStatus .statusKey { color: var(--tack-starboard); font-weight: 600; }
   #dataStatus .warn { color: var(--warn); font-weight: 600; }
   #dataStatus .err { color: var(--danger); font-weight: 600; }
+  /* The sea state arrows' A/B style selector: one line under its checkbox (overrides #panel label / input). */
+  #panel #seasStyleRow { display: flex; align-items: center; gap: var(--s-2); margin: 0 0 var(--s-1) 22px; font-size: 11px; color: var(--text-2); }
+  #panel #seasStyleRow label { display: inline-flex; align-items: center; margin: 0; font-size: 11px; cursor: pointer; }
+  #panel #seasStyleRow input { width: auto; margin: 0 3px 0 0; padding: 0; }
+  #loadingBanner {
+    margin: 0 0 var(--s-2); padding: var(--s-2) var(--s-3);
+    border: 1px solid var(--border-hard); border-left: 3px solid var(--go); border-radius: 6px;
+    background: var(--surface-2); color: var(--text); font-size: var(--f-xs); line-height: 1.45;
+  }
+  #loadingBanner .lb-text { font-weight: 600; }
+  #loadingBanner .lb-bar { height: 6px; margin: var(--s-1) 0; border-radius: 3px; background: var(--surface-3); overflow: hidden; }
+  #loadingBanner .lb-fill { height: 100%; width: 0; background: var(--go); transition: width 0.6s ease; }
+  #loadingBanner .lb-note { color: var(--text-2); }
   .sm-btn {
     background: var(--surface-2); color: var(--text); border: 1px solid var(--border-hard);
     border-radius: var(--r-sm); padding: 4px 10px; font: inherit; font-size: var(--f-xs); cursor: pointer;
@@ -558,6 +593,12 @@
     <h3 style="margin:0;">Weather Router Plus</h3>
     <div id="dataStatus">loading status…</div>
   </div>
+  <!-- While the server gets its first forecast (or the coastline): one calm notice instead of failing layers (rp-core.js). -->
+  <div id="loadingBanner" role="status" aria-live="polite" hidden>
+    <div class="lb-text"></div>
+    <div class="lb-bar" hidden><div class="lb-fill"></div></div>
+    <div class="lb-note">Map layers and routes start by themselves when it is ready; there is nothing to do or reload.</div>
+  </div>
 
   <div id="tabBar" role="tablist">
     <button type="button" data-tab="routeSection" role="tab">Route</button>
@@ -755,6 +796,7 @@
 
   <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="noCurrents">Ignore currents</label>
   <label style="display:flex;align-items:center;gap:4px;cursor:pointer;" title="Finer wind from the signalk-grib-downloader plugin (AROME, ARPEGE, ICON-EU) where it covers the route and time, ECMWF elsewhere. Unticked: ECMWF only. No effect without the downloader."><input type="checkbox" id="regionalWind" checked>Regional wind where available</label>
+  <label style="display:flex;align-items:center;gap:4px;cursor:pointer;" title="Areas marked &quot;avoid&quot; on Signal K notes (a circle around the note) are land to the router: no route goes through them. Unticked: the notes are ignored."><input type="checkbox" id="avoidAreas" checked>Avoid marked areas</label>
   <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="noForecast">Ignore forecast (route in calm wind)</label>
 
   <label for="publishSel">Publish to Signal K resources</label>
@@ -807,6 +849,8 @@
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="osmToggle" style="width:auto;margin-right:4px;" checked>OpenStreetMap</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="seamarkToggle" style="width:auto;margin-right:4px;" checked>OpenSeaMap seamarks (buoys, lights)</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="vesselToggle" style="width:auto;margin-right:4px;" checked>Own vessel (Signal K position)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;" title="Notes from Signal K's Resources API (hazards, warnings, remarks, e.g. from signalk-passage-briefing) in the map view; click one to read it."><input type="checkbox" id="notesToggle" style="width:auto;margin-right:4px;" checked>Signal K notes</label>
+    <label style="display:block;font-size:11px;cursor:pointer;" title="An arrow on each leg of the route, pointing the way the waves travel, coloured by the sea as the boat meets it (the sea-state index weighted for the waves' angle to the course: head seas count more, following seas less)."><input type="checkbox" id="seasRouteToggle" style="width:auto;margin-right:4px;" checked>Seas along the route</label>
     <label style="display:block;font-size:11px;cursor:pointer;" title="The router's search: the front of each stage (the candidates it kept, each with its own arrival time; not isochrones) and the best path so far, live while a route runs. Off by default; the same switch sits beside Find Route."><input type="checkbox" id="frontToggle" style="width:auto;margin-right:4px;">Decision lines (the router's search)</label>
     </div>
     <div class="layer-group" data-group="weather">
@@ -820,6 +864,15 @@
     </div>
     <div class="layer-group" data-group="water">
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="currentToggle" style="width:auto;margin-right:4px;" checked>Current direction (arrows)</label>
+    <label style="display:block;font-size:11px;cursor:pointer;" title="What the current does to the waves, coloured by the sea state there. A: an arrow along the way the waves travel at every point (heads meeting where the current runs against them, a double chevron where it runs with them). B: a mark only where the current against the waves steepens a choppy or rougher sea (tide-rip lines from 10 %, a breaking wave from 25 %, with spray from 50 %). C: three arrows, for the way the wind, the waves and the current are going; where two point against each other the sea is rough."><input type="checkbox" id="seasArrowsToggle" style="width:auto;margin-right:4px;">Current against the waves</label>
+    <!-- Three ways to draw it, A, B and C (rp-layers.js SEAS_STYLE); remembered per browser. -->
+    <div id="seasStyleRow" title="A: a glyph at every point (direction and how the current meets the waves). B: a mark only where the current against the waves steepens a choppy or rougher sea (tide-rip lines from 10 % steeper, a breaking wave from 25 %, with spray from 50 %); nothing elsewhere. C: three arrows, for the way the wind, the waves and the current are going; where two point against each other the sea is rough.">
+      Style:
+      <label><input type="radio" name="seasStyle" value="A">A arrows</label>
+      <label><input type="radio" name="seasStyle" value="B">B rips &amp; breakers</label>
+      <label><input type="radio" name="seasStyle" value="C">C wind, waves, current</label>
+    </div>
+    <label style="display:block;font-size:11px;cursor:pointer;" title="An arrow per point along the way the waves travel, coloured by the significant wave height on the wave-height colour scale; longer arrows for a longer mean period (long swell, short chop)."><input type="checkbox" id="waveArrowsToggle" style="width:auto;margin-right:4px;">Wave direction (arrows)</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="currentHeatmapToggle" style="width:auto;margin-right:4px;">Current speed (colour)</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="wavesCombinedToggle" style="width:auto;margin-right:4px;">Wave height (colour) + direction lines</label>
     <label style="display:block;font-size:11px;cursor:pointer;"><input type="checkbox" id="roughnessToggle" style="width:auto;margin-right:4px;">Sea state (wind + swell + current)</label>
@@ -856,6 +909,7 @@
       <label for="routeNameInput" style="color:var(--ink-text-muted);margin:0;">Route:</label>
       <input type="text" id="routeNameInput" placeholder="(untitled)" readonly style="flex:1;padding:4px 6px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);margin:0;">
       <button id="routePublish" type="button" title="Save this route to the Signal K Resources API" style="padding:4px 10px;font-size:var(--f-xs);background:var(--go);color:#fff;border:0;border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Publish</button>
+      <button id="routeGpx" type="button" title="Download this route as a GPX file (route points with their times and legs), for plotters that import GPX" style="padding:4px 10px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);cursor:pointer;font-weight:600;">GPX</button>
       <button id="routeDelete" type="button" title="Delete this route job" style="padding:4px 10px;font-size:var(--f-xs);background:var(--danger);color:#fff;border:0;border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Delete</button>
       <span id="routeNameStatus" style="color:var(--ink-text-muted);min-width:28px;"></span>
     </div>

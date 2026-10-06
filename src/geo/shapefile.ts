@@ -72,6 +72,21 @@ export class ShapefileError extends Error {
 
 const SHAPE_NULL = 0;
 const SHAPE_POLYGON = 5;
+
+/**
+ * Record scratch buffers reused across calls (one set per thread: each
+ * worker has its own module instance). A record is read into `content`
+ * and parsed before the next read, so one buffer per use serves; it grows
+ * to the largest record met (GSHHG's continents, tens of MB) and is kept.
+ * Allocating it per call churned that through the allocator, which keeps
+ * the freed space (brain, 2026-10-06).
+ */
+let contentScratch = Buffer.alloc(1 << 20);
+function contentBuffer(n: number): Buffer {
+  if (contentScratch.length < n) contentScratch = Buffer.alloc(n);
+  return contentScratch;
+}
+let ptsScratch = new Float64Array(1 << 12);
 const SHAPE_POLYGON_Z = 15;
 const SHAPE_POLYGON_M = 25;
 
@@ -181,8 +196,6 @@ export function readShapefilePolygons(shpPath: string, clip?: BBox): ShapePolygo
     const out: ShapePolygon[] = [];
     const recHeader = Buffer.alloc(8);
     let pos = 100;
-    // Reusable buffer for record contents, grown on demand.
-    let content = Buffer.alloc(1 << 20);
 
     while (pos + 8 <= fileLengthBytes) {
       if (fs.readSync(fd, recHeader, 0, 8, pos) !== 8) break;
@@ -190,7 +203,7 @@ export function readShapefilePolygons(shpPath: string, clip?: BBox): ShapePolygo
       const contentLen = recHeader.readInt32BE(4) * 2;
       pos += 8;
       if (contentLen < 4) throw new ShapefileError(`${shpPath}: record ${recordNumber} has length ${contentLen}`);
-      if (contentLen > content.length) content = Buffer.alloc(contentLen);
+      const content = contentBuffer(contentLen);
       if (fs.readSync(fd, content, 0, contentLen, pos) !== contentLen) {
         throw new ShapefileError(`${shpPath}: truncated record ${recordNumber}`);
       }
@@ -365,11 +378,9 @@ export class ShapefileIndex {
     if (hits.length === 0) return false;
     const fd = fs.openSync(this.path, 'r');
     try {
-      let content = Buffer.alloc(1 << 16);
-      let pts = new Float64Array(1 << 12);
       for (const i of hits) {
         const len = this.length[i];
-        if (len > content.length) content = Buffer.alloc(len);
+        const content = contentBuffer(len);
         if (fs.readSync(fd, content, 0, len, this.offset[i]) !== len)
           throw new ShapefileError(`${this.path}: truncated record ${this.recNo[i]}`);
         if (content.readInt32LE(0) === SHAPE_NULL) continue;
@@ -379,7 +390,8 @@ export class ShapefileIndex {
         if (pointsOff + 16 * numPoints > len)
           throw new ShapefileError(`${this.path}: record ${this.recNo[i]} declares ${numPoints} points but has ${len} bytes`);
         // Copy the coordinates into an aligned Float64Array (little-endian hosts).
-        if (pts.length < 2 * numPoints) pts = new Float64Array(2 * numPoints);
+        if (ptsScratch.length < 2 * numPoints) ptsScratch = new Float64Array(2 * numPoints);
+        const pts = ptsScratch;
         const bytes = new Uint8Array(pts.buffer, 0, 16 * numPoints);
         content.copy(bytes, 0, pointsOff, pointsOff + 16 * numPoints);
         let inside = false;
@@ -413,21 +425,49 @@ export class ShapefileIndex {
 
   private eachRecord(idx: number[], fn: (s: ShapePolygon) => void): void {
     if (idx.length === 0) return;
-    const fd = fs.openSync(this.path, 'r');
+    const r = this.openReader();
     try {
-      let content = Buffer.alloc(1 << 20);
       for (const i of idx) {
-        const len = this.length[i];
-        if (len > content.length) content = Buffer.alloc(len);
-        if (fs.readSync(fd, content, 0, len, this.offset[i]) !== len) {
-          throw new ShapefileError(`${this.path}: truncated record ${this.recNo[i]}`);
-        }
-        const shape = parseRecord(content, len, this.recNo[i], this.shapeType, this.path);
+        const shape = r.decode(i);
         if (shape) fn(shape);
       }
     } finally {
-      fs.closeSync(fd);
+      r.close();
     }
+  }
+
+  /** Index positions (ascending = file order) of the records whose box intersects `clip`. */
+  hitIndices(clip: BBox): number[] {
+    const hits: number[] = [];
+    for (let i = 0; i < this.count; i++) {
+      if (boxIntersects(clip, this.minLon[i], this.minLat[i], this.maxLon[i], this.maxLat[i])) hits.push(i);
+    }
+    return hits;
+  }
+
+  /** Record number of index position `i`. */
+  recordNumber(i: number): number {
+    return this.recNo[i];
+  }
+
+  /**
+   * A reader that decodes records by index position with one open file
+   * (the polygon cache decodes only the records it lacks, in file order).
+   * `decode` returns null for null shapes and shapes without a ring.
+   */
+  openReader(): { decode: (i: number) => ShapePolygon | null; close: () => void } {
+    const fd = fs.openSync(this.path, 'r');
+    return {
+      decode: (i: number): ShapePolygon | null => {
+        const len = this.length[i];
+        const content = contentBuffer(len);
+        if (fs.readSync(fd, content, 0, len, this.offset[i]) !== len) {
+          throw new ShapefileError(`${this.path}: truncated record ${this.recNo[i]}`);
+        }
+        return parseRecord(content, len, this.recNo[i], this.shapeType, this.path);
+      },
+      close: () => fs.closeSync(fd),
+    };
   }
 }
 

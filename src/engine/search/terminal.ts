@@ -35,6 +35,7 @@ function hopCandidate(from: Candidate, lon: number, lat: number, sim: LegSimResu
     lat,
     timeMs: from.timeMs + sim.seconds * 1000,
     elapsedS: from.elapsedS + sim.seconds,
+    costS: from.costS + sim.seconds + sim.penaltySeconds,
     parentIdx: -1,
     sogMs: d / sim.seconds,
     cogDeg: haversineBearing(from.lon, from.lat, lon, lat),
@@ -110,7 +111,8 @@ export function beatToWindward(
       const tack = hopCandidate(from, tLon, tLat, s1);
       const s2 = simulateLegTime(tLon, tLat, new Date(tack.timeMs), gLon, gLat, vessel, polar, wind, current, simOpts);
       if (!Number.isFinite(s2.seconds) || s2.seconds <= 0) continue;
-      const total = s1.seconds + s2.seconds;
+      // Time plus comfort cost: with a comfort weight the beat avoids the rougher tack.
+      const total = s1.seconds + s1.penaltySeconds + s2.seconds + s2.penaltySeconds;
       if (!best || total < best.total) best = { tack, final: hopCandidate(tack, gLon, gLat, s2), d1: o.dFirst, d2: o.dSecond, total };
     }
   }
@@ -125,7 +127,7 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
   const { kEff } = guide;
   const terminals = stages[stages.length - 1];
   if (terminals.length === 0) throw new RouteError('front went empty before reaching the destination; no path found');
-  const score = (c: Candidate): [number, number] => [haversineDistanceM(c.lon, c.lat, eLon, eLat), c.elapsedS];
+  const score = (c: Candidate): [number, number] => [haversineDistanceM(c.lon, c.lat, eLon, eLat), c.costS];
   const pool = nVias > 0 ? terminals.filter(c => c.viaCount === nVias) : terminals;
   if (pool.length === 0) {
     const deepest = Math.max(0, ...terminals.map(c => c.viaCount));
@@ -174,7 +176,8 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
   const fails = new Map<Candidate, FailWhy>();
   const planFor = (c: Candidate) => {
     const hopEnd = hopEndFor(c);
-    if (!hopEnd) return { hopEnd: null, beat: null, sim: null, arrivalS: c.elapsedS };
+    // arrivalS: the real arrival (reported); costS: arrival plus comfort cost (compared).
+    if (!hopEnd) return { hopEnd: null, beat: null, sim: null, arrivalS: c.elapsedS, costS: c.costS };
     if (!snapToExact) {
       const cross = ctx.landMask.legsCrossLandBulk(
         Float64Array.of(c.lon),
@@ -188,13 +191,13 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
       }
     }
     const beat = beatToWindward(ctx, c, hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts, modePolicy);
-    if (beat) return { hopEnd, beat, sim: null, arrivalS: beat.final.elapsedS };
+    if (beat) return { hopEnd, beat, sim: null, arrivalS: beat.final.elapsedS, costS: beat.final.costS };
     const sim = simulateLegTime(c.lon, c.lat, new Date(c.timeMs), hopEnd[0], hopEnd[1], vessel, polar, wind, current, simOpts);
     if (!Number.isFinite(sim.seconds) || sim.seconds <= 0) {
       fails.set(c, sim.reason ?? 'no_speed');
       return null;
     }
-    return { hopEnd, beat: null, sim, arrivalS: c.elapsedS + sim.seconds };
+    return { hopEnd, beat: null, sim, arrivalS: c.elapsedS + sim.seconds, costS: c.costS + sim.seconds + sim.penaltySeconds };
   };
   type FinalPlan = NonNullable<ReturnType<typeof planFor>>;
   const plans = new Map<Candidate, FinalPlan>();
@@ -229,7 +232,7 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
         continue;
       }
       const e = plans.get(earliest)!;
-      if (plan.arrivalS < e.arrivalS || (plan.arrivalS === e.arrivalS && score(c)[0] < score(earliest)[0])) earliest = c;
+      if (plan.costS < e.costS || (plan.costS === e.costS && score(c)[0] < score(earliest)[0])) earliest = c;
     }
     if (earliest !== null) bestC = earliest;
     if (bestC !== nearest) {
@@ -237,7 +240,7 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
       progress(
         Math.max(kEff, stages.length - 1),
         Math.max(kEff, stages.length - 1),
-        `final choice: the branch arriving earliest (${(plans.get(bestC)!.arrivalS / 3600).toFixed(1)} h, from ${(score(bestC)[0] / 1000).toFixed(1)} km out) over the nearest (${(score(nearest)[0] / 1000).toFixed(1)} km out${np ? `, arriving ${(np.arrivalS / 3600).toFixed(1)} h` : ', no sailable final leg'})`
+        `final choice: the branch ${args.comfortWeight && args.comfortWeight > 0 ? 'with the least time plus comfort cost, arriving' : 'arriving earliest'} (${(plans.get(bestC)!.arrivalS / 3600).toFixed(1)} h, from ${(score(bestC)[0] / 1000).toFixed(1)} km out) over the nearest (${(score(nearest)[0] / 1000).toFixed(1)} km out${np ? `, arriving ${(np.arrivalS / 3600).toFixed(1)} h` : ', no sailable final leg'})`
       );
     }
   }
