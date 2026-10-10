@@ -81,7 +81,8 @@ function meshLegRunner(
   // Downloaded meshes first, then the folder managed by hand (one mesh, or a folder of them); the same
   // Use switch applies to both, and where the two share a name only the newer copy is opened.
   const downloaded = cfg.mesh.storeDir ? readyMeshDirs(cfg.mesh.storeDir) : [];
-  for (const m of meshesToOpen(downloaded, localMeshes(cfg.meshDir), cfg.mesh.disabled)) for (const d of m.dirs) open(m.name, d);
+  for (const m of meshesToOpen(downloaded, localMeshes(cfg.meshDir), cfg.mesh.disabled, cfg.mesh.preferLocal))
+    for (const d of m.dirs) open(m.name, d);
   if (!stores.length) return undefined;
   const meshFor = (points: [number, number][]): (typeof stores)[number] | undefined => stores.find(s => meshCovers(s.store, points));
   const useForecast = !request.no_forecast && request.mode !== 'motor';

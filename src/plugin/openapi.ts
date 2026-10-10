@@ -643,6 +643,20 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           responses: { 200: { description: 'OK' }, 503: { description: 'Plugin not started' } },
         },
       },
+      '/api/meshes/{name}/{action}': {
+        post: {
+          summary:
+            "The plugin panel's per-mesh buttons (readwrite): download, update, redownload (fetch the current build afresh and swap it in when complete), remove, cancel",
+          description:
+            "Changes the download list in the plugin's own options (saved without a restart; download, update and redownload add the name, remove and cancel drop it), " +
+            'then reads the catalogue and runs a pass. Answers {downloads: [names], ...the body of GET /api/meshes}. 400 for a name that is not letters, digits, - or _, or an unknown action.',
+          responses: {
+            200: { description: '{downloads, catalog_url, catalog_updated, catalog_error, store_dir, meshes}' },
+            400: { description: '{error}' },
+            503: { description: 'Plugin not started' },
+          },
+        },
+      },
       '/api/meshes/refresh': {
         post: {
           summary:

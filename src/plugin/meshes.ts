@@ -65,6 +65,10 @@ export interface MeshMarker {
 
 export type MeshState = 'absent' | 'downloading' | 'ready' | 'update' | 'error' | 'removing';
 
+/** The panel's per-mesh actions (POST /api/meshes/:name/:action): download, update and redownload add the name to the download list, remove and cancel drop it. */
+export const MESH_ACTIONS = ['download', 'update', 'redownload', 'remove', 'cancel'] as const;
+export type MeshAction = (typeof MESH_ACTIONS)[number];
+
 /** One row for the config panel and /api/status. */
 export interface MeshRow {
   name: string;
@@ -83,6 +87,10 @@ export interface MeshRow {
    * or null when there is neither.
    */
   using: 'download' | 'local' | null;
+  /** Why that copy: the owner's "my folder" choice, the newer build, or the only copy there is. */
+  using_why: 'choice' | 'newer' | 'only' | null;
+  /** The owner chose the folder's copy for this name (mesh.preferLocal). */
+  prefer_local: boolean;
   /** A local folder with the same name as this catalogue mesh, and its build date (null: none, or no sidecar). */
   local_dir: string | null;
   local_build_date: string | null;
@@ -171,21 +179,25 @@ export function localWins(localBuildDate: string | null, publishedBuildDate: str
 export function meshesToOpen(
   downloaded: { name: string; dirs: string[]; build_date: string | null }[],
   local: { name: string; dirs: string[]; build_date: string | null }[],
-  disabled: string[]
+  disabled: string[],
+  preferLocal: string[] = []
 ): { name: string; dirs: string[]; source: 'download' | 'local' }[] {
   const localByName = new Map(local.map(m => [m.name, m]));
   const downloadedByName = new Map(downloaded.map(m => [m.name, m]));
   const out: { name: string; dirs: string[]; source: 'download' | 'local' }[] = [];
+  // A name with both copies: the owner's choice ("my folder") first, else the newer build.
+  const localChosen = (name: string, l: { build_date: string | null }, d: { build_date: string | null }): boolean =>
+    preferLocal.includes(name) || localWins(l.build_date, d.build_date);
   for (const m of downloaded) {
     if (disabled.includes(m.name)) continue;
     const l = localByName.get(m.name);
-    if (l && localWins(l.build_date, m.build_date)) continue;
+    if (l && localChosen(m.name, l, m)) continue;
     out.push({ name: m.name, dirs: m.dirs, source: 'download' });
   }
   for (const m of local) {
     if (disabled.includes(m.name)) continue;
     const d = downloadedByName.get(m.name);
-    if (d && !localWins(m.build_date, d.build_date)) continue;
+    if (d && !localChosen(m.name, m, d)) continue;
     out.push({ name: m.name, dirs: m.dirs, source: 'local' });
   }
   return out;
@@ -332,9 +344,12 @@ export class MeshManager {
   private catalogUrl = DEFAULT_MESH_CATALOG_URL;
   private ticked: string[] = [];
   private disabled: string[] = [];
+  private preferLocal: string[] = [];
   private storeDir = '';
   private meshDir: string | null = null;
   private errors = new Map<string, string>();
+  /** Names to download again from scratch at the next pass, whatever the build on disk (the panel's "Download again"). */
+  private fresh = new Set<string>();
   private downloading: string | null = null;
   private removing = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -356,12 +371,44 @@ export class MeshManager {
   constructor(private readonly log: (m: string) => void) {}
 
   /** Apply a configuration; the next `run` reconciles the store with it. */
-  configure(catalogUrl: string, ticked: string[], storeDir: string, disabled: string[] = [], meshDir: string | null = null): void {
+  configure(
+    catalogUrl: string,
+    ticked: string[],
+    storeDir: string,
+    disabled: string[] = [],
+    meshDir: string | null = null,
+    preferLocal: string[] = []
+  ): void {
     this.catalogUrl = catalogUrl;
     this.ticked = [...new Set(ticked.map(n => n.trim()).filter(Boolean))];
     this.disabled = [...new Set(disabled.map(n => n.trim()).filter(Boolean))];
+    this.preferLocal = [...new Set(preferLocal.map(n => n.trim()).filter(Boolean))];
     this.storeDir = storeDir;
     this.meshDir = meshDir;
+  }
+
+  /** The download list alone (the panel's actions change it without a restart). */
+  setDownloads(ticked: string[]): void {
+    this.ticked = [...new Set(ticked.map(n => n.trim()).filter(Boolean))];
+  }
+
+  /** Download this mesh again from scratch at the next pass, even when the copy on disk is the published build. */
+  redownload(name: string): void {
+    this.fresh.add(name);
+  }
+
+  /**
+   * Stop the download running for this mesh (the child is killed, its
+   * partial folder stays for the next pass to resume or remove) and start
+   * the loop again, so the pass runs with the list as it now is. True when
+   * a download of that mesh was running.
+   */
+  cancel(name: string): boolean {
+    if (this.downloading !== name) return false;
+    const running = !!this.ctrl;
+    this.stop();
+    if (running) this.run();
+    return true;
   }
 
   /** Read the catalogue, download what is ticked and missing or stale, delete what is unticked; then again daily. */
@@ -458,9 +505,11 @@ export class MeshManager {
         continue;
       }
       if (local && localWins(local.build_date, entry.build_date)) continue;
+      const again = this.fresh.has(n);
       const marker = readMarker(path.join(this.storeDir, n));
-      if (marker && marker.build_date === entry.build_date) continue;
-      await this.download(entry, signal);
+      if (!again && marker && marker.build_date === entry.build_date) continue;
+      await this.download(entry, signal, again);
+      if (!signal.aborted) this.fresh.delete(n);
     }
   }
 
@@ -495,7 +544,7 @@ export class MeshManager {
     }
   }
 
-  private async download(entry: CatalogMesh, signal: AbortSignal): Promise<void> {
+  private async download(entry: CatalogMesh, signal: AbortSignal, fresh = false): Promise<void> {
     const dest = path.join(this.storeDir, entry.name);
     const tmp = `${dest}.new`;
     this.downloading = entry.name;
@@ -504,7 +553,7 @@ export class MeshManager {
     try {
       this.log(`mesh ${entry.name}: downloading ${(entry.bytes / 1e9).toFixed(1)} GB from ${meshBaseUrl(this.catalogUrl, entry)}`);
       const r = await runChildTask(
-        { task: 'mesh-download', base: meshBaseUrl(this.catalogUrl, entry), dest: tmp, build: entry.build_date },
+        { task: 'mesh-download', base: meshBaseUrl(this.catalogUrl, entry), dest: tmp, build: entry.build_date, fresh },
         6 * 3600_000,
         signal
       );
@@ -593,13 +642,14 @@ export class MeshManager {
       else if (marker) state = 'ready';
       const l = localByName.get(name);
       const usable = l && !l.error ? l : null;
-      const using: MeshRow['using'] = usable
-        ? marker && !localWins(usable.build_date, marker.build_date)
-          ? 'download'
-          : 'local'
-        : marker
-          ? 'download'
-          : null;
+      const preferLocal = this.preferLocal.includes(name);
+      let using: MeshRow['using'] = null;
+      let usingWhy: MeshRow['using_why'] = null;
+      if (usable && marker) {
+        if (preferLocal) [using, usingWhy] = ['local', 'choice'];
+        else [using, usingWhy] = localWins(usable.build_date, marker.build_date) ? ['local', 'newer'] : ['download', 'newer'];
+      } else if (usable) [using, usingWhy] = ['local', 'only'];
+      else if (marker) [using, usingWhy] = ['download', 'only'];
       rows.push({
         name,
         title: DISTRICT_NAMES[name] ?? name,
@@ -608,6 +658,8 @@ export class MeshManager {
         ticked,
         enabled: !this.disabled.includes(name),
         using,
+        using_why: usingWhy,
+        prefer_local: preferLocal,
         local_dir: l?.dir ?? null,
         local_build_date: l?.build_date ?? null,
         state,
@@ -629,6 +681,8 @@ export class MeshManager {
         ticked: true,
         enabled: !this.disabled.includes(m.name),
         using: m.error ? null : 'local',
+        using_why: m.error ? null : 'only',
+        prefer_local: false,
         local_dir: m.dir,
         local_build_date: m.build_date,
         state: m.error ? 'error' : 'ready',

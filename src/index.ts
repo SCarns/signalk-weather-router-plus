@@ -36,7 +36,7 @@ import { NotStartedError } from './plugin/errors';
 import { TileService, TileStore, type TileGroup } from './plugin/tiles';
 import { TilePrebuilder } from './plugin/prebuild';
 import { runLastMs, type ArcoRun } from './data/arco';
-import { gshhgInstalled, unreadableCoastlines } from './geo/gshhg';
+import { gshhgInstalled, gshhgInstalledAt, unreadableCoastlines } from './geo/gshhg';
 import { Coastline } from './plugin/coastline';
 import { MeshManager } from './plugin/meshes';
 import { ChartsProvider } from './plugin/charts';
@@ -72,6 +72,8 @@ interface SkApp {
   setPluginStatus: (s: string) => void;
   setPluginError: (s: string) => void;
   getDataDirPath: () => string;
+  /** Writes the plugin's options file (no restart); the panel's mesh actions keep the download list through it. */
+  savePluginOptions?: (configuration: object, cb: (err: Error | null) => void) => void;
   getSelfPath?: (path: string) => unknown;
   handleMessage?: (id: string, delta: unknown) => void;
   registerWeatherProvider?: (provider: unknown) => void;
@@ -794,7 +796,14 @@ export = function plugin(app: SkApp): SignalKPlugin {
   function startServices(dataDir: string): void {
     if (!config) return;
     // Managed chart meshes: read the catalogue, download the ticked ones, drop the rest; daily thereafter. Not awaited.
-    meshes.configure(config.mesh.catalogUrl, config.mesh.downloads, config.mesh.storeDir, config.mesh.disabled, config.meshDir);
+    meshes.configure(
+      config.mesh.catalogUrl,
+      config.mesh.downloads,
+      config.mesh.storeDir,
+      config.mesh.disabled,
+      config.meshDir,
+      config.mesh.preferLocal
+    );
     meshes.run();
     tiles = new TileService(
       new TileStore({ root: path.join(dataDir, 'overlay-tiles'), capBytes: config.overlayCache.diskCapBytes, log }),
@@ -936,6 +945,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           configured: pluginOptions?.landShapefiles?.trim() ? pluginOptions.landShapefiles : null,
           in_use: config?.landShapefiles ?? null,
           downloaded: gshhgInstalled(app.getDataDirPath()),
+          downloaded_at: gshhgInstalledAt(app.getDataDirPath()),
           ...coast.state,
         },
         weather_provider_registered: weatherRegistered,
@@ -981,6 +991,26 @@ export = function plugin(app: SkApp): SignalKPlugin {
       downloadCoastline: () => coast.requestDownload(),
       meshes: () => meshes.status(),
       refreshMeshes: () => meshes.refresh(),
+      // A mesh action from the panel: the download list changes in the plugin's own options (saved, no
+      // restart), the manager takes the new list, and a pass runs. The answer carries the list so the
+      // panel's form does not put an old one back on its next Save.
+      meshAction: async (name, action) => {
+        if (!config || !pluginOptions || stopped) throw new NotStartedError();
+        const list = new Set(config.mesh.downloads);
+        if (action === 'remove' || action === 'cancel') list.delete(name);
+        else list.add(name);
+        if (action === 'redownload') meshes.redownload(name);
+        const downloads = [...list];
+        const next: PluginConfig = { ...pluginOptions, mesh: { ...(pluginOptions.mesh ?? {}), downloads } };
+        if (app.savePluginOptions)
+          await new Promise<void>((resolve, reject) => app.savePluginOptions!(next, err => (err ? reject(err) : resolve())));
+        pluginOptions = next;
+        config.mesh.downloads = downloads;
+        meshes.setDownloads(downloads);
+        if (action === 'cancel') meshes.cancel(name);
+        await meshes.refresh();
+        return { downloads, ...meshes.status() };
+      },
       noteTileRequest: (z, x, y) => prebuilder?.noteRequest(z, x, y),
       publicDir,
       polarLibrary: () => (config ? { polarFile: config.polarFile, polarsDir: config.polarsDir, userDir: config.polarUserDir } : null),

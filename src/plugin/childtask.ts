@@ -32,7 +32,7 @@ export type ChildTask =
   | { task: 'rmtree'; dir: string }
   | { task: 'regional'; src: RegionalSource; srcDir: string; dataDir: string; keepRuns: number }
   | MeshLegTask
-  | { task: 'mesh-download'; base: string; dest: string; build: string };
+  | { task: 'mesh-download'; base: string; dest: string; build: string; fresh?: boolean };
 
 /** A message a task sends before its answer (the mesh leg's progress and stage fronts). */
 export type ChildEvent = MeshLegEvent;
@@ -160,8 +160,10 @@ async function countTree(dir: string): Promise<RmtreeResult> {
  * rest are fetched one at a time to a temporary name and renamed.
  * Progress goes to `<dest>/.progress.json` every file.
  */
-async function downloadMesh(base: string, dest: string, build: string): Promise<MeshDownloadResult> {
+async function downloadMesh(base: string, dest: string, build: string, fresh = false): Promise<MeshDownloadResult> {
   dest = path.resolve(dest);
+  // "Download again": the temporary folder (never the served copy) starts empty, so every file is fetched afresh.
+  if (fresh) fs.rmSync(dest, { recursive: true, force: true });
   // A copy started for another build (or from another catalogue) is not
   // resumed: a tile of the same size can differ in content between builds,
   // so the folder goes and the copy starts over. `.progress.json` records
@@ -263,7 +265,7 @@ async function runTask(t: ChildTask): Promise<unknown> {
       return runMeshLegTask(t, event => process.send!({ event }));
     }
     case 'mesh-download':
-      return downloadMesh(t.base, t.dest, t.build);
+      return downloadMesh(t.base, t.dest, t.build, t.fresh === true);
   }
 }
 

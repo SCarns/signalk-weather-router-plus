@@ -353,6 +353,21 @@ test('meshesToOpen: downloads first; where a download and a local mesh share a n
   assert.deepEqual(names(meshesToOpen([dl('09CGD', '2026-10-09T00:00:00Z')], [loc('09CGD', null)], [])), ['download:09CGD']);
   // Use switched off: neither copy.
   assert.deepEqual(names(meshesToOpen([dl('09CGD', '2026-10-09T00:00:00Z')], [loc('09CGD', '2026-10-09T10:10:54Z')], ['09CGD'])), []);
+  // The owner's choice: "my folder" wins over a newer download; it says nothing about other names.
+  assert.deepEqual(
+    names(
+      meshesToOpen(
+        [dl('09CGD', '2026-10-10T00:00:00Z'), dl('01CGD', '2026-10-10T00:00:00Z')],
+        [loc('09CGD', '2026-10-09T10:10:54Z')],
+        [],
+        ['09CGD']
+      )
+    ),
+    ['download:01CGD', 'local:09CGD']
+  );
+  assert.deepEqual(names(meshesToOpen([dl('09CGD', '2026-10-10T00:00:00Z')], [loc('09CGD', '2026-10-09T10:10:54Z')], [], ['01CGD'])), [
+    'download:09CGD',
+  ]);
 });
 
 test('MeshManager: a local mesh of the same name stops the download only when it is the newer; one panel row says which copy is used', async () => {
@@ -392,6 +407,11 @@ test('MeshManager: a local mesh of the same name stops the download only when it
     await mgr.reconcile();
     assert.equal(readMarker(path.join(store, '01CGD'))!.build_date, '2026-10-11T00:00:00Z');
     assert.equal(row().state, 'ready');
+    assert.deepEqual([row().using, row().using_why, row().prefer_local], ['download', 'newer', false], 'the download is newer');
+    // The owner's choice: the folder's copy, whatever the dates; the row says so.
+    mgr.configure(url + 'charts/mesh/index.json', ['01CGD'], store, [], mine, ['01CGD']);
+    assert.deepEqual([row().using, row().using_why, row().prefer_local], ['local', 'choice', true]);
+    mgr.configure(url + 'charts/mesh/index.json', ['01CGD'], store, [], mine);
     assert.equal(row().using, 'download');
     // A local folder without a date never stops a download nor wins.
     fs.rmSync(path.join(store, '01CGD'), { recursive: true, force: true });
@@ -406,5 +426,38 @@ test('MeshManager: a local mesh of the same name stops the download only when it
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(store, { recursive: true, force: true });
     fs.rmSync(mine, { recursive: true, force: true });
+  }
+});
+
+test('MeshManager: redownload fetches the current build afresh; cancel stops a running download; setDownloads changes the list without a restart', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshsrv-'));
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshstore-'));
+  publish(root, '2026-10-10T00:00:00Z', 900, 5);
+  const { url, close } = await serve(root);
+  const mgr = new MeshManager(() => {});
+  try {
+    mgr.configure(url + 'charts/mesh/index.json', ['01CGD'], store);
+    await mgr.reconcile();
+    assert.equal(mgr.status().meshes.find(r => r.name === '01CGD')!.state, 'ready');
+    // The published files change under the same build (a corrupt or repaired tile, same size): a plain pass keeps the copy...
+    publish(root, '2026-10-10T00:00:00Z', 900, 6);
+    await mgr.reconcile();
+    assert.equal(fs.readFileSync(path.join(store, '01CGD', 'mesh_001_002.bin'))[0], 5, 'same build: not fetched again');
+    // ...and "Download again" fetches every file afresh and swaps the copy in.
+    mgr.redownload('01CGD');
+    await mgr.reconcile();
+    assert.equal(fs.readFileSync(path.join(store, '01CGD', 'mesh_001_002.bin'))[0], 6, 'fetched afresh');
+    assert.equal(readMarker(path.join(store, '01CGD'))!.build_date, '2026-10-10T00:00:00Z');
+    // cancel: only a download of that mesh is stopped.
+    assert.equal(mgr.cancel('01CGD'), false, 'nothing running');
+    // setDownloads: the list alone; the next pass removes what is no longer listed.
+    mgr.setDownloads([]);
+    await mgr.reconcile();
+    assert.ok(!fs.existsSync(path.join(store, '01CGD')));
+  } finally {
+    mgr.stop();
+    close();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
   }
 });
