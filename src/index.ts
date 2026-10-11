@@ -1000,15 +1000,16 @@ export = function plugin(app: SkApp): SignalKPlugin {
         const list = new Set(config.mesh.downloads);
         if (action === 'remove' || action === 'cancel') list.delete(name);
         else list.add(name);
-        if (action === 'redownload') meshes.redownload(name);
-        if (action === 'download' || action === 'update') meshes.request(name);
         const downloads = [...list];
         const next: PluginConfig = { ...pluginOptions, mesh: { ...(pluginOptions.mesh ?? {}), downloads } };
         if (app.savePluginOptions)
           await new Promise<void>((resolve, reject) => app.savePluginOptions!(next, err => (err ? reject(err) : resolve())));
+        // Only once the options are saved: a failed save leaves no request behind for a later pass to act on.
         pluginOptions = next;
         config.mesh.downloads = downloads;
         meshes.setDownloads(downloads);
+        if (action === 'redownload') meshes.redownload(name);
+        if (action === 'download' || action === 'update') meshes.request(name);
         if (action === 'cancel') meshes.cancel(name);
         await meshes.refresh();
         return { downloads, ...meshes.status() };
