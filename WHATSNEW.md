@@ -24,8 +24,8 @@
   has buttons that act the moment you click them: Download, Update,
   Download again, Remove, Cancel. No more ticking and saving to fetch a
   mesh. Where a mesh is both downloaded and in your own folder, a
-  *newer build / downloaded / my folder* choice on its row picks the copy
-  the router uses. The Map tiles, Coastline and
+  *downloaded / my folder* choice on its row picks the copy the router
+  uses. The Map tiles, Coastline and
   Forecast cards say in plain words what they do and show their state;
   the harmonics row is gone from the page.
 - **Drawbridges.** Opening bridges on the charts are planned as open by

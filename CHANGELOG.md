@@ -18,9 +18,9 @@ uses [Semantic Versioning](https://semver.org/).
   Ticking the box, the centre-on-boat button, or starting LIVE or SIMULATE
   follows again.
 - **Your copy or the download**: a mesh that is both downloaded and in
-  your own folder gets a *newer build / downloaded / my folder* choice
-  on its row (`mesh.preferLocal`, `mesh.preferDownload`, saved with
-  Save); "newer build" is the default and what happened before. The mesh
+  your own folder gets a *downloaded / my folder* choice on its row
+  (`mesh.preferLocal`, `mesh.preferDownload`, saved with Save), the copy
+  in use ticked; until you click, the newer build is used, as before. The mesh
   list says which copy is in use and why (`using_why`: your choice, the
   newer build, or the only copy; `copy_choice`). Review of PR #37: an
   action arriving while the loop's pass is downloading is applied by one

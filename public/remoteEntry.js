@@ -330,21 +330,21 @@ var signalk_weather_router_plus = (function () {
     if (!Array.isArray(preferLocal)) preferLocal = [];
     var preferDownload = get(['mesh', 'preferDownload'], []);
     if (!Array.isArray(preferDownload)) preferDownload = [];
-    // Which copy the router uses when a name has both: automatic (the newer build), my folder, or the
-    // download; an explicit choice is kept in one of the two lists. Saved with Save.
+    // Which copy the router uses when a name has both. Two buttons, the copy in use ticked: until the
+    // owner clicks, the plugin picks the newer build; a click is kept in one of the two lists. Saved with Save.
     function chooseCopy(name, choice) {
       set(['mesh', 'preferLocal'], preferLocal.filter(function (n) { return n !== name; }).concat(choice === 'local' ? [name] : []));
       set(['mesh', 'preferDownload'], preferDownload.filter(function (n) { return n !== name; }).concat(choice === 'download' ? [name] : []));
     }
     function copyChoice(r) {
       if (r.source !== 'catalog' || !r.local_dir || !r.disk_build_date) return null;
-      var choice = preferLocal.indexOf(r.name) >= 0 ? 'local' : preferDownload.indexOf(r.name) >= 0 ? 'download' : 'auto';
+      var choice = preferLocal.indexOf(r.name) >= 0 ? 'local' : preferDownload.indexOf(r.name) >= 0 ? 'download' : (r.using === 'local' ? 'local' : 'download');
       var id = 'wrp-mesh-copy-' + r.name;
       function radio(value, label) {
         return h('label', { className: 'me-3', style: { cursor: 'pointer' } },
           h('input', { type: 'radio', name: id, className: 'form-check-input me-1', checked: choice === value, onChange: function () { chooseCopy(r.name, value); } }), label);
       }
-      return h('div', { className: 'mt-1 small' }, radio('auto', 'newer build'), radio('download', 'downloaded'), radio('local', 'my folder'));
+      return h('div', { className: 'mt-1 small' }, radio('download', 'downloaded'), radio('local', 'my folder'));
     }
     function toggleEnabled(name, on) {
       var next = disabled.filter(function (n) { return n !== name; });
@@ -443,7 +443,7 @@ var signalk_weather_router_plus = (function () {
         h('b', null, 'Download again'), ' fetches the current build afresh and swaps it in when complete. ',
         h('b', null, 'Remove'), ' deletes the copy. These act at once. ',
         h('b', null, 'Use'), ' lets the router route on a mesh; unticked it stays on disk and the coastline is used there. Where a mesh is both downloaded and in your folder, ',
-        h('b', null, 'newer build / downloaded / my folder'), ' picks the copy the router uses. Use and that choice apply on Save.'),
+        h('b', null, 'downloaded / my folder'), ' picks the copy the router uses. Use and that choice apply on Save.'),
       fold('Catalogue address and your own folder',
         row('Catalogue', text(['mesh', 'catalogUrl'], 'blank = the US-ENC catalogue on R2'), 'The index.json listing the published meshes.'),
         row('Local mesh folder', text(['meshDir'], 'blank = none'),
