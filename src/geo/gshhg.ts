@@ -43,7 +43,6 @@ export function gshhgDir(dataDir: string): string {
 /** Written after extraction: each extracted file and its size. */
 const COMPLETE_MARKER = 'complete.json';
 
-/** The .shp when a complete extraction is in place (every file present at the size recorded when extracted), else null. */
 /** When the coastline was installed (the completion marker's time), ISO, or null when it is not installed. */
 export function gshhgInstalledAt(dataDir: string): string | null {
   if (!gshhgInstalled(dataDir)) return null;
@@ -54,6 +53,7 @@ export function gshhgInstalledAt(dataDir: string): string | null {
   }
 }
 
+/** The .shp when a complete extraction is in place (every file present at the size recorded when extracted), else null. */
 export function gshhgInstalled(dataDir: string): string | null {
   const dir = gshhgDir(dataDir);
   try {

@@ -328,19 +328,23 @@ var signalk_weather_router_plus = (function () {
     if (!Array.isArray(disabled)) disabled = [];
     var preferLocal = get(['mesh', 'preferLocal'], []);
     if (!Array.isArray(preferLocal)) preferLocal = [];
-    // "downloaded" / "my folder": which copy the router uses when a name has both. Saved with Save.
-    function choosePreferLocal(name, mine) {
-      var next = preferLocal.filter(function (n) { return n !== name; });
-      if (mine) next.push(name);
-      set(['mesh', 'preferLocal'], next);
+    var preferDownload = get(['mesh', 'preferDownload'], []);
+    if (!Array.isArray(preferDownload)) preferDownload = [];
+    // Which copy the router uses when a name has both: automatic (the newer build), my folder, or the
+    // download; an explicit choice is kept in one of the two lists. Saved with Save.
+    function chooseCopy(name, choice) {
+      set(['mesh', 'preferLocal'], preferLocal.filter(function (n) { return n !== name; }).concat(choice === 'local' ? [name] : []));
+      set(['mesh', 'preferDownload'], preferDownload.filter(function (n) { return n !== name; }).concat(choice === 'download' ? [name] : []));
     }
     function copyChoice(r) {
       if (r.source !== 'catalog' || !r.local_dir || !r.disk_build_date) return null;
-      var mine = preferLocal.indexOf(r.name) >= 0;
+      var choice = preferLocal.indexOf(r.name) >= 0 ? 'local' : preferDownload.indexOf(r.name) >= 0 ? 'download' : 'auto';
       var id = 'wrp-mesh-copy-' + r.name;
-      return h('div', { className: 'mt-1 small' },
-        h('label', { className: 'me-3', style: { cursor: 'pointer' } }, h('input', { type: 'radio', name: id, className: 'form-check-input me-1', checked: !mine, onChange: function () { choosePreferLocal(r.name, false); } }), 'downloaded'),
-        h('label', { style: { cursor: 'pointer' } }, h('input', { type: 'radio', name: id, className: 'form-check-input me-1', checked: mine, onChange: function () { choosePreferLocal(r.name, true); } }), 'my folder'));
+      function radio(value, label) {
+        return h('label', { className: 'me-3', style: { cursor: 'pointer' } },
+          h('input', { type: 'radio', name: id, className: 'form-check-input me-1', checked: choice === value, onChange: function () { chooseCopy(r.name, value); } }), label);
+      }
+      return h('div', { className: 'mt-1 small' }, radio('auto', 'newer build'), radio('download', 'downloaded'), radio('local', 'my folder'));
     }
     function toggleEnabled(name, on) {
       var next = disabled.filter(function (n) { return n !== name; });
@@ -439,7 +443,7 @@ var signalk_weather_router_plus = (function () {
         h('b', null, 'Download again'), ' fetches the current build afresh and swaps it in when complete. ',
         h('b', null, 'Remove'), ' deletes the copy. These act at once. ',
         h('b', null, 'Use'), ' lets the router route on a mesh; unticked it stays on disk and the coastline is used there. Where a mesh is both downloaded and in your folder, ',
-        h('b', null, 'downloaded / my folder'), ' picks the copy the router uses (the newer build until you pick). Use and that choice apply on Save.'),
+        h('b', null, 'newer build / downloaded / my folder'), ' picks the copy the router uses. Use and that choice apply on Save.'),
       fold('Catalogue address and your own folder',
         row('Catalogue', text(['mesh', 'catalogUrl'], 'blank = the US-ENC catalogue on R2'), 'The index.json listing the published meshes.'),
         row('Local mesh folder', text(['meshDir'], 'blank = none'),
@@ -508,7 +512,8 @@ var signalk_weather_router_plus = (function () {
         'This page is what is installed on this server. Boat and routing settings are in the web app\'s ', h('b', null, 'Defaults'), ' tab. Save restarts the plugin.'),
       coastSection, meshSection, cacheSection, polarSection, forecastSection, weatherSection,
       h('div', { className: 'd-flex align-items-center gap-3' },
-        h('button', { type: 'button', className: 'btn btn-primary', disabled: !dirty && !firstSetup,
+        h('button', { type: 'button', className: 'btn btn-primary', disabled: (!dirty && !firstSetup) || acting !== null,
+          title: acting !== null ? 'A mesh action is running; Save when it has answered' : '',
           onClick: function () { props.save(cfg); setDirty(false); } },
           firstSetup ? 'Save and enable the plugin' : 'Save (restarts the plugin)'),
         dirty ? h('small', { className: 'text-muted' }, 'Unsaved changes') : null));

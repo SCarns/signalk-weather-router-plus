@@ -644,6 +644,21 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         },
       },
       '/api/meshes/{name}/{action}': {
+        parameters: [
+          {
+            name: 'name',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,64}$' },
+            description: 'The mesh name as the catalogue lists it (01CGD, 09CGD, …)',
+          },
+          {
+            name: 'action',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', enum: ['download', 'update', 'redownload', 'remove', 'cancel'] },
+          },
+        ],
         post: {
           summary:
             "The plugin panel's per-mesh buttons (readwrite): download, update, redownload (fetch the current build afresh and swap it in when complete), remove, cancel",

@@ -35,6 +35,8 @@ export interface PluginConfig {
     disabled?: string[];
     /** Names whose copy in `meshDir` is routed on even when a newer download exists (the panel's "my folder" choice). */
     preferLocal?: string[];
+    /** Names whose downloaded copy is routed on even when the copy in `meshDir` is newer (the panel's "downloaded" choice). */
+    preferDownload?: string[];
   };
   polarFile?: string;
   polarsDir?: string;
@@ -102,7 +104,7 @@ export interface ResolvedConfig {
   /** A mesh folder managed by hand, or null. */
   meshDir: string | null;
   /** Managed meshes: catalogue URL, the names ticked, and the store directory the copies live in. */
-  mesh: { catalogUrl: string; downloads: string[]; disabled: string[]; preferLocal: string[]; storeDir: string };
+  mesh: { catalogUrl: string; downloads: string[]; disabled: string[]; preferLocal: string[]; preferDownload: string[]; storeDir: string };
   polarFile: string | null;
   polarsDir: string | null;
   /** Where user polars are kept and generated ones written (see polars.ts PolarLibraryConfig.userDir). */
@@ -245,7 +247,14 @@ export const CONFIG_SCHEMA = {
           type: 'array',
           title: 'Meshes routed on from your own folder',
           description:
-            'Names that exist both as a download and in your mesh folder, where the router uses your copy whatever the dates. Unlisted: the newer build.',
+            'Names that exist both as a download and in your mesh folder, where the router uses your copy whatever the dates. Unlisted in both lists: the newer build.',
+          items: { type: 'string' },
+        },
+        preferDownload: {
+          type: 'array',
+          title: 'Meshes routed on from the download',
+          description:
+            'Names that exist both as a download and in your mesh folder, where the router uses the download whatever the dates.',
           items: { type: 'string' },
         },
       },
@@ -387,6 +396,7 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       downloads: Array.isArray(c.mesh?.downloads) ? c.mesh.downloads.map(s => String(s).trim()).filter(Boolean) : [],
       disabled: Array.isArray(c.mesh?.disabled) ? c.mesh.disabled.map(s => String(s).trim()).filter(Boolean) : [],
       preferLocal: Array.isArray(c.mesh?.preferLocal) ? c.mesh.preferLocal.map(s => String(s).trim()).filter(Boolean) : [],
+      preferDownload: Array.isArray(c.mesh?.preferDownload) ? c.mesh.preferDownload.map(s => String(s).trim()).filter(Boolean) : [],
       storeDir: '', // set by the plugin (index.ts resolve) from its data directory
     },
     polarFile: c.polarFile && c.polarFile.trim() ? c.polarFile.trim() : null,

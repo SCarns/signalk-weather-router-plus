@@ -18,10 +18,19 @@ uses [Semantic Versioning](https://semver.org/).
   Ticking the box, the centre-on-boat button, or starting LIVE or SIMULATE
   follows again.
 - **Your copy or the download**: a mesh that is both downloaded and in
-  your own folder gets a *downloaded / my folder* choice on its row
-  (`mesh.preferLocal`, saved with Save); until you pick, the newer build
-  is used, as before. The mesh list says which copy is in use and why
-  (`using_why`: your choice, the newer build, or the only copy).
+  your own folder gets a *newer build / downloaded / my folder* choice
+  on its row (`mesh.preferLocal`, `mesh.preferDownload`, saved with
+  Save); "newer build" is the default and what happened before. The mesh
+  list says which copy is in use and why (`using_why`: your choice, the
+  newer build, or the only copy; `copy_choice`). Review of PR #37: an
+  action arriving while the loop's pass is downloading is applied by one
+  more pass straight after; *Download again* fetches even when your
+  folder's copy is newer, and a failed fresh fetch is retried at the
+  next pass; Save is disabled while a mesh action is in flight; the
+  action route's path parameters are declared in the OpenAPI document.
+  Found by the new test: a stop during a running pass armed the daily
+  timer after the abort, leaving a day-long timer behind; no timer is
+  armed once stopped.
 - **Plugin configuration page reworked** (`public/remoteEntry.js`):
   the Chart meshes card has the catalogue line and a "Check for updates"
   button on the card, one table (Mesh, Area, Published, On this server,

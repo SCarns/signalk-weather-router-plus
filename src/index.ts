@@ -802,7 +802,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
       config.mesh.storeDir,
       config.mesh.disabled,
       config.meshDir,
-      config.mesh.preferLocal
+      config.mesh.preferLocal,
+      config.mesh.preferDownload
     );
     meshes.run();
     tiles = new TileService(
