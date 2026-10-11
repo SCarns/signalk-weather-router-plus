@@ -132,6 +132,10 @@ var signalk_weather_router_plus = (function () {
     var meshes = mshs[0], setMeshes = mshs[1];
     var rdg = React.useState(false);
     var catalogReading = rdg[0], setCatalogReading = rdg[1];
+    var act = React.useState(null);
+    var acting = act[0], setActing = act[1];   // the mesh an action is running for
+    var mm = React.useState(null);
+    var meshMsg = mm[0], setMeshMsg = mm[1];   // the mesh card's own error line
 
     React.useEffect(function () {
       Promise.all([fetchUnit('distance'), fetchUnit('time')]).then(function (u) { setUnits({ loaded: true, distance: u[0], time: u[1] }); });
@@ -194,10 +198,11 @@ var signalk_weather_router_plus = (function () {
         .catch(function (e) { setMsg('Download could not start: ' + e.message); });
     }
 
-    // "Read the catalogue now": the plugin reads it before answering, so the
-    // answer is the fresh mesh list (or the catalogue's error).
+    // "Check for updates": the plugin reads the catalogue before answering, so the
+    // answer is the fresh mesh list (or the catalogue's error); newer builds of the
+    // meshes kept are then downloaded.
     function refreshCatalog() {
-      setMsg(null);
+      setMeshMsg(null);
       setCatalogReading(true);
       fetch(API + '/meshes/refresh', { method: 'POST', credentials: 'include' })
         .then(function (r) {
@@ -211,8 +216,27 @@ var signalk_weather_router_plus = (function () {
           });
         })
         .then(function (m) { if (m) setMeshes(m); })
-        .catch(function (e) { setMsg('The catalogue could not be read: ' + e.message); })
+        .catch(function (e) { setMeshMsg('The catalogue could not be read: ' + e.message); })
         .then(function () { setCatalogReading(false); });
+    }
+
+    // A mesh action (download, update, redownload, remove, cancel): the plugin
+    // changes its own download list and runs a pass; the form's copy of the
+    // list is taken from the answer so a later Save does not put an old one back.
+    function meshAction(name, action) {
+      setMeshMsg(null);
+      setActing(name);
+      fetch(API + '/meshes/' + encodeURIComponent(name) + '/' + action, { method: 'POST', credentials: 'include' })
+        .then(function (r) {
+          if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + ' ' + t); });
+          return r.json();
+        })
+        .then(function (m) {
+          if (m && m.meshes) setMeshes(m);
+          if (m && Array.isArray(m.downloads)) setCfg(function (c) { var n = JSON.parse(JSON.stringify(c)); n.mesh = n.mesh || {}; n.mesh.downloads = m.downloads; return n; });
+        })
+        .catch(function (e) { setMeshMsg(name + ': ' + e.message); })
+        .then(function () { setActing(null); });
     }
 
     // Inputs -----------------------------------------------------------------
@@ -281,7 +305,7 @@ var signalk_weather_router_plus = (function () {
     else if (coast.downloading) coastStatus = statusDot('warn', 'downloading GSHHG: ' + (coast.message || '…'));
     else if (coast.error) coastStatus = statusDot('bad', 'last download failed: ' + coast.error);
     else if (configuredCoast) coastStatus = statusDot('ok', 'your own coastline files, in use');
-    else if (coast.downloaded) coastStatus = statusDot('ok', 'GSHHG 2.3.7 full resolution, downloaded, in use');
+    else if (coast.downloaded) coastStatus = statusDot('ok', 'GSHHG 2.3.7 full resolution, downloaded' + (coast.downloaded_at ? ' on ' + coast.downloaded_at.slice(0, 10) : '') + ', in use');
     else coastStatus = statusDot('warn', 'no coastline yet; it downloads by itself at start');
     var coastSection = card('Coastline',
       "The land the router steers around wherever no chart mesh covers. Needed; downloaded once by itself.",
@@ -302,17 +326,37 @@ var signalk_weather_router_plus = (function () {
     if (!Array.isArray(ticked)) ticked = [];
     var disabled = get(['mesh', 'disabled'], []);
     if (!Array.isArray(disabled)) disabled = [];
-    function toggleMesh(name, on) {
-      var next = ticked.filter(function (n) { return n !== name; });
-      if (on) next.push(name);
-      set(['mesh', 'downloads'], next);
+    var preferLocal = get(['mesh', 'preferLocal'], []);
+    if (!Array.isArray(preferLocal)) preferLocal = [];
+    var preferDownload = get(['mesh', 'preferDownload'], []);
+    if (!Array.isArray(preferDownload)) preferDownload = [];
+    // Which copy the router uses when a name has both: automatic (the newer build), my folder, or the
+    // download; an explicit choice is kept in one of the two lists. Saved with Save.
+    function chooseCopy(name, choice) {
+      set(['mesh', 'preferLocal'], preferLocal.filter(function (n) { return n !== name; }).concat(choice === 'local' ? [name] : []));
+      set(['mesh', 'preferDownload'], preferDownload.filter(function (n) { return n !== name; }).concat(choice === 'download' ? [name] : []));
+    }
+    function copyChoice(r) {
+      if (r.source !== 'catalog' || !r.local_dir || !r.disk_build_date) return null;
+      var choice = preferLocal.indexOf(r.name) >= 0 ? 'local' : preferDownload.indexOf(r.name) >= 0 ? 'download' : 'auto';
+      var id = 'wrp-mesh-copy-' + r.name;
+      function radio(value, label) {
+        return h('label', { className: 'me-3', style: { cursor: 'pointer' } },
+          h('input', { type: 'radio', name: id, className: 'form-check-input me-1', checked: choice === value, onChange: function () { chooseCopy(r.name, value); } }), label);
+      }
+      return h('div', { className: 'mt-1 small' }, radio('auto', 'newer build'), radio('download', 'downloaded'), radio('local', 'my folder'));
     }
     function toggleEnabled(name, on) {
       var next = disabled.filter(function (n) { return n !== name; });
       if (!on) next.push(name);
       set(['mesh', 'disabled'], next);
     }
-    function meshStatus(r, on) {
+    function day(iso) { return iso ? String(iso).slice(0, 10) : '—'; }
+    // Build times to the minute: two builds of one mesh can be hours apart on the same day.
+    function when(iso) { return iso ? String(iso).slice(0, 16).replace('T', ' ') + 'Z' : 'no build date'; }
+    // "On this server": what copy is here, in words.
+    function onServer(r) {
+      if (r.source === 'local') return h('span', null, 'your folder', h('br'), h('small', { className: 'text-muted' }, 'build of ' + when(r.local_build_date)));
       if (r.state === 'downloading') {
         var p = r.progress;
         var pct = p && p.total ? Math.round(100 * p.files / p.total) : 0;
@@ -321,28 +365,39 @@ var signalk_weather_router_plus = (function () {
             h('span', { style: { position: 'absolute', left: 0, top: 0, bottom: 0, width: pct + '%', background: '#1f5fa8', borderRadius: 3 } })),
           h('small', null, p ? 'downloading, ' + p.files + ' of ' + p.total + ' files' : 'downloading…'));
       }
-      if (r.state === 'ready') return statusDot('ok', 'ready');
-      if (r.state === 'update') return statusDot('warn', 'newer build published; updates at the next daily check or on Read the catalogue now');
-      if (r.state === 'error') return statusDot('bad', r.error || 'failed');
       if (r.state === 'removing') return statusDot('warn', 'removing…');
-      return statusDot('off', on ? 'not on this server yet; downloads after Save' : 'not on this server');
+      if (r.state === 'error') return statusDot('bad', r.error || 'failed');
+      if (!r.catalog_build_date && !r.local_dir) return statusDot('bad', 'unknown name: not published, not in your folder');
+      if (r.state === 'update') return h('span', null, statusDot('warn', 'downloaded: build of ' + when(r.disk_build_date)), h('br'), h('small', { className: 'text-muted' }, 'newer build published'));
+      if (r.state === 'ready') return statusDot('ok', 'downloaded: build of ' + when(r.disk_build_date));
+      return statusDot('off', 'not downloaded');
     }
     // A catalogue row with a local folder of the same name: which copy the router opens, and why.
     function usingNote(r) {
       if (r.source !== 'catalog' || !r.local_dir) return null;
-      var localDate = r.local_build_date ? 'mesh ' + r.local_build_date.slice(0, 10) : 'no build date';
+      var mine = 'Also in your folder: build of ' + when(r.local_build_date);
       var text;
-      if (r.using === 'local') {
-        text = r.disk_build_date
-          ? 'Routing on your local copy (' + localDate + '): built later than the download.'
-          : 'Routing on your local copy (' + localDate + ') until a newer published copy is downloaded.';
-      } else if (r.using === 'download') {
-        text = 'Your local copy (' + localDate + ') is older: routing on the download.';
-      } else {
-        // using === null: the local folder cannot be opened and there is no download.
-        text = 'Your local copy (' + localDate + ') cannot be used' + (r.error ? ': ' + r.error : '') + '; nothing to route on for this mesh.';
-      }
+      if (r.using === 'local') text = mine + (r.using_why === 'choice' ? ': used, your choice.' : r.disk_build_date ? ', newer than the download: used.' : ': used until a newer build is downloaded.');
+      else if (r.using === 'download') text = mine + (r.using_why === 'choice' ? ', not used, your choice.' : ', older, not used.');
+      else text = mine + ', cannot be used' + (r.error ? ': ' + r.error : '') + '.';
       return h('small', { className: 'text-muted d-block' }, text);
+    }
+    function actBtn(label, name, action, kind) {
+      return h('button', { type: 'button', className: 'btn btn-sm me-1 mb-1 ' + (kind || 'btn-outline-secondary'), disabled: acting !== null, onClick: function () { meshAction(name, action); } },
+        acting === name ? '…' : label);
+    }
+    function actions(r) {
+      if (r.source === 'local') return h('small', { className: 'text-muted' }, '—');
+      var unknown = !r.catalog_build_date && !r.local_dir;
+      if (unknown) return actBtn('Remove', r.name, 'remove');
+      if (r.state === 'downloading') return actBtn('Cancel', r.name, 'cancel');
+      if (r.state === 'removing') return null;
+      var out = [];
+      if (r.state === 'update') out.push(actBtn('Update', r.name, 'update', 'btn-outline-primary'));
+      else if (r.state === 'ready') out.push(actBtn('Download again', r.name, 'redownload'));
+      else out.push(actBtn('Download', r.name, 'download', 'btn-outline-primary'));
+      if (r.ticked || r.disk_build_date) out.push(actBtn('Remove', r.name, 'remove'));
+      return h('span', null, out);
     }
     function chk(id, on, enabled, onChange) {
       return h('input', { className: 'form-check-input', type: 'checkbox', id: id, checked: !!on, disabled: !enabled, onChange: function (e) { onChange(e.target.checked); } });
@@ -351,43 +406,46 @@ var signalk_weather_router_plus = (function () {
     var meshTable = meshRows.length
       ? h('div', { className: 'table-responsive' }, h('table', { className: 'table table-sm align-middle' },
           h('thead', null, h('tr', null,
-            h('th', null, 'Mesh'), h('th', null, 'Covers'), h('th', null, 'Chart / mesh'), h('th', null, 'Size'), h('th', null, 'Status'),
-            h('th', { className: 'text-center' }, 'Download'), h('th', { className: 'text-center' }, 'Use'))),
+            h('th', null, 'Mesh'), h('th', null, 'Area'), h('th', null, 'Published'), h('th', null, 'On this server'),
+            h('th', { className: 'text-center' }, 'Use'), h('th', null, 'Actions'))),
           h('tbody', null, meshRows.map(function (r) {
             var local = r.source === 'local';
-            var on = local || ticked.indexOf(r.name) >= 0;
-            // Use applies to a downloaded copy and to a local folder of the same name alike.
-            var usable = on || !!r.local_dir;
+            var on = local || r.ticked;
+            var usable = on || !!r.local_dir || !!r.disk_build_date;
             var use = disabled.indexOf(r.name) < 0;
             var parts = String(r.description || '').split(' · ');
-            var covers = local ? (parts[1] || '') : (parts[0] || '');
-            var dates = local ? (parts.slice(3).join(', ') || '—') : parts.filter(function (s) { return /^(chart|mesh) /.test(s); }).map(function (s) { return s.replace(/^(chart|mesh) /, ''); }).join(' / ');
+            var area = local ? (parts[1] || '') : (r.catalog_build_date ? (parts[0] || '') : '');
             return h('tr', { key: r.source + ':' + r.name },
-              h('td', null, h('strong', null, r.name), h('br'), h('small', { className: 'text-muted' }, local ? 'local folder' : r.title.replace(/^\S+ — /, ''))),
-              h('td', null, h('small', null, covers)),
-              h('td', null, h('small', null, dates || '—')),
-              h('td', null, h('small', null, r.bytes ? gb(r.bytes) : '—')),
-              h('td', null, meshStatus(r, on), usingNote(r)),
-              h('td', { className: 'text-center' }, local ? h('small', { className: 'text-muted' }, '—') : chk('wrp-mesh-dl-' + r.name, on, true, function (v) { toggleMesh(r.name, v); })),
-              h('td', { className: 'text-center' }, chk('wrp-mesh-use-' + r.name, usable && use, usable, function (v) { toggleEnabled(r.name, v); })));
+              h('td', null, h('strong', null, r.name), h('br'), h('small', { className: 'text-muted' }, local ? 'your folder' : String(r.title || '').replace(/^\S+ — /, ''))),
+              h('td', null, h('small', null, area)),
+              h('td', null, h('small', null, r.catalog_build_date ? day(r.catalog_build_date) + (r.bytes ? ', ' + gb(r.bytes) : '') : '—')),
+              h('td', null, onServer(r), usingNote(r), copyChoice(r)),
+              h('td', { className: 'text-center' }, chk('wrp-mesh-use-' + r.name, usable && use, usable, function (v) { toggleEnabled(r.name, v); })),
+              h('td', null, actions(r)));
           }))))
       : h('p', { className: 'small text-muted' }, meshes ? (meshes.catalog_error ? 'No meshes to show: the catalogue could not be read (' + meshes.catalog_error + ').' : 'The catalogue lists no meshes, and no local folder is set.') : 'Mesh list unavailable until the plugin answers.');
-    var catalogNote = meshes
-      ? (meshes.catalog_error ? 'Could not be read: ' + meshes.catalog_error : meshes.catalog_updated ? 'Last read: catalogue of ' + meshes.catalog_updated.slice(0, 16).replace('T', ' ') + 'Z, ' + meshRows.filter(function (r) { return r.source === 'catalog'; }).length + ' meshes' : '')
-      : '';
+    var published = meshRows.filter(function (r) { return r.source === 'catalog' && r.catalog_build_date; }).length;
+    var catalogNote = !meshes ? 'Waiting for the plugin.'
+      : meshes.catalog_error ? 'The catalogue could not be read: ' + meshes.catalog_error
+      : meshes.catalog_updated ? 'Catalogue of ' + meshes.catalog_updated.slice(0, 16).replace('T', ' ') + 'Z, ' + published + ' meshes published.'
+      : 'The catalogue has not been read yet.';
     var meshSection = card('Chart meshes',
-      'Routing on charted water (depths, clearances, hazards) needs a navigation mesh of the area. Tick the US Coast Guard districts you sail in; each is downloaded and kept current.',
+      'Routing on charted water (depths, clearances, hazards) needs a navigation mesh of the area. Download the US Coast Guard districts you sail in; each is kept current.',
+      h('div', { className: 'mb-2 d-flex align-items-center flex-wrap gap-2' },
+        h('button', { type: 'button', className: 'btn btn-outline-secondary btn-sm', disabled: catalogReading || acting !== null, onClick: refreshCatalog },
+          catalogReading ? 'Checking…' : 'Check for updates'),
+        h('small', { className: 'text-muted' }, catalogNote + ' Checked by itself at start and once a day.')),
       meshTable,
+      meshMsg ? h('div', { className: 'text-danger small mb-2' }, meshMsg) : null,
       h('p', { className: 'small text-muted' },
-        h('b', null, 'Download'), ' copies a published mesh to this server and keeps it current; untick to delete the copy. ',
-        h('b', null, 'Use'), " lets the router route on it; untick to keep it on disk but route on the coastline there. A local folder has no Download: it's yours."),
-      fold('Where meshes come from',
-        row('Catalogue', text(['mesh', 'catalogUrl'], 'blank = the US-ENC catalogue on R2'),
-          'List of published meshes. ' + catalogNote),
-        h('div', { className: 'mb-3' },
-          h('button', { type: 'button', className: 'btn btn-outline-secondary btn-sm', disabled: catalogReading, onClick: refreshCatalog },
-            catalogReading ? 'Reading…' : 'Read the catalogue now'),
-          h('small', { className: 'form-text text-muted d-block' }, 'Reads the catalogue at the saved address, lists what it says, then downloads ticked meshes that are missing or have a newer build. Otherwise it is read at start and once a day.')),
+        h('b', null, 'Download'), ' copies a published mesh to this server and keeps it current. ',
+        h('b', null, 'Update'), ' fetches a newer published build. ',
+        h('b', null, 'Download again'), ' fetches the current build afresh and swaps it in when complete. ',
+        h('b', null, 'Remove'), ' deletes the copy. These act at once. ',
+        h('b', null, 'Use'), ' lets the router route on a mesh; unticked it stays on disk and the coastline is used there. Where a mesh is both downloaded and in your folder, ',
+        h('b', null, 'newer build / downloaded / my folder'), ' picks the copy the router uses. Use and that choice apply on Save.'),
+      fold('Catalogue address and your own folder',
+        row('Catalogue', text(['mesh', 'catalogUrl'], 'blank = the US-ENC catalogue on R2'), 'The index.json listing the published meshes.'),
         row('Local mesh folder', text(['meshDir'], 'blank = none'),
           'A folder holding one mesh (index.json and its tiles) or several mesh folders, managed by you and used beside the downloaded ones.')));
 
@@ -395,15 +453,20 @@ var signalk_weather_router_plus = (function () {
     var d = DEFAULTS;
     var tiles = status && status.overlay_tiles ? status.overlay_tiles : null;
     var windowSI = get(['overlayCache', 'window'], d.window);
-    var cacheSection = card('Map tiles built ahead',
-      "The web app's weather layers are drawn from tiles. Building them ahead of time makes the map instant; it costs disk and a little CPU in the background.",
-      row('Build ahead', check(['overlayCache', 'enabled'], d.enabled, 'On'),
+    var pb = status && status.overlay_prebuild ? status.overlay_prebuild : null;
+    var tilesNote = !pb ? null
+      : !pb.enabled ? 'Pre-building is off.'
+      : 'Built so far: ' + pb.built_total + ' tiles. This pass: ' + pb.built + ' built of ' + pb.seen + ' checked' + (pb.complete ? ', complete.' : ', still building.') + (pb.last_error ? ' Last error: ' + pb.last_error : '');
+    var cacheSection = card('Map tiles',
+      "The web app's weather layers are drawn from map tiles. Building them before anyone looks makes the map instant; it costs disk and a little CPU in the background.",
+      tilesNote ? h('div', { className: 'mb-2 small' }, statusDot(pb.enabled ? (pb.last_error ? 'warn' : 'ok') : 'off', tilesNote)) : null,
+      row('Pre-build tiles', check(['overlayCache', 'enabled'], d.enabled, 'On'),
         'Off: tiles are built when first viewed (slower first view, no background work, nothing stored ahead).'),
-      row('Around the boat', unitNumber(['overlayCache', 'radius'], d.radius, units.distance, 1000, 2000000),
-        "Radius built around the vessel's position. Halved at each deeper zoom."),
-      row('How far ahead', unitNumber(['overlayCache', 'window'], d.window, units.time, 0, 360 * 3600),
-        (windowSI === 0 ? 'Currently: the whole forecast. ' : '') + 'Hours of forecast tiles kept ready; 0 = the whole forecast.'),
-      row('Where the map looks', check(['overlayCache', 'followView'], d.followView, 'Also build around the area a map shows'),
+      row('Radius round the boat', unitNumber(['overlayCache', 'radius'], d.radius, units.distance, 1000, 2000000),
+        "Tiles are built this far round the vessel's position. Halved at each deeper zoom."),
+      row('Hours of forecast kept ready', unitNumber(['overlayCache', 'window'], d.window, units.time, 0, 360 * 3600),
+        (windowSI === 0 ? 'Currently: the whole forecast. ' : '') + '0 = the whole forecast.'),
+      row('Also round the area a map shows', check(['overlayCache', 'followView'], d.followView, 'On'),
         'A client panning away from the boat gets tiles built there too.'),
       fold('Advanced',
         row('Deepest zoom', number(['overlayCache', 'maxZoom'], d.maxZoom, { min: 6, max: 18 }), '6–18. Deeper = more detail near the boat, many more tiles.'),
@@ -421,12 +484,13 @@ var signalk_weather_router_plus = (function () {
       row('Default polar', text(['polarFile'], 'blank = the bundled Catalina 36'), 'A .csv or .pol file. Used when a route names no polar.'),
       row('Library folder', text(['polarsDir'], 'blank = the ~700 bundled polars'),
         'A folder of .pol / .csv files to offer instead of the bundled library (weather_routing_pi, GPL-3.0). Polars you generate are kept in the plugin data directory either way.'));
-    var currentsSection = card('Tidal currents',
-      'Ocean currents come from Copernicus and RTOFS by themselves (set up under Defaults → Currents in the web app). Tidal harmonics are optional local files and take precedence where they cover.',
-      row('Harmonics folder', text(['currents', 'harmonicDir'], 'blank = none'), 'FES2014 / NECOFS .npz extracts; every file in the folder is loaded.'));
     var MIRROR_LABELS = { ecmwf: 'ECMWF (data.ecmwf.int)', aws: 'Amazon (AWS Open Data)', google: 'Google Cloud' };
+    var fc = status && status.forecast ? status.forecast : null;
     var forecastSection = card('Forecast download',
       "Where the ECMWF open-data forecast is fetched from. Same data on every mirror; pick the one that's fast from your connection.",
+      h('div', { className: 'mb-2 small' }, fc && fc.cycle
+        ? statusDot('ok', 'Last fetched: the ' + String(fc.cycle).slice(0, 16).replace('T', ' ') + 'Z run, loaded ' + (fc.loaded_at ? String(fc.loaded_at).slice(0, 16).replace('T', ' ') + 'Z' : '') + (fc.model ? ' (' + fc.model + ')' : ''))
+        : statusDot('off', status && status.forecast_loading ? 'Fetching a forecast now.' : 'No forecast loaded yet.')),
       row('Mirror',
         h('select', { className: 'form-select form-control', style: { maxWidth: 320 }, value: get(['forecast', 'mirror'], 'ecmwf'),
           onChange: function (e) { set(['forecast', 'mirror'], e.target.value); } },
@@ -445,12 +509,11 @@ var signalk_weather_router_plus = (function () {
     var firstSetup = props.configuration == null;
     return h('div', { className: 'wrp-config' },
       h('div', { className: 'alert alert-secondary small' },
-        h('b', null, 'Two kinds of settings, two places. '),
-        'This page is the installation: files on this server, what it downloads, how it serves tiles. Everything about the boat and the routing — draft and height (Signal K vessel data), polar performance, forecast horizon, currents, routing engine, publishing — is in the web app under ',
-        h('b', null, 'Defaults'), ', shared by every client. Save here restarts the plugin.'),
-      coastSection, meshSection, cacheSection, polarSection, currentsSection, forecastSection, weatherSection,
+        'This page is what is installed on this server. Boat and routing settings are in the web app\'s ', h('b', null, 'Defaults'), ' tab. Save restarts the plugin.'),
+      coastSection, meshSection, cacheSection, polarSection, forecastSection, weatherSection,
       h('div', { className: 'd-flex align-items-center gap-3' },
-        h('button', { type: 'button', className: 'btn btn-primary', disabled: !dirty && !firstSetup,
+        h('button', { type: 'button', className: 'btn btn-primary', disabled: (!dirty && !firstSetup) || acting !== null,
+          title: acting !== null ? 'A mesh action is running; Save when it has answered' : '',
           onClick: function () { props.save(cfg); setDirty(false); } },
           firstSetup ? 'Save and enable the plugin' : 'Save (restarts the plugin)'),
         dirty ? h('small', { className: 'text-muted' }, 'Unsaved changes') : null));

@@ -17,6 +17,41 @@ uses [Semantic Versioning](https://semver.org/).
   and only the centre-on-boat button or restarting the mode resumed it.
   Ticking the box, the centre-on-boat button, or starting LIVE or SIMULATE
   follows again.
+- **Your copy or the download**: a mesh that is both downloaded and in
+  your own folder gets a *newer build / downloaded / my folder* choice
+  on its row (`mesh.preferLocal`, `mesh.preferDownload`, saved with
+  Save); "newer build" is the default and what happened before. The mesh
+  list says which copy is in use and why (`using_why`: your choice, the
+  newer build, or the only copy; `copy_choice`). Review of PR #37: an
+  action arriving while the loop's pass is downloading is applied by one
+  more pass straight after; *Download again* fetches even when your
+  folder's copy is newer, and a failed fresh fetch is retried at the
+  next pass; Save is disabled while a mesh action is in flight; the
+  action route's path parameters are declared in the OpenAPI document.
+  Found by the new test: a stop during a running pass armed the daily
+  timer after the abort, leaving a day-long timer behind; no timer is
+  armed once stopped. Second review: Download and Update pressed on the
+  panel fetch past a newer copy in your folder (the daily pass still
+  leaves it alone), and a Download again pressed while that mesh is
+  downloading is kept for the next pass.
+- **Plugin configuration page reworked** (`public/remoteEntry.js`):
+  the Chart meshes card has the catalogue line and a "Check for updates"
+  button on the card, one table (Mesh, Area, Published, On this server,
+  Use, Actions) with per-mesh buttons that act at once through
+  `POST /api/meshes/{name}/{action}` (readwrite): Download, Update,
+  Download again (the current build fetched afresh into the temporary
+  folder and swapped in when complete; the served copy is untouched
+  meanwhile), Remove, and Cancel while downloading. The plugin keeps the
+  download list in its own options (`app.savePluginOptions`, no
+  restart) and answers the list, which the form adopts so a later Save
+  does not put an old list back. Your own folder's meshes are in the
+  same table; a kept name that is neither published nor in your folder
+  reads "unknown name" with Remove. The Tidal currents card and its
+  Harmonics folder row are off the page (the setting and the code stay).
+  The Map tiles card says in plain words what each setting does and
+  shows what is built; the Coastline card shows when the coastline was
+  installed (`/api/status` `coastline.downloaded_at`); the Forecast card
+  shows the last run fetched; the banner is one line.
 - **Read the catalogue now** (plugin panel, Chart meshes → Where meshes
   come from): `POST /api/meshes/refresh` (read-write) reads the mesh
   catalogue at once, answers with the mesh list as `GET /api/meshes` does,

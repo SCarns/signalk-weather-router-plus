@@ -19,9 +19,15 @@
   A route that starts in a harbour and ends far outside the mesh is routed
   on the charts out to open water and handed over there. Routes the mesh
   cannot take fall back to the coastline routing you had before.
-- **Charts you can refresh.** The plugin configuration's Chart meshes
-  card has a *Read the catalogue now* button, so a mesh published after
-  Signal K started shows up at once instead of at the next daily check.
+- **A clearer plugin configuration page.** The Chart meshes card shows
+  the catalogue's date and a *Check for updates* button, and each mesh
+  has buttons that act the moment you click them: Download, Update,
+  Download again, Remove, Cancel. No more ticking and saving to fetch a
+  mesh. Where a mesh is both downloaded and in your own folder, a
+  *newer build / downloaded / my folder* choice on its row picks the copy
+  the router uses. The Map tiles, Coastline and
+  Forecast cards say in plain words what they do and show their state;
+  the harmonics row is gone from the page.
 - **Drawbridges.** Opening bridges on the charts are planned as open by
   default; when a route passes under one you are told which, with its
   open clearance, and offered a re-plan that avoids them. Defaults →

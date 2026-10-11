@@ -48,6 +48,7 @@ import { openApiDocument } from './openapi';
 import { buildLegends } from './legends';
 import { listPolars, loadPolarCached, PolarNotFoundError, polarAngles, polarFromSpecs, polarTable, resolvePolarPath } from './polars';
 import type { BBox } from '../geo/geodesy';
+import { MESH_ACTIONS, type MeshAction } from './meshes';
 import { SettingsValidationError, type AppSettings, type SettingsGroup, type SettingSpec } from './settings';
 import { checkTile, roundHour, TILE_LAYERS, type TileLayer, type TileService } from './tiles';
 import { joinField, joinLandMask, joinPoints, joinPressure, type TileGetter } from './tilejoin';
@@ -82,6 +83,8 @@ export interface ApiDeps {
   meshes: () => unknown;
   /** Read the mesh catalogue now and reconcile the store (the panel's button); resolves when the catalogue is read. */
   refreshMeshes: () => Promise<void>;
+  /** The panel's per-mesh action: changes the download list in the plugin's options, then runs a pass; answers the list as GET /api/meshes plus `downloads`. */
+  meshAction: (name: string, action: MeshAction) => Promise<unknown>;
   /** The page asked for this tile (the prebuilder follows the view). */
   noteTileRequest: (z: number, x: number, y: number) => void;
   publicDir: string;
@@ -277,6 +280,25 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const readError = (list as { catalog_error?: string | null } | null)?.catalog_error ?? null;
       if (readError) json(res, 502, { error: `catalogue not read: ${readError}`, ...(list as object) });
       else json(res, 200, list);
+    } catch (err) {
+      fail(res, err, 500);
+    }
+  });
+
+  // The panel's per-mesh buttons: download, update, redownload, remove, cancel.
+  rw.post('/api/meshes/:name/:action', async (req: Request, res: Response) => {
+    const name = String(req.params.name ?? '');
+    const action = String(req.params.action ?? '');
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
+      json(res, 400, { error: 'mesh name: letters, digits, - and _ only' });
+      return;
+    }
+    if (!(MESH_ACTIONS as readonly string[]).includes(action)) {
+      json(res, 400, { error: `action must be one of ${MESH_ACTIONS.join(', ')}` });
+      return;
+    }
+    try {
+      json(res, 200, await deps.meshAction(name, action as MeshAction));
     } catch (err) {
       fail(res, err, 500);
     }
