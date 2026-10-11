@@ -342,7 +342,9 @@ var signalk_weather_router_plus = (function () {
       var id = 'wrp-mesh-copy-' + r.name;
       function radio(value, label) {
         return h('label', { className: 'me-3', style: { cursor: 'pointer' } },
-          h('input', { type: 'radio', name: id, className: 'form-check-input me-1', checked: choice === value, onChange: function () { chooseCopy(r.name, value); } }), label);
+          // On click, not on change: clicking the copy already ticked by date records it as the owner's choice, so it stays
+          // when a newer copy of the other kind arrives later.
+          h('input', { type: 'radio', name: id, className: 'form-check-input me-1', checked: choice === value, onChange: function () {}, onClick: function () { chooseCopy(r.name, value); } }), label);
       }
       return h('div', { className: 'mt-1 small' }, radio('download', 'downloaded'), radio('local', 'my folder'));
     }
