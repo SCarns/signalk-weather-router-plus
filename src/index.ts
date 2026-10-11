@@ -1001,6 +1001,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (action === 'remove' || action === 'cancel') list.delete(name);
         else list.add(name);
         if (action === 'redownload') meshes.redownload(name);
+        if (action === 'download' || action === 'update') meshes.request(name);
         const downloads = [...list];
         const next: PluginConfig = { ...pluginOptions, mesh: { ...(pluginOptions.mesh ?? {}), downloads } };
         if (app.savePluginOptions)

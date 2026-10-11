@@ -30,7 +30,10 @@ uses [Semantic Versioning](https://semver.org/).
   action route's path parameters are declared in the OpenAPI document.
   Found by the new test: a stop during a running pass armed the daily
   timer after the abort, leaving a day-long timer behind; no timer is
-  armed once stopped.
+  armed once stopped. Second review: Download and Update pressed on the
+  panel fetch past a newer copy in your folder (the daily pass still
+  leaves it alone), and a Download again pressed while that mesh is
+  downloading is kept for the next pass.
 - **Plugin configuration page reworked** (`public/remoteEntry.js`):
   the Chart meshes card has the catalogue line and a "Check for updates"
   button on the card, one table (Mesh, Area, Published, On this server,

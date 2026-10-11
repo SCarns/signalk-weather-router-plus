@@ -352,8 +352,15 @@ export class MeshManager {
   private storeDir = '';
   private meshDir: string | null = null;
   private errors = new Map<string, string>();
-  /** Names to download again from scratch at the next pass, whatever the build on disk (the panel's "Download again"). */
-  private fresh = new Set<string>();
+  /**
+   * Names to download again from scratch at the next pass, whatever the build on disk (the panel's "Download again"),
+   * each with the number of its latest request: a request made while that mesh is downloading outlives the pass that
+   * started before it, which clears a mark only when the number is the one it saw.
+   */
+  private fresh = new Map<string, number>();
+  private freshSeq = 0;
+  /** Names the owner asked for (Download, Update): the next pass fetches them even when the folder's copy is newer. */
+  private requested = new Set<string>();
   private downloading: string | null = null;
   private removing = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -400,7 +407,12 @@ export class MeshManager {
 
   /** Download this mesh again from scratch at the next pass, even when the copy on disk is the published build. */
   redownload(name: string): void {
-    this.fresh.add(name);
+    this.fresh.set(name, ++this.freshSeq);
+  }
+
+  /** Download or Update pressed: fetch at the next pass whatever a newer copy in the owner's folder says (resume kept). */
+  request(name: string): void {
+    this.requested.add(name);
   }
 
   /**
@@ -530,14 +542,21 @@ export class MeshManager {
         if (this.catalog && !local) this.errors.set(n, 'not in the catalogue');
         continue;
       }
-      // "Download again" fetches whatever the dates; otherwise a newer local copy, or a copy of the same build, means no download.
-      const again = this.fresh.has(n);
-      if (!again && local && localWins(local.build_date, entry.build_date)) continue;
+      // "Download again" fetches whatever the dates; a pressed Download or Update fetches past a newer folder copy;
+      // otherwise a newer local copy, or a copy of the same build, means no download.
+      const freshSeq = this.fresh.get(n);
+      const again = freshSeq !== undefined;
+      const asked = again || this.requested.has(n);
+      if (!asked && local && localWins(local.build_date, entry.build_date)) continue;
       const marker = readMarker(path.join(this.storeDir, n));
       if (!again && marker && marker.build_date === entry.build_date) continue;
       await this.download(entry, signal, again);
-      // The fresh request stands until a download succeeds, so a failure is retried at the next pass.
-      if (!signal.aborted && !this.errors.has(n)) this.fresh.delete(n);
+      // A request stands until a download succeeds, so a failure is retried at the next pass; a fresh request made
+      // while this download ran is newer than the one seen and stands too.
+      if (!signal.aborted && !this.errors.has(n)) {
+        this.requested.delete(n);
+        if (this.fresh.get(n) === freshSeq) this.fresh.delete(n);
+      }
     }
   }
 

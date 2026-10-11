@@ -526,3 +526,70 @@ test('MeshManager: a list change while the loop is downloading is applied by one
     fs.rmSync(store, { recursive: true, force: true });
   }
 });
+
+test('MeshManager: Download or Update pressed fetches past a newer copy in the folder; a daily pass does not', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshsrv-'));
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshstore-'));
+  const mine = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-mine-'));
+  fs.mkdirSync(path.join(mine, '01CGD_mesh'));
+  fs.writeFileSync(
+    path.join(mine, '01CGD_mesh', 'index.json'),
+    JSON.stringify({ version: 1, west: 0, south: 0, east: 2, north: 1, tileDeg: 1, xScale: 1, triangles: 2, tiles: [] })
+  );
+  fs.writeFileSync(path.join(mine, '01CGD_mesh.json'), JSON.stringify({ build_date: '2026-10-12T00:00:00Z' }));
+  publish(root, '2026-10-10T00:00:00Z', 500);
+  const { url, close } = await serve(root);
+  const mgr = new MeshManager(() => {});
+  try {
+    mgr.configure(url + 'charts/mesh/index.json', ['01CGD'], store, [], mine);
+    await mgr.reconcile();
+    assert.equal(readMarker(path.join(store, '01CGD')), null, 'the daily pass leaves a newer folder copy alone');
+    mgr.request('01CGD'); // the panel's Download
+    await mgr.reconcile();
+    assert.equal(readMarker(path.join(store, '01CGD'))!.build_date, '2026-10-10T00:00:00Z', 'pressed: fetched');
+    // The request is spent: a later pass with a newer published build still defers to the newer folder copy.
+    publish(root, '2026-10-11T00:00:00Z', 500);
+    await mgr.reconcile();
+    assert.equal(readMarker(path.join(store, '01CGD'))!.build_date, '2026-10-10T00:00:00Z');
+  } finally {
+    mgr.stop();
+    close();
+    for (const d of [root, store, mine]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
+test('MeshManager: a Download again pressed while that mesh is downloading is kept for the next pass', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshsrv-'));
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshstore-'));
+  publish(root, '2026-10-10T00:00:00Z', 500, 3);
+  let release: () => void = () => {};
+  const gate = new Promise<void>(r => (release = r));
+  let holds = 0;
+  const { url, close } = await serve(root, () => (++holds <= 2 ? gate : Promise.resolve()));
+  const mgr = new MeshManager(() => {});
+  try {
+    mgr.configure(url + 'charts/mesh/index.json', ['01CGD'], store);
+    mgr.redownload('01CGD');
+    const pass = mgr.reconcile(); // the fetch sits on the first tiles
+    while (holds < 1) await new Promise(r => setTimeout(r, 20));
+    publish(root, '2026-10-10T00:00:00Z', 500, 4); // the files change on the server, same build
+    mgr.redownload('01CGD'); // pressed again while downloading
+    release();
+    await pass;
+    const got = fs.readFileSync(path.join(store, '01CGD', 'mesh_001_002.bin'))[0];
+    await mgr.reconcile();
+    assert.equal(
+      fs.readFileSync(path.join(store, '01CGD', 'mesh_001_002.bin'))[0],
+      4,
+      `the second request fetched afresh (first pass got ${got})`
+    );
+    await mgr.reconcile();
+    assert.equal(mgr.status().meshes.find(r => r.name === '01CGD')!.state, 'ready');
+  } finally {
+    release();
+    mgr.stop();
+    close();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
