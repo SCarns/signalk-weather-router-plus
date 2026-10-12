@@ -417,7 +417,7 @@ export class PagedMesh {
   }
 
   /** The triangle of a tile holding (px, py), local id or -1; with preferUsable a usable one wins over a blocked one. */
-  private locateIn(T: PagedTile, px: number, py: number, preferUsable: boolean): number {
+  private locateIn(T: PagedTile, px: number, py: number, preferUsable: boolean, all?: number[]): number {
     const G = this.gridOf(T);
     const i = Math.floor((px - G.x0) / this.cellM);
     const j = Math.floor((py - G.y0) / this.cellM);
@@ -453,6 +453,10 @@ export class PagedMesh {
       const d3 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx);
       // d1 is the point's distance from edge ab (positive inside) times the edge's length; likewise d2, d3.
       if (d1 >= -tol * lab && d2 >= -tol * lbc && d3 >= -tol * lca) {
+        if (all) {
+          all.push(t);
+          continue;
+        }
         if (!preferUsable || !T.blocked[t]) return t;
         if (found < 0) found = t;
       }
@@ -488,7 +492,7 @@ export class PagedMesh {
       [-1, -1],
     ]) {
       const info = this.store.tile(i + di, j + dj);
-      if (!info || lon < info.bbox[0] || lat < info.bbox[1] || lon > info.bbox[2] || lat > info.bbox[3]) continue;
+      if (!info || !nearExtent(info, lon, lat)) continue;
       const T = this.tile(this.tileIndexOf(info.first));
       const t = this.locateIn(T, px, py, preferUsable);
       if (t < 0) continue;
@@ -537,6 +541,34 @@ export class PagedMesh {
     return best;
   }
 
+  /**
+   * Every usable triangle holding a point of the metres frame (global ids, within the walk's tolerance), across the
+   * tiles around it. A point on a corner or an edge belongs to each triangle it touches: a stop or a route corner
+   * handed on as lon/lat may touch water of two connected groups at one corner (part 2: a snapped waypoint at
+   * 41.3297, -70.4388 touched the route's water and a separate pocket), and the caller decides by the water it needs.
+   */
+  locateAll(px: number, py: number): number[] {
+    const out: number[] = [];
+    const collect = (T: PagedTile): void => {
+      const local: number[] = [];
+      this.locateIn(T, px, py, false, local);
+      for (const l of local) if (!T.blocked[l] && !out.includes(T.first + l)) out.push(T.first + l);
+    };
+    if (!this.store) {
+      collect(this.held.get(0)!);
+      return out;
+    }
+    const [lon, lat] = this.fromXY(px, py);
+    const [i, j] = this.store.tileIJ(lon, lat);
+    for (let di = -1; di <= 1; di++)
+      for (let dj = -1; dj <= 1; dj++) {
+        const info = this.store.tile(i + di, j + dj);
+        if (!info || !nearExtent(info, lon, lat)) continue;
+        collect(this.tile(this.tileIndexOf(info.first)));
+      }
+    return out;
+  }
+
   /** Blocked for the search (rules and buffer)? */
   isBlocked(g: number): boolean {
     const T = this.tileOf(g);
@@ -576,4 +608,15 @@ function closestOnTriangle(px: number, py: number, x: Float64Array, y: Float64Ar
     }
   }
   return best;
+}
+
+/**
+ * Is the point inside a tile's vertex extent, within the walk's tolerance (width.ts U_TOL) of its size? A point on
+ * the tile's outer edge comes back from the metres frame a hair outside it (3.0000000000000004 against 3).
+ */
+function nearExtent(info: MeshTileInfo, lon: number, lat: number): boolean {
+  const b = info.bbox;
+  const tx = U_TOL * (b[2] - b[0]);
+  const ty = U_TOL * (b[3] - b[1]);
+  return lon >= b[0] - tx && lat >= b[1] - ty && lon <= b[2] + tx && lat <= b[3] + ty;
 }

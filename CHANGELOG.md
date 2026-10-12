@@ -25,6 +25,13 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A point on a corner or an edge belongs to every triangle it touches**
+  (`PagedMesh.locateAll`; the tile-extent test with the walk's tolerance):
+  the reach and the snap take the route's water if any of those triangles
+  is in it, and the mesh search starts from all of them and arrives at any
+  (`meshAstar` with several start and end triangles). A snapped waypoint on
+  a corner shared with a separate pocket was refused ("no water connects",
+  test box 2026-10-12, replays 1c7e6fa5 and 7443bcb9).
 - **Snapping on the chart mesh** (docs/drafts/mesh-no-gshhg-design.md part 2;
   child task `mesh-snap`, `plugin/meshcoarse.ts`): in water a mesh covers,
   the start, destination and exact waypoints are moved, by the mesh and not
@@ -117,8 +124,10 @@ uses [Semantic Versioning](https://semver.org/).
   `legs_detail`, the GeoJSON `depth_check`, the log a "depth check:" line.
 - **Web app:** the result strip shows *Chart depth checked* (shallowest
   depth, distance with no charted depth, distance outside the mesh, legs on
-  coastline data); a failed request shows the earlier route's strip again,
-  marked "The last route request failed; this is the earlier route."
+  coastline data). A new request removes the route on the map (line,
+  skeleton, fronts, strip, name; the markers stay); a failed request leaves
+  no route on the map (the owner's choice, 2026-10-12, replacing the
+  earlier-route mark).
 
 ## [0.2.0-beta.1] - 2026-10-09
 

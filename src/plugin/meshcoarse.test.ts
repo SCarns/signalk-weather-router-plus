@@ -12,6 +12,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { writeGridMesh } from '../engine/mesh/fixture';
+import { searchMesh } from '../engine/mesh/route';
+import { MeshStore } from '../engine/mesh/store';
 import { runChildTask } from './childtask';
 import {
   boundaryFile,
@@ -193,6 +195,30 @@ test('mesh-snap: a stop on water the boat cannot use, or in a pond, moves to the
         far.reason,
         /^the start point, at 3\.6000, 0\.5000, is on charted depth \{depth:1\}, too shallow for this boat; the nearest water this boat can use, connected to the route, is \{length:\d+\} away at 3\.0000, 0\.5000, more than \{length:1000\}/
       );
+  } finally {
+    fs.rmSync(mesh, { recursive: true, force: true });
+    fs.rmSync(data, { recursive: true, force: true });
+  }
+});
+
+test('a stop on a corner where the route’s water meets a separate pocket belongs to the route’s water: reach, snap and search', () => {
+  // The U, and a one-tile pocket at (3, 4) touching the top of its right arm (2, 3) only at the corner (3, 4).
+  const mesh = writeGridMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-')), [...U, { i: 3, j: 4 }]);
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-data-'));
+  try {
+    const out = coarseFile(data, mesh, RULES);
+    runMeshCoarseTask({ task: 'mesh-coarse', dir: mesh, out, rules: RULES });
+    const points = [
+      { lon: 0.5, lat: 3.6, name: 'the start' },
+      { lon: 3, lat: 4, name: 'the destination' },
+    ];
+    const reach = runMeshReachTask({ task: 'mesh-reach', dir: mesh, mapFile: out, points, rules: RULES });
+    assert.ok(reach.ok, reach.ok ? '' : reach.reason);
+    const snap = runMeshSnapTask({ task: 'mesh-snap', dir: mesh, mapFile: out, points, rules: RULES, maxMoveM: 1000 });
+    assert.ok(snap.ok, snap.ok ? '' : snap.reason);
+    if (snap.ok) assert.equal(snap.points[1].movedM, 0, 'not moved: it touches the route');
+    const s = searchMesh(MeshStore.open(mesh), [0.5, 3.6], [3, 4], { ...RULES, motorSpeedMs: 3 });
+    assert.ok(s.result.ok, s.result.ok ? '' : s.result.reason);
   } finally {
     fs.rmSync(mesh, { recursive: true, force: true });
     fs.rmSync(data, { recursive: true, force: true });

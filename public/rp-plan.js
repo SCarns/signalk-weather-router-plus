@@ -72,7 +72,6 @@ function _mapFitPadding() {
 // legs coloured by tack, where the forecast runs out, the snap connectors,
 // the result strip and the itinerary.
 function displayRoute(geojson) {
-  _failedOverRoute = false;
   setSelectedRouteFeature(null);
   routeSource.clear();
   const features = new ol.format.GeoJSON().readFeatures(geojson, {
@@ -488,7 +487,6 @@ function _loadRouteJob(id) {
 }
 
 function _clearDisplayedRoute() {
-  _prevRouteProps = null; _prevNavWarns = null; _failedOverRoute = false;
   _currentRouteJobId = null;
   _currentRouteName = '';
   routeSource.clear();
@@ -1560,9 +1558,6 @@ const RouteProgress = (function () {
 // One line of what the route is, from the LineString properties, plus
 // a badge that opens the validator's warnings.
 let _lastRouteProps = null, _lastNavWarns = null;
-// The route on the map when a computation starts, and whether the request that replaced it failed: the earlier
-// route is then shown again, marked, never as if it were the answer.
-let _prevRouteProps = null, _prevNavWarns = null, _failedOverRoute = false;
 // The final depth check (worker: depth_check on the LineString): one line, totals over the legs, in the user's units.
 function _depthCheckLine(dc) {
   if (!dc || !Array.isArray(dc.legs) || !dc.legs.length) return '';
@@ -1584,7 +1579,7 @@ function _depthCheckLine(dc) {
 function renderResultStrip(p, navWarns) {
   const el = document.getElementById('routeInfo');
   _lastRouteProps = p; _lastNavWarns = navWarns;
-  el.classList.toggle('stale', !!(p && (_routeStale || _failedOverRoute)));
+  el.classList.toggle('stale', !!(p && _routeStale));
   if (!p) { el.innerHTML = ''; return; }
   const distStr = p.total_distance_m != null ? fmtDist(p.total_distance_m) : '?';
   const timeStr = p.total_time_s != null ? fmtTime(p.total_time_s) : '?';
@@ -1619,7 +1614,6 @@ function renderResultStrip(p, navWarns) {
   }
   html += _depthCheckLine(p.depth_check);
   if (navWarns && navWarns.length) html += '<div class="rs-notes">' + navWarns.join(' · ') + '</div>';
-  if (_failedOverRoute) html += '<div class="rs-stale">The last route request failed; this is the earlier route.</div>';
   if (_routeStale) html += '<div class="rs-stale">Markers changed since this route was computed.</div>';
   if (warns.length) {
     html += '<div class="rs-warnlist" id="rsWarnList" hidden>' + warns.map(w => {
@@ -1670,9 +1664,17 @@ function showModal() {
   modalStatus.textContent = 'Starting...';
   _routeStale = false;
   _routeComputing = true;
-  // The route still on the map, kept so a failed request can show it again, marked as the earlier route.
-  if (_lastRouteProps) { _prevRouteProps = _lastRouteProps; _prevNavWarns = _lastNavWarns; }
-  _failedOverRoute = false;
+  // A new request: the route on the map goes with its strip and name (the owner, 2026-10-12); a request that fails
+  // leaves the map without a route and shows the error. The markers and waypoints stay.
+  setSelectedRouteFeature(null);
+  routeSource.clear();
+  _routePoints = [];
+  skeletonSource.clear();
+  frontSource.clear();
+  _currentRouteJobId = null;
+  _currentRouteName = '';
+  const nameInput = document.getElementById('routeNameInput');
+  if (nameInput) nameInput.value = '';
   renderResultStrip(null);
   RouteProgress.start();
   cancelBtn.style.display = 'inline-block';
@@ -2399,11 +2401,6 @@ function _jobOnError(job, ev) {
     RouteProgress.fail(cancelled ? 'Cancelled' : 'Failed: ' + unitText(msg));
     _computeUiIdle();
     _backToEarlierRoute();
-    // A failed request leaves the earlier route on the map: show its strip again, marked, so it never reads as the answer.
-    if (!cancelled && _prevRouteProps && routeSource.getFeatures().length) {
-      _failedOverRoute = true;
-      renderResultStrip(_prevRouteProps, _prevNavWarns);
-    }
     showTab('logSection');
     const rawLog = document.getElementById('rawLog');
     if (rawLog) rawLog.open = true;

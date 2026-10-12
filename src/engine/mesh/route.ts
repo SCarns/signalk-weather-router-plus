@@ -364,13 +364,17 @@ export function searchMesh(
   const done = (result: MeshRouteResult): MeshSearch => ({ result, box: pm.touchedBox() ?? ends, paged: pm });
   const [sx, sy] = pm.toXY(start[0], start[1]);
   const [wx, wy] = pm.toXY(end[0], end[1]);
-  // A point on the edge between usable and blocked water belongs to the usable side (as the land test and the walks say).
-  const st = startTri ?? pm.locate(sx, sy, true);
+  // The start's triangles: every usable one the point touches (a corner or an edge between usable and blocked water,
+  // or between two waters, belongs to each), or the one the last piece of a run ended in. None usable: the triangle
+  // under it says why.
+  const sAll = startTri !== undefined ? [startTri] : pm.locateAll(sx, sy);
+  const st = sAll.length ? sAll[0] : pm.locate(sx, sy, true);
   if (st < 0) return done({ ok: false, reason: 'start point is not in a mesh triangle', stats: stats() });
   // The end: the point itself, or for an approximate waypoint the usable water nearest it.
   let ex = wx;
   let ey = wy;
   let et: number;
+  let eAll: number[] = [];
   let target: MeshTarget | undefined;
   if (approach?.aim) {
     // Where the rough cut aimed the waypoint (water connected to the start, under the same blocked sets).
@@ -391,9 +395,11 @@ export function searchMesh(
     const [lon, lat] = nu.distM > 0 ? pm.fromXY(ex, ey) : end;
     target = { lon, lat, radiusM: approach.radiusM, movedM: nu.distM };
   } else {
-    et = pm.locate(ex, ey, true);
+    eAll = pm.locateAll(ex, ey);
+    et = eAll.length ? eAll[0] : pm.locate(ex, ey, true);
     if (et < 0) return done({ ok: false, reason: 'end point is not in a mesh triangle', stats: stats() });
   }
+  if (!eAll.length) eAll = [et];
   // The ends against the rules themselves, before the buffer: inside a blocked triangle is one error, inside the buffer another.
   const S = pm.tileOf(st);
   const E = pm.tileOf(et);
@@ -408,7 +414,7 @@ export function searchMesh(
       stats: stats(),
     });
   const t0 = Date.now();
-  const r = meshAstar(pm, st, et, sx, sy, ex, ey, rules.motorSpeedMs);
+  const r = meshAstar(pm, sAll.length ? sAll : [st], eAll, sx, sy, ex, ey, rules.motorSpeedMs);
   searchMs = Date.now() - t0;
   expanded = r.expanded;
   if (r.goalNode === -2)
@@ -433,13 +439,13 @@ export function searchMesh(
   // An inner waypoint of a run: the route stops where it enters the circle (the water there being usable, or the
   // nearest usable water inside the circle; the route goes on to water moved outside it).
   if (approach?.trim && target!.movedM <= approach.radiusM) pathXY = trimAtCircle(pathXY, wx, wy, approach.radiusM);
-  const widths = passageWidths(pm, pathXY, st);
+  const widths = passageWidths(pm, pathXY, r.startTri);
   funnelMs = Date.now() - t1;
   const path = pathXY.map(p => pm.fromXY(p[0], p[1]));
   let lengthM = 0;
   for (let i = 1; i < path.length; i++) lengthM += haversineDistanceM(path[i - 1][0], path[i - 1][1], path[i][0], path[i][1]);
   // The triangle the route ends in, carried along the route itself from the start's (as passageWidths does).
-  let endTri = st;
+  let endTri = r.startTri;
   for (let i = 1; i < pathXY.length; i++) {
     const [ax, ay] = pathXY[i - 1];
     const L = Math.hypot(pathXY[i][0] - ax, pathXY[i][1] - ay);

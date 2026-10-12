@@ -33,8 +33,9 @@
   the water your boat can use tells it at once when no water joins the
   start and the end. That map is built after each chart download;
   *Rebuild rough cuts* on the plugin configuration page builds it again.
-- **A failed request no longer looks like a result.** When a new request
-  fails, the route still on the map is marked as the earlier route.
+- **A new request clears the old route.** When you ask for a new route,
+  the one on the map goes; if the request fails, the map shows no route and
+  the error says why.
 
 ## 0.2.0-beta.1
 

@@ -237,31 +237,40 @@ export function runMeshReachTask(t: MeshReachTask): MeshReachResult {
   const cl = Math.cos((((Math.min(...lats) + Math.max(...lats)) / 2) * Math.PI) / 180);
   const pm = new PagedMesh(store, meshRulesOf(t.rules, t.avoid), cl, readBoundary(boundaryFile(t.mapFile)));
   const graph = new PieceGraph(map, pm);
+  // Each point's pieces: of every usable triangle it touches (a corner or an edge can touch water of two groups).
+  const piecesAt = (lon: number, lat: number): number[] => {
+    const out: number[] = [];
+    for (const tri of pm.locateAll(...pm.toXY(lon, lat))) {
+      const q = graph.pieceOf(tri);
+      if (q !== null && !out.includes(q)) out.push(q);
+    }
+    return out;
+  };
+  const at = t.points.map(p => (p.radiusM === undefined || p === t.points[0] ? piecesAt(p.lon, p.lat) : []));
+  // The route's water: a connected group the start and every exact point touch.
+  let groups: number[] | null = null;
+  for (let k = 0; k < t.points.length; k++) {
+    const p = t.points[k];
+    if (k > 0 && p.radiusM !== undefined) continue;
+    if (!at[k].length) return { ok: false, reason: unusable(pm, pm.locate(...pm.toXY(p.lon, p.lat), true), p.name, t.rules.bufferM) };
+    const here = [...new Set(at[k].map(q => graph.component(q)))];
+    groups = groups === null ? here : groups.filter(c => here.includes(c));
+    if (!groups.length) return { ok: false, reason: noWater(p.name, t.rules) };
+  }
+  const group = groups![0];
   const pieces: number[] = [];
   const aims: ({ lon: number; lat: number; tri: number; movedM: number } | null)[] = [];
-  let start = -1;
-  for (const p of t.points) {
-    const [px, py] = pm.toXY(p.lon, p.lat);
-    const g = pm.locate(px, py, true);
-    const here = g >= 0 && !pm.isBlocked(g) ? graph.pieceOf(g) : null;
-    if (start < 0) {
-      // The start: on usable water, or the leg cannot leave.
-      if (here === null) return { ok: false, reason: unusable(pm, g, p.name, t.rules.bufferM) };
-      start = graph.component(here);
-      pieces.push(here);
+  for (let k = 0; k < t.points.length; k++) {
+    const p = t.points[k];
+    if (k === 0 || p.radiusM === undefined) {
+      pieces.push(at[k].find(q => graph.component(q) === group)!);
+      if (k > 0) aims.push(null);
       continue;
     }
-    if (p.radiusM === undefined) {
-      if (here === null) return { ok: false, reason: unusable(pm, g, p.name, t.rules.bufferM) };
-      if (graph.component(here) !== start) return { ok: false, reason: noWater(p.name, t.rules) };
-      pieces.push(here);
-      aims.push(null);
-      continue;
-    }
-    // An approximate waypoint: itself when it is connected usable water, else the nearest that is.
-    const nu = pm.nearestUsable(px, py, tri => {
+    // An approximate waypoint: itself when it is usable water of the route's group, else the nearest that is.
+    const nu = pm.nearestUsable(...pm.toXY(p.lon, p.lat), tri => {
       const q = graph.pieceOf(tri);
-      return q !== null && graph.component(q) === start;
+      return q !== null && graph.component(q) === group;
     });
     if (!nu) return { ok: false, reason: noWater(p.name, t.rules) };
     const [lon, lat] = nu.distM > 0 ? pm.fromXY(nu.x, nu.y) : [p.lon, p.lat];
@@ -336,26 +345,34 @@ export function runMeshSnapTask(t: MeshSnapTask): MeshSnapResult {
     const p = graph.pieceOf(g);
     return p === null ? null : graph.component(p);
   };
-  // The route's water: the last stop's connected group (its own water, or the usable water nearest it).
+  // The groups of the usable water a point touches (a corner or an edge can touch water of two groups).
+  const groupsAt = (px: number, py: number): number[] => [
+    ...new Set(pm.locateAll(px, py).flatMap(tri => (groupOf(tri) === null ? [] : [groupOf(tri)!]))),
+  ];
+  // The route's water: the last stop's connected group (its own water, or the usable water nearest it); of several
+  // its point touches, one the first stop touches too.
   const last = t.points[t.points.length - 1];
   const [lx, ly] = pm.toXY(last.lon, last.lat);
-  const lt = pm.locate(lx, ly, true);
-  let group = lt >= 0 && !pm.isBlocked(lt) ? groupOf(lt) : null;
-  if (group === null) {
+  let lastGroups = groupsAt(lx, ly);
+  if (!lastGroups.length) {
     const nu = pm.nearestUsable(lx, ly);
     if (!nu) return { ok: false, reason: 'the chart mesh has no water this boat can use' };
-    group = groupOf(nu.tri);
+    lastGroups = [groupOf(nu.tri)!];
   }
+  const firstGroups = groupsAt(...pm.toXY(t.points[0].lon, t.points[0].lat));
+  const group = lastGroups.find(c => firstGroups.includes(c)) ?? lastGroups[0];
   const out: Extract<MeshSnapResult, { ok: true }>['points'] = [];
   for (const p of t.points) {
     const [px, py] = pm.toXY(p.lon, p.lat);
-    const g = pm.locate(px, py, true);
-    const usable = g >= 0 && !pm.isBlocked(g);
-    if (usable && groupOf(g) === group) {
+    const here = groupsAt(px, py);
+    if (here.includes(group)) {
       out.push({ lon: p.lon, lat: p.lat, movedM: 0, why: null, outsideGroup: false });
       continue;
     }
-    const why = usable ? 'its water does not connect to the route for this boat' : whyUnusable(pm, g, t.rules.bufferM);
+    const usable = here.length > 0;
+    const why = usable
+      ? 'its water does not connect to the route for this boat'
+      : whyUnusable(pm, pm.locate(px, py, true), t.rules.bufferM);
     const nu = pm.nearestUsable(px, py, tri => groupOf(tri) === group);
     if (!nu)
       return {
