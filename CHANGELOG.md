@@ -25,6 +25,19 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Snapping on the chart mesh** (docs/drafts/mesh-no-gshhg-design.md part 2;
+  child task `mesh-snap`, `plugin/meshcoarse.ts`): in water a mesh covers,
+  the start, destination and exact waypoints are moved, by the mesh and not
+  the coastline, to the nearest water the boat can use that connects to the
+  route (the rough cut's groups), within 1,000 m (the owner's choice; farther
+  is an error naming the nearest usable water); a stop in water that does
+  not connect (a pond) moves out with a WARNING. Approximate waypoints are
+  left to their circles. Stops outside the meshes keep the coastline snap.
+  A point's triangle is now found with the walk's own tolerance
+  (`paged.ts` `locateIn`, width.ts `U_TOL`), and the mesh search finds its
+  ends preferring usable water: a snapped stop lies on the edge of usable
+  water and, handed on as lon/lat, was judged in the buffer (test box,
+  2026-10-12: a start moved 684 m, then refused).
 - **Refined router: light-air motoring under sail_max is kept**
   (`experimental/propagator.ts` `sailedThrough`, `legsim.ts`
   `motoringNoGoSeconds`): the tack layout refused any piece the simulator

@@ -989,15 +989,24 @@ not the nearest one: branches advance a fixed distance per stage, so a
 slow branch crawling straight at the waypoint is nearest while faster
 branches that tacked are further out but ahead in time.
 
-Every stop (start, waypoints, destination) is tested against the exact
-coastline polygons before routing. One on land, or within 150 m of the
-shore, is moved to the nearest point with 150 m of water around it, within
-1,000 m, and reported: in the log (which point, how far), on
+Every stop (start, waypoints, destination) is tested before routing. In
+water a chart mesh covers, the mesh decides: the start, the destination and
+exact waypoints on water the boat cannot use (too shallow, a hazard, mark,
+structure, low clearance or area to avoid, within the buffer from unusable
+water, or on land) or on water that does not connect to the route (a pond
+the boat cannot leave) are moved to the nearest water the boat can use that
+connects to the route, within 1,000 m; a move out of unconnected water is
+logged as a WARNING. Approximate waypoints are not moved: their circle is
+aimed at usable water when the leg is planned. Outside the meshes, a stop
+is tested against the exact coastline polygons: one on land, or within
+150 m of the shore, is moved to the nearest point with 150 m of water around
+it, within 1,000 m. Either way the move is reported: in the log (which point, how far), on
 the route (`snaps`, `stop_count`, the `start_`/`end_` original, anchor and
 snap-distance fields) and on the moved point (`snap_distance_m`,
 `original`); the web app draws the tie from the drawn point to the water
-and the itinerary says "moved N m". With no water within 1,000 m the
-route fails naming the point.
+and the itinerary says "moved N m". With no such water within 1,000 m the
+route fails naming the point (on the mesh, also the nearest usable water and
+its distance).
 
 Polar rows closer to the wind than the **Tightest sailable angle**
 setting (Defaults tab, Routing group, default 30°, 0 = off) are ignored

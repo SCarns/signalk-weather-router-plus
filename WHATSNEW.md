@@ -15,6 +15,11 @@
   the places. A route that passes shows *Chart depth checked* with the
   shallowest depth it crosses, how much of it has no charted depth, and
   how much lies outside the charts.
+- **Points in shallow water are moved for you.** A start, destination or
+  waypoint you drop in water too shallow for your boat (or on a rock, a
+  mark, or the land) is moved to the nearest water your boat can use, up to
+  1,000 m, and the dotted line shows where from. This uses the charts'
+  depths, not just the coastline.
 - **Approximate waypoints use the charts.** A trip through approximate
   waypoints is now routed on the chart depths all the way, instead of on
   the coastline outline. A waypoint you drop on land or in shallow water

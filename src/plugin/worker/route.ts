@@ -80,6 +80,40 @@ function openMeshes(cfg: ResolvedConfig, progress: (m: string) => void): OpenMes
 }
 
 /**
+ * The rough cut of a mesh for the route's rules (parts 2–4): built first, in a child process (meshcoarse.ts), when
+ * it is not on disk. Its file, or a refusal when it could not be built.
+ */
+async function ensureRoughCut(
+  st: WorkerState,
+  m: OpenMesh,
+  rules: MeshRules,
+  tag: string,
+  progress: MeshLegArgs['progress'],
+  signal: AbortSignal
+): Promise<string | MeshRefusal> {
+  const r = coarseRulesOf(rules);
+  const file = coarseFile(st.cacheRoot, m.dir, r);
+  if (fs.existsSync(file)) return file;
+  progress(
+    0,
+    0,
+    `${tag}chart mesh: building the rough cut of ${m.name} for this boat (draught {depth:${r.draughtM}}, air draft {length:${r.airDraftM}}, buffer {length:${r.bufferM}}, opening bridges ${r.openingBridges === 'avoid' ? 'avoided' : 'open'}), once`
+  );
+  try {
+    const b = await runChildTask({ task: 'mesh-coarse', dir: m.dir, out: file, rules: r }, 15 * 60_000, signal);
+    progress(
+      0,
+      0,
+      `${tag}chart mesh: rough cut built: ${b.pieces} pieces of water, ${b.links} links, ${b.boundaryBlocked} blocked triangles on tile edges, {dataSize:${b.bytes}} in {time:${b.ms / 1000}}`
+    );
+  } catch (err) {
+    if (signal.aborted) throw err;
+    return { refused: `the rough cut of ${m.name} could not be built (${(err as Error).message})` };
+  }
+  return file;
+}
+
+/**
  * The meshes as the leg pipeline's runner, or undefined when there are
  * none. A leg is covered when one mesh covers all its points, and that leg
  * is planned whole in a child process holding that mesh
@@ -100,38 +134,8 @@ function meshLegRunner(
   if (!stores.length) return undefined;
   const meshFor = (points: [number, number][]): (typeof stores)[number] | undefined => stores.find(s => meshCovers(s.store, points));
   const useForecast = !request.no_forecast && request.mode !== 'motor';
-  /**
-   * The rough cut of a mesh for the boat (part 4): built first, in a child process (meshcoarse.ts), when it is not
-   * on disk. Its file, or a refusal when it could not be built.
-   */
-  const roughCut = async (
-    m: OpenMesh,
-    rules: MeshRules,
-    tag: string,
-    progress: MeshLegArgs['progress'],
-    signal: AbortSignal
-  ): Promise<string | MeshRefusal> => {
-    const r = coarseRulesOf(rules);
-    const file = coarseFile(st.cacheRoot, m.dir, r);
-    if (fs.existsSync(file)) return file;
-    progress(
-      0,
-      0,
-      `${tag}chart mesh: building the rough cut of ${m.name} for this boat (draught {depth:${r.draughtM}}, air draft {length:${r.airDraftM}}, buffer {length:${r.bufferM}}, opening bridges ${r.openingBridges === 'avoid' ? 'avoided' : 'open'}), once`
-    );
-    try {
-      const b = await runChildTask({ task: 'mesh-coarse', dir: m.dir, out: file, rules: r }, 15 * 60_000, signal);
-      progress(
-        0,
-        0,
-        `${tag}chart mesh: rough cut built: ${b.pieces} pieces of water, ${b.links} links, ${b.boundaryBlocked} blocked triangles on tile edges, {dataSize:${b.bytes}} in {time:${b.ms / 1000}}`
-      );
-    } catch (err) {
-      if (signal.aborted) throw err;
-      return { refused: `the rough cut of ${m.name} could not be built (${(err as Error).message})` };
-    }
-    return file;
-  };
+  const roughCut = (m: OpenMesh, rules: MeshRules, tag: string, progress: MeshLegArgs['progress'], signal: AbortSignal) =>
+    ensureRoughCut(st, m, rules, tag, progress, signal);
   return {
     covers: points => meshFor(points) !== undefined,
     leg: async (a: MeshLegArgs) => {
@@ -349,6 +353,8 @@ export async function route(
     // a land cell and no final leg to it is ever clear (job 6ea0c875, the
     // East River: "boxed in … 0 km from the destination"). Further than
     // SNAP_MAX_M is an error that names the point.
+    const vessel = routeVessel(cfg, request.vessel, self);
+    const meshes = openMeshes(cfg, m => progress(0, 0, m));
     const snaps: StopSnap[] = [];
     {
       const SNAP_MAX_M = 1000;
@@ -356,8 +362,74 @@ export async function route(
       const SNAP_CLEAR_M = Math.max(150, cfg.routing.landBufferM);
       const label = (i: number): string =>
         i === 0 ? 'the start point' : i === stops.length - 1 ? 'the destination' : `your point ${i + 1} of ${stops.length} (waypoint ${i})`;
+      const meshOf = (p: Stop): OpenMesh | undefined => meshes.find(m => m.store.covers(p.lon, p.lat));
+      // Stops in mesh water are snapped on the mesh (docs/drafts/mesh-no-gshhg-design.md, part 2; the owner's
+      // choices of 2026-10-12): the start, the destination and exact waypoints, each mesh's stops together, to the
+      // nearest water the boat can use connected to the route, at most SNAP_MAX_M. An approximate waypoint is not
+      // snapped: its circle is aimed at usable water when its leg is planned (part 3). No coastline snap in mesh
+      // water; without the draught and air draft the mesh cannot judge, and the leg says so.
+      const approximate = (request.precision ?? DEFAULT_PRECISION) === 'approximate';
+      const byMesh = new Map<OpenMesh, number[]>();
+      for (let i = 0; i < stops.length; i++) {
+        const m = meshOf(stops[i]);
+        if (!m || (approximate && i > 0 && i < stops.length - 1)) continue;
+        byMesh.set(m, [...(byMesh.get(m) ?? []), i]);
+      }
+      if (byMesh.size && vessel.draughtM !== null && vessel.airDraftM !== null) {
+        const rules: MeshRules = {
+          draughtM: vessel.draughtM,
+          airDraftM: vessel.airDraftM,
+          motorSpeedMs: vessel.motorSpeedMs,
+          bufferM: cfg.routing.navigableBufferM,
+          openingBridges: (request.drawbridges ?? cfg.routing.drawbridges) === 'avoid' ? 'avoid' : 'open',
+          ...(avoid.length ? { avoid: avoid.map(a => ({ lon: a.lon, lat: a.lat, radiusM: a.radiusM })) } : {}),
+        };
+        const ac = new AbortController();
+        const poll = setInterval(() => {
+          if (shouldCancel()) ac.abort();
+        }, 500);
+        try {
+          for (const [m, idx] of byMesh) {
+            const file = await ensureRoughCut(st, m, rules, '', progress, ac.signal);
+            if (typeof file !== 'string') throw new RouteError(file.refused);
+            const r = await runChildTask(
+              {
+                task: 'mesh-snap',
+                dir: m.dir,
+                mapFile: file,
+                points: idx.map(i => ({ lon: stops[i].lon, lat: stops[i].lat, name: label(i) })),
+                rules: coarseRulesOf(rules),
+                ...(rules.avoid ? { avoid: rules.avoid } : {}),
+                maxMoveM: SNAP_MAX_M,
+              },
+              5 * 60_000,
+              ac.signal
+            );
+            if (!r.ok) throw new RouteError(r.reason);
+            idx.forEach((i, k) => {
+              const p = r.points[k];
+              if (!(p.movedM > 0)) return;
+              const s = stops[i];
+              snaps.push({ index: i, original: [s.lon, s.lat], anchor: [p.lon, p.lat], distanceM: p.movedM });
+              stops[i] = { ...s, lon: p.lon, lat: p.lat };
+              progress(
+                0,
+                0,
+                `${p.outsideGroup ? 'WARNING: ' : ''}${label(i)} ${p.why} according to the chart mesh; moved {length:${p.movedM.toFixed(0)}} to water this boat can use, connected to the route, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`
+              );
+            });
+          }
+        } catch (err) {
+          if (shouldCancel()) throw new RouteCancelled();
+          throw err;
+        } finally {
+          clearInterval(poll);
+        }
+      }
       for (let i = 0; i < stops.length; i++) {
         const s = stops[i];
+        // Mesh water: the mesh decides (above), never the coastline.
+        if (meshOf(s)) continue;
         // Only the polygons near this stop (0.02° ≈ 2 km covers SNAP_MAX_M +
         // SNAP_CLEAR_M): one box over every stop would decode the coastline
         // of the whole route, both coasts of an ocean for a crossing. The
@@ -381,6 +453,7 @@ export async function route(
           `${label(i)} ${why} according to the coastline data; moved {length:${d.toFixed(0)}} to open water at ${near[1].toFixed(4)}, ${near[0].toFixed(4)} (route points keep {length:${SNAP_CLEAR_M}} of water around them)`
         );
       }
+      snaps.sort((a, b) => a.index - b.index);
       if (snaps.length) {
         start[0] = stops[0].lon;
         start[1] = stops[0].lat;
@@ -389,7 +462,6 @@ export async function route(
       }
     }
 
-    const vessel = routeVessel(cfg, request.vessel, self);
     // Per-route polar: a library token from GET /api/polars, else the configured default.
     let routePolar: PolarDiagram | null = st.polar;
     let polarLabel: string | null = cfg.polarFile ? path.basename(cfg.polarFile) : null;
@@ -574,7 +646,6 @@ export async function route(
     const router = request.router ?? cfg.routing.router;
     if (router !== 'standard')
       progress(0, 0, `router: ${router} (the search on the convexified polar, legs laid out afterwards, cross-track polish)`);
-    const meshes = openMeshes(cfg, m => progress(0, 0, m));
     const pipeline: LegPipelineInputs = {
       waterGrid: st.waterGrid,
       router,

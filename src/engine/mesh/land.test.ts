@@ -231,3 +231,33 @@ test('MeshLand: a move exactly along an edge between usable and blocked water, t
   }
   assert.equal(checked, 800);
 });
+
+test('a point snapped to the nearest usable water, handed on as lon/lat, is found in usable water', () => {
+  // The lower triangle of square (5, 5) blocked: from a point inside it, the nearest usable water is a point on the
+  // diagonal it shares with the usable upper triangle. That point goes on as lon/lat (the snapped stop); found again,
+  // it must lie in usable water, and a move from it into the usable side must be clear. Real-scale coordinates.
+  for (let k = 0; k < 200; k++) {
+    const side = 20 + k * 1.37;
+    const m = gridMesh(10, 10, side);
+    const [x0, y0] = [-7.3e6, 4.6e6];
+    for (let q = 0; q < m.n * 3; q++) {
+      m.x[q] += x0;
+      m.y[q] += y0;
+    }
+    m.cl = Math.cos(((27 + k * 0.01) * Math.PI) / 180);
+    const blocked = new Uint8Array(m.n);
+    blocked[(5 * 10 + 5) * 2] = 1;
+    const pm = PagedMesh.fromLoaded(m, blocked, 250);
+    const land = new MeshLand(pm);
+    // (5.6, 5.45): nearer the diagonal (0.11 of a side) than the square's bottom (0.45) or right (0.4) edge.
+    const nu = pm.nearestUsable(x0 + 5.6 * side, y0 + 5.45 * side)!;
+    assert.ok(nu.distM > 0, 'moved out of the blocked triangle');
+    assert.equal(nu.tri, (5 * 10 + 5) * 2 + 1, 'onto the diagonal, in the upper triangle');
+    const [lon, lat] = pm.fromXY(nu.x, nu.y);
+    assert.equal(land.isLand(lon, lat), false, `side ${side}: the snapped point is usable water`);
+    const t = land.triangleAt(lon, lat, true);
+    assert.equal(blocked[t], 0, `side ${side}: found in a usable triangle`);
+    const [ul, ua] = pm.fromXY(x0 + 5.2 * side, y0 + 5.8 * side);
+    assert.equal(land.legCrossesLandExact(lon, lat, ul, ua), false, `side ${side}: a move into the usable side is clear`);
+  }
+});

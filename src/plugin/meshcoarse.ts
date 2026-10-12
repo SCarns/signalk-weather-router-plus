@@ -287,3 +287,100 @@ function unusable(pm: PagedMesh, g: number, name: string, bufferM: number): stri
 function noWater(name: string, rules: CoarseRules): string {
   return `no water on the chart mesh connects the start and ${name} for this boat (draught {depth:${rules.draughtM}}, air draft {length:${rules.airDraftM}}${rules.bufferM > 0 ? `, keeping {length:${rules.bufferM}} from water it cannot use` : ''})`;
 }
+
+export interface MeshSnapTask {
+  task: 'mesh-snap';
+  dir: string;
+  mapFile: string;
+  /** The route's exact stops in this mesh, in route order (start, exact waypoints, end), each with its name. */
+  points: { lon: number; lat: number; name: string }[];
+  rules: CoarseRules;
+  avoid?: MeshRules['avoid'];
+  /** The farthest a stop is moved, metres (the owner's choice, 2026-10-12: 1,000 m); farther is an error. */
+  maxMoveM: number;
+}
+
+/** Per point: where it goes (itself when its water is usable and connected), how far, and why it moved. */
+export type MeshSnapResult =
+  | { ok: true; points: { lon: number; lat: number; movedM: number; why: string | null; outsideGroup: boolean }[] }
+  | { ok: false; reason: string };
+
+/**
+ * Snap the route's exact stops in one mesh (docs/drafts/mesh-no-gshhg-design.md, part 2; the owner's choices of
+ * 2026-10-12): a stop on water the boat cannot use under the route's rules (blocked, in the buffer, or on land: no
+ * triangle), or on water not connected to the route's, moves to the nearest usable water connected to the route,
+ * at most `maxMoveM`. The route's water is the connected group of the last stop in this mesh (the destination, or
+ * where the route leaves the mesh): its own when it is usable, else that of the usable water nearest it. So a start
+ * in a pond moves out to water connected to the destination.
+ */
+export function runMeshSnapTask(t: MeshSnapTask): MeshSnapResult {
+  const store = MeshStore.open(t.dir);
+  const map = JSON.parse(fs.readFileSync(t.mapFile, 'utf8')) as CoarseMap;
+  if (
+    map.version !== COARSE_VERSION ||
+    map.triangles !== store.index.triangles ||
+    map.draughtM !== t.rules.draughtM ||
+    map.airDraftM !== t.rules.airDraftM ||
+    map.bufferM !== t.rules.bufferM ||
+    map.openingBridges !== t.rules.openingBridges
+  )
+    return {
+      ok: false,
+      reason: 'the rough cut on disk is for another build of the mesh or other rules; rebuild it in the plugin configuration',
+    };
+  const lats = t.points.map(p => p.lat);
+  const cl = Math.cos((((Math.min(...lats) + Math.max(...lats)) / 2) * Math.PI) / 180);
+  const pm = new PagedMesh(store, meshRulesOf(t.rules, t.avoid), cl, readBoundary(boundaryFile(t.mapFile)));
+  const graph = new PieceGraph(map, pm);
+  const groupOf = (g: number): number | null => {
+    const p = graph.pieceOf(g);
+    return p === null ? null : graph.component(p);
+  };
+  // The route's water: the last stop's connected group (its own water, or the usable water nearest it).
+  const last = t.points[t.points.length - 1];
+  const [lx, ly] = pm.toXY(last.lon, last.lat);
+  const lt = pm.locate(lx, ly, true);
+  let group = lt >= 0 && !pm.isBlocked(lt) ? groupOf(lt) : null;
+  if (group === null) {
+    const nu = pm.nearestUsable(lx, ly);
+    if (!nu) return { ok: false, reason: 'the chart mesh has no water this boat can use' };
+    group = groupOf(nu.tri);
+  }
+  const out: Extract<MeshSnapResult, { ok: true }>['points'] = [];
+  for (const p of t.points) {
+    const [px, py] = pm.toXY(p.lon, p.lat);
+    const g = pm.locate(px, py, true);
+    const usable = g >= 0 && !pm.isBlocked(g);
+    if (usable && groupOf(g) === group) {
+      out.push({ lon: p.lon, lat: p.lat, movedM: 0, why: null, outsideGroup: false });
+      continue;
+    }
+    const why = usable ? 'its water does not connect to the route for this boat' : whyUnusable(pm, g, t.rules.bufferM);
+    const nu = pm.nearestUsable(px, py, tri => groupOf(tri) === group);
+    if (!nu)
+      return {
+        ok: false,
+        reason: `${p.name}, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}, ${why}, and no usable water connected to the route was found`,
+      };
+    const [lon, lat] = pm.fromXY(nu.x, nu.y);
+    if (nu.distM > t.maxMoveM)
+      return {
+        ok: false,
+        reason: `${p.name}, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}, ${why}; the nearest water this boat can use, connected to the route, is {length:${nu.distM.toFixed(0)}} away at ${lat.toFixed(4)}, ${lon.toFixed(4)}, more than {length:${t.maxMoveM}}; move it there or into deeper water`,
+      };
+    out.push({ lon, lat, movedM: nu.distM, why, outsideGroup: usable });
+  }
+  return { ok: true, points: out };
+}
+
+/** Why a point's water is not usable on the mesh: on land (no triangle), blocked (with what blocks it), or in the buffer. */
+function whyUnusable(pm: PagedMesh, g: number, bufferM: number): string {
+  if (g < 0) return 'is on land';
+  const T = pm.tileOf(g);
+  const l = g - T.first;
+  if (!T.ruleBlocked[l]) return `is within {length:${bufferM}} of water the boat cannot use`;
+  const d = T.depth[l];
+  return d !== -999
+    ? `is on charted depth {depth:${d}}, too shallow for this boat`
+    : 'is on a hazard, mark, structure, low clearance or area to avoid';
+}

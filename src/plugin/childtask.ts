@@ -28,7 +28,9 @@
  *              read once, 0.25–0.53 GB on brain (2026-10-12);
  *  - mesh-reach: a leg's reach on the rough cut (whether water connects
  *              its ends for the boat, and the box of the tiles it runs
- *              through).
+ *              through);
+ *  - mesh-snap: the route's exact stops in one mesh moved to usable water
+ *              connected to the route (part 2).
  */
 
 import { fork } from 'node:child_process';
@@ -38,7 +40,7 @@ import type { RegionalSource } from '../data/regional';
 import type { RegionalDecodeResult } from '../data/regionaldecode';
 import type { RouteDepthCheck } from '../engine/mesh/check';
 import type { MeshCheckTask } from './meshchecktask';
-import type { MeshCoarseResult, MeshCoarseTask, MeshReachResult, MeshReachTask } from './meshcoarse';
+import type { MeshCoarseResult, MeshCoarseTask, MeshReachResult, MeshReachTask, MeshSnapResult, MeshSnapTask } from './meshcoarse';
 import type { MeshLegEvent, MeshLegResult, MeshLegTask } from './meshlegtask';
 
 export type ChildTask =
@@ -48,6 +50,7 @@ export type ChildTask =
   | MeshCheckTask
   | MeshCoarseTask
   | MeshReachTask
+  | MeshSnapTask
   | { task: 'mesh-download'; base: string; dest: string; build: string; fresh?: boolean };
 
 /** A message a task sends before its answer (the mesh leg's progress and stage fronts). */
@@ -74,9 +77,11 @@ export type ChildTaskResult<T extends ChildTask> = T extends { task: 'rmtree' }
         ? MeshCoarseResult
         : T extends { task: 'mesh-reach' }
           ? MeshReachResult
-          : T extends { task: 'mesh-download' }
-            ? MeshDownloadResult
-            : RegionalDecodeResult;
+          : T extends { task: 'mesh-snap' }
+            ? MeshSnapResult
+            : T extends { task: 'mesh-download' }
+              ? MeshDownloadResult
+              : RegionalDecodeResult;
 
 const isTs = __filename.endsWith('.ts');
 
@@ -297,6 +302,10 @@ async function runTask(t: ChildTask): Promise<unknown> {
     case 'mesh-reach': {
       const { runMeshReachTask } = await import('./meshcoarse');
       return runMeshReachTask(t);
+    }
+    case 'mesh-snap': {
+      const { runMeshSnapTask } = await import('./meshcoarse');
+      return runMeshSnapTask(t);
     }
     case 'mesh-download':
       return downloadMesh(t.base, t.dest, t.build, t.fresh === true);

@@ -25,8 +25,12 @@ import type { PagedMesh, PagedTile } from './paged';
 export const MAX_SCAN_M = 4000;
 
 const EPS = 1e-9;
-/** How close to an edge's end (as a share of the edge) a crossing counts as through its corner: the walk's own tolerance. */
-const U_TOL = 1e-7;
+/**
+ * The walk's own tolerance, as a share of an edge's length: how close to an edge's end a crossing counts as through
+ * its corner, how close to an edge a point or a direction counts as on or along it (and, in paged.ts, how close to a
+ * triangle a point counts as inside it).
+ */
+export const U_TOL = 1e-7;
 
 const cross = (ax: number, ay: number, bx: number, by: number): number => ax * by - ay * bx;
 

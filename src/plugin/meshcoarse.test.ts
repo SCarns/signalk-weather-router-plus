@@ -22,7 +22,9 @@ import {
   type MeshReachTask,
   pruneCoarse,
   readBoundary,
+  runMeshCoarseTask,
   runMeshReachTask,
+  runMeshSnapTask,
 } from './meshcoarse';
 
 const RULES = { draughtM: 2, airDraftM: 18, bufferM: 0, openingBridges: 'open' as const };
@@ -131,6 +133,66 @@ test('mesh-reach: an approximate waypoint whose nearest water is a pond is aimed
       ok: false,
       reason: 'no water on the chart mesh connects the start and waypoint 1 for this boat (draught {depth:2}, air draft {length:18})',
     });
+  } finally {
+    fs.rmSync(mesh, { recursive: true, force: true });
+    fs.rmSync(data, { recursive: true, force: true });
+  }
+});
+
+test('mesh-snap: a stop on water the boat cannot use, or in a pond, moves to the nearest usable water connected to the route, within the limit', () => {
+  // The U, the top of its left arm 1 m deep, and apart from it a one-tile pond at (5, 5).
+  const mesh = writeGridMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-')), [
+    ...U.map(c => (c.i === 0 && c.j === 3 ? { ...c, depth: 1 } : c)),
+    { i: 5, j: 5 },
+  ]);
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-data-'));
+  try {
+    const out = coarseFile(data, mesh, RULES);
+    runMeshCoarseTask({ task: 'mesh-coarse', dir: mesh, out, rules: RULES });
+    const snap = (points: { lon: number; lat: number; name: string }[], maxMoveM: number) =>
+      runMeshSnapTask({ task: 'mesh-snap', dir: mesh, mapFile: out, points, rules: RULES, maxMoveM });
+    // A start on the shallow tile: moved down the arm to its edge (lat 3), the destination left where it is.
+    const r = snap(
+      [
+        { lon: 0.5, lat: 3.6, name: 'the start point' },
+        { lon: 2.5, lat: 3.6, name: 'the destination' },
+      ],
+      1e6
+    );
+    assert.ok(r.ok, r.ok ? '' : r.reason);
+    if (r.ok) {
+      assert.ok(Math.abs(r.points[0].lat - 3) < 1e-9 && Math.abs(r.points[0].lon - 0.5) < 1e-9, JSON.stringify(r.points[0]));
+      assert.equal(r.points[0].why, 'is on charted depth {depth:1}, too shallow for this boat');
+      assert.equal(r.points[0].outsideGroup, false);
+      assert.deepEqual(r.points[1], { lon: 2.5, lat: 3.6, movedM: 0, why: null, outsideGroup: false });
+    }
+    // A start in the pond: usable but cut off; moved to the U's water, and said so.
+    const pond = snap(
+      [
+        { lon: 5.5, lat: 5.5, name: 'the start point' },
+        { lon: 2.5, lat: 3.6, name: 'the destination' },
+      ],
+      1e6
+    );
+    assert.ok(pond.ok, pond.ok ? '' : pond.reason);
+    if (pond.ok) {
+      assert.ok(pond.points[0].lon <= 3 + 1e-9 && pond.points[0].lat <= 4 + 1e-9, JSON.stringify(pond.points[0]));
+      assert.equal(pond.points[0].outsideGroup, true);
+    }
+    // Farther than the limit: an error naming the stop and the nearest usable water.
+    const far = snap(
+      [
+        { lon: 0.5, lat: 3.6, name: 'the start point' },
+        { lon: 2.5, lat: 3.6, name: 'the destination' },
+      ],
+      1000
+    );
+    assert.ok(!far.ok);
+    if (!far.ok)
+      assert.match(
+        far.reason,
+        /^the start point, at 3\.6000, 0\.5000, is on charted depth \{depth:1\}, too shallow for this boat; the nearest water this boat can use, connected to the route, is \{length:\d+\} away at 3\.0000, 0\.5000, more than \{length:1000\}/
+      );
   } finally {
     fs.rmSync(mesh, { recursive: true, force: true });
     fs.rmSync(data, { recursive: true, force: true });

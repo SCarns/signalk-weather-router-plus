@@ -364,7 +364,8 @@ export function searchMesh(
   const done = (result: MeshRouteResult): MeshSearch => ({ result, box: pm.touchedBox() ?? ends, paged: pm });
   const [sx, sy] = pm.toXY(start[0], start[1]);
   const [wx, wy] = pm.toXY(end[0], end[1]);
-  const st = startTri ?? pm.locate(sx, sy);
+  // A point on the edge between usable and blocked water belongs to the usable side (as the land test and the walks say).
+  const st = startTri ?? pm.locate(sx, sy, true);
   if (st < 0) return done({ ok: false, reason: 'start point is not in a mesh triangle', stats: stats() });
   // The end: the point itself, or for an approximate waypoint the usable water nearest it.
   let ex = wx;
@@ -390,7 +391,7 @@ export function searchMesh(
     const [lon, lat] = nu.distM > 0 ? pm.fromXY(ex, ey) : end;
     target = { lon, lat, radiusM: approach.radiusM, movedM: nu.distM };
   } else {
-    et = pm.locate(ex, ey);
+    et = pm.locate(ex, ey, true);
     if (et < 0) return done({ ok: false, reason: 'end point is not in a mesh triangle', stats: stats() });
   }
   // The ends against the rules themselves, before the buffer: inside a blocked triangle is one error, inside the buffer another.

@@ -21,6 +21,7 @@
 import type { BBox } from '../../geo/geodesy';
 import { blockedTriangles, growBlocked, type MeshRules } from './route';
 import { type LoadedMesh, M_PER_DEG_MESH, type MeshStore, type MeshTileInfo } from './store';
+import { U_TOL } from './width';
 
 /** Index cell size, metres: a few triangles a cell on a chart mesh (triangles are tens of metres). */
 export const TILE_INDEX_CELL_M = 250;
@@ -433,11 +434,25 @@ export class PagedMesh {
       const by = y[a + 1];
       const cx = x[a + 2];
       const cy = y[a + 2];
-      if (px < Math.min(ax, bx, cx) || px > Math.max(ax, bx, cx) || py < Math.min(ay, by, cy) || py > Math.max(ay, by, cy)) continue;
+      // Inside, or on its boundary within the walk's tolerance (width.ts U_TOL of its longest edge): a point handed on
+      // as lon/lat (a snapped stop, a route corner) comes back a hair off the edge it lies on, and on an edge
+      // between usable and blocked water it belongs to the usable side (preferUsable), as a walk along it does.
+      const lab = Math.hypot(bx - ax, by - ay);
+      const lbc = Math.hypot(cx - bx, cy - by);
+      const lca = Math.hypot(ax - cx, ay - cy);
+      const tol = U_TOL * Math.max(lab, lbc, lca);
+      if (
+        px < Math.min(ax, bx, cx) - tol ||
+        px > Math.max(ax, bx, cx) + tol ||
+        py < Math.min(ay, by, cy) - tol ||
+        py > Math.max(ay, by, cy) + tol
+      )
+        continue;
       const d1 = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
       const d2 = (cx - bx) * (py - by) - (cy - by) * (px - bx);
       const d3 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx);
-      if (d1 >= 0 && d2 >= 0 && d3 >= 0) {
+      // d1 is the point's distance from edge ab (positive inside) times the edge's length; likewise d2, d3.
+      if (d1 >= -tol * lab && d2 >= -tol * lbc && d3 >= -tol * lca) {
         if (!preferUsable || !T.blocked[t]) return t;
         if (found < 0) found = t;
       }
