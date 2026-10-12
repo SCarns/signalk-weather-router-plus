@@ -6,9 +6,11 @@
  * through). Both read mesh tiles, so they run in child processes and the
  * tiles never stay in Signal K's memory.
  *
- * Kept under `<data dir>/mesh-coarse/`, two files per mesh build and boat:
- * `<build key>-v<version>-d<draught>-a<air draft>.json` (the pieces and
- * links) and the same name with `.bnd` (the tile-boundary triangles, raw
+ * Kept under `<data dir>/mesh-coarse/`, two files per mesh build, boat,
+ * buffer and Drawbridges choice:
+ * `<build key>-v<version>-d<draught>-a<air draft>-b<buffer>-<o|x>.json`
+ * (the pieces and links; o: opening bridges open, x: avoided) and the same
+ * name with `.bnd` (the tile-boundary triangles, raw
  * Int32: the count blocked, the count of opening bridges, then the ids of
  * each, ascending), the build key a hash of the mesh's index.json (a new
  * build is a new key). The `.bnd` is written first: a `.json` means both
@@ -22,16 +24,17 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { BBox } from '../geo/geodesy';
 import {
+  boundarySeeds,
   buildCoarseMap,
   type CoarseMap,
   type CoarseRules,
   COARSE_VERSION,
   coarseRoute,
-  pieceAt,
-  pieceOfTriangle,
-  reachOf,
+  meshRulesOf,
+  PieceGraph,
 } from '../engine/mesh/coarse';
 import { type BoundarySeeds, PagedMesh } from '../engine/mesh/paged';
+import type { MeshRules } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
 
 export const COARSE_DIR = 'mesh-coarse';
@@ -46,13 +49,24 @@ export function coarseKey(meshDir: string): string {
     .slice(0, 16);
 }
 
-/** The rough-cut file (.json) of a mesh folder for a boat. */
+/** The rough-cut file (.json) of a mesh folder for a boat, buffer and Drawbridges choice. */
 export function coarseFile(dataDir: string, meshDir: string, rules: CoarseRules): string {
+  const r = rules;
   return path.join(
     dataDir,
     COARSE_DIR,
-    `${coarseKey(meshDir)}-v${COARSE_VERSION}-d${rules.draughtM.toFixed(2)}-a${rules.airDraftM.toFixed(2)}.json`
+    `${coarseKey(meshDir)}-v${COARSE_VERSION}-d${r.draughtM.toFixed(2)}-a${r.airDraftM.toFixed(2)}-b${r.bufferM.toFixed(2)}-${r.openingBridges === 'avoid' ? 'x' : 'o'}.json`
   );
+}
+
+/** A rough cut's rules from a mesh leg's (the buffer absent: none; opening bridges absent: open). */
+export function coarseRulesOf(rules: Pick<MeshRules, 'draughtM' | 'airDraftM' | 'bufferM' | 'openingBridges'>): CoarseRules {
+  return {
+    draughtM: rules.draughtM,
+    airDraftM: rules.airDraftM,
+    bufferM: rules.bufferM ?? 0,
+    openingBridges: rules.openingBridges === 'avoid' ? 'avoid' : 'open',
+  };
 }
 
 /** The tile-boundary file (.bnd) beside a rough-cut file. */
@@ -144,14 +158,19 @@ export interface MeshCoarseResult {
 
 /**
  * Build one mesh folder's rough cut and write it, the boundary file first (each to a temporary name, then renamed:
- * a reader never sees half a file, and a map on disk has its boundary file beside it).
+ * a reader never sees half a file, and a map on disk has its boundary file beside it). Two passes over the tiles:
+ * the boundary record, then every tile read through the paged mesh with it (the search's blocked sets).
  */
 export function runMeshCoarseTask(t: MeshCoarseTask): MeshCoarseResult {
   const t0 = Date.now();
-  const { map, boundary } = buildCoarseMap(MeshStore.open(t.dir), t.rules);
-  const text = JSON.stringify(map);
+  const store = MeshStore.open(t.dir);
+  const boundary = boundarySeeds(store, t.rules);
   fs.mkdirSync(path.dirname(t.out), { recursive: true });
   writeBoundary(boundaryFile(t.out), boundary);
+  const ix = store.index;
+  const pm = new PagedMesh(store, meshRulesOf(t.rules), Math.cos((((ix.south + ix.north) / 2) * Math.PI) / 180), boundary);
+  const map = buildCoarseMap(store, t.rules, pm);
+  const text = JSON.stringify(map);
   const tmp = `${t.out}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, text);
   fs.renameSync(tmp, t.out);
@@ -172,60 +191,99 @@ export interface MeshReachTask {
   /** The leg's start, its waypoint circles in order, its end; a circle (radiusM) for an approximate waypoint. */
   points: { lon: number; lat: number; radiusM?: number; name: string }[];
   rules: CoarseRules;
+  /** The request's areas to avoid. */
+  avoid?: MeshRules['avoid'];
 }
 
-export type MeshReachResult = { ok: true; box: BBox; lengthM: number; chainTiles: number } | { ok: false; reason: string };
+export type MeshReachResult =
+  | {
+      ok: true;
+      box: BBox;
+      lengthM: number;
+      chainTiles: number;
+      /**
+       * Per point after the start: for an approximate waypoint, the point the leg aims at (the waypoint itself, or
+       * the nearest usable water connected to the start), the triangle it was chosen in (global id: the point can
+       * lie on a corner shared with a triangle of other water), and how far it lies from the waypoint; null for an
+       * exact one.
+       */
+      aims: ({ lon: number; lat: number; tri: number; movedM: number } | null)[];
+    }
+  | { ok: false; reason: string };
 
 /**
- * A leg's reach on the rough cut: the piece under each point (for an approximate waypoint on water the boat cannot
- * use, under the nearest usable water, as the mesh search aims there: part 3), the chain of pieces from each to the
- * next, the box of their tiles.
+ * A leg's reach on the rough cut, under the request's rules (the rough cut's, plus its areas to avoid: PieceGraph).
+ * The start and every exact point must lie on usable water connected to the start; an approximate waypoint aims at
+ * itself when it does, else at the nearest usable water that does (part 3; the owner's choice: moved, with a
+ * warning when outside its circle). Then the chains of pieces from each point to the next give the box of tiles
+ * the water runs through.
  */
 export function runMeshReachTask(t: MeshReachTask): MeshReachResult {
   const store = MeshStore.open(t.dir);
   const map = JSON.parse(fs.readFileSync(t.mapFile, 'utf8')) as CoarseMap;
-  if (map.version !== COARSE_VERSION || map.triangles !== store.index.triangles)
-    return { ok: false, reason: 'the rough cut on disk is for another build of the mesh; rebuild it in the plugin configuration' };
+  if (
+    map.version !== COARSE_VERSION ||
+    map.triangles !== store.index.triangles ||
+    map.draughtM !== t.rules.draughtM ||
+    map.airDraftM !== t.rules.airDraftM ||
+    map.bufferM !== t.rules.bufferM ||
+    map.openingBridges !== t.rules.openingBridges
+  )
+    return {
+      ok: false,
+      reason: 'the rough cut on disk is for another build of the mesh or other rules; rebuild it in the plugin configuration',
+    };
   const lats = t.points.map(p => p.lat);
   const cl = Math.cos((((Math.min(...lats) + Math.max(...lats)) / 2) * Math.PI) / 180);
-  // The rough cut's rules: no buffer, opening bridges as open.
-  const pm = new PagedMesh(store, { ...t.rules, motorSpeedMs: 1, openingBridges: 'open' }, cl);
+  const pm = new PagedMesh(store, meshRulesOf(t.rules, t.avoid), cl, readBoundary(boundaryFile(t.mapFile)));
+  const graph = new PieceGraph(map, pm);
   const pieces: number[] = [];
+  const aims: ({ lon: number; lat: number; tri: number; movedM: number } | null)[] = [];
+  let start = -1;
   for (const p of t.points) {
-    const r = pieceAt(store, map, t.rules, p.lon, p.lat);
-    if (r.kind !== 'piece' && p.radiusM !== undefined) {
-      const nu = pm.nearestUsable(...pm.toXY(p.lon, p.lat));
-      const piece = nu ? pieceOfTriangle(store, map, t.rules, nu.tri) : null;
-      if (piece !== null) {
-        pieces.push(piece);
-        continue;
-      }
+    const [px, py] = pm.toXY(p.lon, p.lat);
+    const g = pm.locate(px, py, true);
+    const here = g >= 0 && !pm.isBlocked(g) ? graph.pieceOf(g) : null;
+    if (start < 0) {
+      // The start: on usable water, or the leg cannot leave.
+      if (here === null) return { ok: false, reason: unusable(pm, g, p.name, t.rules.bufferM) };
+      start = graph.component(here);
+      pieces.push(here);
+      continue;
     }
-    if (r.kind === 'outside') return { ok: false, reason: `${p.name} is not on a triangle of the mesh` };
-    if (r.kind === 'blocked')
-      return {
-        ok: false,
-        reason: `${p.name} is on water the boat cannot use${r.depth !== null ? ` (charted depth {depth:${r.depth}})` : ' (a hazard, mark, structure or clearance)'}`,
-      };
-    pieces.push(r.piece);
+    if (p.radiusM === undefined) {
+      if (here === null) return { ok: false, reason: unusable(pm, g, p.name, t.rules.bufferM) };
+      if (graph.component(here) !== start) return { ok: false, reason: noWater(p.name, t.rules) };
+      pieces.push(here);
+      aims.push(null);
+      continue;
+    }
+    // An approximate waypoint: itself when it is connected usable water, else the nearest that is.
+    const nu = pm.nearestUsable(px, py, tri => {
+      const q = graph.pieceOf(tri);
+      return q !== null && graph.component(q) === start;
+    });
+    if (!nu) return { ok: false, reason: noWater(p.name, t.rules) };
+    const [lon, lat] = nu.distM > 0 ? pm.fromXY(nu.x, nu.y) : [p.lon, p.lat];
+    pieces.push(graph.pieceOf(nu.tri)!);
+    aims.push({ lon, lat, tri: nu.tri, movedM: nu.distM });
   }
-  const box: BBox = { west: Infinity, south: Infinity, east: -Infinity, north: -Infinity };
-  const tiles = new Set<string>();
-  let lengthM = 0;
-  for (let k = 1; k < pieces.length; k++) {
-    const chain = coarseRoute(map, pieces[k - 1], pieces[k]);
-    if (!chain)
-      return {
-        ok: false,
-        reason: `no water on the chart mesh connects ${t.points[k - 1].name} and ${t.points[k].name} for this boat (draught {depth:${t.rules.draughtM}}, air draft {length:${t.rules.airDraftM}})`,
-      };
-    const r = reachOf(store, map, chain);
-    box.west = Math.min(box.west, r.box.west);
-    box.south = Math.min(box.south, r.box.south);
-    box.east = Math.max(box.east, r.box.east);
-    box.north = Math.max(box.north, r.box.north);
-    for (const c of r.chainTiles) tiles.add(c.join(','));
-    lengthM += r.lengthM;
-  }
-  return { ok: true, box, lengthM, chainTiles: tiles.size };
+  const chains: number[][] = [];
+  for (let k = 1; k < pieces.length; k++) chains.push(coarseRoute(graph, pieces[k - 1], pieces[k])!);
+  const r = graph.reach(chains);
+  return { ok: true, box: r.box, lengthM: r.lengthM, chainTiles: r.chainTiles, aims };
+}
+
+/** Why a point's water is not usable: outside the mesh, blocked (with the charted depth), or within the buffer. */
+function unusable(pm: PagedMesh, g: number, name: string, bufferM: number): string {
+  if (g < 0) return `${name} is not on a triangle of the mesh`;
+  const T = pm.tileOf(g);
+  const l = g - T.first;
+  if (!T.ruleBlocked[l]) return `${name} is within the buffer ({length:${bufferM}}) of water the boat cannot use`;
+  const d = T.depth[l];
+  return `${name} is on water the boat cannot use${d !== -999 ? ` (charted depth {depth:${d}})` : ' (a hazard, mark, structure, clearance or area to avoid)'}`;
+}
+
+function noWater(name: string, rules: CoarseRules): string {
+  return `no water on the chart mesh connects the start and ${name} for this boat (draught {depth:${rules.draughtM}}, air draft {length:${rules.airDraftM}}${rules.bufferM > 0 ? `, keeping {length:${rules.bufferM}} from water it cannot use` : ''})`;
 }

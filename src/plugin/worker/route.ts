@@ -11,7 +11,7 @@ import { validateRouteRequest } from '../request_schema';
 import { runLegPipeline, type LegPipelineInputs, type LegWind } from '../../engine/pipeline';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { boundaryFile, coarseFile } from '../meshcoarse';
+import { boundaryFile, coarseFile, coarseRulesOf } from '../meshcoarse';
 import { ForecastStore } from '../../data/forecast';
 import { loadForecastForBBox, resolveCycle } from '../../data/loader';
 import type { WindowOptions } from '../../data/decoded';
@@ -111,13 +111,13 @@ function meshLegRunner(
     progress: MeshLegArgs['progress'],
     signal: AbortSignal
   ): Promise<string | MeshRefusal> => {
-    const r = { draughtM: rules.draughtM, airDraftM: rules.airDraftM };
+    const r = coarseRulesOf(rules);
     const file = coarseFile(st.cacheRoot, m.dir, r);
     if (fs.existsSync(file)) return file;
     progress(
       0,
       0,
-      `${tag}chart mesh: building the rough cut of ${m.name} for this boat (draught {depth:${r.draughtM}}, air draft {length:${r.airDraftM}}), once`
+      `${tag}chart mesh: building the rough cut of ${m.name} for this boat (draught {depth:${r.draughtM}}, air draft {length:${r.airDraftM}}, buffer {length:${r.bufferM}}, opening bridges ${r.openingBridges === 'avoid' ? 'avoided' : 'open'}), once`
     );
     try {
       const b = await runChildTask({ task: 'mesh-coarse', dir: m.dir, out: file, rules: r }, 15 * 60_000, signal);
@@ -178,6 +178,7 @@ function meshLegRunner(
           drawbridges: a.drawbridges,
           bridgeWaitS: a.bridgeWaitS,
           boundaryFile: boundaryFile(map),
+          ...(a.reach ? { aims: a.reach.aims } : {}),
           forecast: useForecast ? { runDir: st.run!.dir, area: expandBBox(bbox, ROUTE_FORECAST_MARGIN_DEG), params: ROUTE_PARAMS } : null,
           regional:
             useForecast && request.wind_model !== 'ecmwf'
@@ -222,7 +223,6 @@ function meshLegRunner(
     reach: async c => {
       const m = meshFor([c.legStart, ...c.plan.vias.map(v => [v.lon, v.lat] as [number, number]), c.plan.end]);
       if (!m) return { refused: 'no mesh covers the leg' };
-      const rules = { draughtM: c.rules.draughtM, airDraftM: c.rules.airDraftM };
       const ac = new AbortController();
       const poll = setInterval(() => {
         if (c.shouldCancel()) ac.abort();
@@ -237,7 +237,8 @@ function meshLegRunner(
             dir: m.dir,
             mapFile: file,
             points: [{ lon: c.legStart[0], lat: c.legStart[1], name: 'the start' }, ...runTargets(c.plan)],
-            rules,
+            rules: coarseRulesOf(c.rules),
+            ...(c.rules.avoid?.length ? { avoid: c.rules.avoid } : {}),
           },
           5 * 60_000,
           ac.signal
@@ -246,9 +247,9 @@ function meshLegRunner(
         c.progress(
           0,
           0,
-          `${c.tag}chart mesh: rough cut: water connects the ends through ${r.chainTiles} tiles, {distance:${r.lengthM.toFixed(0)}} between their pieces; the forecast and currents are loaded over them ({time:${(Date.now() - t0) / 1000}})`
+          `${c.tag}chart mesh: rough cut: water connects the leg's points through ${r.chainTiles} tiles, {distance:${r.lengthM.toFixed(0)}} between their pieces; the forecast and currents are loaded over them ({time:${(Date.now() - t0) / 1000}})`
         );
-        return { box: r.box, lengthM: r.lengthM };
+        return { box: r.box, lengthM: r.lengthM, aims: r.aims };
       } finally {
         clearInterval(poll);
       }

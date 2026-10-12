@@ -29,7 +29,7 @@ import { MinHeap } from '../heap';
 import { meshAstar } from './astar';
 import { funnel, type XY } from './funnel';
 import { type BoundarySeeds, PagedMesh } from './paged';
-import { passageWidths } from './width';
+import { passageWidths, rayWalk } from './width';
 import {
   FLAG_CHANNEL_MARK,
   FLAG_DREDGED,
@@ -102,6 +102,8 @@ export type MeshRouteResult =
       lengthM: number;
       costS: number;
       stats: MeshRouteStats;
+      /** The triangle the route ends in (global id), carried along the route. */
+      endTri?: number;
       /** An approximate end (searchMesh `approach`): where the leg aimed. */
       target?: MeshTarget;
       /**
@@ -326,7 +328,12 @@ export function searchMesh(
    * `trim` the route stops where it enters the circle of `radiusM` round the waypoint (an inner waypoint of a run:
    * the next piece starts there). A start already inside the circle is not trimmed.
    */
-  approach?: { radiusM: number; trim: boolean }
+  approach?: { radiusM: number; trim: boolean; aim?: { lon: number; lat: number; tri: number } },
+  /**
+   * The start's triangle when it is known (the next piece of a run starts where the last ended, often on a triangle
+   * corner shared with a triangle of other water: the triangle the last piece's route ended in decides).
+   */
+  startTri?: number
 ): MeshSearch {
   const cl = Math.cos(((start[1] + end[1]) / 2) * (Math.PI / 180));
   const pm = new PagedMesh(store, rules, cl, boundary);
@@ -357,14 +364,26 @@ export function searchMesh(
   const done = (result: MeshRouteResult): MeshSearch => ({ result, box: pm.touchedBox() ?? ends, paged: pm });
   const [sx, sy] = pm.toXY(start[0], start[1]);
   const [wx, wy] = pm.toXY(end[0], end[1]);
-  const st = pm.locate(sx, sy);
+  const st = startTri ?? pm.locate(sx, sy);
   if (st < 0) return done({ ok: false, reason: 'start point is not in a mesh triangle', stats: stats() });
   // The end: the point itself, or for an approximate waypoint the usable water nearest it.
   let ex = wx;
   let ey = wy;
   let et: number;
   let target: MeshTarget | undefined;
-  if (approach) {
+  if (approach?.aim) {
+    // Where the rough cut aimed the waypoint (water connected to the start, under the same blocked sets).
+    [ex, ey] = pm.toXY(approach.aim.lon, approach.aim.lat);
+    et = approach.aim.tri;
+    if (pm.isBlocked(et))
+      return done({
+        ok: false,
+        reason:
+          'the water the rough cut chose for the waypoint is not usable on the mesh; rebuild the rough cut in the plugin configuration',
+        stats: stats(),
+      });
+    target = { lon: approach.aim.lon, lat: approach.aim.lat, radiusM: approach.radiusM, movedM: Math.hypot(ex - wx, ey - wy) };
+  } else if (approach) {
     const nu = pm.nearestUsable(wx, wy);
     if (!nu) return done({ ok: false, reason: 'the mesh has no water the boat can use near the waypoint', stats: stats() });
     [ex, ey, et] = [nu.x, nu.y, nu.tri];
@@ -418,7 +437,14 @@ export function searchMesh(
   const path = pathXY.map(p => pm.fromXY(p[0], p[1]));
   let lengthM = 0;
   for (let i = 1; i < path.length; i++) lengthM += haversineDistanceM(path[i - 1][0], path[i - 1][1], path[i][0], path[i][1]);
-  return done({ ok: true, path, widths, lengthM, costS: r.goalG, stats: stats(), ...(target ? { target } : {}) });
+  // The triangle the route ends in, carried along the route itself from the start's (as passageWidths does).
+  let endTri = st;
+  for (let i = 1; i < pathXY.length; i++) {
+    const [ax, ay] = pathXY[i - 1];
+    const L = Math.hypot(pathXY[i][0] - ax, pathXY[i][1] - ay);
+    if (L > 0) endTri = rayWalk(pm, endTri, ax, ay, (pathXY[i][0] - ax) / L, (pathXY[i][1] - ay) / L, L, true).tri;
+  }
+  return done({ ok: true, path, widths, lengthM, costS: r.goalG, stats: stats(), endTri, ...(target ? { target } : {}) });
 }
 
 /**
@@ -454,6 +480,12 @@ export interface RunTarget {
   radiusM?: number;
   /** For the messages ("waypoint 2", "the destination"). */
   name: string;
+  /**
+   * An approximate waypoint: the point the rough cut aimed it at (coarse.ts PieceGraph: the waypoint, or the nearest
+   * usable water connected to the leg's start) and the triangle it chose (the point can be a corner shared with a
+   * triangle of other water, so the triangle, not the point, decides). Absent: the search's own nearest usable water.
+   */
+  aim?: { lon: number; lat: number; tri: number };
 }
 
 /**
@@ -478,6 +510,7 @@ export function searchMeshRun(
   let stats: MeshRouteStats | null = null;
   let box: BBox | null = null;
   let from = start;
+  let fromTri: number | undefined;
   let last: MeshSearch | null = null;
   for (let i = 0; i < targets.length; i++) {
     const tg = targets[i];
@@ -488,7 +521,8 @@ export function searchMeshRun(
       [tg.lon, tg.lat],
       rules,
       boundary,
-      tg.radiusM !== undefined ? { radiusM: tg.radiusM, trim: inner } : undefined
+      tg.radiusM !== undefined ? { radiusM: tg.radiusM, trim: inner, ...(tg.aim ? { aim: tg.aim } : {}) } : undefined,
+      fromTri
     );
     const r = s.result;
     stats = stats ? addStats(stats, r.stats) : r.stats;
@@ -511,6 +545,7 @@ export function searchMeshRun(
     costS += r.costS;
     if (inner) circles.push({ ...r.target!, name: tg.name, pathIndex: path.length - 1 });
     from = r.path[r.path.length - 1];
+    fromTri = r.endTri;
     if (inner) s.paged.retain(() => false);
   }
   const lt = last!.result.ok ? last!.result.target : undefined;

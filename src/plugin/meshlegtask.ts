@@ -61,6 +61,8 @@ export interface MeshLegTask {
   bridgeWaitS: number;
   /** The rough cut's tile-boundary file for this mesh and boat (meshcoarse.ts): seeds of the buffer across tile edges. */
   boundaryFile?: string;
+  /** Per target after the start (route.ts runTargets), the point the rough cut aimed an approximate waypoint at. */
+  aims?: ({ lon: number; lat: number; tri: number; movedM: number } | null)[];
   /** The decoded run and the area to read, or null for calm wind (motor, or no forecast). */
   forecast: { runDir: string; area: BBox; params: string[] } | null;
   /** Regional runs root and the global grid spacing, or null when regional wind is off. */
@@ -90,7 +92,11 @@ export async function runMeshLegTask(t: MeshLegTask, emit: (e: MeshLegEvent) => 
   const progress = (stage: number, total: number, message: string): void => emit({ event: 'progress', stage, total, message });
   const store = MeshStore.open(t.dir);
   // The leg's end, through its waypoint circles when it is a run of approximate legs (part 3).
-  const search = searchMeshRun(store, t.legStart, runTargets(t.plan), t.rules, t.boundaryFile ? readBoundary(t.boundaryFile) : null);
+  const targets = runTargets(t.plan).map((g, i) => {
+    const aim = t.aims?.[i];
+    return aim ? { ...g, aim: { lon: aim.lon, lat: aim.lat, tri: aim.tri } } : g;
+  });
+  const search = searchMeshRun(store, t.legStart, targets, t.rules, t.boundaryFile ? readBoundary(t.boundaryFile) : null);
   const land = search.result.ok ? new MeshLand(search.paged) : null;
   if (land)
     progress(0, 0, `${t.tag}chart mesh: the search's every move is tested against the mesh, its tiles read as the moves reach them`);

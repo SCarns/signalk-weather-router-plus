@@ -12,6 +12,10 @@
  * route cost.
  *
  * The tests' in-memory meshes are one tile (fromLoaded), so the search, the land and the walks run the same code.
+ *
+ * A tile's blocked set (rules, then the buffer) is computed in the tile's own frame, not the leg's, so it is the
+ * same for every leg and for the rough cut built from the same reads (coarse.ts): the rough cut's "connected" is
+ * the search's.
  */
 
 import type { BBox } from '../../geo/geodesy';
@@ -114,7 +118,7 @@ export class PagedMesh {
    */
   constructor(
     private readonly store: MeshStore | null,
-    private readonly rules: MeshRules,
+    readonly rules: MeshRules,
     readonly cl: number,
     private readonly boundary: BoundarySeeds | null = null,
     private readonly cellM = TILE_INDEX_CELL_M,
@@ -212,6 +216,15 @@ export class PagedMesh {
     return T;
   }
 
+  /** How many tiles the mesh has, and the index entry of one (by position in the tile list); null in memory. */
+  get tileCount(): number {
+    return this.firsts.length;
+  }
+
+  infoAt(idx: number): MeshTileInfo | null {
+    return this.infos[idx];
+  }
+
   isHeld(idx: number): boolean {
     return this.held.has(idx);
   }
@@ -255,17 +268,26 @@ export class PagedMesh {
       y[q] = a.corners[2 * q + 1] * M_PER_DEG_MESH;
     }
     const t1 = Date.now();
-    // The tile as a mesh of its own (neighbours local, -1 across its edges) for the rules and the buffer.
+    // The tile as a mesh of its own (neighbours local, -1 across its edges) for the rules and the buffer, in the
+    // tile's own frame (the cosine of its mid-latitude): the blocked set, the buffer's metres and the areas to avoid
+    // are then the same whatever leg reads the tile, so the rough cut (coarse.ts) built from these tiles answers
+    // exactly for the search.
     const local = new Int32Array(n * 3);
     for (let q = 0; q < n * 3; q++) {
       const l = a.nb[q] - info.first;
       local[q] = a.nb[q] >= 0 && l >= 0 && l < n ? l : -1;
     }
+    const clT = Math.cos(((info.bbox[1] + info.bbox[3]) / 2) * (Math.PI / 180));
+    let xt = x;
+    if (clT !== this.cl) {
+      xt = new Float64Array(n * 3);
+      for (let q = 0; q < n * 3; q++) xt[q] = (a.corners[2 * q] / K) * clT * M_PER_DEG_MESH;
+    }
     const m: LoadedMesh = {
       n,
-      x,
+      x: xt,
       y,
-      cl: this.cl,
+      cl: clT,
       neighbours: local,
       rev: a.rev,
       mult: a.mult,
@@ -463,14 +485,19 @@ export class PagedMesh {
 
   /**
    * The usable water nearest a point of the metres frame (docs/drafts/mesh-no-gshhg-design.md, part 3): the triangle
-   * not blocked for the search (rules and buffer) whose nearest point is closest, that point, and its distance in
-   * metres; null when the mesh has no usable triangle. The point's own triangle first; otherwise the tiles are read in
-   * order of the distance to their extent and the scan stops at the first tile farther than the best found, so the
-   * answer is exact with no distance limit (the mesh's edge is the limit).
+   * not blocked for the search (rules and buffer), and accepted by `accept` (the rough cut: water connected to the
+   * leg's start), whose nearest point is closest, that point, and its distance in metres; null when there is none.
+   * The point's own triangle first; otherwise the tiles are read in order of the distance to their extent and the
+   * scan stops at the first tile farther than the best found, so the answer is exact with no distance limit (the
+   * mesh's edge is the limit).
    */
-  nearestUsable(px: number, py: number): { tri: number; x: number; y: number; distM: number } | null {
+  nearestUsable(
+    px: number,
+    py: number,
+    accept: (g: number) => boolean = () => true
+  ): { tri: number; x: number; y: number; distM: number } | null {
     const own = this.locate(px, py, true);
-    if (own >= 0 && !this.isBlocked(own)) return { tri: own, x: px, y: py, distM: 0 };
+    if (own >= 0 && !this.isBlocked(own) && accept(own)) return { tri: own, x: px, y: py, distM: 0 };
     const order: { idx: number; d: number }[] = [];
     if (!this.store) order.push({ idx: 0, d: 0 });
     else
@@ -489,7 +516,7 @@ export class PagedMesh {
         if (T.blocked[l]) continue;
         const [qx, qy] = closestOnTriangle(px, py, T.x, T.y, l * 3);
         const d = Math.hypot(qx - px, qy - py);
-        if (!best || d < best.distM) best = { tri: T.first + l, x: qx, y: qy, distM: d };
+        if ((!best || d < best.distM) && accept(T.first + l)) best = { tri: T.first + l, x: qx, y: qy, distM: d };
       }
     }
     return best;

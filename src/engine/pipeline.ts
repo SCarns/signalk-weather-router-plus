@@ -26,7 +26,7 @@ import { forecastHorizonNote, type LegWind } from './horizon';
 import type { ModePolicy } from './legsim';
 import { findHandover, HANDOVER_SCAN_M, sliceCorridor, stitchLegParts } from './mesh/handover';
 import { isRefusal, type LegReach, type MeshLegRunner, type MeshRefusal, meshRulesFor } from './mesh/leg';
-import { type DrawbridgeChoice, MESH_BOX_PAD_MAX_DEG } from './mesh/route';
+import { type DrawbridgeChoice, MESH_BOX_PAD_MAX_DEG, type MeshRules } from './mesh/route';
 import { legLabel, type LegPlan } from './multileg';
 import { DEFAULT_ROUTER, makeRouter, type RouterKind } from './router';
 import { enrichLegRanges, enrichWaypoints, RouteCancelled, ViasNotCrossedError, type PropagatorOptions } from './propagator';
@@ -118,13 +118,21 @@ async function meshLeg(
     0,
     `${tag}chart mesh: routing on charted depths (draught {depth:${r.rules.draughtM}}, air draft {length:${r.rules.airDraftM}})`
   );
-  // Whether water connects the ends for this boat, and the extent of that water (the rough cut, coarse.ts).
+  // The leg's rules: the boat's, the areas to avoid, the buffer from unusable water, the Drawbridges choice.
+  const rules: MeshRules = {
+    ...r.rules,
+    avoid: inp.avoidAreas,
+    ...(inp.meshBufferM !== undefined ? { bufferM: inp.meshBufferM } : {}),
+    openingBridges: (inp.drawbridges ?? 'ask') === 'avoid' ? 'avoid' : 'open',
+  };
+  // Whether water connects the leg's points for this boat under those rules, where each approximate waypoint is
+  // aimed, and the extent of that water (the rough cut, coarse.ts).
   let reach: LegReach | undefined;
   if (useReach && inp.mesh!.reach) {
     const c = await inp.mesh!.reach({
       legStart,
       plan,
-      rules: r.rules,
+      rules,
       tag,
       progress,
       shouldCancel,
@@ -164,12 +172,7 @@ async function meshLeg(
       legDeparture,
       tag,
       multi,
-      rules: {
-        ...r.rules,
-        avoid: inp.avoidAreas,
-        ...(inp.meshBufferM !== undefined ? { bufferM: inp.meshBufferM } : {}),
-        openingBridges: (inp.drawbridges ?? 'ask') === 'avoid' ? 'avoid' : 'open',
-      },
+      rules,
       vessel: inp.vessel,
       polar: inp.polar,
       sim: inp.sim,

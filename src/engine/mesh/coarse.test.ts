@@ -1,9 +1,10 @@
 /**
- * The rough cut (coarse.ts) and the paged mesh search (route.ts searchMesh,
- * paged.ts) on a U-shaped mesh of 1° tiles: two arms, columns 0 and 2, rows
- * 0–3, joined by row 0. A leg from the top of one arm to the top of the
- * other must run down, across and up, far from the box around its ends;
- * the search reads the tiles as it reaches them, with no area given.
+ * The rough cut (coarse.ts) and the paged mesh search (route.ts searchMesh, paged.ts) on a U-shaped mesh of 1° tiles:
+ * two arms, columns 0 and 2, rows 0–3, joined by row 0. A leg from the top of one arm to the top of the other must
+ * run down, across and up, far from the box around its ends; the search reads the tiles as it reaches them, with no
+ * area given. The rough cut is built from the same tile reads as the search, so the two must agree on what water
+ * connects: the buffer from unusable water, an area to avoid and an opening bridge under Avoid each close the
+ * bottom of the U for both or for neither.
  */
 
 import { test } from 'node:test';
@@ -12,14 +13,14 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { meshAstar } from './astar';
-import { buildCoarseMap, coarseRoute, pieceAt, reachOf } from './coarse';
+import { boundarySeeds, buildCoarseMap, type CoarseMap, type CoarseRules, coarseRoute, meshRulesOf, PieceGraph } from './coarse';
 import { writeGridMesh } from './fixture';
-import { PagedMesh } from './paged';
-import { blockedTriangles, searchMesh } from './route';
+import { type BoundarySeeds, PagedMesh } from './paged';
+import { blockedTriangles, type MeshRules, searchMesh } from './route';
 import { FLAG_OPENING_BRIDGE, MeshStore } from './store';
 
-const RULES = { draughtM: 2, airDraftM: 18 };
-const SEARCH = { ...RULES, motorSpeedMs: 3 };
+const RULES: CoarseRules = { draughtM: 2, airDraftM: 18, bufferM: 0, openingBridges: 'open' };
+const SEARCH = { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 };
 const U = [
   { i: 0, j: 0 },
   { i: 1, j: 0 },
@@ -43,9 +44,36 @@ function withMesh(cells: { i: number; j: number; depth?: number; flags?: number 
   }
 }
 
+/** The rough cut for the rules, as the plugin builds it (meshcoarse.ts). */
+function build(store: MeshStore, rules: CoarseRules): { map: CoarseMap; boundary: BoundarySeeds } {
+  const boundary = boundarySeeds(store, rules);
+  return { map: buildCoarseMap(store, rules, new PagedMesh(store, meshRulesOf(rules), 1, boundary)), boundary };
+}
+
+/** The rough cut as the reach task sees it (under the rules and the areas to avoid). */
+function graphOf(store: MeshStore, rules: CoarseRules, avoid?: MeshRules['avoid']): { graph: PieceGraph; pm: PagedMesh } {
+  const { map, boundary } = build(store, rules);
+  const pm = new PagedMesh(store, meshRulesOf(rules, avoid), 1, boundary);
+  return { graph: new PieceGraph(map, pm), pm };
+}
+
+/** Does the rough cut connect two points, as the reach task asks? */
+function connects(store: MeshStore, rules: CoarseRules, a: [number, number], b: [number, number], avoid?: MeshRules['avoid']): boolean {
+  const { graph, pm } = graphOf(store, rules, avoid);
+  const piece = (p: [number, number]): number | null => {
+    const g = pm.locate(...pm.toXY(p[0], p[1]), true);
+    return g >= 0 && !pm.isBlocked(g) ? graph.pieceOf(g) : null;
+  };
+  const [pa, pb] = [piece(a), piece(b)];
+  if (pa === null || pb === null) return false;
+  const same = graph.component(pa) === graph.component(pb);
+  assert.equal(coarseRoute(graph, pa, pb) !== null, same, 'a chain exactly when the pieces share a group');
+  return same;
+}
+
 test('rough cut: one piece per water tile, linked across shared tile edges; the blocked tile-boundary triangles recorded', () => {
   withMesh(U, store => {
-    const { map, boundary } = buildCoarseMap(store, RULES);
+    const { map, boundary } = build(store, RULES);
     assert.equal(map.pieces.length, 9);
     assert.equal(map.links.length, 8, JSON.stringify(map.links));
     assert.equal(map.triangles, 18);
@@ -59,7 +87,7 @@ test('rough cut: one piece per water tile, linked across shared tile edges; the 
   withMesh(
     U.map((c, k) => (k === 1 ? { ...c, depth: 1 } : k === 8 ? { ...c, flags: FLAG_OPENING_BRIDGE } : c)),
     store => {
-      const { map, boundary } = buildCoarseMap(store, RULES);
+      const { map, boundary } = build(store, RULES);
       assert.equal(map.pieces.length, 8);
       assert.deepEqual(Array.from(boundary.blocked), [2, 3]);
       assert.deepEqual(Array.from(boundary.bridges), [16]);
@@ -81,17 +109,13 @@ test('paged search: the U is routed down, across and up with no area given; the 
       assert.equal(s.result.stats.trianglesLoaded, 18);
     }
     assert.deepEqual(s.box, { west: 0, south: 0, east: 3, north: 4 });
-    const { map } = buildCoarseMap(store, RULES);
-    const a = pieceAt(store, map, RULES, START[0], START[1]);
-    const b = pieceAt(store, map, RULES, END[0], END[1]);
-    if (a.kind !== 'piece' || b.kind !== 'piece') throw new Error('ends not on pieces');
-    const chain = coarseRoute(map, a.piece, b.piece);
+    const { graph, pm } = graphOf(store, RULES);
+    const a = graph.pieceOf(pm.locate(...pm.toXY(START[0], START[1])))!;
+    const b = graph.pieceOf(pm.locate(...pm.toXY(END[0], END[1])))!;
+    const chain = coarseRoute(graph, a, b);
     assert.ok(chain);
-    const r = reachOf(store, map, chain!);
-    assert.deepEqual(
-      r.chainTiles.map(t => t.join(',')),
-      ['0,3', '0,2', '0,1', '0,0', '1,0', '2,0', '2,1', '2,2', '2,3']
-    );
+    const r = graph.reach([chain!]);
+    assert.equal(r.chainTiles, 9);
     assert.deepEqual(r.box, { west: 0, south: 0, east: 3, north: 4 });
   });
 });
@@ -130,6 +154,18 @@ test('paged mesh: a tile dropped and read again is the same tile', () => {
   });
 });
 
+test('paged mesh: a tile’s blocked set is the same whatever leg reads it (its own frame)', () => {
+  withMesh([...U, { i: 1, j: 1, depth: 1 }], store => {
+    const boundary = boundarySeeds(store, RULES);
+    const rules = { ...SEARCH, bufferM: 10 };
+    for (let idx = 0; idx < 10; idx++) {
+      const a = new PagedMesh(store, rules, Math.cos((10 * Math.PI) / 180), boundary).tile(idx);
+      const b = new PagedMesh(store, rules, Math.cos((60 * Math.PI) / 180), boundary).tile(idx);
+      assert.deepEqual(a.blocked, b.blocked, `tile ${idx}`);
+    }
+  });
+});
+
 test('paged mesh: the buffer crosses a tile edge from the rough cut’s blocked boundary triangles, opening bridges under Avoid', () => {
   // Two tiles side by side: (0, 0) 10 m deep (ids 0, 1), (1, 0) 1 m deep (ids 2, 3); only 3, the upper triangle
   // of (1, 0), has a neighbour across the tile edge (0, the lower triangle of (0, 0)).
@@ -139,7 +175,7 @@ test('paged mesh: the buffer crosses a tile edge from the rough cut’s blocked 
       { i: 1, j: 0, depth: 1 },
     ],
     store => {
-      const { boundary } = buildCoarseMap(store, RULES);
+      const boundary = boundarySeeds(store, RULES);
       assert.deepEqual(Array.from(boundary.blocked), [3]);
       const rules = { ...SEARCH, bufferM: 10 };
       const seeded = new PagedMesh(store, rules, 1, boundary).tile(0);
@@ -155,7 +191,7 @@ test('paged mesh: the buffer crosses a tile edge from the rough cut’s blocked 
       { i: 1, j: 0, flags: FLAG_OPENING_BRIDGE },
     ],
     store => {
-      const { boundary } = buildCoarseMap(store, RULES);
+      const boundary = boundarySeeds(store, RULES);
       const avoid = new PagedMesh(store, { ...SEARCH, bufferM: 10, openingBridges: 'avoid' }, 1, boundary).tile(0);
       assert.deepEqual(Array.from(avoid.blocked), [1, 1]);
       const open = new PagedMesh(store, { ...SEARCH, bufferM: 10, openingBridges: 'open' }, 1, boundary).tile(0);
@@ -164,24 +200,41 @@ test('paged mesh: the buffer crosses a tile edge from the rough cut’s blocked 
   );
 });
 
-test('rough cut: an end on water too shallow is reported with its depth; water that does not connect has no chain', () => {
+test('the rough cut connects two points exactly when the search finds a route: buffer, area to avoid, opening bridge', () => {
+  /** Rough cut and search on the same mesh and rules: they must agree. */
+  const agree = (store: MeshStore, rules: CoarseRules, avoid?: MeshRules['avoid']): boolean => {
+    const rough = connects(store, rules, START, END, avoid);
+    const boundary = boundarySeeds(store, rules);
+    const s = searchMesh(store, START, END, meshRulesOf(rules, avoid), boundary);
+    assert.equal(rough, s.result.ok, `rough cut ${rough}, search ${s.result.ok ? 'routed' : s.result.reason}`);
+    return rough;
+  };
+  // A shallow tile above the bottom middle one: the buffer closes the bottom of the U, and only the buffer does.
+  withMesh([...U, { i: 1, j: 1, depth: 1 }], store => {
+    assert.equal(agree(store, RULES), true, 'no buffer: connected');
+    assert.equal(agree(store, { ...RULES, bufferM: 10 }), false, 'a 10 m buffer from the shallow tile closes it');
+  });
+  // An area to avoid over the bottom middle tile (its triangles' centroids about 26 km from its centre).
+  withMesh(U, store => {
+    assert.equal(agree(store, RULES, [{ lon: 1.5, lat: 0.5, radiusM: 30000 }]), false, 'the area closes it');
+    assert.equal(agree(store, RULES, [{ lon: 1.5, lat: 0.5, radiusM: 1000 }]), true, 'a small area does not');
+  });
+  // An opening bridge over the bottom middle tile: open by default, closed under Avoid.
   withMesh(
-    U.map(c => (c.i === 2 && c.j === 3 ? { ...c, depth: 1 } : c)),
+    U.map(c => (c.i === 1 && c.j === 0 ? { ...c, flags: FLAG_OPENING_BRIDGE } : c)),
     store => {
-      const { map } = buildCoarseMap(store, RULES);
-      assert.deepEqual(pieceAt(store, map, RULES, END[0], END[1]), { kind: 'blocked', depth: 1 });
+      assert.equal(agree(store, RULES), true);
+      assert.equal(agree(store, { ...RULES, openingBridges: 'avoid' }), false);
     }
   );
-  // Without the bottom middle tile the arms do not meet; the paged search runs out of water.
+});
+
+test('rough cut: water that does not connect has no chain, and the search runs out of water', () => {
+  // Without the bottom middle tile the arms do not meet.
   withMesh(
     U.filter(c => !(c.i === 1 && c.j === 0)),
     store => {
-      const { map } = buildCoarseMap(store, RULES);
-      const a = pieceAt(store, map, RULES, START[0], START[1]);
-      const b = pieceAt(store, map, RULES, END[0], END[1]);
-      if (a.kind !== 'piece' || b.kind !== 'piece') throw new Error('ends not on pieces');
-      assert.equal(coarseRoute(map, a.piece, b.piece), null);
-      assert.deepEqual(pieceAt(store, map, RULES, 5.5, 5.5), { kind: 'outside' });
+      assert.equal(connects(store, RULES, START, END), false);
       const s = searchMesh(store, START, END, SEARCH);
       assert.ok(!s.result.ok);
       if (!s.result.ok)

@@ -39,7 +39,7 @@ import { runLastMs, type ArcoRun } from './data/arco';
 import { gshhgInstalled, gshhgInstalledAt, unreadableCoastlines } from './geo/gshhg';
 import { Coastline } from './plugin/coastline';
 import { localMeshes, MeshManager, meshesToOpen, readyMeshDirs } from './plugin/meshes';
-import { coarseFile, coarseKey, pruneCoarse } from './plugin/meshcoarse';
+import { coarseFile, coarseKey, coarseRulesOf, pruneCoarse } from './plugin/meshcoarse';
 import { runChildTask } from './plugin/childtask';
 import { ChartsProvider } from './plugin/charts';
 import { makePlotterExtension } from './plugin/plotterext';
@@ -240,7 +240,16 @@ export = function plugin(app: SkApp): SignalKPlugin {
     done: number;
     total: number;
     again: boolean;
-    last: { at: string; built: number; ms: number; draught_m: number; air_draft_m: number; removed: number } | null;
+    last: {
+      at: string;
+      built: number;
+      ms: number;
+      draught_m: number;
+      air_draft_m: number;
+      buffer_m: number;
+      drawbridges: 'open' | 'avoid';
+      removed: number;
+    } | null;
     error: string | null;
   } = { running: null, done: 0, total: 0, again: false, last: null, error: null };
   let roughCutCtrl: AbortController | null = null;
@@ -256,7 +265,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
       roughCut.error = "the boat's draught or air draft is not set in Signal K (design.draft.maximum, design.airHeight)";
       return;
     }
-    const rules = { draughtM: self.draughtM, airDraftM: self.airDraftM };
+    // The routes' own rules by default: the buffer from unusable water and the Drawbridges choice (Defaults).
+    const rules = coarseRulesOf({
+      draughtM: self.draughtM,
+      airDraftM: self.airDraftM,
+      bufferM: config.routing.navigableBufferM,
+      openingBridges: config.routing.drawbridges === 'avoid' ? 'avoid' : 'open',
+    });
     const open = meshesToOpen(
       config.mesh.storeDir ? readyMeshDirs(config.mesh.storeDir) : [],
       localMeshes(config.meshDir),
@@ -290,6 +305,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
         ms: Date.now() - t0,
         draught_m: rules.draughtM,
         air_draft_m: rules.airDraftM,
+        buffer_m: rules.bufferM,
+        drawbridges: rules.openingBridges,
         removed,
       };
     } catch (err) {

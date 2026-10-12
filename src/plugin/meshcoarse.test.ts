@@ -1,8 +1,9 @@
 /**
  * The rough cuts on disk and their child tasks (meshcoarse.ts, childtask.ts
  * 'mesh-coarse', 'mesh-reach'): built into the data folder with their
- * boundary file, read back for a leg's reach on a U-shaped mesh, pruned
- * when their build or version is gone.
+ * boundary file, read back for a leg's reach on a U-shaped mesh (with an
+ * approximate waypoint aimed at water connected to the start, not at a
+ * pond), pruned when their build or version is gone.
  */
 
 import { test } from 'node:test';
@@ -12,9 +13,19 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { writeGridMesh } from '../engine/mesh/fixture';
 import { runChildTask } from './childtask';
-import { boundaryFile, COARSE_DIR, COARSE_KEEP_PER_MESH, coarseFile, coarseKey, pruneCoarse, readBoundary } from './meshcoarse';
+import {
+  boundaryFile,
+  COARSE_DIR,
+  COARSE_KEEP_PER_MESH,
+  coarseFile,
+  coarseKey,
+  type MeshReachTask,
+  pruneCoarse,
+  readBoundary,
+  runMeshReachTask,
+} from './meshcoarse';
 
-const RULES = { draughtM: 2, airDraftM: 18 };
+const RULES = { draughtM: 2, airDraftM: 18, bufferM: 0, openingBridges: 'open' as const };
 const U = [
   { i: 0, j: 0 },
   { i: 1, j: 0 },
@@ -33,7 +44,8 @@ test('mesh-coarse and mesh-reach child tasks: a rough cut built into the data fo
   try {
     const out = coarseFile(data, mesh, RULES);
     assert.equal(path.dirname(out), path.join(data, COARSE_DIR));
-    assert.match(path.basename(out), /^[0-9a-f]{16}-v2-d2\.00-a18\.00\.json$/);
+    assert.match(path.basename(out), /^[0-9a-f]{16}-v3-d2\.00-a18\.00-b0\.00-o\.json$/);
+    assert.match(path.basename(coarseFile(data, mesh, { ...RULES, bufferM: 10, openingBridges: 'avoid' })), /-b10\.00-x\.json$/);
     const b = await runChildTask({ task: 'mesh-coarse', dir: mesh, out, rules: RULES }, 60_000);
     assert.equal(b.pieces, 9);
     assert.equal(b.links, 8);
@@ -52,6 +64,7 @@ test('mesh-coarse and mesh-reach child tasks: a rough cut built into the data fo
     if (c.ok) {
       assert.equal(c.chainTiles, 9);
       assert.deepEqual(c.box, { west: 0, south: 0, east: 3, north: 4 });
+      assert.deepEqual(c.aims, [null]);
     }
     // An end on land: not on a triangle of the mesh.
     const off = await runChildTask(
@@ -59,8 +72,8 @@ test('mesh-coarse and mesh-reach child tasks: a rough cut built into the data fo
       60_000
     );
     assert.deepEqual(off, { ok: false, reason: 'the start is not on a triangle of the mesh' });
-    // An approximate waypoint off the water (the gap between the arms): the reach goes through the nearest usable
-    // water; an exact one there is refused.
+    // An approximate waypoint off the water (the gap between the arms): aimed at the nearest usable water, half a
+    // degree away on an arm's edge.
     const via = await runChildTask(
       {
         task: 'mesh-reach',
@@ -76,6 +89,48 @@ test('mesh-coarse and mesh-reach child tasks: a rough cut built into the data fo
       60_000
     );
     assert.ok(via.ok, via.ok ? '' : via.reason);
+    if (via.ok) {
+      const aim = via.aims[0]!;
+      assert.ok(Math.abs(aim.lat - 2.5) < 1e-9 && (Math.abs(aim.lon - 1) < 1e-9 || Math.abs(aim.lon - 2) < 1e-9), JSON.stringify(aim));
+      assert.ok(aim.movedM > 500);
+      assert.equal(via.aims[1], null);
+    }
+  } finally {
+    fs.rmSync(mesh, { recursive: true, force: true });
+    fs.rmSync(data, { recursive: true, force: true });
+  }
+});
+
+test('mesh-reach: an approximate waypoint whose nearest water is a pond is aimed at water connected to the start; an exact one in the pond is refused', async () => {
+  // The U and, apart from it, a one-tile pond at (5, 5).
+  const mesh = writeGridMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-')), [...U, { i: 5, j: 5 }]);
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-data-'));
+  try {
+    const out = coarseFile(data, mesh, RULES);
+    await runChildTask({ task: 'mesh-coarse', dir: mesh, out, rules: RULES }, 60_000);
+    const points = (wp: { lon: number; lat: number; radiusM?: number }): MeshReachTask['points'] => [
+      { lon: 0.5, lat: 3.6, name: 'the start' },
+      { ...wp, name: 'waypoint 1' },
+      { lon: 2.5, lat: 3.6, name: 'the destination' },
+    ];
+    // Just off the pond's edge: the pond is 0.1° away, the right arm's corner (3, 4) far further.
+    const r = runMeshReachTask({
+      task: 'mesh-reach',
+      dir: mesh,
+      mapFile: out,
+      points: points({ lon: 4.9, lat: 5.5, radiusM: 500 }),
+      rules: RULES,
+    });
+    assert.ok(r.ok, r.ok ? '' : r.reason);
+    if (r.ok) {
+      const aim = r.aims[0]!;
+      assert.ok(aim.lon <= 3 + 1e-9 && aim.lat <= 4 + 1e-9, `aimed in the U, not the pond: ${JSON.stringify(aim)}`);
+    }
+    const exact = runMeshReachTask({ task: 'mesh-reach', dir: mesh, mapFile: out, points: points({ lon: 5.5, lat: 5.5 }), rules: RULES });
+    assert.deepEqual(exact, {
+      ok: false,
+      reason: 'no water on the chart mesh connects the start and waypoint 1 for this boat (draught {depth:2}, air draft {length:18})',
+    });
   } finally {
     fs.rmSync(mesh, { recursive: true, force: true });
     fs.rmSync(data, { recursive: true, force: true });
@@ -91,7 +146,7 @@ test('pruneCoarse: rough cuts of builds no longer in use or of another version g
     const key = coarseKey(mesh);
     const names: string[] = [];
     for (let k = 0; k < COARSE_KEEP_PER_MESH + 2; k++) {
-      const n = `${key}-v2-d${(1 + k).toFixed(2)}-a18.00.json`;
+      const n = `${key}-v3-d${(1 + k).toFixed(2)}-a18.00-b0.00-o.json`;
       fs.writeFileSync(path.join(dir, n), '{}');
       fs.writeFileSync(boundaryFile(path.join(dir, n)), '');
       // Older first: each file a second newer than the one before.
@@ -99,9 +154,9 @@ test('pruneCoarse: rough cuts of builds no longer in use or of another version g
       fs.utimesSync(path.join(dir, n), t, t);
       names.push(n, boundaryFile(n));
     }
-    fs.writeFileSync(path.join(dir, 'deadbeefdeadbeef-v2-d2.00-a18.00.json'), '{}');
-    // A rough cut of version 1 (no boundary file, no version in its name) of the live build.
-    fs.writeFileSync(path.join(dir, `${key}-d2.00-a18.00.json`), '{}');
+    fs.writeFileSync(path.join(dir, 'deadbeefdeadbeef-v3-d2.00-a18.00-b0.00-o.json'), '{}');
+    // A rough cut of an earlier version of the live build.
+    fs.writeFileSync(path.join(dir, `${key}-v2-d2.00-a18.00.json`), '{}');
     const removed = pruneCoarse(data, new Set([key]));
     assert.equal(removed, 4);
     const left = fs.readdirSync(dir).sort();

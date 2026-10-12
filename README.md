@@ -747,21 +747,28 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   the final depth check read the tiles the same way.
 - **The rough cut.** Each mesh has a rough cut for the boat: the usable
   water as pieces, one set of connected triangles per tile, linked across
-  tile edges, built under the boat's draught and air draft (no buffer).
-  It answers three things before a leg is searched: whether any water
-  connects the leg's ends for this boat (an end on water the boat cannot
-  use, or no water connecting the ends, fails with that reason without a
-  search), where that water runs (the forecast and currents are loaded
-  over its tiles as well as around the ends), and which triangles on each
-  tile's edge the boat cannot use, so the buffer from unusable water
-  (Defaults) carries across tile edges. An area to avoid in the next tile
-  is not carried across a tile edge by the buffer (its triangles are
-  still blocked). Rough cuts are built in a child process after a mesh
-  is downloaded or updated, on the configuration panel's *Rebuild rough
-  cuts* button (`POST /api/meshes/rough-cut`), and by a route that needs
-  one not built yet; never at start. They are kept in `mesh-coarse/` in
-  the plugin's data folder, two files (`.json`, `.bnd`) per mesh build,
-  draught and air draft; a rough cut of an earlier version is rebuilt.
+  tile edges. It is built from the same tile reads as the mesh search
+  (the boat's draught and air draft, the buffer from unusable water, the
+  Drawbridges choice), so it connects two points exactly when the search
+  can; areas to avoid, which change per request, are applied to it at the
+  time of the request by recomputing the tiles they touch. Before a leg is
+  searched it answers: whether water connects the leg's points for this
+  boat (if not, the leg fails at once with that reason, no search), where
+  an approximate waypoint on water the boat cannot use is aimed (the
+  nearest usable water connected to the start, never a pond), where that
+  water runs (the forecast and currents are loaded over its tiles as well
+  as around the ends), and which triangles on each tile's edge the boat
+  cannot use, so the buffer carries across tile edges. An area to avoid in
+  the next tile is not carried across a tile edge by the buffer (its
+  triangles are still blocked). Rough cuts are built in a child process
+  after a mesh is downloaded or updated and on the configuration panel's
+  *Rebuild rough cuts* button (`POST /api/meshes/rough-cut`), for the
+  boat's Signal K draught and air draft and the Defaults buffer and
+  Drawbridges choice, and by a route that needs one not built yet (another
+  buffer, Drawbridges = Avoid on one request); never at start. They are
+  kept in `mesh-coarse/` in the plugin's data folder, two files (`.json`,
+  `.bnd`) per mesh build, draught, air draft, buffer and Drawbridges
+  choice; a rough cut of an earlier version is rebuilt.
 - **No coastline search inside the mesh.** A leg both of whose ends one
   mesh holds is routed on the mesh or fails: when the mesh cannot take it
   (no water connecting its ends, a start or end in a blocked triangle, a
@@ -779,9 +786,10 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   pass through the circles on that stretch (where it cannot, the stretch
   follows the mesh route, which passes through them). The point where the
   route reaches each circle is marked as the waypoint. A waypoint on water
-  the boat cannot use (land, shallows) is aimed at the nearest usable
-  water; when that lies outside the waypoint's circle the log says so in a
-  WARNING with the distance and position.
+  the boat cannot use (land, shallows, a pond cut off from the route) is
+  aimed at the nearest usable water connected to the start; when that
+  lies outside the waypoint's circle the log says so in a WARNING with the
+  distance and position.
 - **Final depth check.** Every finished route, whatever planned it, is
   walked through every mesh it meets, segment by segment and triangle by
   triangle (the walk the routers test their moves with), against the same

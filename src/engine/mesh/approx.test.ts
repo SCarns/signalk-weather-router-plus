@@ -151,3 +151,31 @@ test('searchMeshRun: through a waypoint circle, cut where it enters it, then on 
     if (!bad.result.ok) assert.equal(bad.result.reason, 'to the destination: end point is not in a mesh triangle');
   });
 });
+
+test('a waypoint aimed at a corner shared with other water: the chosen triangle decides, and the next piece starts in it', () => {
+  // Two tiles touching only at the corner (1, 1): (0, 0) (ids 0, 1) and (1, 1) (ids 2, 3), no shared edge, two waters.
+  withMesh(
+    [
+      { i: 0, j: 0 },
+      { i: 1, j: 1 },
+    ],
+    store => {
+      const start: [number, number] = [0.5, 0.4];
+      // Aimed at the corner in triangle 0 (the lower one of (0, 0), which holds the corner): routed in the start's water.
+      const s = searchMesh(store, start, [1, 1], SEARCH, null, { radiusM: 500, trim: false, aim: { lon: 1, lat: 1, tri: 0 } });
+      assert.ok(s.result.ok, s.result.ok ? '' : s.result.reason);
+      if (s.result.ok) assert.ok([0, 1].includes(s.result.endTri!), `ended in ${s.result.endTri}`);
+      // A run: to the corner, then back into (0, 0): the second piece starts on the corner in the first piece's water.
+      const run = searchMeshRun(
+        store,
+        start,
+        [
+          { lon: 1, lat: 1, radiusM: 1, name: 'waypoint 1', aim: { lon: 1, lat: 1, tri: 0 } },
+          { lon: 0.2, lat: 0.8, name: 'the destination' },
+        ],
+        SEARCH
+      );
+      assert.ok(run.result.ok, run.result.ok ? '' : run.result.reason);
+    }
+  );
+});

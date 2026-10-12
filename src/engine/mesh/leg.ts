@@ -53,10 +53,15 @@ export interface MeshLegArgs {
   shouldCancel: () => boolean;
 }
 
-/** A leg's reach (coarse.ts reachOf): the box of the tiles its water runs through, the chain's length. Not a search area. */
+/**
+ * A leg's reach (coarse.ts PieceGraph): the box of the tiles its water runs through, the chains' length (not a search
+ * area), and per target after the start (route.ts runTargets) the point an approximate waypoint is aimed at: itself,
+ * or the nearest usable water connected to the start; null for an exact one.
+ */
 export interface LegReach {
   box: BBox;
   lengthM: number;
+  aims: ({ lon: number; lat: number; tri: number; movedM: number } | null)[];
 }
 
 /**

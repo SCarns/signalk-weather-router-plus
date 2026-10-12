@@ -25,6 +25,19 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The rough cut answers for the search** (docs/drafts/mesh-no-gshhg-design.md):
+  built from the paged mesh's own tile reads (`buildCoarseMap` over
+  `PagedMesh`), so its blocked sets are the search's: the buffer from
+  unusable water and the Drawbridges choice are in it and in its key
+  (`-v3-d…-a…-b<buffer>-<o|x>`); a tile's blocked set and buffer are now
+  computed in the tile's own frame, the same for every leg. Areas to
+  avoid are applied per request (`PieceGraph` recomputes the tiles they
+  touch). The reach task finds each approximate waypoint's aim (the
+  nearest usable water connected to the start, `nearestUsable` with a
+  filter) and the leg searches to it. Fixes a waypoint aimed at a pond and
+  a search that read 42.6 M triangles (2.3 GB, 114 s) before finding no
+  water the rough cut had called connected (test box, 2026-10-12). Rebuild
+  the rough cuts after updating.
 - **Approximate waypoints on the mesh** (docs/drafts/mesh-no-gshhg-design.md
   part 3): a leg through waypoint circles inside one mesh is no longer sent
   to the coastline search. `searchMeshRun` searches start → circle → … → end
