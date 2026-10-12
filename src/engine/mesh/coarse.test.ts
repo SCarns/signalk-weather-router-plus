@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import { meshAstar } from './astar';
 import { boundarySeeds, buildCoarseMap, type CoarseMap, type CoarseRules, coarseRoute, meshRulesOf, PieceGraph } from './coarse';
 import { writeGridMesh } from './fixture';
+import { MeshLand } from './land';
 import { type BoundarySeeds, PagedMesh } from './paged';
 import { blockedTriangles, type MeshRules, searchMesh } from './route';
 import { FLAG_OPENING_BRIDGE, MeshStore } from './store';
@@ -244,4 +245,23 @@ test('rough cut: water that does not connect has no chain, and the search runs o
         );
     }
   );
+});
+
+test('every segment of a mesh route passes the mesh land test (its corners turn round blocked water)', () => {
+  // The U with a shallow tile above its bottom middle: the route down, across and up turns at the shallow tile's and
+  // the arms' corners.
+  withMesh([...U, { i: 1, j: 1, depth: 1 }], store => {
+    const s = searchMesh(store, START, END, SEARCH);
+    assert.ok(s.result.ok, s.result.ok ? '' : s.result.reason);
+    if (!s.result.ok) return;
+    const land = new MeshLand(new PagedMesh(store, SEARCH, Math.cos((3.6 * Math.PI) / 180)));
+    const p = s.result.path;
+    assert.ok(p.length > 2, 'the route turns');
+    for (let i = 1; i < p.length; i++)
+      assert.equal(
+        land.legCrossesLandExact(p[i - 1][0], p[i - 1][1], p[i][0], p[i][1]),
+        false,
+        `segment ${i}: ${JSON.stringify([p[i - 1], p[i]])}`
+      );
+  });
 });

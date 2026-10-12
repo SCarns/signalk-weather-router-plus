@@ -15,7 +15,7 @@
 import type { LandTest } from '../../geo/landmask';
 import type { PagedMesh } from './paged';
 import { FLAG_OPENING_BRIDGE, NO_VALUE } from './store';
-import { rayWalk } from './width';
+import { rayWalk, walkMesh } from './width';
 
 export class MeshLand implements LandTest {
   constructor(readonly pm: PagedMesh) {}
@@ -57,68 +57,21 @@ export class MeshLand implements LandTest {
   }
 
   /**
-   * Every triangle the straight move a→b (mesh frame) passes through, in
-   * order, blocked or not, starting with the one under a; stops where the
-   * move leaves the mesh. The walk of width.ts rayWalk, reporting each
-   * triangle (global id) with the stretch of the move inside it (metres
-   * from a, the exit capped at the move's end). Returns how far the walk
-   * got: the move's length when it reached b, less where it left the mesh,
-   * -1 when no triangle holds a.
+   * Every triangle the straight move a→b (mesh frame) passes through, in order, blocked or not, starting with the one
+   * the move enters at a (width.ts walkMesh: at a corner or on an edge, the triangle its direction goes into); stops
+   * where the move leaves the mesh. Each triangle (global id) comes with the stretch of the move inside it (metres
+   * from a, the exit capped at the move's end). Returns how far the walk got: the move's length when it reached b,
+   * less where it left the mesh, -1 when no triangle holds a.
    */
   forEachTriangleAlong(ax: number, ay: number, bx: number, by: number, fn: (tri: number, from: number, to: number) => void): number {
-    let cur = this.locate(ax, ay, true);
-    if (cur < 0) return -1;
+    const t = this.locate(ax, ay, true);
+    if (t < 0) return -1;
     const len = Math.hypot(bx - ax, by - ay);
     if (len <= 0) {
-      fn(cur, 0, 0);
+      fn(t, 0, 0);
       return 0;
     }
-    const dx = (bx - ax) / len;
-    const dy = (by - ay) / len;
-    let T = this.pm.tileOf(cur);
-    let entry = -1;
-    let s = 0;
-    for (let iter = 0; iter < 100000; iter++) {
-      const l = cur - T.first;
-      const { x, y } = T;
-      let bestS = Infinity;
-      let bestK = -1;
-      for (let k = 0; k < 3; k++) {
-        if (k === entry) continue;
-        const a = l * 3 + k;
-        const b = l * 3 + ((k + 1) % 3);
-        const ex = x[b] - x[a];
-        const ey = y[b] - y[a];
-        if (ex * dy - ey * dx >= 0) continue;
-        const den = dx * ey - dy * ex;
-        if (Math.abs(den) < 1e-18) continue;
-        const wx = x[a] - ax;
-        const wy = y[a] - ay;
-        const sHit = (wx * ey - wy * ex) / den;
-        const u = (wx * dy - wy * dx) / den;
-        if (u < -1e-7 || u > 1 + 1e-7) continue;
-        if (sHit < s - 1e-9) continue;
-        if (sHit < bestS) {
-          bestS = sHit;
-          bestK = k;
-        }
-      }
-      if (bestK < 0) {
-        // A numerical dead end: no exit found, the walk stops in this triangle.
-        fn(cur, s, s);
-        return s;
-      }
-      const exit = Math.min(Math.max(bestS, s), len);
-      fn(cur, s, exit);
-      if (bestS >= len) return len;
-      const n = T.nb[l * 3 + bestK];
-      if (n < 0) return exit;
-      s = exit;
-      entry = T.rev[l * 3 + bestK];
-      cur = n;
-      if (n < T.first || n >= T.first + T.n) T = this.pm.tileOf(n);
-    }
-    return s;
+    return walkMesh(this.pm, t, ax, ay, (bx - ax) / len, (by - ay) / len, len, true, fn).dist;
   }
 
   /**
@@ -161,11 +114,12 @@ export class MeshLand implements LandTest {
     const [ax, ay] = this.pm.toXY(lonA, latA);
     const [bx, by] = this.pm.toXY(lonB, latB);
     const ta = this.locate(ax, ay, true);
-    if (ta < 0 || this.pm.isBlocked(ta)) return true;
+    if (ta < 0) return true;
     const len = Math.hypot(bx - ax, by - ay);
-    if (len <= 0) return false;
+    if (len <= 0) return this.pm.isBlocked(ta);
+    // The walk enters the triangle the move goes into (a corner of blocked water the move leaves is not crossed) and
+    // stops short at a blocked triangle, the mesh's edge, or a numerical dead end: all unusable.
     const r = rayWalk(this.pm, ta, ax, ay, (bx - ax) / len, (by - ay) / len, len);
-    // The walk stops short at a blocked triangle, the mesh's edge, or a numerical dead end: all unusable.
     return r.dist < len - 1e-6;
   }
 

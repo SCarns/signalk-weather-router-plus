@@ -25,6 +25,16 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The mesh's straight walk at corners and edges** (`engine/mesh/width.ts`
+  `walkMesh`, one walk for the land test, the depth check, opening bridges,
+  passage widths and a route's end triangle): a walk starting at, or passing
+  through, a triangle corner or edge enters the triangle its direction goes
+  into, and a direction along an edge (within the walk's own tolerance)
+  takes the usable side: touching blocked water is not crossing it. Before,
+  a mesh route's own segments, which turn at corners of blocked water, were
+  rejected by the land test: 57 of 11,967 segments over the 50 test cases
+  on the test box, 0 after (2026-10-12); 11 of the 13 routes failing in the
+  sail layout failed on such a segment.
 - **The rough cut answers for the search** (docs/drafts/mesh-no-gshhg-design.md):
   built from the paged mesh's own tile reads (`buildCoarseMap` over
   `PagedMesh`), so its blocked sets are the search's: the buffer from

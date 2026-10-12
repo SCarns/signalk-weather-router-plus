@@ -169,3 +169,65 @@ test('MeshLand: the opening bridges a move passes under, one per bridge, with th
   const e = fromMeshXY(m, 1.5 * side, 2.5 * side);
   assert.equal(land.openingBridgesAlong(d[0], d[1], e[0], e[1]).length, 0);
 });
+
+test('MeshLand: moves from a corner or an edge of blocked water, along its edge, and through its corner', () => {
+  // 10 × 10 squares of 100 m; the square (5, 5) blocked (both its triangles). Its corners are shared by up to six
+  // triangles: a move from one enters the triangle its direction goes into.
+  const side = 100;
+  const m = gridMesh(10, 10, side);
+  const blocked = new Uint8Array(m.n);
+  blocked[(5 * 10 + 5) * 2] = 1;
+  blocked[(5 * 10 + 5) * 2 + 1] = 1;
+  const land = new MeshLand(PagedMesh.fromLoaded(m, blocked, 250));
+  const cross = (x0: number, y0: number, x1: number, y1: number): boolean =>
+    land.legCrossesLandExact(...ll(m, x0, y0, side), ...ll(m, x1, y1, side));
+  // From each corner of the blocked square: away from it clear, into it not.
+  assert.equal(cross(5, 5, 4, 4), false, 'from the lower-left corner, away');
+  assert.equal(cross(5, 5, 5.5, 5.5), true, 'from the lower-left corner, into the square');
+  assert.equal(cross(6, 6, 7, 7), false, 'from the upper-right corner, away');
+  assert.equal(cross(6, 5, 7, 4), false, 'from the lower-right corner, away');
+  assert.equal(cross(5, 6, 4, 6.5), false, 'from the upper-left corner, away');
+  // Along its edges: touching blocked water is not crossing it.
+  assert.equal(cross(5, 5, 5, 7), false, 'up its left edge and on');
+  assert.equal(cross(3, 5, 8, 5), false, 'along its bottom edge');
+  // From a point on its edge: out clear, in not.
+  assert.equal(cross(5, 5.5, 4, 5.5), false, 'from its left edge, out');
+  assert.equal(cross(5, 5.5, 6, 5.5), true, 'from its left edge, in');
+  // Through its corner: touching only the corner is clear; through the corner into it is not.
+  assert.equal(cross(3, 7, 7, 3), false, 'through the corner (5, 5) diagonally past the square');
+  assert.equal(cross(3, 3, 7, 7), true, 'through the corner (5, 5) into the square');
+  // Every triangle the walk reports along a move past the corner is usable (the depth check's walk).
+  const [ax, ay] = [3 * side, 7 * side];
+  const [bx, by] = [7 * side, 3 * side];
+  land.forEachTriangleAlong(ax, ay, bx, by, t => assert.equal(blocked[t], 0, `triangle ${t} reported`));
+});
+
+test('MeshLand: a move exactly along an edge between usable and blocked water, through a lon/lat round trip, is clear', () => {
+  // The lower triangle of square (5, 5) blocked, its upper one usable: they share the square's diagonal (5, 5)–(6, 6).
+  // A mesh route hugging blocked water runs corner to corner along such edges; its points come back from lon/lat, so
+  // the direction is a hair off the edge and must still count as along it. Real-scale coordinates (a leg frame at
+  // about 40° N, 70° W) and irregular square sizes leave the noise real routes carry: the walk before this rule
+  // rejected 187 of these 600 moves.
+  let checked = 0;
+  for (let k = 0; k < 200; k++) {
+    const side = 20 + k * 1.37;
+    const m = gridMesh(10, 10, side);
+    const [x0, y0] = [-7.3e6, 4.6e6];
+    for (let q = 0; q < m.n * 3; q++) {
+      m.x[q] += x0;
+      m.y[q] += y0;
+    }
+    m.cl = Math.cos(((40 + k * 0.01) * Math.PI) / 180);
+    const blocked = new Uint8Array(m.n);
+    blocked[(5 * 10 + 5) * 2] = 1;
+    const land = new MeshLand(PagedMesh.fromLoaded(m, blocked, 250));
+    const at = (gx: number, gy: number): [number, number] => fromMeshXY(m, x0 + gx * side, y0 + gy * side);
+    const cross = (a: [number, number], b: [number, number]): boolean => land.legCrossesLandExact(...at(...a), ...at(...b));
+    assert.equal(cross([5, 5], [6, 6]), false, `side ${side}: along the diagonal, corner to corner`);
+    assert.equal(cross([6, 6], [5, 5]), false, `side ${side}: back along it`);
+    assert.equal(cross([4, 4], [7, 7]), false, `side ${side}: through it from corner to corner beyond`);
+    assert.equal(cross([5, 5], [6, 5.5]), true, `side ${side}: off the edge into the blocked triangle`);
+    checked += 4;
+  }
+  assert.equal(checked, 800);
+});
