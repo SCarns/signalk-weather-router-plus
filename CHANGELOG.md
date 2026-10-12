@@ -25,6 +25,21 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Corridor search on the rough cut** (docs/drafts/mesh-no-gshhg-design.md
+  part 4; `engine/mesh/coarse.ts`, `plugin/meshcoarse.ts`, child tasks
+  `mesh-coarse` and `mesh-corridor`): a leg inside one mesh is searched in
+  the tiles its water passes through (the chain of water pieces on the
+  mesh's rough cut, plus one ring of neighbour tiles, two on a second
+  attempt) instead of boxes of 0.5°, 1° and 2° around its ends, which never
+  reached a route that swings far out and stopped at the 16 M triangle cap
+  (on the test box: Bahamas → Gulf, around Florida, Chicago → Lake Huron).
+  `MeshStore.loadTiles` and `readTileArrays`; `searchMesh` takes the
+  corridor's rings. The rough cut is built per mesh build, draught and air
+  draft into `mesh-coarse/` in the data folder: after a download or update,
+  on the panel's *Rebuild rough cuts* button (`POST /api/meshes/rough-cut`,
+  status in `GET /api/meshes` `rough_cut`), and by a route that needs one;
+  not at start (the owner's choice). The forecast and currents a mesh leg
+  reads are loaded for the corridor's box.
 - **Final depth check** (`engine/mesh/check.ts`, `plugin/meshchecktask.ts`,
   child task `mesh-check`): every finished route is walked through every
   mesh it meets, triangle by triangle with `MeshLand.forEachTriangleAlong`

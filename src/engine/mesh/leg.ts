@@ -21,7 +21,7 @@ import type { RouterKind } from '../router';
 import type { CorridorInput } from '../search/types';
 import { MAX_SCAN_M } from './width';
 import { enrichLegRanges, enrichWaypoints } from '../propagator';
-import { haversineDistanceM } from '../../geo/geodesy';
+import { haversineDistanceM, type BBox } from '../../geo/geodesy';
 import { recomputePerWaypointMetadata, type Route, type RouteWarning, type Waypoint } from '../route';
 import { recomputeTotals } from '../smoother';
 import type { DrawbridgeChoice, MeshRules } from './route';
@@ -47,8 +47,17 @@ export interface MeshLegArgs {
   smootherTolerance: number;
   drawbridges: DrawbridgeChoice;
   bridgeWaitS: number;
+  /** The corridor of tiles the leg's water passes through (coarse.ts), when the runner gave one: the mesh search reads exactly these. */
+  corridor?: LegCorridor;
   progress: ProgressFn;
   shouldCancel: () => boolean;
+}
+
+/** A leg's corridor (coarse.ts corridorOf): its rings of tiles ([i, j]), the box they span, the chain's length. */
+export interface LegCorridor {
+  rings: [number, number][][];
+  box: BBox;
+  lengthM: number;
 }
 
 /**
@@ -61,7 +70,7 @@ export interface MeshRefusal {
   refused: string;
 }
 
-export function isRefusal(r: Route | MeshRefusal): r is MeshRefusal {
+export function isRefusal<T extends object>(r: T | MeshRefusal): r is MeshRefusal {
   return (r as MeshRefusal).refused !== undefined;
 }
 
@@ -77,6 +86,19 @@ export interface MeshLegRunner {
   /** Every point lies in the mesh (a tile exists and holds the point). */
   covers(points: [number, number][]): boolean;
   leg(args: MeshLegArgs): Promise<Route | MeshRefusal>;
+  /**
+   * The corridor of a leg inside one mesh, from the rough cut for these rules (built first when missing), or why
+   * there is none (an end on water the boat cannot use, no water connecting the ends). Absent: the leg's mesh
+   * search grows boxes around its ends instead.
+   */
+  corridor?(args: {
+    legStart: [number, number];
+    legEnd: [number, number];
+    rules: MeshRules;
+    tag: string;
+    progress: ProgressFn;
+    shouldCancel: () => boolean;
+  }): Promise<LegCorridor | MeshRefusal>;
 }
 
 /**

@@ -379,7 +379,11 @@ export class MeshManager {
   /** Counts catalogue reads; a read superseded by a newer one writes nothing. */
   private catalogSeq = 0;
 
-  constructor(private readonly log: (m: string) => void) {}
+  constructor(
+    private readonly log: (m: string) => void,
+    /** A mesh was downloaded or updated and is in place (its rough cuts are rebuilt then: index.ts). */
+    private readonly onReady: (name: string) => void = () => undefined
+  ) {}
 
   /** Apply a configuration; the next `run` reconciles the store with it. */
   configure(
@@ -624,6 +628,7 @@ export class MeshManager {
       this.log(
         `mesh ${entry.name}: ready, ${r.files} files, ${(r.bytes / 1e9).toFixed(2)} GB in ${((Date.now() - t0) / 1000).toFixed(0)} s`
       );
+      this.onReady(entry.name);
     } catch (err) {
       // Stopped (the child was killed): not an error; the next run resumes the copy.
       if (signal.aborted) return;

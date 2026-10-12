@@ -21,7 +21,11 @@
  *              `.progress.json` there;
  *  - mesh-check: the final depth check of a finished route on the chart
  *              meshes (plugin/meshchecktask.ts, engine/mesh/check.ts),
- *              reading the tiles along the route a chunk at a time.
+ *              reading the tiles along the route a chunk at a time;
+ *  - mesh-coarse: build one mesh's rough cut for one boat
+ *              (plugin/meshcoarse.ts, engine/mesh/coarse.ts): every tile
+ *              read once, 0.25–0.53 GB on brain (2026-10-12);
+ *  - mesh-corridor: a leg's corridor of tiles on the rough cut.
  */
 
 import { fork } from 'node:child_process';
@@ -31,6 +35,7 @@ import type { RegionalSource } from '../data/regional';
 import type { RegionalDecodeResult } from '../data/regionaldecode';
 import type { RouteDepthCheck } from '../engine/mesh/check';
 import type { MeshCheckTask } from './meshchecktask';
+import type { MeshCoarseResult, MeshCoarseTask, MeshCorridorResult, MeshCorridorTask } from './meshcoarse';
 import type { MeshLegEvent, MeshLegResult, MeshLegTask } from './meshlegtask';
 
 export type ChildTask =
@@ -38,6 +43,8 @@ export type ChildTask =
   | { task: 'regional'; src: RegionalSource; srcDir: string; dataDir: string; keepRuns: number }
   | MeshLegTask
   | MeshCheckTask
+  | MeshCoarseTask
+  | MeshCorridorTask
   | { task: 'mesh-download'; base: string; dest: string; build: string; fresh?: boolean };
 
 /** A message a task sends before its answer (the mesh leg's progress and stage fronts). */
@@ -60,9 +67,13 @@ export type ChildTaskResult<T extends ChildTask> = T extends { task: 'rmtree' }
     ? MeshLegResult
     : T extends { task: 'mesh-check' }
       ? RouteDepthCheck
-      : T extends { task: 'mesh-download' }
-        ? MeshDownloadResult
-        : RegionalDecodeResult;
+      : T extends { task: 'mesh-coarse' }
+        ? MeshCoarseResult
+        : T extends { task: 'mesh-corridor' }
+          ? MeshCorridorResult
+          : T extends { task: 'mesh-download' }
+            ? MeshDownloadResult
+            : RegionalDecodeResult;
 
 const isTs = __filename.endsWith('.ts');
 
@@ -275,6 +286,14 @@ async function runTask(t: ChildTask): Promise<unknown> {
     case 'mesh-check': {
       const { runMeshCheckTask } = await import('./meshchecktask');
       return runMeshCheckTask(t);
+    }
+    case 'mesh-coarse': {
+      const { runMeshCoarseTask } = await import('./meshcoarse');
+      return runMeshCoarseTask(t);
+    }
+    case 'mesh-corridor': {
+      const { runMeshCorridorTask } = await import('./meshcoarse');
+      return runMeshCorridorTask(t);
     }
     case 'mesh-download':
       return downloadMesh(t.base, t.dest, t.build, t.fresh === true);

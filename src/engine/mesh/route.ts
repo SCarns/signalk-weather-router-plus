@@ -40,6 +40,7 @@ import {
   type LoadedMesh,
   locate,
   type MeshStore,
+  type MeshTileInfo,
   NO_VALUE,
   toMeshXY,
 } from './store';
@@ -79,6 +80,9 @@ export interface MeshRouteStats {
   bufferM: number;
   buffered: number;
   bufferMs: number;
+  /** With a corridor (coarse.ts): the ring of neighbour tiles read on the last attempt and how many tiles that was. */
+  corridorRing?: number;
+  corridorTiles?: number;
 }
 
 export type MeshRouteResult =
@@ -291,7 +295,20 @@ export function meshRoute(store: MeshStore, start: [number, number], end: [numbe
   return searchMesh(store, start, end, rules).result;
 }
 
-export function searchMesh(store: MeshStore, start: [number, number], end: [number, number], rules: MeshRules): MeshSearch {
+/**
+ * The mesh search for a leg. Without `corridor`: the tiles in a box around
+ * the leg's ends, widened when no route is found (MESH_BOX_PADS_DEG). With
+ * `corridor` (coarse.ts: the tiles the leg's water passes through, one ring
+ * of neighbours, then two): exactly those tiles, the next ring when no
+ * route is found; a ring over the triangle cap is refused.
+ */
+export function searchMesh(
+  store: MeshStore,
+  start: [number, number],
+  end: [number, number],
+  rules: MeshRules,
+  corridor?: [number, number][][]
+): MeshSearch {
   const maxTriangles = rules.maxTriangles ?? MESH_MAX_TRIANGLES;
   const boxFor = (pad: number): BBox => ({
     west: Math.min(start[0], end[0]) - pad,
@@ -322,28 +339,54 @@ export function searchMesh(store: MeshStore, start: [number, number], end: [numb
   let ex = 0;
   let ey = 0;
   let r: ReturnType<typeof meshAstar> | null = null;
-  for (let attempt = 0; attempt < MESH_BOX_PADS_DEG.length; attempt++) {
-    const pad = MESH_BOX_PADS_DEG[attempt];
-    box = boxFor(pad);
-    if (attempt > 0) {
-      const would = store.countTriangles(box);
+  const attempts = corridor ? corridor.length : MESH_BOX_PADS_DEG.length;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let tiles: MeshTileInfo[] | null = null;
+    if (corridor) {
+      tiles = corridor[attempt].map(([i, j]) => store.tile(i, j)).filter((t): t is MeshTileInfo => t !== undefined);
+      box = {
+        west: Math.min(...tiles.map(t => t.bbox[0])),
+        south: Math.min(...tiles.map(t => t.bbox[1])),
+        east: Math.max(...tiles.map(t => t.bbox[2])),
+        north: Math.max(...tiles.map(t => t.bbox[3])),
+      };
+      const would = tiles.reduce((a, t) => a + t.n, 0);
       if (would > maxTriangles)
         return {
           result: {
             ok: false,
-            reason: `no route on the mesh within {angle:${(stats.padDeg * Math.PI) / 180}} of the leg's ends; a box {angle:${(pad * Math.PI) / 180}} around them would read ${would} triangles, over the ${maxTriangles} cap`,
+            reason: `the leg's water passes through ${tiles.length} tiles of the mesh (with ${attempt + 1} ring(s) of neighbours), ${would} triangles, over the ${maxTriangles} cap`,
             stats,
           },
           box,
           mesh: m && blocked ? { m, blocked } : null,
         };
-      // The previous box's arrays go before the next one's are read.
-      m = null;
+      if (attempt > 0) m = null;
+      stats.corridorRing = attempt + 1;
+      stats.corridorTiles = tiles.length;
+    } else {
+      const pad = MESH_BOX_PADS_DEG[attempt];
+      box = boxFor(pad);
+      if (attempt > 0) {
+        const would = store.countTriangles(box);
+        if (would > maxTriangles)
+          return {
+            result: {
+              ok: false,
+              reason: `no route on the mesh within {angle:${(stats.padDeg * Math.PI) / 180}} of the leg's ends; a box {angle:${(pad * Math.PI) / 180}} around them would read ${would} triangles, over the ${maxTriangles} cap`,
+              stats,
+            },
+            box,
+            mesh: m && blocked ? { m, blocked } : null,
+          };
+        // The previous box's arrays go before the next one's are read.
+        m = null;
+      }
+      stats.padDeg = pad;
     }
-    stats.padDeg = pad;
     stats.attempts = attempt + 1;
     const t0 = Date.now();
-    m = store.load(box);
+    m = tiles ? store.loadTiles(tiles, box) : store.load(box);
     const t1 = Date.now();
     blocked = blockedTriangles(m, rules);
     [sx, sy] = toMeshXY(m, start[0], start[1]);
@@ -393,7 +436,13 @@ export function searchMesh(store: MeshStore, start: [number, number], end: [numb
   }
   if (!m || !blocked || !r || r.goalNode === -2)
     return {
-      result: { ok: false, reason: `no route on the mesh within {angle:${(stats.padDeg * Math.PI) / 180}} of the leg's ends`, stats },
+      result: {
+        ok: false,
+        reason: corridor
+          ? `no route on the mesh in the corridor of tiles the rough cut gave (${stats.corridorTiles} tiles, ${stats.corridorRing} ring(s) of neighbours); the buffer from unusable water may close a passage the rough cut, built without it, counts as open`
+          : `no route on the mesh within {angle:${(stats.padDeg * Math.PI) / 180}} of the leg's ends`,
+        stats,
+      },
       box,
       mesh: m && blocked ? { m, blocked } : null,
     };

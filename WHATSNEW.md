@@ -15,6 +15,13 @@
   the places. A route that passes shows *Chart depth checked* with the
   shallowest depth it crosses, how much of it has no charted depth, and
   how much lies outside the charts.
+- **Long trips on the charts.** A trip whose water route swings far out
+  (from the Bahamas round the Florida Keys into the Gulf, from Chicago
+  through the Straits of Mackinac into Lake Huron) used to be too big for
+  the charts. The router now first finds which part of the charts the
+  water runs through and routes inside that. The map it uses is built
+  after each chart download; *Rebuild rough cuts* on the plugin
+  configuration page builds it again.
 - **A failed request no longer looks like a result.** When a new request
   fails, the route still on the map is marked as the earlier route.
 

@@ -9,7 +9,9 @@
 import { HOUR_S, NM_M } from '../../geo/units';
 import { validateRouteRequest } from '../request_schema';
 import { runLegPipeline, type LegPipelineInputs, type LegWind } from '../../engine/pipeline';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { coarseFile } from '../meshcoarse';
 import { ForecastStore } from '../../data/forecast';
 import { loadForecastForBBox, resolveCycle } from '../../data/loader';
 import type { WindowOptions } from '../../data/decoded';
@@ -107,7 +109,8 @@ function meshLegRunner(
       const m = meshFor([a.legStart, a.plan.end]) ?? meshFor([a.legStart]) ?? meshFor([a.plan.end]);
       if (!m) return { refused: 'no mesh covers the leg' };
       a.progress(0, 0, `${a.tag}chart mesh: ${m.name}`);
-      const bbox = bboxFromLonLat([a.legStart[0], a.plan.end[0]], [a.legStart[1], a.plan.end[1]], 0.5);
+      // The forecast area: the corridor's tiles when there is one (the search may run far from the ends), else the ends.
+      const bbox = a.corridor ? a.corridor.box : bboxFromLonLat([a.legStart[0], a.plan.end[0]], [a.legStart[1], a.plan.end[1]], 0.5);
       const task: MeshLegTask = {
         task: 'mesh-leg',
         dir: m.dir,
@@ -129,6 +132,7 @@ function meshLegRunner(
         smootherTolerance: a.smootherTolerance,
         drawbridges: a.drawbridges,
         bridgeWaitS: a.bridgeWaitS,
+        corridor: a.corridor,
         forecast: useForecast ? { runDir: st.run!.dir, area: expandBBox(bbox, ROUTE_FORECAST_MARGIN_DEG), params: ROUTE_PARAMS } : null,
         regional:
           useForecast && request.wind_model !== 'ecmwf'
@@ -169,6 +173,48 @@ function meshLegRunner(
           return { refused: r.reason };
         }
         return r.route;
+      } finally {
+        clearInterval(poll);
+      }
+    },
+    // The leg's corridor on the rough cut (part 4): built first when this boat has none for the mesh, both in child
+    // processes (meshcoarse.ts), so no mesh tile is read in this worker.
+    corridor: async c => {
+      const m = meshFor([c.legStart, c.legEnd]);
+      if (!m) return { refused: 'no mesh covers the leg' };
+      const rules = { draughtM: c.rules.draughtM, airDraftM: c.rules.airDraftM };
+      const ac = new AbortController();
+      const poll = setInterval(() => {
+        if (c.shouldCancel()) ac.abort();
+      }, 500);
+      try {
+        const file = coarseFile(st.cacheRoot, m.dir, rules);
+        if (!fs.existsSync(file)) {
+          c.progress(
+            0,
+            0,
+            `${c.tag}chart mesh: building the rough cut of ${m.name} for this boat (draught {depth:${rules.draughtM}}, air draft {length:${rules.airDraftM}}), once`
+          );
+          const b = await runChildTask({ task: 'mesh-coarse', dir: m.dir, out: file, rules }, 15 * 60_000, ac.signal);
+          c.progress(
+            0,
+            0,
+            `${c.tag}chart mesh: rough cut built: ${b.pieces} pieces of water, ${b.links} links, {dataSize:${b.bytes}} in {time:${b.ms / 1000}}`
+          );
+        }
+        const t0 = Date.now();
+        const r = await runChildTask(
+          { task: 'mesh-corridor', dir: m.dir, mapFile: file, start: c.legStart, end: c.legEnd, rules },
+          5 * 60_000,
+          ac.signal
+        );
+        if (!r.ok) return { refused: r.reason };
+        c.progress(
+          0,
+          0,
+          `${c.tag}chart mesh: rough cut: the water runs through ${r.chainTiles} tiles, {distance:${r.lengthM.toFixed(0)}} between their pieces; the search reads those and their neighbours ({time:${(Date.now() - t0) / 1000}})`
+        );
+        return { rings: r.rings, box: r.box, lengthM: r.lengthM };
       } finally {
         clearInterval(poll);
       }

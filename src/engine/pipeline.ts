@@ -25,7 +25,7 @@ import { RouteError } from './errors';
 import { forecastHorizonNote, type LegWind } from './horizon';
 import type { ModePolicy } from './legsim';
 import { findHandover, HANDOVER_SCAN_M, sliceCorridor, stitchLegParts } from './mesh/handover';
-import { isRefusal, type MeshLegRunner, type MeshRefusal, meshRulesFor } from './mesh/leg';
+import { isRefusal, type LegCorridor, type MeshLegRunner, type MeshRefusal, meshRulesFor } from './mesh/leg';
 import { type DrawbridgeChoice, MESH_BOX_PAD_MAX_DEG } from './mesh/route';
 import { legLabel, type LegPlan } from './multileg';
 import { DEFAULT_ROUTER, makeRouter, type RouterKind } from './router';
@@ -102,7 +102,9 @@ async function meshLeg(
   legIndex: number,
   legStart: [number, number],
   legDeparture: Date,
-  tag: string
+  tag: string,
+  /** A leg inside one mesh: its corridor from the rough cut, when the runner offers one (part 4); the handover's mesh part keeps the boxes. */
+  useCorridor = false
 ): Promise<Route | MeshRefusal> {
   const { progress, shouldCancel, multi, stages } = inp;
   const r = meshRulesFor(inp.vessel, plan.vias.length > 0);
@@ -116,11 +118,28 @@ async function meshLeg(
     0,
     `${tag}chart mesh: routing on charted depths (draught {depth:${r.rules.draughtM}}, air draft {length:${r.rules.airDraftM}})`
   );
-  // The widest box the mesh search can widen to: the mesh process reads
-  // the forecast and the currents from this worker's files only, so what
-  // is loaded here must cover every box it may search (the search widens
-  // its box up to MESH_BOX_PAD_MAX_DEG when the mesh route does not fit).
-  const bbox = bboxFromLonLat([legStart[0], plan.end[0]], [legStart[1], plan.end[1]], MESH_BOX_PAD_MAX_DEG);
+  // The corridor of tiles the leg's water passes through (the rough cut, coarse.ts), when there is one.
+  let corridor: LegCorridor | undefined;
+  if (useCorridor && inp.mesh!.corridor) {
+    const c = await inp.mesh!.corridor({
+      legStart,
+      legEnd: plan.end,
+      rules: r.rules,
+      tag,
+      progress,
+      shouldCancel,
+    });
+    if (shouldCancel()) throw new RouteCancelled();
+    if (isRefusal(c)) return c;
+    corridor = c;
+  }
+  // The area the mesh process may search: the mesh process reads the
+  // forecast and the currents from this worker's files only, so what is
+  // loaded here must cover it: the corridor's tiles, or the widest box the
+  // search can widen to (MESH_BOX_PAD_MAX_DEG around the ends).
+  const bbox = corridor
+    ? bboxFromLonLat([corridor.box.west, corridor.box.east], [corridor.box.south, corridor.box.north], 0.1)
+    : bboxFromLonLat([legStart[0], plan.end[0]], [legStart[1], plan.end[1]], MESH_BOX_PAD_MAX_DEG);
   await inp.loadAreas(bbox, multi ? `${tag}area` : 'route area');
   const { names: currentNames } = inp.currents();
   if (currentNames && plan.index === 0) progress(0, 0, `currents: ${currentNames.join(' > ')}`);
@@ -150,6 +169,7 @@ async function meshLeg(
       smootherTolerance: inp.smootherTolerance,
       drawbridges: inp.drawbridges ?? 'ask',
       bridgeWaitS: inp.bridgeWaitS ?? 0,
+      corridor,
       progress,
       shouldCancel,
     });
@@ -203,7 +223,7 @@ export async function runLegPipeline(
     const cs = both || inp.mesh.covers([legStart]);
     const ce = both || inp.mesh.covers([legEnd]);
     if (both) {
-      const mr = await meshLeg(inp, plan, legIndex, legStart, legDeparture, tag);
+      const mr = await meshLeg(inp, plan, legIndex, legStart, legDeparture, tag, true);
       if (!isRefusal(mr)) return mr;
       // No tag: the worker names the leg of a multi-leg route on every error (worker/route.ts legOne).
       if (plan.vias.length === 0) throw new RouteError(`the chart mesh covers this leg but cannot take it: ${mr.refused}`);

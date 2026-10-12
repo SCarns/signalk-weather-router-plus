@@ -88,9 +88,13 @@ export interface MeshLegInputs {
 export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
   const { result: res, land, plan, legStart, legDeparture, tag, progress, shouldCancel, stages } = inp;
   const st = res.stats;
-  const timing = `${st.trianglesLoaded} triangles read in {time:${(st.readMs + st.prepMs) / 1000}}, ${st.blocked} blocked, search {time:${st.searchMs / 1000}} (${st.expanded} edges)${
+  const timing = `${st.trianglesLoaded} triangles read in {time:${(st.readMs + st.prepMs) / 1000}}${
+    st.corridorTiles !== undefined ? ` from a corridor of ${st.corridorTiles} tiles (${st.corridorRing} ring(s) of neighbours)` : ''
+  }, ${st.blocked} blocked, search {time:${st.searchMs / 1000}} (${st.expanded} edges)${
     st.attempts > 1
-      ? `; the box around the leg's ends widened to {angle:${(st.padDeg * Math.PI) / 180}} after ${st.attempts - 1} search(es) found no route`
+      ? st.corridorTiles !== undefined
+        ? `; the corridor widened after ${st.attempts - 1} search(es) found no route`
+        : `; the box around the leg's ends widened to {angle:${(st.padDeg * Math.PI) / 180}} after ${st.attempts - 1} search(es) found no route`
       : ''
   }`;
   if (!res.ok || !land) return { refused: `${res.ok ? 'no mesh land' : res.reason} (${timing})` };

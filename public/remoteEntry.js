@@ -220,6 +220,19 @@ var signalk_weather_router_plus = (function () {
         .then(function () { setCatalogReading(false); });
     }
 
+    // "Rebuild rough cuts": every mesh's rough cut (the corridor search's map of the water) for the boat's Signal K
+    // draught and air draft, rebuilt in the background; the card shows its progress from GET /api/meshes.
+    function rebuildRoughCuts() {
+      setMeshMsg(null);
+      fetch(API + '/meshes/rough-cut', { method: 'POST', credentials: 'include' })
+        .then(function (r) {
+          if (!r.ok) return r.text().then(function (t) { throw new Error('HTTP ' + r.status + ' ' + t); });
+          return r.json();
+        })
+        .then(function (rc) { setMeshes(function (m) { return m ? Object.assign({}, m, { rough_cut: rc }) : m; }); })
+        .catch(function (e) { setMeshMsg('Rough cuts: ' + e.message); });
+    }
+
     // A mesh action (download, update, redownload, remove, cancel): the plugin
     // changes its own download list and runs a pass; the form's copy of the
     // list is taken from the answer so a later Save does not put an old one back.
@@ -431,6 +444,17 @@ var signalk_weather_router_plus = (function () {
       : meshes.catalog_error ? 'The catalogue could not be read: ' + meshes.catalog_error
       : meshes.catalog_updated ? 'Catalogue of ' + meshes.catalog_updated.slice(0, 16).replace('T', ' ') + 'Z, ' + published + ' meshes published.'
       : 'The catalogue has not been read yet.';
+    // The rough cuts: what is building, or the last build and its error.
+    var rc = meshes && meshes.rough_cut ? meshes.rough_cut : null;
+    var rcNote = !rc ? null
+      : rc.running ? 'Building rough cuts: ' + rc.done + ' of ' + rc.total + ' done, now ' + rc.running + '.'
+      : rc.error ? 'Rough cuts: ' + rc.error
+      : rc.last ? 'Rough cuts built ' + String(rc.last.at).slice(0, 16).replace('T', ' ') + 'Z for ' + rc.last.built + ' mesh folder(s) in ' + Math.round(rc.last.ms / 1000) + ' s.'
+      : 'No rough cuts built since the plugin started; a route builds the one it needs.';
+    var roughCutRow = h('div', { className: 'mb-2 d-flex align-items-center flex-wrap gap-2' },
+      h('button', { type: 'button', className: 'btn btn-outline-secondary btn-sm', disabled: !!(rc && rc.running) || acting !== null, onClick: rebuildRoughCuts },
+        rc && rc.running ? 'Building…' : 'Rebuild rough cuts'),
+      rcNote ? h('small', { className: rc && rc.error ? 'text-danger' : 'text-muted' }, rcNote) : null);
     var meshSection = card('Chart meshes',
       'Routing on charted water (depths, clearances, hazards) needs a navigation mesh of the area. Download the US Coast Guard districts you sail in; each is kept current.',
       h('div', { className: 'mb-2 d-flex align-items-center flex-wrap gap-2' },
@@ -438,6 +462,7 @@ var signalk_weather_router_plus = (function () {
           catalogReading ? 'Checking…' : 'Check for updates'),
         h('small', { className: 'text-muted' }, catalogNote + ' Checked by itself at start and once a day.')),
       meshTable,
+      roughCutRow,
       meshMsg ? h('div', { className: 'text-danger small mb-2' }, meshMsg) : null,
       h('p', { className: 'small text-muted' },
         h('b', null, 'Download'), ' copies a published mesh to this server and keeps it current. ',
@@ -445,7 +470,8 @@ var signalk_weather_router_plus = (function () {
         h('b', null, 'Download again'), ' fetches the current build afresh and swaps it in when complete. ',
         h('b', null, 'Remove'), ' deletes the copy. These act at once. ',
         h('b', null, 'Use'), ' lets the router route on a mesh; unticked it stays on disk and the coastline is used there. Where a mesh is both downloaded and in your folder, ',
-        h('b', null, 'downloaded / my folder'), ' picks the copy the router uses. Use and that choice apply on Save.'),
+        h('b', null, 'downloaded / my folder'), ' picks the copy the router uses. Use and that choice apply on Save. ',
+        h('b', null, 'Rebuild rough cuts'), ' redoes the map of the water each mesh gives the router to find a long leg\'s way (built by itself after each download, and by a route that needs one).'),
       fold('Catalogue address and your own folder',
         row('Catalogue', text(['mesh', 'catalogUrl'], 'blank = the US-ENC catalogue on R2'), 'The index.json listing the published meshes.'),
         row('Local mesh folder', text(['meshDir'], 'blank = none'),

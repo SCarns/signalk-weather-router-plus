@@ -86,6 +86,49 @@ export function squareTile(i: number, j: number): Tri[] {
 }
 
 /**
+ * A mesh of 1° tiles at the given cells (each tile two triangles split along
+ * its rising diagonal, squareTile), neighbours joined across every shared
+ * tile edge; per cell an optional depth for both its triangles (default
+ * 10 m). Index origin (0, 0), xScale 1. Returns the mesh folder.
+ */
+export function writeGridMesh(dir: string, cells: { i: number; j: number; depth?: number }[]): string {
+  const id = new Map(cells.map((c, k) => [`${c.i},${c.j}`, k]));
+  // Global ids: cell k's lower triangle 2k, upper 2k + 1.
+  const lower = (i: number, j: number): number => (id.has(`${i},${j}`) ? 2 * id.get(`${i},${j}`)! : -1);
+  const upper = (i: number, j: number): number => (id.has(`${i},${j}`) ? 2 * id.get(`${i},${j}`)! + 1 : -1);
+  const tiles = cells.map((c, k) => {
+    const { i, j } = c;
+    // Lower: edges bottom (→ upper of the cell below, its top edge 1), right (→ upper of the cell right, its left
+    // edge 2), diagonal (→ own upper, edge 0). Upper: diagonal (→ own lower, edge 2), top (→ lower of the cell
+    // above, its bottom edge 0), left (→ lower of the cell left, its right edge 1).
+    const nb = [
+      [upper(i, j - 1), upper(i + 1, j), 2 * k + 1],
+      [2 * k, lower(i, j + 1), lower(i - 1, j)],
+    ];
+    const rev = nb.map((row, t) => row.map((g, e) => (g < 0 ? -1 : t === 0 ? [1, 2, 0][e] : [2, 0, 1][e])));
+    const file = `t_${i}_${j}.bin`;
+    const d = c.depth ?? 10;
+    writeTile(dir, file, squareTile(i, j), nb, rev, [d, d]);
+    return { i, j, file, first: 2 * k, n: 2, bbox: [i, j, i + 1, j + 1] };
+  });
+  fs.writeFileSync(
+    path.join(dir, 'index.json'),
+    JSON.stringify({
+      version: 1,
+      west: 0,
+      south: 0,
+      east: Math.max(...cells.map(c => c.i)) + 1,
+      north: Math.max(...cells.map(c => c.j)) + 1,
+      tileDeg: 1,
+      xScale: 1,
+      triangles: cells.length * 2,
+      tiles,
+    })
+  );
+  return dir;
+}
+
+/**
  * Two 1° tiles side by side (A at (0,0): ids 0, 1; B at (1,0): ids 2, 3),
  * sharing the vertex column at lon 1, with the given depths per triangle
  * (default: 10 m everywhere) and flags (default 0). Returns the mesh folder.
