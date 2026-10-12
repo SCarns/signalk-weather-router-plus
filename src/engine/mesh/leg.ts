@@ -52,15 +52,31 @@ export interface MeshLegArgs {
 }
 
 /**
+ * Why the mesh cannot take a leg: no route in the box, an end on a blocked
+ * triangle, a stretch that cannot be made against the current, no mesh or
+ * no forecast for the mesh process. A sentence for the user, without the
+ * leg's tag.
+ */
+export interface MeshRefusal {
+  refused: string;
+}
+
+export function isRefusal(r: Route | MeshRefusal): r is MeshRefusal {
+  return (r as MeshRefusal).refused !== undefined;
+}
+
+/**
  * The chart mesh for the pipeline: which legs it covers, and the whole leg
  * planned on it (the plugin: in the child process holding the mesh,
- * plugin/meshlegtask.ts; the tests: in-process). Null when the mesh cannot
- * take the leg: the pipeline then routes it on the coastline search.
+ * plugin/meshlegtask.ts; the tests: in-process). A refusal when the mesh
+ * cannot take the leg: a leg inside the mesh then fails with that reason
+ * (no fallback to the coastline search, the owner's rule of 2026-10-12);
+ * the mesh part of a handover leg goes to the coastline search as before.
  */
 export interface MeshLegRunner {
   /** Every point lies in the mesh (a tile exists and holds the point). */
   covers(points: [number, number][]): boolean;
-  leg(args: MeshLegArgs): Promise<Route | null>;
+  leg(args: MeshLegArgs): Promise<Route | MeshRefusal>;
 }
 
 /**

@@ -72,6 +72,7 @@ function _mapFitPadding() {
 // legs coloured by tack, where the forecast runs out, the snap connectors,
 // the result strip and the itinerary.
 function displayRoute(geojson) {
+  _failedOverRoute = false;
   setSelectedRouteFeature(null);
   routeSource.clear();
   const features = new ol.format.GeoJSON().readFeatures(geojson, {
@@ -487,6 +488,7 @@ function _loadRouteJob(id) {
 }
 
 function _clearDisplayedRoute() {
+  _prevRouteProps = null; _prevNavWarns = null; _failedOverRoute = false;
   _currentRouteJobId = null;
   _currentRouteName = '';
   routeSource.clear();
@@ -1558,10 +1560,31 @@ const RouteProgress = (function () {
 // One line of what the route is, from the LineString properties, plus
 // a badge that opens the validator's warnings.
 let _lastRouteProps = null, _lastNavWarns = null;
+// The route on the map when a computation starts, and whether the request that replaced it failed: the earlier
+// route is then shown again, marked, never as if it were the answer.
+let _prevRouteProps = null, _prevNavWarns = null, _failedOverRoute = false;
+// The final depth check (worker: depth_check on the LineString): one line, totals over the legs, in the user's units.
+function _depthCheckLine(dc) {
+  if (!dc || !Array.isArray(dc.legs) || !dc.legs.length) return '';
+  let onMesh = 0, unknown = 0, outside = 0, shallow = null;
+  for (const l of dc.legs) {
+    onMesh += l.on_mesh_m || 0; unknown += l.unknown_depth_m || 0; outside += l.outside_mesh_m || 0;
+    if (l.shallowest_m != null && (!shallow || l.shallowest_m < shallow.shallowest_m)) shallow = l;
+  }
+  const multi = dc.legs.length > 1;
+  const parts = [];
+  if (shallow) parts.push('shallowest ' + (fmtDepth(shallow.shallowest_m) || UNIT_MISSING) + (multi ? ' (leg ' + (shallow.leg + 1) + ')' : ''));
+  if (unknown > 0) parts.push((fmtDist(unknown) || UNIT_MISSING) + ' with no charted depth');
+  if (outside > 0) parts.push((fmtDist(outside) || UNIT_MISSING) + ' outside the chart mesh');
+  const coast = dc.legs.filter(l => l.source !== 'mesh').map(l => l.leg + 1);
+  if (coast.length && multi) parts.push('leg' + (coast.length > 1 ? 's ' : ' ') + coast.join(', ') + ' partly or wholly on coastline data');
+  else if (coast.length) parts.push('partly or wholly on coastline data');
+  return onMesh > 0 || parts.length ? '<div class="rs-notes">Chart depth checked' + (parts.length ? ': ' + parts.join(' · ') : '') + '</div>' : '';
+}
 function renderResultStrip(p, navWarns) {
   const el = document.getElementById('routeInfo');
   _lastRouteProps = p; _lastNavWarns = navWarns;
-  el.classList.toggle('stale', !!(p && _routeStale));
+  el.classList.toggle('stale', !!(p && (_routeStale || _failedOverRoute)));
   if (!p) { el.innerHTML = ''; return; }
   const distStr = p.total_distance_m != null ? fmtDist(p.total_distance_m) : '?';
   const timeStr = p.total_time_s != null ? fmtTime(p.total_time_s) : '?';
@@ -1594,7 +1617,9 @@ function renderResultStrip(p, navWarns) {
       + (p.limits_beyond_forecast ? ', and the wind/wave limit was checked against those held conditions' : '')
       + '. A longer <a id="rsBeyondLink">Forecast horizon</a> in Settings covers more of the passage.</div>';
   }
+  html += _depthCheckLine(p.depth_check);
   if (navWarns && navWarns.length) html += '<div class="rs-notes">' + navWarns.join(' · ') + '</div>';
+  if (_failedOverRoute) html += '<div class="rs-stale">The last route request failed; this is the earlier route.</div>';
   if (_routeStale) html += '<div class="rs-stale">Markers changed since this route was computed.</div>';
   if (warns.length) {
     html += '<div class="rs-warnlist" id="rsWarnList" hidden>' + warns.map(w => {
@@ -1645,6 +1670,9 @@ function showModal() {
   modalStatus.textContent = 'Starting...';
   _routeStale = false;
   _routeComputing = true;
+  // The route still on the map, kept so a failed request can show it again, marked as the earlier route.
+  if (_lastRouteProps) { _prevRouteProps = _lastRouteProps; _prevNavWarns = _lastNavWarns; }
+  _failedOverRoute = false;
   renderResultStrip(null);
   RouteProgress.start();
   cancelBtn.style.display = 'inline-block';
@@ -2215,7 +2243,18 @@ function _computeUiIdle() {
 // Follow a job: its SSE stream (status, progress lines, stage fronts,
 // done / error), backfilled from the status row. The result GeoJSON is
 // fetched separately when the job is done.
+// The route on the map when a job is attached (its job id and name): a job that fails or is cancelled leaves that
+// route on the map, so the page points back at it (Publish, Delete, the name bar act on it, not on the failed job).
+let _jobBeforeAttach = null;
+function _backToEarlierRoute() {
+  const shown = _jobBeforeAttach && routeSource.getFeatures().length;
+  _currentRouteJobId = shown ? _jobBeforeAttach.id : null;
+  _currentRouteName = shown ? _jobBeforeAttach.name : '';
+  _jobBeforeAttach = null;
+}
 function attachToJob(id, jobRow) {
+  // A reconnect to the same job keeps what was on the map before it.
+  if (_activeJobId !== id) _jobBeforeAttach = { id: _currentRouteJobId, name: _currentRouteName };
   _closeJobStream();
   _activeJobId = id;
   _currentRouteJobId = id;
@@ -2359,6 +2398,12 @@ function _jobOnError(job, ev) {
     statusEl.textContent = cancelled ? 'Route cancelled.' : 'Error: ' + unitText(msg);
     RouteProgress.fail(cancelled ? 'Cancelled' : 'Failed: ' + unitText(msg));
     _computeUiIdle();
+    _backToEarlierRoute();
+    // A failed request leaves the earlier route on the map: show its strip again, marked, so it never reads as the answer.
+    if (!cancelled && _prevRouteProps && routeSource.getFeatures().length) {
+      _failedOverRoute = true;
+      renderResultStrip(_prevRouteProps, _prevNavWarns);
+    }
     showTab('logSection');
     const rawLog = document.getElementById('rawLog');
     if (rawLog) rawLog.open = true;
@@ -2376,7 +2421,7 @@ function _jobOnError(job, ev) {
       .then(j => {
         if (j.status === 'done') { appendLog('stream closed; job finished — loading result', 'done'); _computeUiIdle(); RouteProgress.hide(); _loadRouteJob(id); }
         else if (j.status === 'queued' || j.status === 'running') { appendLog('stream lost; reconnecting…', 'error'); setTimeout(() => attachToJob(id, j), 2000); }
-        else { appendLog('job ' + j.status + (j.error ? ': ' + j.error : ''), 'error'); RouteProgress.fail(j.status); _computeUiIdle(); }
+        else { appendLog('job ' + j.status + (j.error ? ': ' + j.error : ''), 'error'); RouteProgress.fail(j.status); _computeUiIdle(); _backToEarlierRoute(); }
       })
       .catch(e => { appendLog('Connection error: ' + e.message, 'error'); statusEl.textContent = 'Error: ' + e.message; RouteProgress.fail('Connection error'); _computeUiIdle(); });
   } else {

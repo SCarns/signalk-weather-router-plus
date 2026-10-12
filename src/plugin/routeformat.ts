@@ -207,6 +207,20 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
     props.max_swh_m = round(Math.max(...swh), 2);
     props.avg_swh_m = round(swh.reduce((a, b) => a + b, 0) / swh.length, 2);
   }
+  // The final depth check (worker/route.ts): what each leg crossed on the chart mesh, for the result strip.
+  if (route.depthCheck) {
+    props.depth_check = {
+      legs: route.depthCheck.legs.map(l => ({
+        leg: l.leg,
+        source: route.legSources?.[l.leg] ?? 'coastline',
+        on_mesh_m: round(l.onMeshM, 0),
+        unknown_depth_m: round(l.unknownDepthM, 0),
+        outside_mesh_m: round(l.outsideMeshM, 0),
+        shallowest_m: l.shallowestM === null ? null : round(l.shallowestM, 1),
+        shallowest_at: l.shallowestAt ? [round(l.shallowestAt[0], 6), round(l.shallowestAt[1], 6)] : null,
+      })),
+    };
+  }
   const snapped = snapProperties(route);
   Object.assign(props, snapped.props);
   // What the route was asked for: a client keeps its waypoint pins there

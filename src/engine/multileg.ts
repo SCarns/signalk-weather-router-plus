@@ -190,6 +190,7 @@ export function stitchLegs(legs: Route[]): Route {
   let drops = legs[0].smootherDrops ?? 0;
   let fallback = legs[0].corridorFallback ?? false;
   let mesh = legs[0].meshLeg ?? false;
+  const legSources = [...(legs[0].legSources ?? [])];
   for (let li = 1; li < legs.length; li++) {
     const leg = legs[li];
     // The previous leg's end is this waypoint's junction.
@@ -222,6 +223,7 @@ export function stitchLegs(legs: Route[]): Route {
     limitsBeyond = limitsBeyond || (leg.limitsBeyondForecast ?? false);
     fallback = fallback || (leg.corridorFallback ?? false);
     mesh = mesh || (leg.meshLeg ?? false);
+    legSources.push(...(leg.legSources ?? []));
     drops += leg.smootherDrops ?? 0;
   }
   const route: Route = {
@@ -243,6 +245,7 @@ export function stitchLegs(legs: Route[]): Route {
   if (drops) route.smootherDrops = drops;
   if (fallback) route.corridorFallback = true;
   if (mesh) route.meshLeg = true;
+  if (legSources.length) route.legSources = legSources;
   recomputePerWaypointMetadata(route);
   return route;
 }
@@ -287,6 +290,9 @@ export async function routeMultiLeg(args: MultiLegArgs): Promise<Route> {
     }
     const r = await args.runLeg(plan, start, departure);
     if (!r.waypoints.length) throw new Error(`${legLabel(plan)} returned no waypoints`);
+    // One source per leg the plan covers (a collapsed approximate run is several legs, all from one search).
+    const source = r.legSources?.[0] ?? (r.meshLeg ? 'mesh' : 'coastline');
+    r.legSources = Array.from({ length: plan.lastIndex - plan.index + 1 }, () => source);
     const last = r.waypoints[r.waypoints.length - 1];
     if (multi) {
       const miss = haversineDistanceM(last.lon, last.lat, plan.end[0], plan.end[1]);

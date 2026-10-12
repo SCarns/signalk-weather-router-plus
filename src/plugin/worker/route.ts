@@ -24,7 +24,8 @@ import { RouteCancelled } from '../../engine/propagator';
 import { RouteError } from '../../engine/errors';
 import { nearestExactWater, waterAround } from '../../engine/corridor';
 import { DEFAULT_ARRIVAL_RADIUS_M, DEFAULT_PRECISION, legLabel, type LegPlan, routeMultiLeg, type Stop } from '../../engine/multileg';
-import type { Route, StageFront, StopSnap } from '../../engine/route';
+import type { LegDepth, Route, StageFront, StopSnap } from '../../engine/route';
+import type { CheckRules, DepthViolation, RouteDepthCheck } from '../../engine/mesh/check';
 import { routeToGeoJSON, routeToSignalKRoute, skeletonToGeoJSON } from '../routeformat';
 import { PolarDiagram } from '../../vessel/polar';
 import { loadPolarCached, resolvePolarPath } from '../polars';
@@ -48,29 +49,18 @@ import { smocSettings } from './currents';
 import { localMeshes, meshesToOpen, readyMeshDirs } from '../meshes';
 import { beamFor, DEFAULT_SEARCH } from '../../engine/search/presets';
 
+/** One opened chart mesh (one cluster of a multi-cluster mesh): its name, folder and index. */
+type OpenMesh = { name: string; dir: string; store: MeshStore };
+
 /**
- * The chart meshes for this route, or undefined when there are none: the
- * downloaded ones with a complete marker under the store directory
- * (plugin/meshes.ts; a multi-cluster mesh is one store per cluster) and
- * the folder configured by hand (where the two share a name, the newer
- * copy: meshes.ts meshesToOpen). Only each mesh's index (one small JSON)
- * is read here; a leg is covered when one mesh covers all its points, and
- * that leg is planned whole in a child process holding that mesh
- * (plugin/meshlegtask.ts), which exits with the leg, so its tile arrays
- * never stay in this worker. The child reads the forecast, the currents
- * and the regional runs from this worker's files; this worker has already
- * fetched what needed the network (loadAreas) before the leg starts.
+ * The chart meshes for this route: the downloaded ones with a complete
+ * marker under the store directory (plugin/meshes.ts; a multi-cluster mesh
+ * is one store per cluster) and the folder configured by hand (where the
+ * two share a name, the newer copy: meshes.ts meshesToOpen). Only each
+ * mesh's index (one small JSON) is read here.
  */
-function meshLegRunner(
-  st: WorkerState,
-  cfg: ResolvedConfig,
-  id: string,
-  request: RouteRequest,
-  progress: (m: string) => void,
-  /** The SMOC area and steps loadAreas loaded for the current leg; the mesh process asks for exactly these. */
-  smocLeg: () => { area: BBox; steps: number[] } | null
-): MeshLegRunner | undefined {
-  const stores: { name: string; dir: string; store: MeshStore }[] = [];
+function openMeshes(cfg: ResolvedConfig, progress: (m: string) => void): OpenMesh[] {
+  const stores: OpenMesh[] = [];
   const open = (name: string, dir: string): void => {
     try {
       stores.push({ name, dir, store: MeshStore.open(dir) });
@@ -83,6 +73,27 @@ function meshLegRunner(
   const downloaded = cfg.mesh.storeDir ? readyMeshDirs(cfg.mesh.storeDir) : [];
   for (const m of meshesToOpen(downloaded, localMeshes(cfg.meshDir), cfg.mesh.disabled, cfg.mesh.preferLocal, cfg.mesh.preferDownload))
     for (const d of m.dirs) open(m.name, d);
+  return stores;
+}
+
+/**
+ * The meshes as the leg pipeline's runner, or undefined when there are
+ * none. A leg is covered when one mesh covers all its points, and that leg
+ * is planned whole in a child process holding that mesh
+ * (plugin/meshlegtask.ts), which exits with the leg, so its tile arrays
+ * never stay in this worker. The child reads the forecast, the currents
+ * and the regional runs from this worker's files; this worker has already
+ * fetched what needed the network (loadAreas) before the leg starts.
+ */
+function meshLegRunner(
+  st: WorkerState,
+  cfg: ResolvedConfig,
+  id: string,
+  request: RouteRequest,
+  stores: OpenMesh[],
+  /** The SMOC area and steps loadAreas loaded for the current leg; the mesh process asks for exactly these. */
+  smocLeg: () => { area: BBox; steps: number[] } | null
+): MeshLegRunner | undefined {
   if (!stores.length) return undefined;
   const meshFor = (points: [number, number][]): (typeof stores)[number] | undefined => stores.find(s => meshCovers(s.store, points));
   const useForecast = !request.no_forecast && request.mode !== 'motor';
@@ -90,20 +101,11 @@ function meshLegRunner(
     covers: points => meshFor(points) !== undefined,
     leg: async (a: MeshLegArgs) => {
       // The child reads the forecast from the decoded run's files; without one it would plan the leg with no wind.
-      if (useForecast && !st.run) {
-        a.progress(
-          0,
-          0,
-          `WARNING: ${a.tag}chart mesh: no decoded forecast run yet for the mesh process to read; using the coastline search instead`
-        );
-        return null;
-      }
+      if (useForecast && !st.run)
+        return { refused: 'the forecast is still being decoded, and the mesh process reads only a decoded run; try again shortly' };
       // The mesh holding both ends; a handover leg has one end outside every mesh, so then the one holding either.
       const m = meshFor([a.legStart, a.plan.end]) ?? meshFor([a.legStart]) ?? meshFor([a.plan.end]);
-      if (!m) {
-        a.progress(0, 0, `WARNING: ${a.tag}chart mesh: no mesh covers the leg; using the coastline search instead`);
-        return null;
-      }
+      if (!m) return { refused: 'no mesh covers the leg' };
       a.progress(0, 0, `${a.tag}chart mesh: ${m.name}`);
       const bbox = bboxFromLonLat([a.legStart[0], a.plan.end[0]], [a.legStart[1], a.plan.end[1]], 0.5);
       const task: MeshLegTask = {
@@ -164,8 +166,7 @@ function meshLegRunner(
         });
         if (!r.ok) {
           if (r.fatal) throw new RouteError(r.reason);
-          a.progress(0, 0, `WARNING: ${a.tag}chart mesh: ${r.reason}; using the coastline search instead`);
-          return null;
+          return { refused: r.reason };
         }
         return r.route;
       } finally {
@@ -492,17 +493,11 @@ export async function route(
     const router = request.router ?? cfg.routing.router;
     if (router !== 'standard')
       progress(0, 0, `router: ${router} (the search on the convexified polar, legs laid out afterwards, cross-track polish)`);
+    const meshes = openMeshes(cfg, m => progress(0, 0, m));
     const pipeline: LegPipelineInputs = {
       waterGrid: st.waterGrid,
       router,
-      mesh: meshLegRunner(
-        st,
-        cfg,
-        id,
-        request,
-        m => progress(0, 0, m),
-        () => smocLeg
-      ),
+      mesh: meshLegRunner(st, cfg, id, request, meshes, () => smocLeg),
       avoidAreas: avoid.map(a => ({ lon: a.lon, lat: a.lat, radiusM: a.radiusM })),
       meshBufferM: cfg.routing.navigableBufferM,
       drawbridges: request.drawbridges ?? cfg.routing.drawbridges,
@@ -559,6 +554,19 @@ export async function route(
     });
     if (cycleLabel) result.forecastCycle = cycleLabel;
     if (snaps.length) result.snaps = snaps;
+    // The final depth check: whatever planned each leg, a route that crosses
+    // water a chart mesh blocks for this boat fails here and is never returned.
+    await finalDepthCheck(
+      result,
+      meshes,
+      vessel,
+      {
+        openingBridges: (request.drawbridges ?? cfg.routing.drawbridges) === 'avoid' ? 'avoid' : 'open',
+        avoid: avoid.map(a => ({ lon: a.lon, lat: a.lat, radiusM: a.radiusM })),
+      },
+      progress,
+      shouldCancel
+    );
     // Which model answered the wind, over every leg's samples.
     let regionalWind: { name: string; run: string; share: number }[] | undefined;
     if (layers.length) {
@@ -617,6 +625,18 @@ export async function route(
       summary.precision = request.precision ?? DEFAULT_PRECISION;
     }
     if (result.meshLeg) summary.mesh = true;
+    if (result.depthCheck) {
+      summary.depth_checked = true;
+      summary.legs_detail = result.depthCheck.legs.map(l => ({
+        leg: l.leg,
+        source: result.legSources?.[l.leg] ?? 'coastline',
+        on_mesh_m: Math.round(l.onMeshM),
+        unknown_depth_m: Math.round(l.unknownDepthM),
+        outside_mesh_m: Math.round(l.outsideMeshM),
+        shallowest_m: l.shallowestM,
+        shallowest_at: l.shallowestAt,
+      }));
+    }
     if (result.drawbridges?.length) {
       summary.drawbridges = result.drawbridges.map(b => ({ lat: b.lat, lon: b.lon, clear_m: b.clearM, leg_index: b.legIndex }));
       summary.drawbridges_rule = request.drawbridges ?? cfg.routing.drawbridges;
@@ -656,6 +676,123 @@ export async function route(
     releaseMemory();
     st.send({ type: 'forecast-memory', memory: { ...st.forecastMemory } });
   }
+}
+
+/** A blocked crossing in words, quantities as unit tokens (the web app writes them in its user's units). */
+function violationText(v: DepthViolation): string {
+  switch (v.kind) {
+    case 'depth':
+      return `charted depth {depth:${v.value}}${v.value !== null && v.value < 0 ? ' (dries)' : ''}`;
+    case 'hazard':
+      return v.value === null ? 'a rock, wreck or obstruction with no charted depth' : `a rock, wreck or obstruction at {depth:${v.value}}`;
+    case 'clearance':
+      return `vertical clearance {length:${v.value}}`;
+    case 'opening bridge':
+      return 'an opening bridge (Drawbridges is set to Avoid)';
+    case 'mark':
+      return 'within 20 m of a buoy, beacon or light';
+    case 'structure':
+      return 'a structure (pier, pile, pontoon or the like)';
+    case 'area to avoid':
+      return 'an area to avoid (a Signal K note)';
+  }
+}
+
+/**
+ * The final depth check (docs/drafts/mesh-no-gshhg-design.md, part 1): the
+ * finished route walked through every chart mesh it meets, in a child
+ * process (plugin/meshchecktask.ts). A crossing of water a mesh blocks
+ * for this boat fails the route (RouteError naming the places); otherwise
+ * what each leg crossed is recorded on the route (`depthCheck`). Nothing
+ * happens when no mesh meets the route.
+ */
+async function finalDepthCheck(
+  route: Route,
+  meshes: OpenMesh[],
+  vessel: { draughtM: number | null; airDraftM: number | null },
+  rules: Pick<CheckRules, 'openingBridges' | 'avoid'>,
+  progress: (stage: number, total: number, message: string) => void,
+  shouldCancel: () => boolean
+): Promise<void> {
+  const wps = route.waypoints;
+  if (wps.length < 2 || !meshes.length) return;
+  const path: [number, number][] = wps.map(w => [w.lon, w.lat]);
+  const box = bboxFromLonLat(
+    path.map(p => p[0]),
+    path.map(p => p[1]),
+    0.01
+  );
+  const near = meshes.filter(m => {
+    const ix = m.store.index;
+    return ix.west <= box.east && box.west <= ix.east && ix.south <= box.north && box.south <= ix.north;
+  });
+  if (!near.length) return;
+  if (vessel.draughtM === null || vessel.airDraftM === null) {
+    if (path.some(p => near.some(m => m.store.covers(p[0], p[1]))))
+      throw new RouteError(
+        `the route passes through water a chart mesh covers, but the vessel's ${vessel.draughtM === null ? 'draught' : 'air draft'} is not set, so it cannot be checked against charted depth; set the draught and air draft (Signal K design.draft.maximum and design.airHeight)`
+      );
+    return;
+  }
+  // The leg of each segment: a leg ends at each waypoint of role 'via' (multileg.ts stitchLegs).
+  const legOf: number[] = [];
+  let leg = 0;
+  for (let k = 0; k + 1 < wps.length; k++) {
+    if (k > 0 && wps[k].role === 'via') leg++;
+    legOf.push(leg);
+  }
+  const legCount = Math.max(leg + 1, route.legSources?.length ?? 0);
+  const ac = new AbortController();
+  const poll = setInterval(() => {
+    if (shouldCancel()) ac.abort();
+  }, 500);
+  const t0 = Date.now();
+  let check: RouteDepthCheck;
+  try {
+    check = await runChildTask(
+      {
+        task: 'mesh-check',
+        dirs: near.map(m => m.dir),
+        path,
+        legOf,
+        legCount,
+        rules: { draughtM: vessel.draughtM, airDraftM: vessel.airDraftM, ...rules },
+      },
+      10 * 60_000,
+      ac.signal
+    );
+  } catch (err) {
+    if (shouldCancel()) throw new RouteCancelled();
+    throw new RouteError(
+      `the final depth check against the chart mesh could not run (${(err as Error).message}); no route is returned unchecked`
+    );
+  } finally {
+    clearInterval(poll);
+  }
+  const multi = legCount > 1;
+  if (check.violations.length) {
+    const first = check.violations
+      .slice(0, 3)
+      .map(v => `${multi ? `leg ${v.leg + 1} ` : ''}at ${v.lat.toFixed(4)}, ${v.lon.toFixed(4)}: ${violationText(v)}`)
+      .join('; ');
+    const more = check.violations.length > 3 ? `; and ${check.violations.length - 3} more place(s)` : '';
+    throw new RouteError(
+      `the route crosses water the chart mesh says this boat cannot use (draught {depth:${vessel.draughtM}}, so at least {depth:${vessel.draughtM + 0.5}} of water; air draft {length:${vessel.airDraftM}}): ${first}${more}`
+    );
+  }
+  const sum = (f: (l: LegDepth) => number): number => check.legs.reduce((a, l) => a + f(l), 0);
+  let shallow: LegDepth | null = null;
+  for (const l of check.legs) if (l.shallowestM !== null && (shallow === null || l.shallowestM < shallow.shallowestM!)) shallow = l;
+  progress(
+    0,
+    0,
+    `depth check: {distance:${sum(l => l.onMeshM).toFixed(0)}} on the chart mesh` +
+      (shallow
+        ? `, shallowest charted depth {depth:${shallow.shallowestM}}${multi ? ` (leg ${shallow.leg + 1})` : ''} at ${shallow.shallowestAt![1].toFixed(4)}, ${shallow.shallowestAt![0].toFixed(4)}`
+        : '') +
+      `, {distance:${sum(l => l.unknownDepthM).toFixed(0)}} with no charted depth, {distance:${sum(l => l.outsideMeshM).toFixed(0)}} outside the chart mesh; nothing the boat cannot use ({time:${(Date.now() - t0) / 1000}})`
+  );
+  route.depthCheck = { legs: check.legs };
 }
 
 export function expandBBox(b: BBox, d: number): BBox {

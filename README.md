@@ -737,10 +737,31 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   water 5 km from any land has no mesh part. A leg still near land
   after 50 km hands over there (the mesh part's memory limit), and the log
   says so.
-- Anything the mesh cannot take (a start in a blocked triangle, no route)
-  is logged as a WARNING and the leg runs on the coastline search as
-  before. The mesh search runs in a child process that exits with the
-  leg, so its tile arrays never stay in Signal K's memory.
+- **No coastline search inside the mesh.** A leg both of whose ends one
+  mesh holds is routed on the mesh or fails: when the mesh cannot take it
+  (no route in the search box, a start or end in a blocked triangle, a
+  stretch that cannot be made against the current, no draught or air
+  draft, the forecast still being decoded, the mesh process failing) the
+  route fails with that reason; it is no longer handed to the coastline
+  search, which knows no depths. Two cases still use the coastline search
+  for now: a leg through waypoint circles (Approximate), and a leg with
+  one end outside the mesh or its ends in two different meshes (the
+  handover above).
+- **Final depth check.** Every finished route, whatever planned it, is
+  walked through every mesh it meets, segment by segment and triangle by
+  triangle (the walk the routers test their moves with), against the same
+  rules: depth, clearance, rocks and wrecks, marks, structures, opening
+  bridges under Drawbridges = Avoid, areas to avoid (no buffer). A route
+  that crosses any triangle the boat cannot use fails, naming the places
+  and what blocks them; nothing unchecked is returned. Water with no
+  charted depth and depths inside fairways, dredged areas and recommended
+  tracks pass, as the blocking rules pass them. Where the route leaves the
+  mesh the stretch is counted, not judged. The log has a "depth check:"
+  line, and the result strip a *Chart depth checked* line: the shallowest
+  charted depth crossed, the distance with no charted depth and the
+  distance outside the mesh.
+- The mesh search and the depth check run in child processes that exit
+  with their work, so their tile arrays never stay in Signal K's memory.
 
 The mesh files are built outside the plugin by the s57Work chart build
 (binary tiles plus an `index.json`; the format is documented in
@@ -753,7 +774,12 @@ Update, Download again, Remove, Cancel; `POST /api/meshes/{name}/{action}`)
 change the download list at once, without a restart. A leg is covered when one downloaded mesh (or the
 `meshDir` folder) holds its points, and that mesh is used.
 The job log says what the mesh did ("chart mesh: …") and the summary's
-`mesh` is true when any leg used it.
+`mesh` is true when any leg used it. When a mesh meets the route, the
+summary's `depth_checked` is true and `legs_detail` gives, per leg, what
+planned it (`mesh`, `coastline`, or `mixed` for a handover leg), the
+metres on the mesh, with no charted depth and outside the mesh, and the
+shallowest charted depth crossed with its position; the route's GeoJSON
+carries the same as `depth_check`.
 
 ### Open-water router: Standard or Refined
 

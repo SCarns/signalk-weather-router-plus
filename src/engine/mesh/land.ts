@@ -169,23 +169,25 @@ export class MeshLand implements LandTest {
    * Every triangle the straight move a→b (mesh frame) passes through, in
    * order, blocked or not, starting with the one under a; stops where the
    * move leaves the mesh. The walk of width.ts rayWalk, reporting each
-   * triangle.
+   * triangle with the stretch of the move inside it (metres from a, the
+   * exit capped at the move's end). Returns how far the walk got: the
+   * move's length when it reached b, less where it left the mesh, -1 when
+   * no triangle holds a.
    */
-  forEachTriangleAlong(ax: number, ay: number, bx: number, by: number, fn: (tri: number) => void): void {
+  forEachTriangleAlong(ax: number, ay: number, bx: number, by: number, fn: (tri: number, from: number, to: number) => void): number {
     const { x, y, neighbours: NB } = this.m;
     let cur = this.locate(ax, ay, true);
-    if (cur < 0) return;
+    if (cur < 0) return -1;
     const len = Math.hypot(bx - ax, by - ay);
     if (len <= 0) {
-      fn(cur);
-      return;
+      fn(cur, 0, 0);
+      return 0;
     }
     const dx = (bx - ax) / len;
     const dy = (by - ay) / len;
     let entry = -1;
     let s = 0;
     for (let iter = 0; iter < 100000; iter++) {
-      fn(cur);
       let bestS = Infinity;
       let bestK = -1;
       for (let k = 0; k < 3; k++) {
@@ -208,13 +210,21 @@ export class MeshLand implements LandTest {
           bestK = k;
         }
       }
-      if (bestK < 0 || bestS >= len) return;
+      if (bestK < 0) {
+        // A numerical dead end: no exit found, the walk stops in this triangle.
+        fn(cur, s, s);
+        return s;
+      }
+      const exit = Math.min(Math.max(bestS, s), len);
+      fn(cur, s, exit);
+      if (bestS >= len) return len;
       const n = NB[cur * 3 + bestK];
-      if (n < 0) return;
-      s = Math.max(bestS, s);
+      if (n < 0) return exit;
+      s = exit;
       entry = this.m.rev[cur * 3 + bestK];
       cur = n;
     }
+    return s;
   }
 
   /**

@@ -2,8 +2,9 @@
  * The chart mesh in the leg pipeline: when the mesh takes a leg, the
  * split into narrow and open segments, the Route built from a mesh
  * polyline, the hybrid leg (narrow parts motored, open water sailed by
- * the isochrone search) and the fall-through to the coastline search
- * when the mesh cannot route the leg.
+ * the isochrone search), the failure with the mesh's reason when it
+ * cannot route a leg it covers, and the cases that keep the coastline
+ * search until their parts are built (waypoint circles, two meshes).
  */
 
 import { test } from 'node:test';
@@ -13,7 +14,8 @@ import type { ShapePolygon } from '../../geo/shapefile';
 import { haversineDistanceM } from '../../geo/geodesy';
 import { makeVessel } from '../../vessel/vessel';
 import { ConstantWind, NoCurrent, NoWind, type CurrentSource } from '../environment';
-import { planLegs } from '../multileg';
+import { RouteError } from '../errors';
+import { collapseRuns, planLegs } from '../multileg';
 import { PolarDiagram } from '../../vessel/polar';
 import { runLegPipeline, type LegPipelineInputs } from '../pipeline';
 import { classifySegments, meshCorridor, type MeshLegRunner, meshRulesFor, routeFromMeshPath, stitchMeshSegments } from './leg';
@@ -555,22 +557,43 @@ test('pipeline: an opening bridge on the route is reported with its clearance an
   assert.equal(r.drawbridges, undefined);
 });
 
-test('pipeline: the mesh falls through to the coastline search when it finds no route or does not cover the leg', async () => {
+// The owner's rule of 2026-10-12: no coastline search where a mesh covers the water. A leg inside the mesh that the
+// mesh cannot take fails with the mesh's reason (this test pinned the fall-through to the coastline search before).
+test('pipeline: a leg inside the mesh that the mesh cannot take fails with the reason, the coastline search is not run; outside the mesh it routes as before', async () => {
   {
     const { mesh, calls } = fakeMesh({ ok: false, reason: 'no route on the mesh', stats: STATS });
     const { inp, messages } = inputs(mesh);
-    const r = await runLegPipeline(inp, PLAN, 0, [0, 0.5], T0);
-    assert.equal(r.meshLeg, undefined);
+    await assert.rejects(
+      () => runLegPipeline(inp, PLAN, 0, [0, 0.5], T0),
+      (err: Error) => {
+        assert.ok(err instanceof RouteError, String(err));
+        assert.match(err.message, /^the chart mesh covers this leg but cannot take it: no route on the mesh \(10 triangles read/);
+        return true;
+      }
+    );
     assert.equal(calls.length, 1);
-    assert.ok(
-      messages.some(m => /^WARNING: chart mesh: no route on the mesh .*using the coastline search instead/.test(m)),
-      messages.join('\n')
+    assert.ok(!messages.some(m => /^skeleton/.test(m)), 'the coastline search did not run: ' + messages.join('\n'));
+  }
+  {
+    // No draught or air draft: the mesh cannot judge the leg, so it fails instead of going to the coastline search.
+    const { mesh, calls } = fakeMeshOk([
+      [0, 0.5],
+      [1, 0.5],
+    ]);
+    const { inp, messages } = inputs(mesh, { vessel: makeVessel({ motorSpeedMs: 3 }) });
+    await assert.rejects(
+      () => runLegPipeline(inp, PLAN, 0, [0, 0.5], T0),
+      (err: Error) => {
+        assert.ok(err instanceof RouteError, String(err));
+        assert.match(
+          err.message,
+          /^the chart mesh covers this leg but cannot take it: the vessel's draught \(Signal K design.draft.maximum/
+        );
+        return true;
+      }
     );
-    assert.ok(
-      messages.some(m => /^skeleton/.test(m)),
-      'the coastline search ran'
-    );
-    assert.ok(r.waypoints.length >= 2);
+    assert.equal(calls.length, 0);
+    assert.ok(!messages.some(m => /^skeleton/.test(m)), messages.join('\n'));
   }
   {
     // Not covered: never asked.
@@ -580,6 +603,39 @@ test('pipeline: the mesh falls through to the coastline search when it finds no 
     assert.equal(calls.length, 0);
     assert.ok(!messages.some(m => /chart mesh/.test(m)));
   }
+});
+
+// Until part 3 of docs/drafts/mesh-no-gshhg-design.md (the owner, 2026-10-12): a leg through waypoint circles keeps
+// the coastline search; the worker's final depth check judges it.
+test('pipeline: a leg through waypoint circles inside the mesh still runs on the coastline search (until part 3)', async () => {
+  const [run] = collapseRuns(
+    planLegs(
+      [
+        { lon: 0, lat: 0.5 },
+        { lon: 0.5, lat: 0.6 },
+        { lon: 1, lat: 0.5 },
+      ],
+      'approximate',
+      300
+    )
+  );
+  assert.equal(run.vias.length, 1);
+  const { mesh, calls } = fakeMeshOk([
+    [0, 0.5],
+    [1, 0.5],
+  ]);
+  const { inp, messages } = inputs(mesh);
+  const r = await runLegPipeline(inp, run, 0, [0, 0.5], T0);
+  assert.equal(calls.length, 0, 'the mesh leg was not asked for');
+  assert.ok(!r.meshLeg);
+  assert.ok(
+    messages.some(m => /^chart mesh covers the leg but is not used: the leg passes through waypoint circles$/.test(m)),
+    messages.join('\n')
+  );
+  assert.ok(
+    messages.some(m => /^skeleton/.test(m)),
+    'the coastline search ran: ' + messages.join('\n')
+  );
 });
 
 test('pipeline: a leg whose ends lie in two different meshes is not planned as one mesh leg', async () => {

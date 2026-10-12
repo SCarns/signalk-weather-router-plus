@@ -18,7 +18,10 @@
  *              task streams its progress before its answer;
  *  - mesh-download: mirror one published mesh folder (plugin/meshes.ts)
  *              file by file into a folder, resumable, progress in
- *              `.progress.json` there.
+ *              `.progress.json` there;
+ *  - mesh-check: the final depth check of a finished route on the chart
+ *              meshes (plugin/meshchecktask.ts, engine/mesh/check.ts),
+ *              reading the tiles along the route a chunk at a time.
  */
 
 import { fork } from 'node:child_process';
@@ -26,12 +29,15 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { RegionalSource } from '../data/regional';
 import type { RegionalDecodeResult } from '../data/regionaldecode';
+import type { RouteDepthCheck } from '../engine/mesh/check';
+import type { MeshCheckTask } from './meshchecktask';
 import type { MeshLegEvent, MeshLegResult, MeshLegTask } from './meshlegtask';
 
 export type ChildTask =
   | { task: 'rmtree'; dir: string }
   | { task: 'regional'; src: RegionalSource; srcDir: string; dataDir: string; keepRuns: number }
   | MeshLegTask
+  | MeshCheckTask
   | { task: 'mesh-download'; base: string; dest: string; build: string; fresh?: boolean };
 
 /** A message a task sends before its answer (the mesh leg's progress and stage fronts). */
@@ -52,9 +58,11 @@ export type ChildTaskResult<T extends ChildTask> = T extends { task: 'rmtree' }
   ? RmtreeResult
   : T extends { task: 'mesh-leg' }
     ? MeshLegResult
-    : T extends { task: 'mesh-download' }
-      ? MeshDownloadResult
-      : RegionalDecodeResult;
+    : T extends { task: 'mesh-check' }
+      ? RouteDepthCheck
+      : T extends { task: 'mesh-download' }
+        ? MeshDownloadResult
+        : RegionalDecodeResult;
 
 const isTs = __filename.endsWith('.ts');
 
@@ -263,6 +271,10 @@ async function runTask(t: ChildTask): Promise<unknown> {
     case 'mesh-leg': {
       const { runMeshLegTask } = await import('./meshlegtask');
       return runMeshLegTask(t, event => process.send!({ event }));
+    }
+    case 'mesh-check': {
+      const { runMeshCheckTask } = await import('./meshchecktask');
+      return runMeshCheckTask(t);
     }
     case 'mesh-download':
       return downloadMesh(t.base, t.dest, t.build, t.fresh === true);

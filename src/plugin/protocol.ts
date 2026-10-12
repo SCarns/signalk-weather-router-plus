@@ -126,6 +126,22 @@ export interface RouteSummary {
   regional_wind?: { name: string; run: string; share: number }[];
   /** At least one leg was routed on the chart mesh (charted depths and obstructions) instead of the coastline search. */
   mesh?: true;
+  /** The finished route passed the final depth check against the chart meshes it meets (absent when no mesh meets it). */
+  depth_checked?: true;
+  /**
+   * Per leg: what planned it (chart mesh, coastline search, or both for a leg leaving the mesh), and what the
+   * check found along it: metres on the mesh, with no charted depth, outside the mesh; the shallowest charted
+   * depth crossed (m) and where ([lon, lat]), null when none was charted.
+   */
+  legs_detail?: {
+    leg: number;
+    source: 'mesh' | 'coastline' | 'mixed';
+    on_mesh_m: number;
+    unknown_depth_m: number;
+    outside_mesh_m: number;
+    shallowest_m: number | null;
+    shallowest_at: [number, number] | null;
+  }[];
   /** Opening bridges the route passes under (mesh legs), and the rule that applied. */
   drawbridges?: { lat: number; lon: number; clear_m: number | null; leg_index: number }[];
   drawbridges_rule?: DrawbridgeChoice;

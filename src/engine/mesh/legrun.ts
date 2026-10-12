@@ -31,6 +31,7 @@ import type { VesselParams } from '../../vessel/vessel';
 import {
   classifySegments,
   meshCorridor,
+  type MeshRefusal,
   type MeshSegment,
   MIN_OPEN_SEGMENT_M,
   pathLengthM,
@@ -79,11 +80,12 @@ export interface MeshLegInputs {
 }
 
 /**
- * The leg on the mesh, or null when the mesh cannot take it (no route,
- * a stretch that cannot be made): the caller logs the reason it was given
- * and routes the leg on the coastline search instead.
+ * The leg on the mesh, or the reason the mesh cannot take it (no route,
+ * a stretch that cannot be made): the caller decides what follows (a leg
+ * inside the mesh fails with it; the mesh part of a handover leg goes to
+ * the coastline search).
  */
-export function runMeshLeg(inp: MeshLegInputs): Route | null {
+export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
   const { result: res, land, plan, legStart, legDeparture, tag, progress, shouldCancel, stages } = inp;
   const st = res.stats;
   const timing = `${st.trianglesLoaded} triangles read in {time:${(st.readMs + st.prepMs) / 1000}}, ${st.blocked} blocked, search {time:${st.searchMs / 1000}} (${st.expanded} edges)${
@@ -91,10 +93,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | null {
       ? `; the box around the leg's ends widened to {angle:${(st.padDeg * Math.PI) / 180}} after ${st.attempts - 1} search(es) found no route`
       : ''
   }`;
-  if (!res.ok || !land) {
-    progress(0, 0, `WARNING: ${tag}chart mesh: ${res.ok ? 'no mesh land' : res.reason} (${timing}); using the coastline search instead`);
-    return null;
-  }
+  if (!res.ok || !land) return { refused: `${res.ok ? 'no mesh land' : res.reason} (${timing})` };
   progress(0, 0, `${tag}chart mesh: {distance:${res.lengthM.toFixed(0)}}, ${res.path.length} points; ${timing}`);
   if (st.bufferM > 0)
     progress(
@@ -241,10 +240,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | null {
     }
     if (!part) {
       part = alongMesh(seg, pts, at, label, lenM);
-      if (!part) {
-        progress(0, 0, `WARNING: ${label}: cannot be made against the current; using the coastline search for the leg instead`);
-        return null;
-      }
+      if (!part) return { refused: `segment ${si + 1}/${segs.length} of the mesh route cannot be made against the current` };
     }
     parts.push(part);
     at = part.waypoints[part.waypoints.length - 1].time;

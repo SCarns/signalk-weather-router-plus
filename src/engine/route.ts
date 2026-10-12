@@ -138,6 +138,30 @@ export interface Route {
   corridorFallback?: true;
   /** The leg (or at least one leg) was routed on the chart mesh (engine/mesh) instead of the coastline search. */
   meshLeg?: true;
+  /** Per leg of the route (a leg ends at each waypoint), what planned it: the chart mesh, the coastline search, or both (a handover leg). */
+  legSources?: LegSource[];
+  /** The final depth check against the chart mesh (set by the caller): per leg what the route crosses. */
+  depthCheck?: DepthCheck;
+}
+
+export type LegSource = 'mesh' | 'coastline' | 'mixed';
+
+/** What one leg of a finished route crosses on the chart mesh (engine/mesh/check.ts); metres along the route. */
+export interface LegDepth {
+  leg: number;
+  /** On mesh triangles. */
+  onMeshM: number;
+  /** On mesh triangles with no charted depth (-999): passed, as the blocking rules pass them. */
+  unknownDepthM: number;
+  /** Where no mesh triangle is (outside every mesh, or land the mesh leaves out: not told apart yet). */
+  outsideMeshM: number;
+  /** The shallowest charted depth crossed, metres, and where; null when none was charted along the leg. */
+  shallowestM: number | null;
+  shallowestAt: [number, number] | null;
+}
+
+export interface DepthCheck {
+  legs: LegDepth[];
 }
 
 /** Recompute cog / twa / sog on every waypoint from the final geometry. */

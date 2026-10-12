@@ -25,7 +25,7 @@ import { RouteError } from './errors';
 import { forecastHorizonNote, type LegWind } from './horizon';
 import type { ModePolicy } from './legsim';
 import { findHandover, HANDOVER_SCAN_M, sliceCorridor, stitchLegParts } from './mesh/handover';
-import { type MeshLegRunner, meshRulesFor } from './mesh/leg';
+import { isRefusal, type MeshLegRunner, type MeshRefusal, meshRulesFor } from './mesh/leg';
 import { type DrawbridgeChoice, MESH_BOX_PAD_MAX_DEG } from './mesh/route';
 import { legLabel, type LegPlan } from './multileg';
 import { DEFAULT_ROUTER, makeRouter, type RouterKind } from './router';
@@ -93,8 +93,8 @@ export interface LegPipelineInputs {
  * runner: the child process holding it in the plugin, in-process in the
  * tests), with the forecast and current areas loaded here first (the
  * worker fetches on-demand current areas over the network; the mesh
- * process reads only disk). Null when the mesh cannot take the leg: the
- * caller routes it on the coastline search, unchanged.
+ * process reads only disk). A refusal when the mesh cannot take the leg,
+ * with the reason; the caller decides what follows (runLegPipeline).
  */
 async function meshLeg(
   inp: LegPipelineInputs,
@@ -103,12 +103,12 @@ async function meshLeg(
   legStart: [number, number],
   legDeparture: Date,
   tag: string
-): Promise<Route | null> {
+): Promise<Route | MeshRefusal> {
   const { progress, shouldCancel, multi, stages } = inp;
   const r = meshRulesFor(inp.vessel, plan.vias.length > 0);
   if (!r.rules) {
     progress(0, 0, `${tag}chart mesh covers the leg but is not used: ${r.why}`);
-    return null;
+    return { refused: r.why };
   }
   const t = Date.now();
   progress(
@@ -124,7 +124,7 @@ async function meshLeg(
   await inp.loadAreas(bbox, multi ? `${tag}area` : 'route area');
   const { names: currentNames } = inp.currents();
   if (currentNames && plan.index === 0) progress(0, 0, `currents: ${currentNames.join(' > ')}`);
-  let route: Route | null;
+  let route: Route | MeshRefusal;
   try {
     route = await inp.mesh!.leg({
       plan,
@@ -157,14 +157,13 @@ async function meshLeg(
     if (shouldCancel() || err instanceof RouteCancelled) throw new RouteCancelled();
     // A leg that cannot be made as asked (a stretch that cannot be sailed under the policy) fails the route with that reason.
     if (err instanceof RouteError) throw err;
-    progress(0, 0, `WARNING: ${tag}chart mesh: the mesh leg failed (${(err as Error).message}); using the coastline search instead`);
     inp.releaseAreas?.();
-    return null;
+    return { refused: `the mesh process failed (${(err as Error).message})` };
   }
   if (shouldCancel()) throw new RouteCancelled();
-  if (!route) {
+  if (isRefusal(route)) {
     inp.releaseAreas?.();
-    return null;
+    return route;
   }
   if (multi)
     inp.log?.(
@@ -188,11 +187,14 @@ export async function runLegPipeline(
   const tag = multi ? `${legLabel(plan)} ` : '';
   // The chart mesh first: a leg inside it is routed on charted depths,
   // clearances and obstructions (narrow water motored, open water by the
-  // selected router); a leg with one end inside it is routed on the mesh
-  // as far as open water clear of the shore (mesh/handover.ts) and handed
-  // over to the coastline search there;
-  // anything the mesh cannot take falls through to the coastline search
-  // below, unchanged.
+  // selected router), or fails with the reason the mesh gives: no
+  // coastline search where a mesh covers the water (the owner's rule,
+  // 2026-10-12). Two cases keep the coastline search until their own
+  // parts are built (docs/drafts/mesh-no-gshhg-design.md): a leg through
+  // waypoint circles (part 3) and a leg with one end outside the mesh or
+  // the ends in two meshes, routed on the mesh as far as open water clear
+  // of the shore (mesh/handover.ts) and handed over there (part 5). The
+  // worker's final depth check runs on every route either way.
   if (inp.mesh) {
     // One mesh must hold both ends for the whole leg to be planned on it
     // (the runner opens one mesh); ends in two different meshes are the
@@ -202,7 +204,9 @@ export async function runLegPipeline(
     const ce = both || inp.mesh.covers([legEnd]);
     if (both) {
       const mr = await meshLeg(inp, plan, legIndex, legStart, legDeparture, tag);
-      if (mr) return mr;
+      if (!isRefusal(mr)) return mr;
+      // No tag: the worker names the leg of a multi-leg route on every error (worker/route.ts legOne).
+      if (plan.vias.length === 0) throw new RouteError(`the chart mesh covers this leg but cannot take it: ${mr.refused}`);
     } else if ((cs || ce) && inp.waterGrid && plan.vias.length === 0) {
       const c = corridorFor(inp, chain, tag);
       if (c.corridor) {
@@ -254,8 +258,12 @@ async function meshHandoverLeg(
   const exactAt = (end: [number, number]): LegPlan => ({ ...plan, end, snapToExact: true, arrivalRadiusM: undefined });
   if (covered === 'start') {
     const meshPart = await meshLeg(inp, exactAt(h.point), legIndex, legStart, legDeparture, tag);
-    if (!meshPart) {
-      progress(0, 0, `WARNING: ${tag}chart mesh: no route on the mesh to the handover point; the coastline search takes the whole leg`);
+    if (isRefusal(meshPart)) {
+      progress(
+        0,
+        0,
+        `WARNING: ${tag}chart mesh: no route on the mesh to the handover point (${meshPart.refused}); the coastline search takes the whole leg`
+      );
       return null;
     }
     inp.releaseAreas?.();
@@ -276,8 +284,12 @@ async function meshHandoverLeg(
   inp.releaseAreas?.();
   const arrive = openPart.waypoints[openPart.waypoints.length - 1].time;
   const meshPart = await meshLeg(inp, plan, legIndex, h.point, arrive, tag);
-  if (!meshPart) {
-    progress(0, 0, `WARNING: ${tag}chart mesh: no route on the mesh from the handover point; the coastline search takes the whole leg`);
+  if (isRefusal(meshPart)) {
+    progress(
+      0,
+      0,
+      `WARNING: ${tag}chart mesh: no route on the mesh from the handover point (${meshPart.refused}); the coastline search takes the whole leg`
+    );
     return openWaterLeg(inp, plan, legIndex, legStart, legDeparture, tag, corridor, false);
   }
   return stitchLegParts(openPart, meshPart);

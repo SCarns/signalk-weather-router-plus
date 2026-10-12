@@ -1,0 +1,268 @@
+/**
+ * The final depth check (docs/drafts/mesh-no-gshhg-design.md, part 1): a
+ * finished route walked through the chart meshes, every straight segment
+ * triangle by triangle with the walk the routers test their moves with
+ * (land.ts forEachTriangleAlong), not sampled, so a triangle of a square
+ * metre is not stepped over. A triangle the boat cannot use under the
+ * route's rules (route.ts blockedTriangles: depth, clearance, hazard,
+ * mark, structure, opening bridge under Drawbridges = Avoid, area to
+ * avoid; no buffer: the buffer is a margin, not a depth) is a violation;
+ * the caller fails the route on any. Where no mesh triangle is, the
+ * stretch is counted as outside the mesh and not judged: a mesh edge with
+ * no neighbour is either land or the end of the charts, and the mesh does
+ * not say which (part 5).
+ *
+ * Tiles are read a chunk of the route at a time (long segments are cut
+ * into pieces first), so the check holds a few million triangles at most;
+ * the plugin runs it in a child process (plugin/meshchecktask.ts).
+ */
+
+import { bboxFromLonLat, haversineDistanceM, type BBox } from '../../geo/geodesy';
+import type { LegDepth } from '../route';
+import { MeshLand } from './land';
+import { blockedTriangles, type MeshRules } from './route';
+import {
+  FLAG_CHANNEL_MARK,
+  FLAG_DREDGED,
+  FLAG_FAIRWAY,
+  FLAG_HAZARD,
+  FLAG_MARK,
+  FLAG_NAVIGABLE,
+  FLAG_OPENING_BRIDGE,
+  FLAG_STRUCTURE,
+  type MeshStore,
+  NO_VALUE,
+  toMeshXY,
+} from './store';
+
+/** The rules the route was planned with, as far as they decide what is blocked. */
+export type CheckRules = Pick<MeshRules, 'draughtM' | 'airDraftM' | 'openingBridges' | 'avoid'>;
+
+export type ViolationKind = 'depth' | 'hazard' | 'clearance' | 'opening bridge' | 'mark' | 'structure' | 'area to avoid';
+
+/** The first triangle of a run of blocked triangles along the route. */
+export interface DepthViolation {
+  leg: number;
+  lon: number;
+  lat: number;
+  kind: ViolationKind;
+  /** The charted depth (depth), the hazard's charted depth (hazard; null when none is charted), the clearance (clearance); else null. */
+  value: number | null;
+}
+
+export interface RouteDepthCheck {
+  legs: LegDepth[];
+  violations: DepthViolation[];
+}
+
+/** Longest piece a segment is cut into, metres: keeps a chunk's box small on a long open-water segment. */
+const PIECE_M = 5000;
+/** Most triangles one chunk of the route may read. */
+const CHUNK_TRIANGLES = 3_000_000;
+/** Step along a piece where no triangle is, metres, looking for the mesh again. */
+const GAP_STEP_M = 10;
+/** Past the point a walk stopped at (a mesh edge), metres. */
+const NUDGE_M = 0.5;
+
+interface Piece {
+  a: [number, number];
+  b: [number, number];
+  leg: number;
+  lengthM: number;
+  /** Covered stretches as fractions of the piece [from, to), each with what covers it, in walking order per store. */
+  covered: { f0: number; f1: number; tri: TriInfo }[];
+}
+
+interface TriInfo {
+  depth: number;
+  blocked: ViolationKind | null;
+  value: number | null;
+}
+
+/** Why a blocked triangle is blocked, in the order blockedTriangles tests (route.ts). */
+function blockedKind(flags: number, depth: number, clear: number, hazv: number, rules: CheckRules): ViolationKind {
+  const minClear = rules.airDraftM + 1;
+  const minDepth = rules.draughtM + 0.5;
+  if (rules.openingBridges === 'avoid' && flags & FLAG_OPENING_BRIDGE) return 'opening bridge';
+  if (clear !== NO_VALUE && clear < minClear) return 'clearance';
+  if (!(flags & FLAG_NAVIGABLE) && depth !== NO_VALUE && depth < minDepth) return 'depth';
+  if (flags & FLAG_HAZARD && hazv < minDepth) return 'hazard';
+  if (flags & FLAG_MARK && !(flags & FLAG_CHANNEL_MARK && flags & (FLAG_FAIRWAY | FLAG_DREDGED))) return 'mark';
+  if (flags & FLAG_STRUCTURE) return 'structure';
+  return 'area to avoid';
+}
+
+function cutPieces(path: [number, number][], legOf: number[]): Piece[] {
+  const out: Piece[] = [];
+  for (let k = 1; k < path.length; k++) {
+    const [a, b] = [path[k - 1], path[k]];
+    const len = haversineDistanceM(a[0], a[1], b[0], b[1]);
+    if (!(len > 0)) continue;
+    const n = Math.max(1, Math.ceil(len / PIECE_M));
+    for (let i = 0; i < n; i++) {
+      const p0: [number, number] = [a[0] + ((b[0] - a[0]) * i) / n, a[1] + ((b[1] - a[1]) * i) / n];
+      const p1: [number, number] = [a[0] + ((b[0] - a[0]) * (i + 1)) / n, a[1] + ((b[1] - a[1]) * (i + 1)) / n];
+      out.push({ a: p0, b: p1, leg: legOf[k - 1], lengthM: len / n, covered: [] });
+    }
+  }
+  return out;
+}
+
+const boxOf = (p: Piece): BBox => bboxFromLonLat([p.a[0], p.b[0]], [p.a[1], p.b[1]], 0.01);
+
+function meets(a: BBox, b: BBox): boolean {
+  return a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north;
+}
+
+function union(a: BBox, b: BBox): BBox {
+  return {
+    west: Math.min(a.west, b.west),
+    east: Math.max(a.east, b.east),
+    south: Math.min(a.south, b.south),
+    north: Math.max(a.north, b.north),
+  };
+}
+
+/** Add [f0, f1) to the piece unless another mesh already covers it (the first mesh to cover a stretch decides it). */
+function cover(p: Piece, f0: number, f1: number, tri: TriInfo): void {
+  let parts: [number, number][] = [[f0, f1]];
+  for (const c of p.covered) {
+    const next: [number, number][] = [];
+    for (const [u, v] of parts) {
+      if (v <= c.f0 || u >= c.f1) next.push([u, v]);
+      else {
+        if (u < c.f0) next.push([u, c.f0]);
+        if (v > c.f1) next.push([c.f1, v]);
+      }
+    }
+    parts = next;
+    if (!parts.length) return;
+  }
+  for (const [u, v] of parts) if (v > u) p.covered.push({ f0: u, f1: v, tri });
+}
+
+/** Walk the chunk's pieces through one loaded mesh. */
+function walkChunk(store: MeshStore, pieces: Piece[], box: BBox, rules: CheckRules): void {
+  const m = store.load(box);
+  if (m.n === 0) return;
+  const blocked = blockedTriangles(m, { ...rules, motorSpeedMs: 1 });
+  const land = new MeshLand(m, blocked);
+  const info = (t: number): TriInfo =>
+    blocked[t]
+      ? (() => {
+          const kind = blockedKind(m.flags[t], m.depth[t], m.clear[t], m.hazv[t], rules);
+          const value =
+            kind === 'depth'
+              ? m.depth[t]
+              : kind === 'clearance'
+                ? m.clear[t]
+                : kind === 'hazard'
+                  ? m.hazv[t] <= -1e8
+                    ? null
+                    : m.hazv[t]
+                  : null;
+          return { depth: m.depth[t], blocked: kind, value };
+        })()
+      : { depth: m.depth[t], blocked: null, value: null };
+  for (const p of pieces) {
+    const [ax, ay] = toMeshXY(m, p.a[0], p.a[1]);
+    const [bx, by] = toMeshXY(m, p.b[0], p.b[1]);
+    const len = Math.hypot(bx - ax, by - ay);
+    if (!(len > 0)) continue;
+    const dx = (bx - ax) / len;
+    const dy = (by - ay) / len;
+    let s = 0;
+    while (s < len) {
+      const px = ax + dx * s;
+      const py = ay + dy * s;
+      const s0 = s;
+      const walked = land.forEachTriangleAlong(px, py, bx, by, (t, from, to) => {
+        if (to > from) cover(p, (s0 + from) / len, (s0 + to) / len, info(t));
+        else if (blocked[t]) cover(p, s0 / len, Math.min(len, s0 + NUDGE_M) / len, info(t));
+      });
+      s = walked < 0 ? s + GAP_STEP_M : s + walked + NUDGE_M;
+    }
+  }
+}
+
+/**
+ * Walk the route (`path`, [lon, lat] in route order; `legOf[k]` the leg of
+ * segment k → k + 1) through every mesh that meets it. `legCount` legs are
+ * reported, each with what it crossed.
+ */
+export function checkRouteOnMeshes(
+  stores: MeshStore[],
+  path: [number, number][],
+  legOf: number[],
+  legCount: number,
+  rules: CheckRules
+): RouteDepthCheck {
+  const pieces = cutPieces(path, legOf);
+  for (const store of stores) {
+    const ix = store.index;
+    const extent: BBox = { west: ix.west, east: ix.east, south: ix.south, north: ix.north };
+    let chunk: Piece[] = [];
+    let box: BBox | null = null;
+    const flush = (): void => {
+      if (chunk.length && box && store.countTriangles(box) > 0) walkChunk(store, chunk, box, rules);
+      chunk = [];
+      box = null;
+    };
+    for (const p of pieces) {
+      const pb = boxOf(p);
+      if (!meets(pb, extent)) {
+        flush();
+        continue;
+      }
+      const grown: BBox = box ? union(box, pb) : pb;
+      if (box && store.countTriangles(grown) > CHUNK_TRIANGLES) {
+        flush();
+        box = pb;
+      } else box = grown;
+      chunk.push(p);
+    }
+    flush();
+  }
+  const legs: LegDepth[] = Array.from({ length: legCount }, (_v, leg) => ({
+    leg,
+    onMeshM: 0,
+    unknownDepthM: 0,
+    outsideMeshM: 0,
+    shallowestM: null,
+    shallowestAt: null,
+  }));
+  const violations: DepthViolation[] = [];
+  let inRun = false;
+  for (const p of pieces) {
+    const L = legs[Math.min(p.leg, legCount - 1)];
+    p.covered.sort((x, y) => x.f0 - y.f0);
+    let coveredF = 0;
+    let lastEnd = 0;
+    for (const c of p.covered) {
+      const m = (c.f1 - c.f0) * p.lengthM;
+      coveredF += c.f1 - c.f0;
+      L.onMeshM += m;
+      if (c.tri.depth === NO_VALUE) L.unknownDepthM += m;
+      else if (L.shallowestM === null || c.tri.depth < L.shallowestM) {
+        L.shallowestM = c.tri.depth;
+        L.shallowestAt = at(p, c.f0);
+      }
+      // A run of blocked triangles reports its first; a gap of usable water or no mesh ends the run.
+      if (c.tri.blocked) {
+        if (!inRun || c.f0 > lastEnd + 1e-9) {
+          const [lon, lat] = at(p, c.f0);
+          violations.push({ leg: p.leg, lon, lat, kind: c.tri.blocked, value: c.tri.value });
+        }
+        inRun = true;
+      } else inRun = false;
+      lastEnd = c.f1;
+    }
+    if (lastEnd < 1 - 1e-9) inRun = false;
+    L.outsideMeshM += Math.max(0, 1 - coveredF) * p.lengthM;
+  }
+  return { legs, violations };
+}
+
+function at(p: Piece, f: number): [number, number] {
+  return [p.a[0] + (p.b[0] - p.a[0]) * f, p.a[1] + (p.b[1] - p.a[1]) * f];
+}

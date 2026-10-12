@@ -1,5 +1,23 @@
 # What's new
 
+## Unreleased
+
+- **No more quiet detours over shallow water.** Until now, when the
+  charts could not route a leg, the plugin quietly used the coastline
+  routing instead, which knows nothing about depths, and a route could
+  cross water too shallow for your boat while still showing "validated".
+  A leg inside the charts is now routed on the charts or fails and tells
+  you why.
+- **Every route is checked against the charts before you see it.** The
+  finished route is followed across the charts, and if any part of it
+  crosses water too shallow for your draft, a bridge too low for your
+  height, a rock, a mark or an area to avoid, the route fails and names
+  the places. A route that passes shows *Chart depth checked* with the
+  shallowest depth it crosses, how much of it has no charted depth, and
+  how much lies outside the charts.
+- **A failed request no longer looks like a result.** When a new request
+  fails, the route still on the map is marked as the earlier route.
+
 ## 0.2.0-beta.1
 
 - **Charts to download.** The plugin configuration lists the navigation

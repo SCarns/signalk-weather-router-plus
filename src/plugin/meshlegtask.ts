@@ -22,7 +22,7 @@ import type { LegWind } from '../engine/horizon';
 import { LayeredWind, type RegionalWind } from '../engine/layeredwind';
 import type { SimOptions } from '../engine/legsim';
 import { MeshLand } from '../engine/mesh/land';
-import type { MeshLegArgs } from '../engine/mesh/leg';
+import { isRefusal, type MeshLegArgs, type MeshRefusal } from '../engine/mesh/leg';
 import { runMeshLeg } from '../engine/mesh/legrun';
 import { type DrawbridgeChoice, type MeshRules, searchMesh } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
@@ -73,7 +73,11 @@ export interface MeshLegTask {
 
 export type MeshLegEvent = { event: 'progress'; stage: number; total: number; message: string } | { event: 'frontier'; front: StageFront };
 
-/** fatal: the leg cannot be made as asked (a RouteError: a stretch that cannot be sailed); the route fails with the reason. Otherwise the mesh cannot take the leg and the coastline search does. */
+/**
+ * fatal: the leg cannot be made as asked (a RouteError: a stretch that cannot be sailed); the route fails with the
+ * reason. Otherwise the mesh cannot take the leg, and `reason` says why (legrun.ts's refusal); the worker decides
+ * what follows.
+ */
 export type MeshLegResult = { ok: true; route: Route } | { ok: false; reason: string; fatal?: boolean };
 
 /** Degrees added around the leg's box for the currents read from complete files on disk (RTOFS, harmonics); SMOC uses the worker's area. */
@@ -112,7 +116,7 @@ export async function runMeshLegTask(t: MeshLegTask, emit: (e: MeshLegEvent) => 
     progress,
     shouldCancel: () => false, // cancel kills the process (childtask.ts)
   };
-  let route: Route | null;
+  let route: Route | MeshRefusal;
   try {
     route = runMeshLeg({
       result: search.result,
@@ -126,7 +130,7 @@ export async function runMeshLegTask(t: MeshLegTask, emit: (e: MeshLegEvent) => 
     if (err instanceof RouteError) return { ok: false, reason: err.message, fatal: true };
     throw err;
   }
-  if (!route) return { ok: false, reason: 'the mesh cannot take the leg (see the log)' };
+  if (isRefusal(route)) return { ok: false, reason: route.refused };
   return { ok: true, route };
 }
 

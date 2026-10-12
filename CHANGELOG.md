@@ -6,6 +6,39 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **No coastline fallback inside a chart mesh** (the owner's rule,
+  2026-10-12; docs/drafts/mesh-no-gshhg-design.md part 1). A leg both of
+  whose ends one mesh holds is routed on the mesh or fails with the
+  mesh's reason (`pipeline.ts`): no route in the box, an end in a blocked
+  triangle, a stretch against the current, no draught or air draft, no
+  decoded forecast yet, or the mesh process failing. Before, each of these
+  handed the leg to the coastline search with a WARNING line only; on the
+  test box a Bahamas → Gulf route hit the 16 M triangle cap and the
+  coastline search took it 123–140 km through water the mesh blocks for a
+  2 m draught, drying at -1.2 m, marked validated with no warning. The
+  mesh leg's refusal now carries its reason (`MeshRefusal`, `legrun.ts`,
+  `meshlegtask.ts`) instead of "the mesh cannot take the leg (see the
+  log)". Unchanged until their own parts: legs through waypoint circles,
+  and legs with one end outside the mesh or the ends in two meshes.
+
+### Added
+
+- **Final depth check** (`engine/mesh/check.ts`, `plugin/meshchecktask.ts`,
+  child task `mesh-check`): every finished route is walked through every
+  mesh it meets, triangle by triangle with `MeshLand.forEachTriangleAlong`
+  (which now reports each triangle's stretch and how far it got), against
+  the route's blocking rules without the buffer. Any blocked crossing
+  fails the route, naming up to three places and the count. Per leg the
+  route records its source (`legSources`: mesh, coastline, mixed) and what
+  it crossed (`depthCheck`); the summary has `depth_checked` and
+  `legs_detail`, the GeoJSON `depth_check`, the log a "depth check:" line.
+- **Web app:** the result strip shows *Chart depth checked* (shallowest
+  depth, distance with no charted depth, distance outside the mesh, legs on
+  coastline data); a failed request shows the earlier route's strip again,
+  marked "The last route request failed; this is the earlier route."
+
 ## [0.2.0-beta.1] - 2026-10-09
 
 ### Added
