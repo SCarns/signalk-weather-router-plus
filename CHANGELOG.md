@@ -25,6 +25,15 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Refined router: light-air motoring under sail_max is kept**
+  (`experimental/propagator.ts` `sailedThrough`, `legsim.ts`
+  `motoringNoGoSeconds`): the tack layout refused any piece the simulator
+  motored, so a stretch the sail threshold motors in light air failed the
+  route ("cannot be sailed under the sail_max policy"; the Gulf coast
+  replays on the test box, 5.1 kt held past the forecast's end). The
+  simulator now books the seconds motored in the polar's no-go angle
+  apart, and only those split a piece into tacks. The error's advice to
+  raise the sail threshold is now what happens.
 - **The mesh's straight walk at corners and edges** (`engine/mesh/width.ts`
   `walkMesh`, one walk for the land test, the depth check, opening bridges,
   passage widths and a route's end triangle): a walk starting at, or passing

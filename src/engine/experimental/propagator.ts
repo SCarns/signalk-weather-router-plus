@@ -340,17 +340,19 @@ export class ExperimentalPropagator {
   }
 
   /**
-   * As sailable, but under sail_max the piece must be sailed all the way:
-   * a piece the simulator finishes under motor (the wind veered into the
-   * no-go angle before its end) is split instead, so the layout looks at
-   * the wind there and tacks where the hull says it can sail. The narrow
-   * channel's last resort (the course itself, when no tack fits) uses the
-   * plain test: there motoring below the threshold is the policy's own.
+   * As sailable, but under sail_max a piece the simulator motors in the
+   * polar's no-go angle (the wind veered ahead before its end) is split
+   * instead, so the layout looks at the wind there and tacks where the hull
+   * says it can sail. Motoring because the sailing speed is under a positive
+   * threshold (light air) is the policy's own and is kept: before
+   * 2026-10-12 every motored second was refused, so a light-air stretch the
+   * threshold motors failed the route (the Gulf coast replays 730e14fc and
+   * e341dd00, 5.1 kt held past the forecast's end, reproduced on brain).
    */
   private sailedThrough(from: Waypoint, toLon: number, toLat: number, env: Env): LegSimResult | null {
     const r = this.sailable(from, toLon, toLat, env);
     if (r === null) return null;
-    if (env.sim.modePolicy === 'sail_max' && r.motoringSeconds > 0) return null;
+    if (env.sim.modePolicy === 'sail_max' && r.motoringNoGoSeconds > 0) return null;
     return r;
   }
 

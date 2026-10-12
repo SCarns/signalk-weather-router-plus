@@ -31,6 +31,11 @@ export interface LegSimResult {
   dominantMode: 'sailing' | 'motoring' | 'stuck';
   sailingSeconds: number;
   motoringSeconds: number;
+  /**
+   * Of motoringSeconds, those motored because the heading lay in the polar's no-go angle (sail_max with a positive
+   * threshold motors there too); the rest were motored because the sailing speed was under the threshold.
+   */
+  motoringNoGoSeconds: number;
   /** Why the leg is stuck: over a wind/wave limit, heading in the polar's no-go angle, the current cancelling the boat's speed, or no boat speed at all. */
   reason?: 'limited' | 'no_go' | 'current' | 'no_speed';
   /** Comfort cost of the leg in seconds (engine/seas.ts comfortRate), on top of `seconds`; 0 without a comfort weight. */
@@ -139,7 +144,7 @@ export function simulateLegTime(
 ): LegSimResult {
   const totalDistM = haversineDistanceM(aLon, aLat, cLon, cLat);
   if (totalDistM <= 0) {
-    return { seconds: 0, dominantMode: 'motoring', sailingSeconds: 0, motoringSeconds: 0, penaltySeconds: 0 };
+    return { seconds: 0, dominantMode: 'motoring', sailingSeconds: 0, motoringSeconds: 0, motoringNoGoSeconds: 0, penaltySeconds: 0 };
   }
   const bearingDeg = haversineBearing(aLon, aLat, cLon, cLat);
   const sc = scoreCandidatesFromParent(
@@ -156,13 +161,22 @@ export function simulateLegTime(
   );
   if (!Number.isFinite(sc.seconds[0]) || sc.seconds[0] <= 0) {
     const reason: LegSimResult['reason'] = sc.limited[0] ? 'limited' : sc.noGo[0] ? 'no_go' : sc.foul[0] ? 'current' : 'no_speed';
-    return { seconds: Infinity, dominantMode: 'stuck', sailingSeconds: 0, motoringSeconds: 0, reason, penaltySeconds: Infinity };
+    return {
+      seconds: Infinity,
+      dominantMode: 'stuck',
+      sailingSeconds: 0,
+      motoringSeconds: 0,
+      motoringNoGoSeconds: 0,
+      reason,
+      penaltySeconds: Infinity,
+    };
   }
   return {
     seconds: sc.seconds[0],
     dominantMode: sc.dominant[0] === 1 ? 'sailing' : 'motoring',
     sailingSeconds: sc.sailing[0],
     motoringSeconds: sc.motoring[0],
+    motoringNoGoSeconds: sc.motoringNoGo[0],
     penaltySeconds: sc.penalty[0],
   };
 }
@@ -241,6 +255,8 @@ export interface CandidateScores {
   seconds: Float64Array;
   sailing: Float64Array;
   motoring: Float64Array;
+  /** Of `motoring`, the seconds motored with the heading in the polar's no-go angle. */
+  motoringNoGo: Float64Array;
   /** 1 = sailing dominant, 0 = motoring, -1 = stuck. */
   dominant: Int8Array;
   /** 1 when the candidate was stopped by a wind or wave limit. */
@@ -285,13 +301,14 @@ export function scoreCandidatesFromParent(
   const seconds = new Float64Array(n);
   const sailing = new Float64Array(n);
   const motoring = new Float64Array(n);
+  const motoringNoGo = new Float64Array(n);
   const dominant = new Int8Array(n);
   const limited = new Uint8Array(n);
   const noGo = new Uint8Array(n);
   const foul = new Uint8Array(n);
   const badCurrent = new Uint8Array(n);
   const penalty = new Float64Array(n);
-  if (n === 0) return { seconds, sailing, motoring, dominant, limited, noGo, foul, badCurrent, penalty };
+  if (n === 0) return { seconds, sailing, motoring, motoringNoGo, dominant, limited, noGo, foul, badCurrent, penalty };
   const comfortW = opts.comfortWeight && opts.comfortWeight > 0 && wind.hasWaves ? opts.comfortWeight : 0;
 
   const motor = vessel.motorSpeedMs;
@@ -393,7 +410,10 @@ export function scoreCandidatesFromParent(
         penalty[i] += stepS * comfortRate(enc, comfortW);
       }
       if (sailUsed) sailing[i] += stepS;
-      else motoring[i] += stepS;
+      else {
+        motoring[i] += stepS;
+        if (inNoGo) motoringNoGo[i] += stepS;
+      }
       const [nl, nla] = projectAlongBearing(curLon[i], curLat[i], bearings[i], stepPerCand[i]);
       curLon[i] = nl;
       curLat[i] = nla;
@@ -409,5 +429,5 @@ export function scoreCandidatesFromParent(
       dominant[i] = sailing[i] >= motoring[i] ? 1 : 0;
     }
   }
-  return { seconds, sailing, motoring, dominant, limited, noGo, foul, badCurrent, penalty };
+  return { seconds, sailing, motoring, motoringNoGo, dominant, limited, noGo, foul, badCurrent, penalty };
 }
