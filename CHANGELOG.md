@@ -43,7 +43,10 @@ uses [Semantic Versioning](https://semver.org/).
   the target, and the target straight from there or room on the next
   tack's heading): a tack taken to the bank at a bend boxed the boat in
   (test box, the Cape Cod Canal replay 7306dc97); the edge is tried first,
-  then ends back along the tack, halving down to the simulator's step.
+  then ends back along the tack, halving: from the shore down to the walk's
+  own precision, for the wind down to the simulator's step (a 200 m floor on
+  both left a 239.5 m first tack from a corner with no shorter try, though
+  119.7 m left 214.7 m for the next; replay d6d067cb).
 - **A point on a corner or an edge belongs to every triangle it touches**
   (`PagedMesh.locateAll`; the tile-extent test with the walk's tolerance):
   the reach and the snap take the route's water if any of those triangles

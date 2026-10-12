@@ -51,6 +51,7 @@ import { enrichLegRanges, enrichWaypoints, OceanPropagator } from '../propagator
 import { recomputePerWaypointMetadata, type Route, type Waypoint } from '../route';
 import type { ComputeRouteArgs, PropagatorOptions } from '../search/types';
 import { recomputeTotals } from '../smoother';
+import { U_TOL } from '../mesh/width';
 import { crossTrackPolish } from './polish';
 
 /** Seconds lost per tack or gybe when the request sets none (legsim.ts). */
@@ -286,16 +287,22 @@ export class ExperimentalPropagator {
     };
     /**
      * A piece on heading h, of up to `want` metres, that the boat can go on from: first where the water ends on that
-     * heading (exactly the point the land test reached) or all of `want`, then ends back along it, halving, down to
-     * the simulator's step (the wind along a piece is read at that step); the first that can be sailed, is clear and
-     * leaves the boat able to go on is taken.
+     * heading (exactly the point the land test reached) or all of `want`, then ends back along it, halving; the first
+     * that can be sailed, is clear and leaves the boat able to go on is taken. Backing off from the shore (the water
+     * ends before `want`: a bend or a corner may leave no room for the next tack at the shore, and some just short of
+     * it) halves down to the walk's own precision (width.ts U_TOL of the room); backing off for the wind (the water
+     * allows all of `want`) stops at the simulator's step, the resolution it reads the wind along a piece at
+     * (2026-10-12: a 200 m floor on both left a 239.5 m tack to a corner's shore with no shorter try, though 119.7 m
+     * had 214.7 m of room for the next; replay d6d067cb).
      */
     const placeOn = (h: number, want: number, tack: boolean, next: number[]): Waypoint | null => {
       const room = this.land.clearAlong(at.lon, at.lat, h, want);
       if (!(room.m > 0)) return null;
       const good = (p: Waypoint | null): Waypoint | null => (p && canGoOn(p, next) ? p : null);
-      let p = good(room.m < want ? stepToPoint(room.end, tack) : stepTo(h, room.m, tack));
-      for (let d = room.m / 2; !p && d >= env.sim.simStepM; d /= 2) p = good(stepTo(h, d, tack));
+      const shore = room.m < want;
+      const floor = shore ? U_TOL * room.m : env.sim.simStepM;
+      let p = good(shore ? stepToPoint(room.end, tack) : stepTo(h, room.m, tack));
+      for (let d = room.m / 2; !p && d >= floor; d /= 2) p = good(stepTo(h, d, tack));
       return p;
     };
     for (let n = 0; n < MAX_TACKS_PER_LEG; n++) {
