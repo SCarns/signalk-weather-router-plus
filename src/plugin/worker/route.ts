@@ -411,11 +411,13 @@ export async function route(
               if (!(p.movedM > 0)) return;
               const s = stops[i];
               snaps.push({ index: i, original: [s.lon, s.lat], anchor: [p.lon, p.lat], distanceM: p.movedM });
-              stops[i] = { ...s, lon: p.lon, lat: p.lat };
+              // A moved stop after the start sits on the edge of unusable water: its leg ends on entering the circle
+              // of the distance moved round it (the owner's choice, 2026-10-12; multileg.ts Stop.snapped).
+              stops[i] = i > 0 ? { ...s, lon: p.lon, lat: p.lat, radiusM: p.movedM, snapped: true } : { ...s, lon: p.lon, lat: p.lat };
               progress(
                 0,
                 0,
-                `${p.outsideGroup ? 'WARNING: ' : ''}${label(i)} ${p.why} according to the chart mesh; moved {length:${p.movedM.toFixed(0)}} to water this boat can use, connected to the route, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}`
+                `${p.outsideGroup ? 'WARNING: ' : ''}${label(i)} ${p.why} according to the chart mesh; moved {length:${p.movedM.toFixed(0)}} to water this boat can use, connected to the route, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}${i > 0 ? `; its leg ends on coming within {length:${p.movedM.toFixed(0)}} of it` : ''}`
               );
             });
           }
@@ -746,7 +748,7 @@ export async function route(
     result.precision = precision;
     result.stops = stops.map((s, i) => {
       const inner = i > 0 && i < stops.length - 1;
-      return inner && precision === 'approximate'
+      return (inner && precision === 'approximate') || s.snapped
         ? { lon: s.lon, lat: s.lat, radiusM: s.radiusM ?? defaultRadius }
         : { lon: s.lon, lat: s.lat };
     });

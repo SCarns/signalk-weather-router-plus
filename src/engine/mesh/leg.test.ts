@@ -10,7 +10,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LandMask } from '../../geo/landmask';
+import { clearAlongByHalving, LandMask } from '../../geo/landmask';
 import type { ShapePolygon } from '../../geo/shapefile';
 import { haversineDistanceM } from '../../geo/geodesy';
 import { makeVessel } from '../../vessel/vessel';
@@ -72,6 +72,8 @@ function fakeLand(
     isLandExact: point,
     legCrossesLandExact: leg,
     legsCrossLandBulk: (la, pa, lb, pb) => Uint8Array.from({ length: la.length }, (_v, k) => (leg(la[k], pa[k], lb[k], pb[k]) ? 1 : 0)),
+    // The fake's own resolution: a metre.
+    clearAlong: (lon, lat, b, maxM) => clearAlongByHalving({ isLandExact: point, legCrossesLandExact: leg }, lon, lat, b, maxM, 1),
     depthAt,
     openingBridgesAlong: bridges,
   };

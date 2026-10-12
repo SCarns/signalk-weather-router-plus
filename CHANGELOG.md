@@ -25,6 +25,21 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A stop the mesh snap moved is reached on its circle** (`multileg.ts`
+  `Stop.snapped`; the owner's choice): a moved waypoint or destination
+  becomes approximate, its circle the distance it was moved, in either
+  precision; the mesh routes it as an approximate waypoint (part 3). The
+  moved point is on the edge of unusable water; under sail alone the last
+  2.6 m into a shoal's corner, dead upwind, could not be laid out (test box,
+  replays 1c7e6fa5 and 7443bcb9).
+- **Refined layout: tacks as long as the water allows, no fixed 500 m
+  minimum** (`experimental/propagator.ts`, `LandTest.clearAlong`: exact on
+  the chart mesh, to the raster's cell on the coastline): a tack cut short
+  for land is cut to the room on its heading instead of halved down to
+  500 m, and halving for the wind stops at the simulator's step. A beat up
+  a channel narrower than 500 m can now be laid out (test box: the last
+  97 m into a waypoint, 45 and 137 m of water either side, failed under
+  sail only).
 - **A point on a corner or an edge belongs to every triangle it touches**
   (`PagedMesh.locateAll`; the tile-extent test with the walk's tolerance):
   the reach and the snap take the route's water if any of those triangles

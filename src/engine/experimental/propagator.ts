@@ -14,9 +14,14 @@
  * with the forecast's wind, and a course sailable at its start can be in
  * the no-go angle before its end: 2026-10-08, a Bermuda run failed on
  * such a leg when only the start was checked) or when it crosses land.
- * Then the longest piece that can be sailed is taken, halving down to
- * TACK_MIN_M, the other side tried first for a tack, and the layout looks
- * again from there. (Until the evening of 2026-10-08 tacks were chopped
+ * Then the longest piece that can be sailed is taken: as long as the
+ * water allows on its heading (LandTest clearAlong: exact on the chart
+ * mesh, to the raster's cell on the coastline) and, where the wind turns
+ * along it, halved down to the simulator's step; the other side tried
+ * first for a tack, and the layout looks again from there. (Until
+ * 2026-10-12 tacks were halved for land too, down to a fixed 500 m, so a
+ * beat up a channel narrower than that could never be laid out: a 97 m
+ * beat with 45 and 137 m of water either side failed under sail only.) (Until the evening of 2026-10-08 tacks were chopped
  * at a fixed 5 nm whatever they cost, so the tacking penalty could add
  * time but never lengthen a tack.) Every leg is timed with the real
  * polar and each tack costs TACK_PENALTY_S. Anything that still cannot
@@ -50,8 +55,6 @@ import { crossTrackPolish } from './polish';
 
 /** Seconds lost per tack or gybe when the request sets none (legsim.ts). */
 export const TACK_PENALTY_S = DEFAULT_TACK_PENALTY_S;
-/** Tacks are shortened for land or an unsailable heading down to this; below it the leg fails. */
-export const TACK_MIN_M = 500;
 /** More tacks than this on one leg is a loop, not a beat. */
 const MAX_TACKS_PER_LEG = 400;
 
@@ -248,8 +251,8 @@ export class ExperimentalPropagator {
     const pts: Waypoint[] = [];
     let at: Waypoint = a;
     let lastHeading = -1;
-    const stepTo = (h: number, d: number, tack: boolean): Waypoint | null => {
-      const [tLon, tLat] = projectAlongBearing(at.lon, at.lat, h, d);
+    const stepTo = (h: number, d: number, tack: boolean, end?: [number, number]): Waypoint | null => {
+      const [tLon, tLat] = end ?? projectAlongBearing(at.lon, at.lat, h, d);
       if (this.land.legCrossesLandExact(at.lon, at.lat, tLon, tLat)) return null;
       const r = this.sailedThrough(at, tLon, tLat, env);
       if (r === null) return null;
@@ -267,6 +270,9 @@ export class ExperimentalPropagator {
       return p;
     };
     const tackTo = (h: number, d: number): Waypoint | null => stepTo(h, d, true);
+    /** A piece to a given point (where the water ends on a heading). */
+    const stepToPoint = (end: [number, number], tack: boolean): Waypoint | null =>
+      stepTo(haversineBearing(at.lon, at.lat, end[0], end[1]), haversineDistanceM(at.lon, at.lat, end[0], end[1]), tack, end);
     for (let n = 0; n < MAX_TACKS_PER_LEG; n++) {
       const D = haversineDistanceM(at.lon, at.lat, b.lon, b.lat);
       const theta = haversineBearing(at.lon, at.lat, b.lon, b.lat);
@@ -285,8 +291,15 @@ export class ExperimentalPropagator {
         // A direct heading in this wind: the rest in one go when the real polar sails it all the way and it is
         // clear; else the longest straight piece that can be sailed, and look again from there.
         if (!this.land.legCrossesLandExact(at.lon, at.lat, b.lon, b.lat) && this.sailedThrough(at, b.lon, b.lat, env) !== null) return pts;
-        let p: Waypoint | null = null;
-        for (let len = D / 2; len >= TACK_MIN_M && !p; len /= 2) p = stepTo(theta, len, false);
+        // As far as the water allows on the course, else (the wind turning along it) half of it, halving down to the
+        // simulator's step.
+        const room = this.land.clearAlong(at.lon, at.lat, theta, D);
+        const p =
+          room.m <= 0
+            ? null
+            : room.m < D
+              ? (stepToPoint(room.end, false) ?? this.longestPiece(room.m / 2, env, len => stepTo(theta, len, false)))
+              : this.longestPiece(D / 2, env, len => stepTo(theta, len, false));
         if (!p)
           throw new RouteError(
             `${env.who}: the leg from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} to ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be sailed at ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)} under the ${env.sim.modePolicy} policy; ${env.advice}`
@@ -307,18 +320,21 @@ export class ExperimentalPropagator {
         pts.push(p);
         return pts;
       }
-      // Neither order works in two legs (land, or the wind changing along a long leg): the longest first tack
-      // that can be sailed and is clear, halving down to TACK_MIN_M, then look again from there.
+      // Neither order works in two legs (land, or the wind changing along a long leg): the longest first tack that
+      // can be sailed and is clear, as long as the water allows on its heading (no fixed minimum: in a narrow
+      // channel the tacks are as short as the channel), halved for the wind down to the simulator's step; then look
+      // again from there.
       let placed: Waypoint | null = null;
-      for (let len = Math.max(share(first), share(other)); len >= TACK_MIN_M && !placed; len /= 2) {
-        for (const h of [first, other]) {
-          const d = Math.min(len, share(h));
-          if (d < TACK_MIN_M) continue;
-          placed = tackTo(h, d);
-          if (placed) {
-            lastHeading = h;
-            break;
-          }
+      for (const h of [first, other]) {
+        const room = this.land.clearAlong(at.lon, at.lat, h, share(h));
+        if (!(room.m > 0)) continue;
+        // Where the water ends (exactly the point the land test reached), else the share; then halved for the wind.
+        placed =
+          (room.m < share(h) ? stepToPoint(room.end, true) : tackTo(h, room.m)) ??
+          this.longestPiece(room.m / 2, env, len => tackTo(h, len));
+        if (placed) {
+          lastHeading = h;
+          break;
         }
       }
       if (!placed) {
@@ -337,6 +353,19 @@ export class ExperimentalPropagator {
       at = placed;
     }
     throw new RouteError(`${env.who}: more than ${MAX_TACKS_PER_LEG} tacks on one leg from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)}`);
+  }
+
+  /**
+   * For the wind (a piece the polar cannot sail all the way): the longest piece from `len` that `step` can place,
+   * halving while the piece is at least the simulator's step (the wind along a piece is read at that step, so a
+   * shorter split cannot change it).
+   */
+  private longestPiece(len: number, env: Env, step: (len: number) => Waypoint | null): Waypoint | null {
+    for (let d = len; d >= env.sim.simStepM; d /= 2) {
+      const p = step(d);
+      if (p) return p;
+    }
+    return null;
   }
 
   /**

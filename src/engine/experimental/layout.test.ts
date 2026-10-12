@@ -5,7 +5,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { LandTest } from '../../geo/landmask';
+import { clearAlongByHalving, type LandTest } from '../../geo/landmask';
+import { projectAlongBearing } from '../../geo/geodesy';
 import { NoCurrent, type WindSource } from '../environment';
 import { PolarDiagram } from '../../vessel/polar';
 import { makeVessel } from '../../vessel/vessel';
@@ -31,6 +32,7 @@ const OPEN: LandTest = {
   isLandExact: () => false,
   legCrossesLandExact: () => false,
   legsCrossLandBulk: la => new Uint8Array(la.length),
+  clearAlong: (lon, lat, b, maxM) => ({ m: maxM, end: projectAlongBearing(lon, lat, b, maxM) }),
 };
 /** Wind from `dir` at `kn` everywhere. */
 function wind(kn: number, dir: number): WindSource {
@@ -82,4 +84,43 @@ test('sailPolyline under sail_max: a course dead into the wind is tacked, not mo
     'tacked'
   );
   assert.equal(r.motoringTimeS, 0, 'nothing motored');
+});
+
+test('sailPolyline under sail only: a beat up a channel narrower than any fixed tack is laid out in short tacks inside it', () => {
+  // A channel 150 m wide running north (|x| < 75 m), water nowhere else; 1 km dead into 12 kn from the north.
+  const half = 75 / 111320;
+  const inside = (lon: number): boolean => Math.abs(lon) < half;
+  const channel: LandTest = {
+    isLand: lon => !inside(lon),
+    isLandExact: lon => !inside(lon),
+    // The channel is a strip: a straight move stays in it when both its ends do.
+    legCrossesLandExact: (la, _pa, lb) => !inside(la) || !inside(lb),
+    legsCrossLandBulk: (la, _pa, lb) => Uint8Array.from({ length: la.length }, (_v, k) => (!inside(la[k]) || !inside(lb[k]) ? 1 : 0)),
+    clearAlong: (lon, lat, b, maxM) => clearAlongByHalving(channel, lon, lat, b, maxM, 1),
+  };
+  const r = new ExperimentalPropagator(channel, { stages: 10 }).sailPolyline(
+    [
+      [0, 0],
+      [0, 0.009],
+    ],
+    T0,
+    {
+      vessel: VESSEL,
+      polar: POLAR,
+      wind: wind(12, 0),
+      current: new NoCurrent(),
+      sim: { modePolicy: 'sail_max', sailThreshMs: 0, simStepM: 200 },
+      who: 'test',
+      advice: 'none',
+    }
+  );
+  const tacks = r.waypoints.filter(w => w.tack).length;
+  assert.ok(tacks >= 4, `${tacks} tacks`);
+  assert.ok(
+    r.waypoints.every(w => inside(w.lon)),
+    'every waypoint in the channel'
+  );
+  assert.equal(r.motoringTimeS, 0, 'nothing motored');
+  const last = r.waypoints[r.waypoints.length - 1];
+  assert.ok(Math.abs(last.lat - 0.009) < 1e-9 && Math.abs(last.lon) < 1e-9, 'ends on the point');
 });

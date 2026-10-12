@@ -261,3 +261,25 @@ test('a point snapped to the nearest usable water, handed on as lon/lat, is foun
     assert.equal(land.legCrossesLandExact(lon, lat, ul, ua), false, `side ${side}: a move into the usable side is clear`);
   }
 });
+
+test('MeshLand.clearAlong: the room along a bearing, to the first blocked triangle or the mesh edge', () => {
+  // 10 × 10 squares of 100 m; column 5 blocked. From (2.5, 2.5) the water runs 250 m east, 250 m west to the mesh's
+  // edge, 750 m north; none from inside the blocked column.
+  const side = 100;
+  const m = gridMesh(10, 10, side);
+  const blocked = new Uint8Array(m.n);
+  for (let cy = 0; cy < 10; cy++) blocked[(cy * 10 + 5) * 2] = blocked[(cy * 10 + 5) * 2 + 1] = 1;
+  const land = new MeshLand(PagedMesh.fromLoaded(m, blocked, 250));
+  const [lon, lat] = ll(m, 2.5, 2.5, side);
+  // The frame's metres (M_PER_DEG_MESH a degree) are 0.11 % longer than haversine's: compare as shares of 1,000 m.
+  const share = (b: number): number => land.clearAlong(lon, lat, b, 1000).m / 1000;
+  const frame = (mFrame: number): number => mFrame / 1000;
+  assert.ok(Math.abs(share(90) - frame(250)) < 0.003, `east ${share(90)}`);
+  assert.ok(Math.abs(share(270) - frame(250)) < 0.003, `west ${share(270)}`);
+  assert.ok(Math.abs(share(0) - frame(750)) < 0.003, `north ${share(0)}`);
+  assert.equal(land.clearAlong(lon, lat, 90, 100).m, 100, 'all of a shorter move');
+  assert.equal(land.clearAlong(...ll(m, 5.5, 2.5, side), 0, 1000).m, 0, 'none from blocked water');
+  // A tack the water limits ends at the point the walk reached: the move there is clear by the same test.
+  const east = land.clearAlong(lon, lat, 90, 1000);
+  assert.equal(land.legCrossesLandExact(lon, lat, ...east.end), false, 'to where the water ends: clear');
+});

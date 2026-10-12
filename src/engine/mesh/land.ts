@@ -12,7 +12,8 @@
  * searched). No copy of the chart, no raster.
  */
 
-import type { LandTest } from '../../geo/landmask';
+import { projectAlongBearing } from '../../geo/geodesy';
+import type { ClearAlong, LandTest } from '../../geo/landmask';
 import type { PagedMesh } from './paged';
 import { FLAG_OPENING_BRIDGE, NO_VALUE } from './store';
 import { rayWalk, walkMesh } from './width';
@@ -121,6 +122,28 @@ export class MeshLand implements LandTest {
     // stops short at a blocked triangle, the mesh's edge, or a numerical dead end: all unusable.
     const r = rayWalk(this.pm, ta, ax, ay, (bx - ax) / len, (by - ay) / len, len);
     return r.dist < len - 1e-6;
+  }
+
+  /**
+   * The room along a bearing (landmask.ts LandTest): the walk from the point towards the point `maxM` away on that
+   * bearing, stopping at the first blocked or missing triangle; the metres as a share of that move (the caller's
+   * metres), and the point where the walk stopped (a tack the water limits ends there).
+   */
+  clearAlong(lon: number, lat: number, bearingDeg: number, maxM: number): ClearAlong {
+    const none: ClearAlong = { m: 0, end: [lon, lat] };
+    if (!(maxM > 0)) return none;
+    const [ax, ay] = this.pm.toXY(lon, lat);
+    const [bLon, bLat] = projectAlongBearing(lon, lat, bearingDeg, maxM);
+    const [bx, by] = this.pm.toXY(bLon, bLat);
+    const ta = this.locate(ax, ay, true);
+    if (ta < 0) return none;
+    const len = Math.hypot(bx - ax, by - ay);
+    if (!(len > 0)) return none;
+    const dx = (bx - ax) / len;
+    const dy = (by - ay) / len;
+    const r = rayWalk(this.pm, ta, ax, ay, dx, dy, len);
+    if (r.dist >= len) return { m: maxM, end: [bLon, bLat] };
+    return { m: (r.dist / len) * maxM, end: this.pm.fromXY(ax + dx * r.dist, ay + dy * r.dist) };
   }
 
   legsCrossLandBulk(lonsA: ArrayLike<number>, latsA: ArrayLike<number>, lonsB: ArrayLike<number>, latsB: ArrayLike<number>): Uint8Array {

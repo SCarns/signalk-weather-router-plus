@@ -26,7 +26,7 @@
 
 import type { BBox } from './geodesy';
 import { wrapLon, unwrapLonNear } from './angles';
-import { bboxHeight, bboxWidth, lonOffsetFromWest, slerpSamples, haversineDistanceM } from './geodesy';
+import { bboxHeight, bboxWidth, lonOffsetFromWest, slerpSamples, haversineDistanceM, projectAlongBearing } from './geodesy';
 import { M_PER_DEG } from './units';
 import { pointInShape, shorelinePaths, type ShapePolygon } from './shapefile';
 import { polygonCache } from './polygoncache';
@@ -76,6 +76,43 @@ export interface LandTest {
   legCrossesLandExact(lonA: number, latA: number, lonB: number, latB: number): boolean;
   /** For each leg a→b: 1 when it crosses something unusable. */
   legsCrossLandBulk(lonsA: ArrayLike<number>, latsA: ArrayLike<number>, lonsB: ArrayLike<number>, latsB: ArrayLike<number>): Uint8Array;
+  /**
+   * How far a straight move from the point on `bearingDeg` stays clear, metres, up to `maxM` (0 when the point
+   * itself is unusable or the first step meets something), and the farthest clear point itself: the room a tack has
+   * (experimental/propagator.ts). A tack the water limits goes to `end`, the point this test reached, so the move's
+   * own test agrees with it (measured in another frame, the same distance can land a hair over the edge).
+   */
+  clearAlong(lon: number, lat: number, bearingDeg: number, maxM: number): ClearAlong;
+}
+
+export interface ClearAlong {
+  m: number;
+  end: [number, number];
+}
+
+/**
+ * clearAlong for a land test that only answers yes/no for a move: the longest clear move, found by halving between
+ * clear and not, down to `resolutionM` (the land data's own resolution: no finer answer exists).
+ */
+export function clearAlongByHalving(
+  test: Pick<LandTest, 'legCrossesLandExact' | 'isLandExact'>,
+  lon: number,
+  lat: number,
+  bearingDeg: number,
+  maxM: number,
+  resolutionM: number
+): ClearAlong {
+  if (!(maxM > 0) || test.isLandExact(lon, lat)) return { m: 0, end: [lon, lat] };
+  const to = (d: number): [number, number] => projectAlongBearing(lon, lat, bearingDeg, d);
+  if (!test.legCrossesLandExact(lon, lat, ...to(maxM))) return { m: maxM, end: to(maxM) };
+  let lo = 0;
+  let hi = maxM;
+  while (hi - lo > resolutionM) {
+    const mid = (lo + hi) / 2;
+    if (test.legCrossesLandExact(lon, lat, ...to(mid))) hi = mid;
+    else lo = mid;
+  }
+  return { m: lo, end: to(lo) };
 }
 
 export class LandMask implements LandTest {
@@ -706,6 +743,12 @@ export class LandMask implements LandTest {
    * all water are clear without a polygon test (the raster is
    * conservative). No sampling: land of any width is found.
    */
+  /** The room along a bearing, halved down to the finest raster's cell (the coastline data's working resolution). */
+  clearAlong(lon: number, lat: number, bearingDeg: number, maxM: number): ClearAlong {
+    const res = Math.min(this.resolutionDeg, ...this.patches.map(p => p.resolutionDeg)) * M_PER_DEG;
+    return clearAlongByHalving(this, lon, lat, bearingDeg, maxM, res);
+  }
+
   legCrossesLandExact(lonA: number, latA: number, lonB: number, latB: number): boolean {
     // The raster only speaks for its own box: outside it, fall through to the polygons.
     const inside = this.cellIndex(lonA, latA) >= 0 && this.cellIndex(lonB, latB) >= 0;

@@ -15,7 +15,10 @@
  *  - approximate: an intermediate leg is done as soon as the route enters
  *    the waypoint's circle (arrival radius, ocean_propagator.py lines
  *    1037–1075, snap_to_exact=False); the next leg starts from that point.
- *    The final destination is always exact.
+ *    The final destination is always exact, unless the chart mesh moved
+ *    it (Stop.snapped).
+ *  - a stop the chart mesh moved (Stop.snapped) is approximate in either
+ *    mode, its circle the distance it was moved.
  *
  * Consecutive approximate legs are collapsed into one run (hybrid.py
  * lines 1336–1446): one search from the run's start to its end that must
@@ -51,6 +54,13 @@ export interface Stop {
   lat: number;
   /** Per-waypoint arrival radius, metres; overrides the request's arrival radius (approximate mode). */
   radiusM?: number;
+  /**
+   * The chart mesh moved this stop to the nearest water the boat can use (part 2): its leg ends on entering the
+   * circle of `radiusM` (the distance moved) round it, whatever the precision, the destination included (the owner's
+   * choice, 2026-10-12: the moved point sits on the edge of unusable water, where a boat under sail alone may not
+   * reach it exactly).
+   */
+  snapped?: boolean;
 }
 
 export interface LegPlan {
@@ -112,7 +122,7 @@ export function planLegs(stops: Stop[], precision: Precision = DEFAULT_PRECISION
     const to = stops[i + 1];
     const last = i === count - 1;
     const r = to.radiusM ?? arrivalRadiusM;
-    const approx = precision === 'approximate' && !last && r > 0;
+    const approx = (precision === 'approximate' && !last && r > 0) || (to.snapped === true && (to.radiusM ?? 0) > 0);
     out.push({
       index: i,
       lastIndex: i,

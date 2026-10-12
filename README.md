@@ -996,7 +996,11 @@ structure, low clearance or area to avoid, within the buffer from unusable
 water, or on land) or on water that does not connect to the route (a pond
 the boat cannot leave) are moved to the nearest water the boat can use that
 connects to the route, within 1,000 m; a move out of unconnected water is
-logged as a WARNING. Approximate waypoints are not moved: their circle is
+logged as a WARNING. The moved point lies on the edge of the unusable water,
+so a moved waypoint or destination is reached on coming within the distance
+it was moved (its leg ends on that circle, as an approximate waypoint's
+does), not exactly: a boat under sail alone may have no room to beat the
+last metres into a corner of a shoal. Approximate waypoints are not moved: their circle is
 aimed at usable water when the leg is planned. Outside the meshes, a stop
 is tested against the exact coastline polygons: one on land, or within
 150 m of the shore, is moved to the nearest point with 150 m of water around
