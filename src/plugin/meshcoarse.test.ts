@@ -40,7 +40,14 @@ test('mesh-coarse and mesh-reach child tasks: a rough cut built into the data fo
     assert.equal(b.boundaryBlocked, 0);
     assert.ok(fs.existsSync(out));
     assert.deepEqual(readBoundary(boundaryFile(out)), { blocked: new Int32Array(0), bridges: new Int32Array(0) });
-    const c = await runChildTask({ task: 'mesh-reach', dir: mesh, mapFile: out, start: [0.5, 3.6], end: [2.5, 3.6], rules: RULES }, 60_000);
+    const ends = (a: [number, number], b: [number, number]): { lon: number; lat: number; name: string }[] => [
+      { lon: a[0], lat: a[1], name: 'the start' },
+      { lon: b[0], lat: b[1], name: 'the destination' },
+    ];
+    const c = await runChildTask(
+      { task: 'mesh-reach', dir: mesh, mapFile: out, points: ends([0.5, 3.6], [2.5, 3.6]), rules: RULES },
+      60_000
+    );
     assert.ok(c.ok, c.ok ? '' : c.reason);
     if (c.ok) {
       assert.equal(c.chainTiles, 9);
@@ -48,10 +55,27 @@ test('mesh-coarse and mesh-reach child tasks: a rough cut built into the data fo
     }
     // An end on land: not on a triangle of the mesh.
     const off = await runChildTask(
-      { task: 'mesh-reach', dir: mesh, mapFile: out, start: [1.5, 3.6], end: [2.5, 3.6], rules: RULES },
+      { task: 'mesh-reach', dir: mesh, mapFile: out, points: ends([1.5, 3.6], [2.5, 3.6]), rules: RULES },
       60_000
     );
-    assert.deepEqual(off, { ok: false, reason: 'the start point is not on a triangle of the mesh' });
+    assert.deepEqual(off, { ok: false, reason: 'the start is not on a triangle of the mesh' });
+    // An approximate waypoint off the water (the gap between the arms): the reach goes through the nearest usable
+    // water; an exact one there is refused.
+    const via = await runChildTask(
+      {
+        task: 'mesh-reach',
+        dir: mesh,
+        mapFile: out,
+        points: [
+          { lon: 0.5, lat: 3.6, name: 'the start' },
+          { lon: 1.5, lat: 2.5, radiusM: 500, name: 'waypoint 1' },
+          { lon: 2.5, lat: 3.6, name: 'the destination' },
+        ],
+        rules: RULES,
+      },
+      60_000
+    );
+    assert.ok(via.ok, via.ok ? '' : via.reason);
   } finally {
     fs.rmSync(mesh, { recursive: true, force: true });
     fs.rmSync(data, { recursive: true, force: true });

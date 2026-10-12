@@ -218,6 +218,16 @@ export function pieceAt(store: MeshStore, map: CoarseMap, rules: CoarseRules, lo
   return { kind: 'outside' };
 }
 
+/** The piece of a usable triangle (global id), or null when the triangle is blocked for the rules or not in the mesh. */
+export function pieceOfTriangle(store: MeshStore, map: CoarseMap, rules: CoarseRules, g: number): number | null {
+  const info = store.index.tiles.find(t => g >= t.first && g < t.first + t.n);
+  if (!info) return null;
+  const { pieceOf } = tilePieces(store.readTileArrays(info), info.first, rules);
+  const p = pieceOf[g - info.first];
+  const entry = map.tiles.find(e => e[0] === info.i && e[1] === info.j);
+  return p < 0 || !entry ? null : entry[2] + p;
+}
+
 /** The shortest chain of pieces from one to the other (A* on the distance between centres), or null when none. */
 export function coarseRoute(map: CoarseMap, from: number, to: number): number[] | null {
   const n = map.pieces.length;

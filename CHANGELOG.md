@@ -25,6 +25,15 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Approximate waypoints on the mesh** (docs/drafts/mesh-no-gshhg-design.md
+  part 3): a leg through waypoint circles inside one mesh is no longer sent
+  to the coastline search. `searchMeshRun` searches start → circle → … → end
+  on the paged mesh, each piece cut where it enters its circle
+  (`trimAtCircle`); the open stretches get the circles as vias, the reach
+  (`mesh-reach`) goes through them. An approximate waypoint the boat cannot
+  use is aimed at the nearest usable water (`PagedMesh.nearestUsable`, exact,
+  no distance limit), with a WARNING when that is outside its circle (the
+  owner's choice). `meshRulesFor` no longer refuses legs with vias.
 - **The mesh read on demand, no search area** (docs/drafts/mesh-no-gshhg-design.md
   part 4 revised; `engine/mesh/paged.ts`): the mesh search, the sailed
   stretches' land (`MeshLand`) and the final depth check read the mesh a

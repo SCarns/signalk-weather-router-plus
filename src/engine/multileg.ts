@@ -30,7 +30,8 @@
  *    stitch), so the stitched track is continuous;
  *  - when a collapsed run finds no branch through every circle, its legs
  *    are routed one by one (approximate ends as above) instead of failing
- *    the route.
+ *    the route (on the coastline search; a run on the chart mesh follows
+ *    the mesh route through the circles instead, mesh/legrun.ts).
  */
 
 import { haversineDistanceM } from '../geo/geodesy';

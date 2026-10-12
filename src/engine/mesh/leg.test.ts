@@ -4,7 +4,8 @@
  * polyline, the hybrid leg (narrow parts motored, open water sailed by
  * the isochrone search), the failure with the mesh's reason when it
  * cannot route a leg it covers, and the cases that keep the coastline
- * search until their parts are built (waypoint circles, two meshes).
+ * search until its part is built (two meshes); a leg through waypoint
+ * circles is planned on the mesh.
  */
 
 import { test } from 'node:test';
@@ -153,17 +154,16 @@ const PLAN = planLegs(
   300
 )[0];
 
-test('meshRulesFor: both drafts set, no waypoint circles', () => {
-  assert.deepEqual(meshRulesFor(BOAT, false), { rules: { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 } });
+test('meshRulesFor: both drafts set', () => {
+  assert.deepEqual(meshRulesFor(BOAT), { rules: { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 } });
   assert.match(
-    (meshRulesFor(makeVessel({ motorSpeedMs: 3, draughtM: 2 }), false) as { why: string }).why,
+    (meshRulesFor(makeVessel({ motorSpeedMs: 3, draughtM: 2 })) as { why: string }).why,
     /air draft \(Signal K design.airHeight/
   );
   assert.match(
-    (meshRulesFor(makeVessel({ motorSpeedMs: 3, airDraftM: 18 }), false) as { why: string }).why,
+    (meshRulesFor(makeVessel({ motorSpeedMs: 3, airDraftM: 18 })) as { why: string }).why,
     /draught \(Signal K design.draft.maximum/
   );
-  assert.match((meshRulesFor(BOAT, true) as { why: string }).why, /waypoint circles/);
 });
 
 test('classifySegments: narrow where both shores are near, hysteresis by distance, open run-out kept in the narrow segment', () => {
@@ -609,9 +609,9 @@ test('pipeline: a leg inside the mesh that the mesh cannot take fails with the r
   }
 });
 
-// Until part 3 of docs/drafts/mesh-no-gshhg-design.md (the owner, 2026-10-12): a leg through waypoint circles keeps
-// the coastline search; the worker's final depth check judges it.
-test('pipeline: a leg through waypoint circles inside the mesh still runs on the coastline search (until part 3)', async () => {
+// Part 3 of docs/drafts/mesh-no-gshhg-design.md (the owner, 2026-10-12): a leg through waypoint circles inside the
+// mesh is planned on the mesh through them (this test pinned the coastline search before).
+test('pipeline: a leg through waypoint circles inside the mesh is planned on the mesh; the circle is marked, a moved waypoint warned', async () => {
   const [run] = collapseRuns(
     planLegs(
       [
@@ -624,22 +624,81 @@ test('pipeline: a leg through waypoint circles inside the mesh still runs on the
     )
   );
   assert.equal(run.vias.length, 1);
-  const { mesh, calls } = fakeMeshOk([
+  const path: [number, number][] = [
     [0, 0.5],
+    [0.5, 0.6],
     [1, 0.5],
-  ]);
-  const { inp, messages } = inputs(mesh);
+  ];
+  for (const movedM of [0, 500]) {
+    const { mesh, calls } = fakeMesh({
+      ok: true,
+      path,
+      widths: path.map(() => [4000, 4000] as [number, number]),
+      lengthM: 1,
+      costS: 1,
+      stats: STATS,
+      circles: [{ lon: 0.5, lat: 0.6, radiusM: 300, movedM, name: 'waypoint 1', pathIndex: 1 }],
+    });
+    const { inp, messages } = inputs(mesh);
+    const r = await runLegPipeline(inp, run, 0, [0, 0.5], T0);
+    assert.equal(calls.length, 1, 'the mesh leg was asked for');
+    assert.ok(r.meshLeg);
+    assert.ok(!messages.some(m => /^skeleton/.test(m)), 'the coastline search did not run: ' + messages.join('\n'));
+    const via = r.waypoints.filter(w => w.role === 'via');
+    assert.equal(via.length, 1);
+    assert.deepEqual([via[0].lon, via[0].lat], [0.5, 0.6]);
+    const warned = messages.some(m => /^WARNING: chart mesh: waypoint 1: no water the boat can use within \{length:300\} of it/.test(m));
+    assert.equal(warned, movedM > 300, messages.join('\n'));
+  }
+});
+
+test("pipeline: a circle inside an open stretch is the sailing search's via; the route passes through it, marked", async () => {
+  const [run] = collapseRuns(
+    planLegs(
+      [
+        { lon: 0, lat: 0.5 },
+        { lon: 0.5, lat: 0.6 },
+        { lon: 1, lat: 0.5 },
+      ],
+      'approximate',
+      3000
+    )
+  );
+  const path: [number, number][] = [
+    [0, 0.5],
+    [0.5, 0.6],
+    [1, 0.5],
+  ];
+  const wind = Object.assign(new ConstantWind(12 * 0.514444, 0), {
+    validRange: [T0, new Date(T0.getTime() + 48 * 3600e3)] as [Date, Date],
+  });
+  const { mesh } = fakeMesh(
+    {
+      ok: true,
+      path,
+      widths: path.map(() => [4000, 4000] as [number, number]),
+      lengthM: 1,
+      costS: 1,
+      stats: STATS,
+      circles: [{ lon: 0.5, lat: 0.6, radiusM: 3000, movedM: 0, name: 'waypoint 1', pathIndex: 1 }],
+    },
+    true,
+    { wind }
+  );
+  const { inp, messages } = inputs(mesh, {
+    polar: PolarDiagram.parse(POLAR_CSV, ','),
+    sim: { modePolicy: 'sail_max', sailThreshMs: 2.5, simStepM: 200 },
+    loadAreas: async () => wind,
+  });
   const r = await runLegPipeline(inp, run, 0, [0, 0.5], T0);
-  assert.equal(calls.length, 0, 'the mesh leg was not asked for');
-  assert.ok(!r.meshLeg);
+  assert.ok(r.meshLeg);
   assert.ok(
-    messages.some(m => /^chart mesh covers the leg but is not used: the leg passes through waypoint circles$/.test(m)),
+    messages.some(m => /segment 1\/1: open water, .* the isochrone search made it \d+ waypoints/.test(m)),
     messages.join('\n')
   );
-  assert.ok(
-    messages.some(m => /^skeleton/.test(m)),
-    'the coastline search ran: ' + messages.join('\n')
-  );
+  const via = r.waypoints.filter(w => w.role === 'via');
+  assert.equal(via.length, 1, JSON.stringify(r.waypoints.map(w => [w.lon, w.lat, w.role])));
+  assert.ok(haversineDistanceM(via[0].lon, via[0].lat, 0.5, 0.6) <= 3000 + 1, `${via[0].lon}, ${via[0].lat}`);
 });
 
 test('pipeline: a leg whose ends lie in two different meshes is not planned as one mesh leg', async () => {

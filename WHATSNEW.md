@@ -15,6 +15,11 @@
   the places. A route that passes shows *Chart depth checked* with the
   shallowest depth it crosses, how much of it has no charted depth, and
   how much lies outside the charts.
+- **Approximate waypoints use the charts.** A trip through approximate
+  waypoints is now routed on the chart depths all the way, instead of on
+  the coastline outline. A waypoint you drop on land or in shallow water
+  is fine: the route goes to the nearest water your boat can use, and
+  tells you when that is outside the waypoint's circle.
 - **Long trips on the charts.** A trip whose water route swings far out
   (from the Bahamas round the Florida Keys into the Gulf, from Chicago
   through the Straits of Mackinac into Lake Huron) used to be too big for

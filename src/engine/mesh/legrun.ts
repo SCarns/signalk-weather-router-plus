@@ -93,6 +93,19 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
   const timing = `${st.trianglesLoaded} triangles in ${st.tiles} tiles read as the search reached them (${st.tileReads} reads, at most ${st.peakTriangles} triangles held at once) in {time:${(st.readMs + st.prepMs) / 1000}}, ${st.blocked} blocked, search {time:${st.searchMs / 1000}} (${st.expanded} edges)`;
   if (!res.ok || !land) return { refused: `${res.ok ? 'no mesh land' : res.reason} (${timing})` };
   progress(0, 0, `${tag}chart mesh: {distance:${res.lengthM.toFixed(0)}}, ${res.path.length} points; ${timing}`);
+  // Approximate waypoints whose own water the boat cannot use: the leg went to the nearest usable water (part 3; the
+  // owner's choice, 2026-10-12: moved, with a warning when that is outside the circle).
+  for (const c of [...(res.circles ?? []), ...(res.target ? [res.target] : [])]) {
+    if (!(c.movedM > 0)) continue;
+    const where = `${c.lat.toFixed(4)}, ${c.lon.toFixed(4)}`;
+    progress(
+      0,
+      0,
+      c.movedM > c.radiusM
+        ? `WARNING: ${tag}chart mesh: ${c.name ?? 'the waypoint'}: no water the boat can use within {length:${c.radiusM}} of it; the route goes to the nearest usable water, {distance:${c.movedM.toFixed(0)}} away at ${where}`
+        : `${tag}chart mesh: ${c.name ?? 'the waypoint'}: the boat cannot use the water at the waypoint; the route aims at the nearest usable water inside its circle, {distance:${c.movedM.toFixed(0)}} away at ${where}`
+    );
+  }
   if (st.bufferM > 0)
     progress(
       0,
@@ -157,6 +170,13 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
       );
     return part;
   };
+  /** The circles inside a stretch, as the open-water search's vias. */
+  const viasIn = (seg: MeshSegment): { lon: number; lat: number; radiusM: number }[] | undefined => {
+    const v = (res.circles ?? [])
+      .filter(c => c.pathIndex > seg.start && c.pathIndex < seg.end)
+      .map(c => ({ lon: c.lon, lat: c.lat, radiusM: c.radiusM }));
+    return v.length ? v : undefined;
+  };
   const parts: Route[] = [];
   let at = legDeparture;
   for (let si = 0; si < segs.length; si++) {
@@ -179,6 +199,8 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
           wind: inp.wind ?? undefined,
           current,
           corridor: meshCorridor(pts, res.widths.slice(seg.start, seg.end + 1)),
+          // The waypoint circles this stretch passes (an inner circle at its end is reached by the stretch's own end).
+          vias: viasIn(seg),
           modePolicy: inp.sim.modePolicy,
           sailThreshMs: inp.sim.sailThreshMs,
           maxWindMs: inp.sim.maxWindMs,
@@ -247,6 +269,14 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
   }
   const route = parts.length === 1 ? parts[0] : stitchMeshSegments(parts, wind);
   route.meshLeg = true;
+  // The waypoints where the leg reached each circle carry the role 'via' (as the coastline search marks them), where
+  // the stretch that reached it has a waypoint there (a motored stretch, a stretch's end); a sailed stretch given the
+  // circle as a via marks its own.
+  for (const c of res.circles ?? []) {
+    const [lon, lat] = res.path[c.pathIndex];
+    const w = route.waypoints.find(p => Math.abs(p.lon - lon) < 1e-9 && Math.abs(p.lat - lat) < 1e-9);
+    if (w) w.role = 'via';
+  }
   // The charted depth under each waypoint, from the triangle under it.
   let n = 0;
   for (const w of route.waypoints) {

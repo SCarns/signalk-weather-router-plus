@@ -107,7 +107,7 @@ async function meshLeg(
   useReach = false
 ): Promise<Route | MeshRefusal> {
   const { progress, shouldCancel, multi, stages } = inp;
-  const r = meshRulesFor(inp.vessel, plan.vias.length > 0);
+  const r = meshRulesFor(inp.vessel);
   if (!r.rules) {
     progress(0, 0, `${tag}chart mesh covers the leg but is not used: ${r.why}`);
     return { refused: r.why };
@@ -123,7 +123,7 @@ async function meshLeg(
   if (useReach && inp.mesh!.reach) {
     const c = await inp.mesh!.reach({
       legStart,
-      legEnd: plan.end,
+      plan,
       rules: r.rules,
       tag,
       progress,
@@ -138,7 +138,12 @@ async function meshLeg(
   // cover where the leg can go: the box around its ends
   // (MESH_BOX_PAD_MAX_DEG), and the tiles its water runs through when the
   // rough cut gave them. The search itself has no area (paged.ts).
-  const ends = bboxFromLonLat([legStart[0], plan.end[0]], [legStart[1], plan.end[1]], MESH_BOX_PAD_MAX_DEG);
+  const pts: [number, number][] = [legStart, ...plan.vias.map(v => [v.lon, v.lat] as [number, number]), plan.end];
+  const ends = bboxFromLonLat(
+    pts.map(p => p[0]),
+    pts.map(p => p[1]),
+    MESH_BOX_PAD_MAX_DEG
+  );
   const bbox: BBox = reach
     ? {
         west: Math.min(ends.west, reach.box.west),
@@ -216,24 +221,25 @@ export async function runLegPipeline(
   // clearances and obstructions (narrow water motored, open water by the
   // selected router), or fails with the reason the mesh gives: no
   // coastline search where a mesh covers the water (the owner's rule,
-  // 2026-10-12). Two cases keep the coastline search until their own
-  // parts are built (docs/drafts/mesh-no-gshhg-design.md): a leg through
-  // waypoint circles (part 3) and a leg with one end outside the mesh or
-  // the ends in two meshes, routed on the mesh as far as open water clear
-  // of the shore (mesh/handover.ts) and handed over there (part 5). The
-  // worker's final depth check runs on every route either way.
+  // 2026-10-12). A leg through waypoint circles is planned on the mesh
+  // through them (part 3). One case keeps the coastline search until its
+  // part is built (docs/drafts/mesh-no-gshhg-design.md): a leg with one
+  // end outside the mesh or the ends in two meshes, routed on the mesh as
+  // far as open water clear of the shore (mesh/handover.ts) and handed
+  // over there (part 5). The worker's final depth check runs on every
+  // route either way.
   if (inp.mesh) {
-    // One mesh must hold both ends for the whole leg to be planned on it
-    // (the runner opens one mesh); ends in two different meshes are the
-    // handover case, like one end outside any mesh.
-    const both = inp.mesh.covers([legStart, legEnd]);
+    // One mesh must hold the leg's start, circles and end for the whole leg
+    // to be planned on it (the runner opens one mesh); points in two
+    // different meshes are the handover case, like one outside any mesh.
+    const both = inp.mesh.covers(chain);
     const cs = both || inp.mesh.covers([legStart]);
     const ce = both || inp.mesh.covers([legEnd]);
     if (both) {
       const mr = await meshLeg(inp, plan, legIndex, legStart, legDeparture, tag, true);
       if (!isRefusal(mr)) return mr;
       // No tag: the worker names the leg of a multi-leg route on every error (worker/route.ts legOne).
-      if (plan.vias.length === 0) throw new RouteError(`the chart mesh covers this leg but cannot take it: ${mr.refused}`);
+      throw new RouteError(`the chart mesh covers this leg but cannot take it: ${mr.refused}`);
     } else if ((cs || ce) && inp.waterGrid && plan.vias.length === 0) {
       const c = corridorFor(inp, chain, tag);
       if (c.corridor) {

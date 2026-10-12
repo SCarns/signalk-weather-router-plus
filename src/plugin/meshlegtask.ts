@@ -24,7 +24,7 @@ import type { SimOptions } from '../engine/legsim';
 import { MeshLand } from '../engine/mesh/land';
 import { isRefusal, type MeshLegArgs, type MeshRefusal } from '../engine/mesh/leg';
 import { runMeshLeg } from '../engine/mesh/legrun';
-import { type DrawbridgeChoice, type MeshRules, searchMesh } from '../engine/mesh/route';
+import { type DrawbridgeChoice, type MeshRules, runTargets, searchMeshRun } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
 import type { LegPlan } from '../engine/multileg';
 import type { PropagatorOptions } from '../engine/propagator';
@@ -89,7 +89,8 @@ const CURRENTS_MARGIN_DEG = 0.25;
 export async function runMeshLegTask(t: MeshLegTask, emit: (e: MeshLegEvent) => void): Promise<MeshLegResult> {
   const progress = (stage: number, total: number, message: string): void => emit({ event: 'progress', stage, total, message });
   const store = MeshStore.open(t.dir);
-  const search = searchMesh(store, t.legStart, t.plan.end, t.rules, t.boundaryFile ? readBoundary(t.boundaryFile) : null);
+  // The leg's end, through its waypoint circles when it is a run of approximate legs (part 3).
+  const search = searchMeshRun(store, t.legStart, runTargets(t.plan), t.rules, t.boundaryFile ? readBoundary(t.boundaryFile) : null);
   const land = search.result.ok ? new MeshLand(search.paged) : null;
   if (land)
     progress(0, 0, `${t.tag}chart mesh: the search's every move is tested against the mesh, its tiles read as the moves reach them`);

@@ -86,13 +86,13 @@ export interface MeshLegRunner {
   covers(points: [number, number][]): boolean;
   leg(args: MeshLegArgs): Promise<Route | MeshRefusal>;
   /**
-   * The reach of a leg inside one mesh, from the rough cut for these rules (built first when missing), or why there
-   * is none (an end on water the boat cannot use, no water connecting the ends). Absent: the forecast area is the
-   * box around the leg's ends.
+   * The reach of a leg inside one mesh, from the rough cut for these rules (built first when missing), through the
+   * plan's waypoint circles, or why there is none (an end on water the boat cannot use, no water connecting two of its
+   * points). Absent: the forecast area is the box around the leg's points.
    */
   reach?(args: {
     legStart: [number, number];
-    legEnd: [number, number];
+    plan: LegPlan;
     rules: MeshRules;
     tag: string;
     progress: ProgressFn;
@@ -117,15 +117,14 @@ export function meshCorridor(pts: [number, number][], widths: [number, number][]
 /**
  * The rules the mesh needs from the vessel, or null (with why) when the
  * mesh cannot be used for this leg: its blocking rules need the draught
- * and the air draft, and a leg through waypoint circles is not split.
+ * and the air draft.
  */
-export function meshRulesFor(vessel: VesselParams, hasVias: boolean): { rules: MeshRules } | { rules: null; why: string } {
+export function meshRulesFor(vessel: VesselParams): { rules: MeshRules } | { rules: null; why: string } {
   if (vessel.draughtM === null || vessel.airDraftM === null)
     return {
       rules: null,
       why: `the vessel's ${vessel.draughtM === null ? 'draught (Signal K design.draft.maximum' : 'air draft (Signal K design.airHeight'}, or the request's vessel override) is not set`,
     };
-  if (hasVias) return { rules: null, why: 'the leg passes through waypoint circles' };
   return { rules: { draughtM: vessel.draughtM, airDraftM: vessel.airDraftM, motorSpeedMs: vessel.motorSpeedMs } };
 }
 

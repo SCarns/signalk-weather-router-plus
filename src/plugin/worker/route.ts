@@ -42,7 +42,7 @@ import { GLOBAL_DLON_DEG } from './regional';
 import { avoidAt, type AvoidArea } from '../../geo/avoid';
 import type { WorkerState } from './state';
 import { MeshStore } from '../../engine/mesh/store';
-import { meshCovers } from '../../engine/mesh/route';
+import { meshCovers, runTargets } from '../../engine/mesh/route';
 import type { MeshLegArgs, MeshLegRunner, MeshRefusal } from '../../engine/mesh/leg';
 import type { MeshRules } from '../../engine/mesh/route';
 import { runChildTask } from '../childtask';
@@ -139,7 +139,10 @@ function meshLegRunner(
       if (useForecast && !st.run)
         return { refused: 'the forecast is still being decoded, and the mesh process reads only a decoded run; try again shortly' };
       // The mesh holding both ends; a handover leg has one end outside every mesh, so then the one holding either.
-      const m = meshFor([a.legStart, a.plan.end]) ?? meshFor([a.legStart]) ?? meshFor([a.plan.end]);
+      const m =
+        meshFor([a.legStart, ...a.plan.vias.map(v => [v.lon, v.lat] as [number, number]), a.plan.end]) ??
+        meshFor([a.legStart]) ??
+        meshFor([a.plan.end]);
       if (!m) return { refused: 'no mesh covers the leg' };
       a.progress(0, 0, `${a.tag}chart mesh: ${m.name}`);
       // Cancel: the worker's flag, polled; aborting kills the child.
@@ -217,7 +220,7 @@ function meshLegRunner(
     // the rough cut built first when this boat has none for the mesh, both in child processes (meshcoarse.ts), so
     // no mesh tile is read in this worker.
     reach: async c => {
-      const m = meshFor([c.legStart, c.legEnd]);
+      const m = meshFor([c.legStart, ...c.plan.vias.map(v => [v.lon, v.lat] as [number, number]), c.plan.end]);
       if (!m) return { refused: 'no mesh covers the leg' };
       const rules = { draughtM: c.rules.draughtM, airDraftM: c.rules.airDraftM };
       const ac = new AbortController();
@@ -229,7 +232,13 @@ function meshLegRunner(
         if (typeof file !== 'string') return file;
         const t0 = Date.now();
         const r = await runChildTask(
-          { task: 'mesh-reach', dir: m.dir, mapFile: file, start: c.legStart, end: c.legEnd, rules },
+          {
+            task: 'mesh-reach',
+            dir: m.dir,
+            mapFile: file,
+            points: [{ lon: c.legStart[0], lat: c.legStart[1], name: 'the start' }, ...runTargets(c.plan)],
+            rules,
+          },
           5 * 60_000,
           ac.signal
         );

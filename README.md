@@ -768,10 +768,20 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   stretch that cannot be made against the current, no draught or air
   draft, the forecast still being decoded, the mesh process failing) the
   route fails with that reason; it is no longer handed to the coastline
-  search, which knows no depths. Two cases still use the coastline search
-  for now: a leg through waypoint circles (Approximate), and a leg with
-  one end outside the mesh or its ends in two different meshes (the
-  handover above).
+  search, which knows no depths. One case still uses the coastline search
+  for now: a leg with one end outside the mesh or its points in two
+  different meshes (the handover above).
+- **Approximate waypoints on the mesh.** A leg through waypoint circles
+  (Approximate precision) is planned on the mesh like any other: the mesh
+  route runs from the start to the first circle, on from where it entered
+  it to the next, and so on to the end; narrow passages are motored along
+  it, and each open stretch is sailed by the open-water router, which must
+  pass through the circles on that stretch (where it cannot, the stretch
+  follows the mesh route, which passes through them). The point where the
+  route reaches each circle is marked as the waypoint. A waypoint on water
+  the boat cannot use (land, shallows) is aimed at the nearest usable
+  water; when that lies outside the waypoint's circle the log says so in a
+  WARNING with the distance and position.
 - **Final depth check.** Every finished route, whatever planned it, is
   walked through every mesh it meets, segment by segment and triangle by
   triangle (the walk the routers test their moves with), against the same

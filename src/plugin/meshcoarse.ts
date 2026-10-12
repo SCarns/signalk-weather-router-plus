@@ -21,8 +21,17 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { BBox } from '../geo/geodesy';
-import { buildCoarseMap, type CoarseMap, type CoarseRules, COARSE_VERSION, coarseRoute, pieceAt, reachOf } from '../engine/mesh/coarse';
-import type { BoundarySeeds } from '../engine/mesh/paged';
+import {
+  buildCoarseMap,
+  type CoarseMap,
+  type CoarseRules,
+  COARSE_VERSION,
+  coarseRoute,
+  pieceAt,
+  pieceOfTriangle,
+  reachOf,
+} from '../engine/mesh/coarse';
+import { type BoundarySeeds, PagedMesh } from '../engine/mesh/paged';
 import { MeshStore } from '../engine/mesh/store';
 
 export const COARSE_DIR = 'mesh-coarse';
@@ -160,39 +169,63 @@ export interface MeshReachTask {
   task: 'mesh-reach';
   dir: string;
   mapFile: string;
-  start: [number, number];
-  end: [number, number];
+  /** The leg's start, its waypoint circles in order, its end; a circle (radiusM) for an approximate waypoint. */
+  points: { lon: number; lat: number; radiusM?: number; name: string }[];
   rules: CoarseRules;
 }
 
 export type MeshReachResult = { ok: true; box: BBox; lengthM: number; chainTiles: number } | { ok: false; reason: string };
 
-/** A leg's reach on the rough cut: the piece under each end, the chain of pieces between them, the box of its tiles. */
+/**
+ * A leg's reach on the rough cut: the piece under each point (for an approximate waypoint on water the boat cannot
+ * use, under the nearest usable water, as the mesh search aims there: part 3), the chain of pieces from each to the
+ * next, the box of their tiles.
+ */
 export function runMeshReachTask(t: MeshReachTask): MeshReachResult {
   const store = MeshStore.open(t.dir);
   const map = JSON.parse(fs.readFileSync(t.mapFile, 'utf8')) as CoarseMap;
   if (map.version !== COARSE_VERSION || map.triangles !== store.index.triangles)
     return { ok: false, reason: 'the rough cut on disk is for another build of the mesh; rebuild it in the plugin configuration' };
-  const ends: number[] = [];
-  for (const [which, p] of [
-    ['start', t.start],
-    ['end', t.end],
-  ] as const) {
-    const r = pieceAt(store, map, t.rules, p[0], p[1]);
-    if (r.kind === 'outside') return { ok: false, reason: `the ${which} point is not on a triangle of the mesh` };
+  const lats = t.points.map(p => p.lat);
+  const cl = Math.cos((((Math.min(...lats) + Math.max(...lats)) / 2) * Math.PI) / 180);
+  // The rough cut's rules: no buffer, opening bridges as open.
+  const pm = new PagedMesh(store, { ...t.rules, motorSpeedMs: 1, openingBridges: 'open' }, cl);
+  const pieces: number[] = [];
+  for (const p of t.points) {
+    const r = pieceAt(store, map, t.rules, p.lon, p.lat);
+    if (r.kind !== 'piece' && p.radiusM !== undefined) {
+      const nu = pm.nearestUsable(...pm.toXY(p.lon, p.lat));
+      const piece = nu ? pieceOfTriangle(store, map, t.rules, nu.tri) : null;
+      if (piece !== null) {
+        pieces.push(piece);
+        continue;
+      }
+    }
+    if (r.kind === 'outside') return { ok: false, reason: `${p.name} is not on a triangle of the mesh` };
     if (r.kind === 'blocked')
       return {
         ok: false,
-        reason: `the ${which} point is on water the boat cannot use${r.depth !== null ? ` (charted depth {depth:${r.depth}})` : ' (a hazard, mark, structure or clearance)'}`,
+        reason: `${p.name} is on water the boat cannot use${r.depth !== null ? ` (charted depth {depth:${r.depth}})` : ' (a hazard, mark, structure or clearance)'}`,
       };
-    ends.push(r.piece);
+    pieces.push(r.piece);
   }
-  const chain = coarseRoute(map, ends[0], ends[1]);
-  if (!chain)
-    return {
-      ok: false,
-      reason: `no water on the chart mesh connects the start and the end for this boat (draught {depth:${t.rules.draughtM}}, air draft {length:${t.rules.airDraftM}})`,
-    };
-  const r = reachOf(store, map, chain);
-  return { ok: true, box: r.box, lengthM: r.lengthM, chainTiles: r.chainTiles.length };
+  const box: BBox = { west: Infinity, south: Infinity, east: -Infinity, north: -Infinity };
+  const tiles = new Set<string>();
+  let lengthM = 0;
+  for (let k = 1; k < pieces.length; k++) {
+    const chain = coarseRoute(map, pieces[k - 1], pieces[k]);
+    if (!chain)
+      return {
+        ok: false,
+        reason: `no water on the chart mesh connects ${t.points[k - 1].name} and ${t.points[k].name} for this boat (draught {depth:${t.rules.draughtM}}, air draft {length:${t.rules.airDraftM}})`,
+      };
+    const r = reachOf(store, map, chain);
+    box.west = Math.min(box.west, r.box.west);
+    box.south = Math.min(box.south, r.box.south);
+    box.east = Math.max(box.east, r.box.east);
+    box.north = Math.max(box.north, r.box.north);
+    for (const c of r.chainTiles) tiles.add(c.join(','));
+    lengthM += r.lengthM;
+  }
+  return { ok: true, box, lengthM, chainTiles: tiles.size };
 }

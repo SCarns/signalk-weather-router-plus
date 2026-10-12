@@ -24,6 +24,7 @@
  */
 
 import { haversineDistanceM, type BBox } from '../../geo/geodesy';
+import type { LegPlan } from '../multileg';
 import { MinHeap } from '../heap';
 import { meshAstar } from './astar';
 import { funnel, type XY } from './funnel';
@@ -79,6 +80,19 @@ export interface MeshRouteStats {
   bufferMs: number;
 }
 
+/**
+ * Where a leg aimed at an approximate waypoint actually went (part 3): the waypoint itself when the boat can use the
+ * water there, else the nearest usable water (`movedM` from the waypoint, inside its circle or not).
+ */
+export interface MeshTarget {
+  lon: number;
+  lat: number;
+  radiusM: number;
+  movedM: number;
+  /** The waypoint's name for messages (searchMeshRun). */
+  name?: string;
+}
+
 export type MeshRouteResult =
   | {
       ok: true;
@@ -88,6 +102,13 @@ export type MeshRouteResult =
       lengthM: number;
       costS: number;
       stats: MeshRouteStats;
+      /** An approximate end (searchMesh `approach`): where the leg aimed. */
+      target?: MeshTarget;
+      /**
+       * The waypoint circles of a run (searchMeshRun), in order: the index of the path point where the route reached
+       * each, what it aimed at, and the waypoint's name.
+       */
+      circles?: (MeshTarget & { pathIndex: number })[];
     }
   | { ok: false; reason: string; stats: MeshRouteStats };
 
@@ -298,7 +319,14 @@ export function searchMesh(
   start: [number, number],
   end: [number, number],
   rules: MeshRules,
-  boundary: BoundarySeeds | null = null
+  boundary: BoundarySeeds | null = null,
+  /**
+   * The end is an approximate waypoint (part 3): the leg aims at it when the boat can use the water there, else at
+   * the nearest usable water (the owner's choice, 2026-10-12: moved, with a warning, even outside the circle); with
+   * `trim` the route stops where it enters the circle of `radiusM` round the waypoint (an inner waypoint of a run:
+   * the next piece starts there). A start already inside the circle is not trimmed.
+   */
+  approach?: { radiusM: number; trim: boolean }
 ): MeshSearch {
   const cl = Math.cos(((start[1] + end[1]) / 2) * (Math.PI / 180));
   const pm = new PagedMesh(store, rules, cl, boundary);
@@ -328,10 +356,24 @@ export function searchMesh(
   let funnelMs = 0;
   const done = (result: MeshRouteResult): MeshSearch => ({ result, box: pm.touchedBox() ?? ends, paged: pm });
   const [sx, sy] = pm.toXY(start[0], start[1]);
-  const [ex, ey] = pm.toXY(end[0], end[1]);
+  const [wx, wy] = pm.toXY(end[0], end[1]);
   const st = pm.locate(sx, sy);
-  const et = pm.locate(ex, ey);
-  if (st < 0 || et < 0) return done({ ok: false, reason: `${st < 0 ? 'start' : 'end'} point is not in a mesh triangle`, stats: stats() });
+  if (st < 0) return done({ ok: false, reason: 'start point is not in a mesh triangle', stats: stats() });
+  // The end: the point itself, or for an approximate waypoint the usable water nearest it.
+  let ex = wx;
+  let ey = wy;
+  let et: number;
+  let target: MeshTarget | undefined;
+  if (approach) {
+    const nu = pm.nearestUsable(wx, wy);
+    if (!nu) return done({ ok: false, reason: 'the mesh has no water the boat can use near the waypoint', stats: stats() });
+    [ex, ey, et] = [nu.x, nu.y, nu.tri];
+    const [lon, lat] = nu.distM > 0 ? pm.fromXY(ex, ey) : end;
+    target = { lon, lat, radiusM: approach.radiusM, movedM: nu.distM };
+  } else {
+    et = pm.locate(ex, ey);
+    if (et < 0) return done({ ok: false, reason: 'end point is not in a mesh triangle', stats: stats() });
+  }
   // The ends against the rules themselves, before the buffer: inside a blocked triangle is one error, inside the buffer another.
   const S = pm.tileOf(st);
   const E = pm.tileOf(et);
@@ -367,11 +409,166 @@ export function searchMesh(
       [T.x[b], T.y[b]],
     ];
   });
-  const pathXY = funnel(portals, [sx, sy], [ex, ey]);
+  let pathXY = funnel(portals, [sx, sy], [ex, ey]);
+  // An inner waypoint of a run: the route stops where it enters the circle (the water there being usable, or the
+  // nearest usable water inside the circle; the route goes on to water moved outside it).
+  if (approach?.trim && target!.movedM <= approach.radiusM) pathXY = trimAtCircle(pathXY, wx, wy, approach.radiusM);
   const widths = passageWidths(pm, pathXY, st);
   funnelMs = Date.now() - t1;
   const path = pathXY.map(p => pm.fromXY(p[0], p[1]));
   let lengthM = 0;
   for (let i = 1; i < path.length; i++) lengthM += haversineDistanceM(path[i - 1][0], path[i - 1][1], path[i][0], path[i][1]);
-  return done({ ok: true, path, widths, lengthM, costS: r.goalG, stats: stats() });
+  return done({ ok: true, path, widths, lengthM, costS: r.goalG, stats: stats(), ...(target ? { target } : {}) });
+}
+
+/**
+ * The polyline cut where it first comes within `r` of (cx, cy) (metres frame): the points before, then the point
+ * where that segment enters the circle. Unchanged when it starts inside the circle or never reaches it.
+ */
+export function trimAtCircle(path: XY[], cx: number, cy: number, r: number): XY[] {
+  if (!path.length || Math.hypot(path[0][0] - cx, path[0][1] - cy) <= r) return path;
+  for (let i = 1; i < path.length; i++) {
+    const [ax, ay] = path[i - 1];
+    const dx = path[i][0] - ax;
+    const dy = path[i][1] - ay;
+    const L2 = dx * dx + dy * dy;
+    if (!(L2 > 0)) continue;
+    // Does the segment come within r of the centre? Then it enters at the smaller root of |a + t d - c| = r.
+    const t = Math.max(0, Math.min(1, ((cx - ax) * dx + (cy - ay) * dy) / L2));
+    if (Math.hypot(ax + t * dx - cx, ay + t * dy - cy) > r) continue;
+    const fx = ax - cx;
+    const fy = ay - cy;
+    const B = 2 * (fx * dx + fy * dy);
+    const C = fx * fx + fy * fy - r * r;
+    const t0 = Math.max(0, Math.min(1, (-B - Math.sqrt(Math.max(0, B * B - 4 * L2 * C))) / (2 * L2)));
+    return [...path.slice(0, i), [ax + t0 * dx, ay + t0 * dy]];
+  }
+  return path;
+}
+
+/** A point a run of mesh searches goes to: a waypoint circle (radiusM), or the exact end (no radius). */
+export interface RunTarget {
+  lon: number;
+  lat: number;
+  /** An approximate waypoint's circle, metres. */
+  radiusM?: number;
+  /** For the messages ("waypoint 2", "the destination"). */
+  name: string;
+}
+
+/**
+ * A leg through waypoint circles on the mesh (docs/drafts/mesh-no-gshhg-design.md, part 3): one search per piece,
+ * start → circle 1 → … → the end, each piece starting where the one before entered its circle (searchMesh with
+ * `approach`, trimmed), joined into one route with its passage widths. The last target is the leg's end: exact, or
+ * approximate (not trimmed: the leg's own planning stops on entering its circle). The land for planning the leg is the
+ * last piece's paged mesh. Fails with the first piece that fails, naming its target.
+ */
+export function searchMeshRun(
+  store: MeshStore,
+  start: [number, number],
+  targets: RunTarget[],
+  rules: MeshRules,
+  boundary: BoundarySeeds | null = null
+): MeshSearch {
+  const path: [number, number][] = [];
+  const widths: [number, number][] = [];
+  const circles: (MeshTarget & { pathIndex: number })[] = [];
+  let lengthM = 0;
+  let costS = 0;
+  let stats: MeshRouteStats | null = null;
+  let box: BBox | null = null;
+  let from = start;
+  let last: MeshSearch | null = null;
+  for (let i = 0; i < targets.length; i++) {
+    const tg = targets[i];
+    const inner = i < targets.length - 1;
+    const s = searchMesh(
+      store,
+      from,
+      [tg.lon, tg.lat],
+      rules,
+      boundary,
+      tg.radiusM !== undefined ? { radiusM: tg.radiusM, trim: inner } : undefined
+    );
+    const r = s.result;
+    stats = stats ? addStats(stats, r.stats) : r.stats;
+    box = box
+      ? {
+          west: Math.min(box.west, s.box.west),
+          south: Math.min(box.south, s.box.south),
+          east: Math.max(box.east, s.box.east),
+          north: Math.max(box.north, s.box.north),
+        }
+      : s.box;
+    last = s;
+    if (!r.ok)
+      return { result: { ok: false, reason: targets.length > 1 ? `to ${tg.name}: ${r.reason}` : r.reason, stats }, box, paged: s.paged };
+    // Joined at the point where the previous piece ended (dropped from this one).
+    const skip = path.length ? 1 : 0;
+    path.push(...r.path.slice(skip));
+    widths.push(...r.widths.slice(skip));
+    lengthM += r.lengthM;
+    costS += r.costS;
+    if (inner) circles.push({ ...r.target!, name: tg.name, pathIndex: path.length - 1 });
+    from = r.path[r.path.length - 1];
+    if (inner) s.paged.retain(() => false);
+  }
+  const lt = last!.result.ok ? last!.result.target : undefined;
+  const lastTarget = lt ? { ...lt, name: targets[targets.length - 1].name } : undefined;
+  return {
+    result: {
+      ok: true,
+      path,
+      widths,
+      lengthM,
+      costS,
+      stats: stats!,
+      ...(lastTarget ? { target: lastTarget } : {}),
+      ...(circles.length ? { circles } : {}),
+    },
+    box: box!,
+    paged: last!.paged,
+  };
+}
+
+/** Two pieces' stats as one: counts and times summed, the most held at once the larger. */
+function addStats(a: MeshRouteStats, b: MeshRouteStats): MeshRouteStats {
+  return {
+    trianglesLoaded: a.trianglesLoaded + b.trianglesLoaded,
+    tiles: a.tiles + b.tiles,
+    tileReads: a.tileReads + b.tileReads,
+    peakTriangles: Math.max(a.peakTriangles, b.peakTriangles),
+    blocked: a.blocked + b.blocked,
+    expanded: a.expanded + b.expanded,
+    readMs: a.readMs + b.readMs,
+    prepMs: a.prepMs + b.prepMs,
+    searchMs: a.searchMs + b.searchMs,
+    funnelMs: a.funnelMs + b.funnelMs,
+    bufferM: a.bufferM,
+    buffered: a.buffered + b.buffered,
+    bufferMs: a.bufferMs + b.bufferMs,
+  };
+}
+
+/**
+ * A leg plan's targets for searchMeshRun: its waypoint circles in order (waypoint numbers as the route counts them),
+ * then its end, approximate when the leg ends on entering its circle.
+ */
+export function runTargets(
+  plan: Pick<LegPlan, 'index' | 'lastIndex' | 'count' | 'vias' | 'end' | 'snapToExact' | 'arrivalRadiusM'>
+): RunTarget[] {
+  const out: RunTarget[] = plan.vias.map((v, i) => ({
+    lon: v.lon,
+    lat: v.lat,
+    radiusM: v.radiusM,
+    name: `waypoint ${plan.index + i + 1}`,
+  }));
+  const last = plan.lastIndex + 1 < plan.count;
+  out.push({
+    lon: plan.end[0],
+    lat: plan.end[1],
+    ...(!plan.snapToExact && plan.arrivalRadiusM ? { radiusM: plan.arrivalRadiusM } : {}),
+    name: last ? `waypoint ${plan.lastIndex + 1}` : 'the destination',
+  });
+  return out;
 }

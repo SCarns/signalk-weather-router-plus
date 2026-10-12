@@ -461,9 +461,77 @@ export class PagedMesh {
     return fallback;
   }
 
+  /**
+   * The usable water nearest a point of the metres frame (docs/drafts/mesh-no-gshhg-design.md, part 3): the triangle
+   * not blocked for the search (rules and buffer) whose nearest point is closest, that point, and its distance in
+   * metres; null when the mesh has no usable triangle. The point's own triangle first; otherwise the tiles are read in
+   * order of the distance to their extent and the scan stops at the first tile farther than the best found, so the
+   * answer is exact with no distance limit (the mesh's edge is the limit).
+   */
+  nearestUsable(px: number, py: number): { tri: number; x: number; y: number; distM: number } | null {
+    const own = this.locate(px, py, true);
+    if (own >= 0 && !this.isBlocked(own)) return { tri: own, x: px, y: py, distM: 0 };
+    const order: { idx: number; d: number }[] = [];
+    if (!this.store) order.push({ idx: 0, d: 0 });
+    else
+      for (let idx = 0; idx < this.infos.length; idx++) {
+        const b = this.infos[idx]!.bbox;
+        const [lon, lat] = this.fromXY(px, py);
+        const [cx, cy] = this.toXY(Math.min(Math.max(lon, b[0]), b[2]), Math.min(Math.max(lat, b[1]), b[3]));
+        order.push({ idx, d: Math.hypot(cx - px, cy - py) });
+      }
+    order.sort((u, v) => u.d - v.d);
+    let best: { tri: number; x: number; y: number; distM: number } | null = null;
+    for (const o of order) {
+      if (best && o.d >= best.distM) break;
+      const T = this.tile(o.idx);
+      for (let l = 0; l < T.n; l++) {
+        if (T.blocked[l]) continue;
+        const [qx, qy] = closestOnTriangle(px, py, T.x, T.y, l * 3);
+        const d = Math.hypot(qx - px, qy - py);
+        if (!best || d < best.distM) best = { tri: T.first + l, x: qx, y: qy, distM: d };
+      }
+    }
+    return best;
+  }
+
   /** Blocked for the search (rules and buffer)? */
   isBlocked(g: number): boolean {
     const T = this.tileOf(g);
     return T.blocked[g - T.first] === 1;
   }
+}
+
+/** The point of triangle (x, y at a, a + 1, a + 2) nearest (px, py): inside it, or on its nearest side. */
+function closestOnTriangle(px: number, py: number, x: Float64Array, y: Float64Array, a: number): [number, number] {
+  const ax = x[a];
+  const ay = y[a];
+  const bx = x[a + 1];
+  const by = y[a + 1];
+  const cx = x[a + 2];
+  const cy = y[a + 2];
+  const d1 = (bx - ax) * (py - ay) - (by - ay) * (px - ax);
+  const d2 = (cx - bx) * (py - by) - (cy - by) * (px - bx);
+  const d3 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx);
+  if (d1 >= 0 && d2 >= 0 && d3 >= 0) return [px, py];
+  let best: [number, number] = [ax, ay];
+  let bd = Infinity;
+  for (const [ux, uy, vx, vy] of [
+    [ax, ay, bx, by],
+    [bx, by, cx, cy],
+    [cx, cy, ax, ay],
+  ]) {
+    const ex = vx - ux;
+    const ey = vy - uy;
+    const l2 = ex * ex + ey * ey;
+    const t = l2 > 0 ? Math.max(0, Math.min(1, ((px - ux) * ex + (py - uy) * ey) / l2)) : 0;
+    const qx = ux + t * ex;
+    const qy = uy + t * ey;
+    const d = (qx - px) * (qx - px) + (qy - py) * (qy - py);
+    if (d < bd) {
+      bd = d;
+      best = [qx, qy];
+    }
+  }
+  return best;
 }
