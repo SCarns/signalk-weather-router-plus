@@ -39,7 +39,11 @@ uses [Semantic Versioning](https://semver.org/).
   500 m, and halving for the wind stops at the simulator's step. A beat up
   a channel narrower than 500 m can now be laid out (test box: the last
   97 m into a waypoint, 45 and 137 m of water either side, failed under
-  sail only).
+  sail only). A tack ends only where the boat can go on (nearer
+  the target, and the target straight from there or room on the next
+  tack's heading): a tack taken to the bank at a bend boxed the boat in
+  (test box, the Cape Cod Canal replay 7306dc97); the edge is tried first,
+  then ends back along the tack, halving down to the simulator's step.
 - **A point on a corner or an edge belongs to every triangle it touches**
   (`PagedMesh.locateAll`; the tile-extent test with the walk's tolerance):
   the reach and the snap take the route's water if any of those triangles

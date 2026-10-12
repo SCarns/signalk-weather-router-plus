@@ -273,6 +273,31 @@ export class ExperimentalPropagator {
     /** A piece to a given point (where the water ends on a heading). */
     const stepToPoint = (end: [number, number], tack: boolean): Waypoint | null =>
       stepTo(haversineBearing(at.lon, at.lat, end[0], end[1]), haversineDistanceM(at.lon, at.lat, end[0], end[1]), tack, end);
+    /**
+     * Can the boat go on from p (placed from `at`)? It is nearer b, and either b can be sailed straight from it or
+     * one of the `next` headings has room from it. A tack ending on the bank at a bend, with no room on the next
+     * tack's heading, boxes the boat in (2026-10-12, the Cape Cod Canal replay 7306dc97: 0 m on 71° and 145°).
+     */
+    const canGoOn = (p: Waypoint, next: number[]): boolean => {
+      const dp = haversineDistanceM(p.lon, p.lat, b.lon, b.lat);
+      if (!(dp < haversineDistanceM(at.lon, at.lat, b.lon, b.lat))) return false;
+      if (!this.land.legCrossesLandExact(p.lon, p.lat, b.lon, b.lat) && this.sailedThrough(p, b.lon, b.lat, env) !== null) return true;
+      return next.some(h => this.land.clearAlong(p.lon, p.lat, h, dp).m > 0);
+    };
+    /**
+     * A piece on heading h, of up to `want` metres, that the boat can go on from: first where the water ends on that
+     * heading (exactly the point the land test reached) or all of `want`, then ends back along it, halving, down to
+     * the simulator's step (the wind along a piece is read at that step); the first that can be sailed, is clear and
+     * leaves the boat able to go on is taken.
+     */
+    const placeOn = (h: number, want: number, tack: boolean, next: number[]): Waypoint | null => {
+      const room = this.land.clearAlong(at.lon, at.lat, h, want);
+      if (!(room.m > 0)) return null;
+      const good = (p: Waypoint | null): Waypoint | null => (p && canGoOn(p, next) ? p : null);
+      let p = good(room.m < want ? stepToPoint(room.end, tack) : stepTo(h, room.m, tack));
+      for (let d = room.m / 2; !p && d >= env.sim.simStepM; d /= 2) p = good(stepTo(h, d, tack));
+      return p;
+    };
     for (let n = 0; n < MAX_TACKS_PER_LEG; n++) {
       const D = haversineDistanceM(at.lon, at.lat, b.lon, b.lat);
       const theta = haversineBearing(at.lon, at.lat, b.lon, b.lat);
@@ -291,15 +316,9 @@ export class ExperimentalPropagator {
         // A direct heading in this wind: the rest in one go when the real polar sails it all the way and it is
         // clear; else the longest straight piece that can be sailed, and look again from there.
         if (!this.land.legCrossesLandExact(at.lon, at.lat, b.lon, b.lat) && this.sailedThrough(at, b.lon, b.lat, env) !== null) return pts;
-        // As far as the water allows on the course, else (the wind turning along it) half of it, halving down to the
-        // simulator's step.
-        const room = this.land.clearAlong(at.lon, at.lat, theta, D);
-        const p =
-          room.m <= 0
-            ? null
-            : room.m < D
-              ? (stepToPoint(room.end, false) ?? this.longestPiece(room.m / 2, env, len => stepTo(theta, len, false)))
-              : this.longestPiece(D / 2, env, len => stepTo(theta, len, false));
+        // As far as the water allows on the course, else (the wind turning along it) shorter, from where the boat
+        // can go on.
+        const p = placeOn(theta, D, false, [theta]);
         if (!p)
           throw new RouteError(
             `${env.who}: the leg from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} to ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be sailed at ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)} under the ${env.sim.modePolicy} policy; ${env.advice}`
@@ -321,17 +340,11 @@ export class ExperimentalPropagator {
         return pts;
       }
       // Neither order works in two legs (land, or the wind changing along a long leg): the longest first tack that
-      // can be sailed and is clear, as long as the water allows on its heading (no fixed minimum: in a narrow
-      // channel the tacks are as short as the channel), halved for the wind down to the simulator's step; then look
-      // again from there.
+      // can be sailed, is clear and leaves room for the next (no fixed minimum: in a narrow channel the tacks are as
+      // short as the channel); then look again from there.
       let placed: Waypoint | null = null;
       for (const h of [first, other]) {
-        const room = this.land.clearAlong(at.lon, at.lat, h, share(h));
-        if (!(room.m > 0)) continue;
-        // Where the water ends (exactly the point the land test reached), else the share; then halved for the wind.
-        placed =
-          (room.m < share(h) ? stepToPoint(room.end, true) : tackTo(h, room.m)) ??
-          this.longestPiece(room.m / 2, env, len => tackTo(h, len));
+        placed = placeOn(h, share(h), true, [h === mix.h1 ? mix.h2 : mix.h1]);
         if (placed) {
           lastHeading = h;
           break;
@@ -353,19 +366,6 @@ export class ExperimentalPropagator {
       at = placed;
     }
     throw new RouteError(`${env.who}: more than ${MAX_TACKS_PER_LEG} tacks on one leg from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)}`);
-  }
-
-  /**
-   * For the wind (a piece the polar cannot sail all the way): the longest piece from `len` that `step` can place,
-   * halving while the piece is at least the simulator's step (the wind along a piece is read at that step, so a
-   * shorter split cannot change it).
-   */
-  private longestPiece(len: number, env: Env, step: (len: number) => Waypoint | null): Waypoint | null {
-    for (let d = len; d >= env.sim.simStepM; d /= 2) {
-      const p = step(d);
-      if (p) return p;
-    }
-    return null;
   }
 
   /**

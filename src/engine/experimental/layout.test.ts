@@ -124,3 +124,50 @@ test('sailPolyline under sail only: a beat up a channel narrower than any fixed 
   const last = r.waypoints[r.waypoints.length - 1];
   assert.ok(Math.abs(last.lat - 0.009) < 1e-9 && Math.abs(last.lon) < 1e-9, 'ends on the point');
 });
+
+test('sailPolyline under sail only: a beat round a right-angle bend in a narrow channel never ends a tack boxed into the bend', () => {
+  // An L of water 150 m wide: north 600 m from the origin, then east 600 m along the top; dead upwind both ways
+  // means a northeasterly, so both arms are beats. A move is clear when every metre of it is in the L.
+  const m = 1 / 111320;
+  const inL = (lon: number, lat: number): boolean =>
+    (Math.abs(lon) <= 75 * m && lat >= 0 && lat <= 675 * m) || (lat >= 525 * m && lat <= 675 * m && lon >= -75 * m && lon <= 600 * m);
+  const clearMove = (la: number, pa: number, lb: number, pb: number): boolean => {
+    const n = Math.max(1, Math.ceil(Math.hypot(lb - la, pb - pa) / m));
+    for (let k = 0; k <= n; k++) if (!inL(la + ((lb - la) * k) / n, pa + ((pb - pa) * k) / n)) return false;
+    return true;
+  };
+  const bend: LandTest = {
+    isLand: (lon, lat) => !inL(lon, lat),
+    isLandExact: (lon, lat) => !inL(lon, lat),
+    legCrossesLandExact: (la, pa, lb, pb) => !clearMove(la, pa, lb, pb),
+    legsCrossLandBulk: (la, pa, lb, pb) =>
+      Uint8Array.from({ length: la.length }, (_v, k) => (clearMove(la[k], pa[k], lb[k], pb[k]) ? 0 : 1)),
+    clearAlong: (lon, lat, b, maxM) => clearAlongByHalving(bend, lon, lat, b, maxM, 1),
+  };
+  const r = new ExperimentalPropagator(bend, { stages: 10 }).sailPolyline(
+    [
+      [0, 0],
+      [0, 600 * m],
+      [550 * m, 600 * m],
+    ],
+    T0,
+    {
+      vessel: VESSEL,
+      polar: POLAR,
+      wind: wind(12, 45),
+      current: new NoCurrent(),
+      sim: { modePolicy: 'sail_max', sailThreshMs: 0, simStepM: 200 },
+      who: 'test',
+      advice: 'none',
+    }
+  );
+  assert.ok(
+    r.waypoints.every(w => inL(w.lon, w.lat)),
+    'every waypoint in the channel'
+  );
+  for (let i = 1; i < r.waypoints.length; i++)
+    assert.ok(clearMove(r.waypoints[i - 1].lon, r.waypoints[i - 1].lat, r.waypoints[i].lon, r.waypoints[i].lat), `leg ${i} in the channel`);
+  const last = r.waypoints[r.waypoints.length - 1];
+  assert.ok(Math.abs(last.lat - 600 * m) < 1e-9 && Math.abs(last.lon - 550 * m) < 1e-9, 'ends on the point');
+  assert.equal(r.motoringTimeS, 0);
+});
