@@ -12,20 +12,23 @@
  *              generation: hundreds of thousands of files);
  *  - regional: decode one signalk-grib-downloader run (decodeRegionalRun);
  *  - mesh-leg: plan one leg on the chart mesh (plugin/meshlegtask.ts,
- *              engine/mesh/legrun.ts): the tiles of the leg's box are
- *              about 1 GB of typed arrays for 6 M triangles (brain,
- *              2026-10-08), which the route worker must not keep; the
- *              task streams its progress before its answer;
+ *              engine/mesh/legrun.ts): the tiles the search reads, up to
+ *              about 1.1 GB on the longest leg measured (brain,
+ *              2026-10-12, tiles dropped as the search leaves them),
+ *              which the route worker must not keep; the task streams
+ *              its progress before its answer;
  *  - mesh-download: mirror one published mesh folder (plugin/meshes.ts)
  *              file by file into a folder, resumable, progress in
  *              `.progress.json` there;
  *  - mesh-check: the final depth check of a finished route on the chart
  *              meshes (plugin/meshchecktask.ts, engine/mesh/check.ts),
- *              reading the tiles along the route a chunk at a time;
+ *              reading the tiles along the route as the walk reaches them;
  *  - mesh-coarse: build one mesh's rough cut for one boat
  *              (plugin/meshcoarse.ts, engine/mesh/coarse.ts): every tile
  *              read once, 0.25–0.53 GB on brain (2026-10-12);
- *  - mesh-corridor: a leg's corridor of tiles on the rough cut.
+ *  - mesh-reach: a leg's reach on the rough cut (whether water connects
+ *              its ends for the boat, and the box of the tiles it runs
+ *              through).
  */
 
 import { fork } from 'node:child_process';
@@ -35,7 +38,7 @@ import type { RegionalSource } from '../data/regional';
 import type { RegionalDecodeResult } from '../data/regionaldecode';
 import type { RouteDepthCheck } from '../engine/mesh/check';
 import type { MeshCheckTask } from './meshchecktask';
-import type { MeshCoarseResult, MeshCoarseTask, MeshCorridorResult, MeshCorridorTask } from './meshcoarse';
+import type { MeshCoarseResult, MeshCoarseTask, MeshReachResult, MeshReachTask } from './meshcoarse';
 import type { MeshLegEvent, MeshLegResult, MeshLegTask } from './meshlegtask';
 
 export type ChildTask =
@@ -44,7 +47,7 @@ export type ChildTask =
   | MeshLegTask
   | MeshCheckTask
   | MeshCoarseTask
-  | MeshCorridorTask
+  | MeshReachTask
   | { task: 'mesh-download'; base: string; dest: string; build: string; fresh?: boolean };
 
 /** A message a task sends before its answer (the mesh leg's progress and stage fronts). */
@@ -69,8 +72,8 @@ export type ChildTaskResult<T extends ChildTask> = T extends { task: 'rmtree' }
       ? RouteDepthCheck
       : T extends { task: 'mesh-coarse' }
         ? MeshCoarseResult
-        : T extends { task: 'mesh-corridor' }
-          ? MeshCorridorResult
+        : T extends { task: 'mesh-reach' }
+          ? MeshReachResult
           : T extends { task: 'mesh-download' }
             ? MeshDownloadResult
             : RegionalDecodeResult;
@@ -291,9 +294,9 @@ async function runTask(t: ChildTask): Promise<unknown> {
       const { runMeshCoarseTask } = await import('./meshcoarse');
       return runMeshCoarseTask(t);
     }
-    case 'mesh-corridor': {
-      const { runMeshCorridorTask } = await import('./meshcoarse');
-      return runMeshCorridorTask(t);
+    case 'mesh-reach': {
+      const { runMeshReachTask } = await import('./meshcoarse');
+      return runMeshReachTask(t);
     }
     case 'mesh-download':
       return downloadMesh(t.base, t.dest, t.build, t.fresh === true);

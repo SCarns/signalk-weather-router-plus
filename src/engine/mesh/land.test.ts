@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { MeshLand } from './land';
+import { PagedMesh } from './paged';
 import { FLAG_OPENING_BRIDGE, fromMeshXY, type LoadedMesh, M_PER_DEG_MESH, NO_HAZARD, NO_VALUE } from './store';
 
 /**
@@ -80,14 +81,16 @@ test('MeshLand: points and moves against blocked triangles, the mesh edge, and t
     blocked[(cy * 10 + 5) * 2] = 1;
     blocked[(cy * 10 + 5) * 2 + 1] = 1;
   }
-  const land = new MeshLand(m, blocked, 250);
-  assert.ok(land.indexBytes() > 0);
+  const land = new MeshLand(PagedMesh.fromLoaded(m, blocked, 250));
+  // The tile's point index is built on its first lookup.
+  assert.equal(land.indexBytes(), 0);
   // Points.
   assert.equal(land.isLand(...ll(m, 2.5, 2.5, side)), false);
   assert.equal(land.isLand(...ll(m, 5.5, 2.5, side)), true, 'in the wall');
   assert.equal(land.isLand(...ll(m, 5.5, 7.5, side)), false, 'in the gap');
   assert.equal(land.isLand(...ll(m, 12, 2, side)), true, 'outside the mesh');
   assert.equal(land.isLandExact(...ll(m, 5.5, 2.5, side)), true);
+  assert.ok(land.indexBytes() > 0);
   // Moves.
   const cross = (x0: number, y0: number, x1: number, y1: number): boolean =>
     land.legCrossesLandExact(...ll(m, x0, y0, side), ...ll(m, x1, y1, side));
@@ -121,7 +124,7 @@ test('MeshLand: depth at a contour corner reports the usable side; a blocked poi
   // Square 0: lower 1.5 m (blocked), upper 8 m; square 1: both 12 m.
   m.depth.set([1.5, 8, 12, 12]);
   const blocked = Uint8Array.of(1, 0, 0, 0);
-  const land = new MeshLand(m, blocked, 250);
+  const land = new MeshLand(PagedMesh.fromLoaded(m, blocked, 250));
   // On the shared diagonal of square 0: locate (first met) gives the blocked lower triangle; preferUsable gives the upper.
   const [dx, dy] = [50, 50];
   assert.equal(land.locate(dx, dy), 0);
@@ -151,7 +154,7 @@ test('MeshLand: the opening bridges a move passes under, one per bridge, with th
         m.flags[t] |= FLAG_OPENING_BRIDGE;
         m.clear[t] = cx === 3 ? 30 : NO_VALUE;
       }
-  const land = new MeshLand(m, new Uint8Array(m.n), 250);
+  const land = new MeshLand(PagedMesh.fromLoaded(m, new Uint8Array(m.n), 250));
   const a = fromMeshXY(m, 0.5 * side, 1.5 * side);
   const b = fromMeshXY(m, 9.5 * side, 1.5 * side);
   const found = land.openingBridgesAlong(a[0], a[1], b[0], b[1]);

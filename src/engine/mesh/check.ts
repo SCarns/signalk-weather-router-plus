@@ -12,15 +12,17 @@
  * no neighbour is either land or the end of the charts, and the mesh does
  * not say which (part 5).
  *
- * Tiles are read a chunk of the route at a time (long segments are cut
- * into pieces first), so the check holds a few million triangles at most;
- * the plugin runs it in a child process (plugin/meshchecktask.ts).
+ * Tiles are read as the walk reaches them (paged.ts) and dropped once it
+ * has passed them (long segments are cut into pieces first, and only the
+ * tiles meeting the piece walked are kept); the plugin runs it in a child
+ * process (plugin/meshchecktask.ts).
  */
 
 import { bboxFromLonLat, haversineDistanceM, type BBox } from '../../geo/geodesy';
 import type { LegDepth } from '../route';
 import { MeshLand } from './land';
-import { blockedTriangles, type MeshRules } from './route';
+import { PagedMesh } from './paged';
+import type { MeshRules } from './route';
 import {
   FLAG_CHANNEL_MARK,
   FLAG_DREDGED,
@@ -32,7 +34,6 @@ import {
   FLAG_STRUCTURE,
   type MeshStore,
   NO_VALUE,
-  toMeshXY,
 } from './store';
 
 /** The rules the route was planned with, as far as they decide what is blocked. */
@@ -55,10 +56,8 @@ export interface RouteDepthCheck {
   violations: DepthViolation[];
 }
 
-/** Longest piece a segment is cut into, metres: keeps a chunk's box small on a long open-water segment. */
+/** Longest piece a segment is cut into, metres: the tiles a piece meets are the ones held while it is walked. */
 const PIECE_M = 5000;
-/** Most triangles one chunk of the route may read. */
-const CHUNK_TRIANGLES = 3_000_000;
 /** Step along a piece where no triangle is, metres, looking for the mesh again. */
 const GAP_STEP_M = 10;
 /** Past the point a walk stopped at (a mesh edge), metres. */
@@ -114,15 +113,6 @@ function meets(a: BBox, b: BBox): boolean {
   return a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north;
 }
 
-function union(a: BBox, b: BBox): BBox {
-  return {
-    west: Math.min(a.west, b.west),
-    east: Math.max(a.east, b.east),
-    south: Math.min(a.south, b.south),
-    north: Math.max(a.north, b.north),
-  };
-}
-
 /** Add [f0, f1) to the piece unless another mesh already covers it (the first mesh to cover a stretch decides it). */
 function cover(p: Piece, f0: number, f1: number, tri: TriInfo): void {
   let parts: [number, number][] = [[f0, f1]];
@@ -141,47 +131,35 @@ function cover(p: Piece, f0: number, f1: number, tri: TriInfo): void {
   for (const [u, v] of parts) if (v > u) p.covered.push({ f0: u, f1: v, tri });
 }
 
-/** Walk the chunk's pieces through one loaded mesh. */
-function walkChunk(store: MeshStore, pieces: Piece[], box: BBox, rules: CheckRules): void {
-  const m = store.load(box);
-  if (m.n === 0) return;
-  const blocked = blockedTriangles(m, { ...rules, motorSpeedMs: 1 });
-  const land = new MeshLand(m, blocked);
-  const info = (t: number): TriInfo =>
-    blocked[t]
-      ? (() => {
-          const kind = blockedKind(m.flags[t], m.depth[t], m.clear[t], m.hazv[t], rules);
-          const value =
-            kind === 'depth'
-              ? m.depth[t]
-              : kind === 'clearance'
-                ? m.clear[t]
-                : kind === 'hazard'
-                  ? m.hazv[t] <= -1e8
-                    ? null
-                    : m.hazv[t]
-                  : null;
-          return { depth: m.depth[t], blocked: kind, value };
-        })()
-      : { depth: m.depth[t], blocked: null, value: null };
-  for (const p of pieces) {
-    const [ax, ay] = toMeshXY(m, p.a[0], p.a[1]);
-    const [bx, by] = toMeshXY(m, p.b[0], p.b[1]);
-    const len = Math.hypot(bx - ax, by - ay);
-    if (!(len > 0)) continue;
-    const dx = (bx - ax) / len;
-    const dy = (by - ay) / len;
-    let s = 0;
-    while (s < len) {
-      const px = ax + dx * s;
-      const py = ay + dy * s;
-      const s0 = s;
-      const walked = land.forEachTriangleAlong(px, py, bx, by, (t, from, to) => {
-        if (to > from) cover(p, (s0 + from) / len, (s0 + to) / len, info(t));
-        else if (blocked[t]) cover(p, s0 / len, Math.min(len, s0 + NUDGE_M) / len, info(t));
-      });
-      s = walked < 0 ? s + GAP_STEP_M : s + walked + NUDGE_M;
-    }
+/** Walk one piece through one paged mesh (its tiles read as the walk reaches them). */
+function walkPiece(land: MeshLand, p: Piece, rules: CheckRules): void {
+  const pm = land.pm;
+  const info = (t: number): TriInfo => {
+    const T = pm.tileOf(t);
+    const l = t - T.first;
+    if (!T.ruleBlocked[l]) return { depth: T.depth[l], blocked: null, value: null };
+    const kind = blockedKind(T.flags[l], T.depth[l], T.clear[l], T.hazv[l], rules);
+    const value =
+      kind === 'depth' ? T.depth[l] : kind === 'clearance' ? T.clear[l] : kind === 'hazard' ? (T.hazv[l] <= -1e8 ? null : T.hazv[l]) : null;
+    return { depth: T.depth[l], blocked: kind, value };
+  };
+  const [ax, ay] = pm.toXY(p.a[0], p.a[1]);
+  const [bx, by] = pm.toXY(p.b[0], p.b[1]);
+  const len = Math.hypot(bx - ax, by - ay);
+  if (!(len > 0)) return;
+  const dx = (bx - ax) / len;
+  const dy = (by - ay) / len;
+  let s = 0;
+  while (s < len) {
+    const px = ax + dx * s;
+    const py = ay + dy * s;
+    const s0 = s;
+    const walked = land.forEachTriangleAlong(px, py, bx, by, (t, from, to) => {
+      const ti = info(t);
+      if (to > from) cover(p, (s0 + from) / len, (s0 + to) / len, ti);
+      else if (ti.blocked) cover(p, s0 / len, Math.min(len, s0 + NUDGE_M) / len, ti);
+    });
+    s = walked < 0 ? s + GAP_STEP_M : s + walked + NUDGE_M;
   }
 }
 
@@ -198,30 +176,20 @@ export function checkRouteOnMeshes(
   rules: CheckRules
 ): RouteDepthCheck {
   const pieces = cutPieces(path, legOf);
+  const lats = path.map(p => p[1]);
+  const cl = Math.cos((((Math.min(...lats) + Math.max(...lats)) / 2) * Math.PI) / 180);
   for (const store of stores) {
     const ix = store.index;
     const extent: BBox = { west: ix.west, east: ix.east, south: ix.south, north: ix.north };
-    let chunk: Piece[] = [];
-    let box: BBox | null = null;
-    const flush = (): void => {
-      if (chunk.length && box && store.countTriangles(box) > 0) walkChunk(store, chunk, box, rules);
-      chunk = [];
-      box = null;
-    };
+    const land = new MeshLand(new PagedMesh(store, { ...rules, motorSpeedMs: 1 }, cl));
     for (const p of pieces) {
       const pb = boxOf(p);
-      if (!meets(pb, extent)) {
-        flush();
-        continue;
-      }
-      const grown: BBox = box ? union(box, pb) : pb;
-      if (box && store.countTriangles(grown) > CHUNK_TRIANGLES) {
-        flush();
-        box = pb;
-      } else box = grown;
-      chunk.push(p);
+      if (!meets(pb, extent)) continue;
+      // The tiles the walk has passed go: only those meeting this piece stay.
+      land.pm.retain(T => T.bbox[0] <= pb.east && pb.west <= T.bbox[2] && T.bbox[1] <= pb.north && pb.south <= T.bbox[3]);
+      walkPiece(land, p, rules);
     }
-    flush();
+    land.release();
   }
   const legs: LegDepth[] = Array.from({ length: legCount }, (_v, leg) => ({
     leg,

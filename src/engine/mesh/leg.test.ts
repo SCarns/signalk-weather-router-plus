@@ -41,14 +41,15 @@ function rect(recordNumber: number, lon0: number, lat0: number, lon1: number, la
 
 const STATS = {
   trianglesLoaded: 10,
+  tiles: 1,
+  tileReads: 1,
+  peakTriangles: 10,
   blocked: 2,
   expanded: 5,
   readMs: 1,
   prepMs: 1,
   searchMs: 1,
   funnelMs: 0,
-  padDeg: 0.5,
-  attempts: 1,
   bufferM: 0,
   buffered: 0,
   bufferMs: 0,
@@ -567,7 +568,10 @@ test('pipeline: a leg inside the mesh that the mesh cannot take fails with the r
       () => runLegPipeline(inp, PLAN, 0, [0, 0.5], T0),
       (err: Error) => {
         assert.ok(err instanceof RouteError, String(err));
-        assert.match(err.message, /^the chart mesh covers this leg but cannot take it: no route on the mesh \(10 triangles read/);
+        assert.match(
+          err.message,
+          /^the chart mesh covers this leg but cannot take it: no route on the mesh \(10 triangles in 1 tiles read/
+        );
         return true;
       }
     );

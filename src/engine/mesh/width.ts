@@ -4,10 +4,10 @@
  * the right of the track, up to MAX_SCAN_M. The parent planner's
  * measure_passage_width on its grid (scan at bearing ∓ 90° to the first
  * impassable cell, 4 km cap), done here by walking the ray from triangle
- * to triangle across the edges it crosses.
+ * to triangle across the edges it crosses, tile to tile on the paged mesh.
  */
 
-import type { LoadedMesh } from './store';
+import type { PagedMesh } from './paged';
 
 /** The scan stops here: water this wide on a side counts as open (the parent's max_scan_m). */
 export const MAX_SCAN_M = 4000;
@@ -15,15 +15,14 @@ export const MAX_SCAN_M = 4000;
 const EPS = 1e-9;
 
 /**
- * Walk the ray p + s·d from inside (or on the boundary of) triangle `tri`
- * until it leaves the mesh, meets a blocked triangle, or has gone
+ * Walk the ray p + s·d from inside (or on the boundary of) global triangle
+ * `tri` until it leaves the mesh, meets a blocked triangle, or has gone
  * `maxM`. Returns the distance gone and the triangle the ray is in when
  * it stops (the last open one). With `through` the ray ignores blocked
  * triangles (used to carry the current triangle along the route).
  */
 export function rayWalk(
-  m: LoadedMesh,
-  blocked: Uint8Array,
+  pm: PagedMesh,
   tri: number,
   px: number,
   py: number,
@@ -32,20 +31,22 @@ export function rayWalk(
   maxM: number,
   through = false
 ): { dist: number; tri: number } {
-  const { x, y, neighbours: NB } = m;
   let cur = tri;
+  let T = pm.tileOf(cur);
   let entry = -1;
   let s = 0;
   // A ray from a corner can hop round the fan of triangles at that
   // corner with s = 0 before it finds the one it runs into; the cap ends
   // a degenerate case rather than hang.
   for (let iter = 0; iter < 100000; iter++) {
+    const l = cur - T.first;
+    const { x, y } = T;
     let bestS = Infinity;
     let bestK = -1;
     for (let k = 0; k < 3; k++) {
       if (k === entry) continue;
-      const a = cur * 3 + k;
-      const b = cur * 3 + ((k + 1) % 3);
+      const a = l * 3 + k;
+      const b = l * 3 + ((k + 1) % 3);
       const ex = x[b] - x[a];
       const ey = y[b] - y[a];
       // Corners wind counter-clockwise, so the inside is to the left of
@@ -68,11 +69,14 @@ export function rayWalk(
     }
     if (bestK < 0) return { dist: s, tri: cur }; // numerical dead end: stop here
     if (bestS >= maxM) return { dist: maxM, tri: cur };
-    const n = NB[cur * 3 + bestK];
-    if (n < 0 || (!through && blocked[n])) return { dist: Math.max(bestS, 0), tri: cur };
+    const n = T.nb[l * 3 + bestK];
+    if (n < 0) return { dist: Math.max(bestS, 0), tri: cur };
+    const N = n >= T.first && n < T.first + T.n ? T : pm.tileOf(n);
+    if (!through && N.blocked[n - N.first]) return { dist: Math.max(bestS, 0), tri: cur };
     s = Math.max(bestS, s);
-    entry = m.rev[cur * 3 + bestK];
+    entry = T.rev[l * 3 + bestK];
     cur = n;
+    T = N;
   }
   return { dist: s, tri: cur };
 }
@@ -85,7 +89,7 @@ export function rayWalk(
  * point (the last point: from the previous one); a zero-length step
  * keeps the previous direction.
  */
-export function passageWidths(m: LoadedMesh, blocked: Uint8Array, pathXY: [number, number][], startTri: number): [number, number][] {
+export function passageWidths(pm: PagedMesh, pathXY: [number, number][], startTri: number): [number, number][] {
   const out: [number, number][] = [];
   let tri = startTri;
   let dirX = 0;
@@ -100,13 +104,13 @@ export function passageWidths(m: LoadedMesh, blocked: Uint8Array, pathXY: [numbe
         dirY = (nxt[1] - py) / L;
       }
     }
-    const left = rayWalk(m, blocked, tri, px, py, -dirY, dirX, MAX_SCAN_M).dist;
-    const right = rayWalk(m, blocked, tri, px, py, dirY, -dirX, MAX_SCAN_M).dist;
+    const left = rayWalk(pm, tri, px, py, -dirY, dirX, MAX_SCAN_M).dist;
+    const right = rayWalk(pm, tri, px, py, dirY, -dirX, MAX_SCAN_M).dist;
     out.push([left, right]);
     if (nxt) {
       // Carry the triangle to the next point along the route itself.
       const L = Math.hypot(nxt[0] - px, nxt[1] - py);
-      if (L > 0) tri = rayWalk(m, blocked, tri, px, py, dirX, dirY, L, true).tri;
+      if (L > 0) tri = rayWalk(pm, tri, px, py, dirX, dirY, L, true).tri;
     }
   }
   return out;

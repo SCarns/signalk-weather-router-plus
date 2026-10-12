@@ -2,8 +2,9 @@
  * The navigation mesh on disk: one folder of flat binary tiles (0.25°)
  * plus index.json, written by the experiment's converter
  * (~/mesh-experiment/scripts/mesh_to_bin.py; not part of this repo).
- * Nothing is held between routes: a leg reads the tiles in its box into
- * one set of typed arrays and drops them when the leg is done.
+ * Nothing is held between routes: a leg reads its tiles one at a time as
+ * the search reaches them (paged.ts) and drops them as it goes; the tests
+ * also read a box of tiles into one set of typed arrays (load).
  *
  * Tile file (little-endian): 32-byte header (magic 'WRPMESH1', uint32 n,
  * float64 originLon, float64 originLat, 4 bytes pad), then
@@ -168,9 +169,9 @@ export class MeshStore {
   }
 
   /**
-   * Read exactly these tiles into one mesh (a corridor of tiles, coarse.ts),
-   * in the metres frame about the box's mid-latitude. A neighbour in a tile
-   * not read is -1, as at the edge of a box.
+   * Read exactly these tiles into one mesh, in the metres frame about the
+   * box's mid-latitude. A neighbour in a tile not read is -1, as at the
+   * edge of a box.
    */
   loadTiles(tileInfos: MeshTileInfo[], box: BBox): LoadedMesh {
     const infos = [...tileInfos].sort((a, b) => a.first - b.first);

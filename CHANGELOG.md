@@ -25,21 +25,33 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Corridor search on the rough cut** (docs/drafts/mesh-no-gshhg-design.md
-  part 4; `engine/mesh/coarse.ts`, `plugin/meshcoarse.ts`, child tasks
-  `mesh-coarse` and `mesh-corridor`): a leg inside one mesh is searched in
-  the tiles its water passes through (the chain of water pieces on the
-  mesh's rough cut, plus one ring of neighbour tiles, two on a second
-  attempt) instead of boxes of 0.5°, 1° and 2° around its ends, which never
-  reached a route that swings far out and stopped at the 16 M triangle cap
-  (on the test box: Bahamas → Gulf, around Florida, Chicago → Lake Huron).
-  `MeshStore.loadTiles` and `readTileArrays`; `searchMesh` takes the
-  corridor's rings. The rough cut is built per mesh build, draught and air
-  draft into `mesh-coarse/` in the data folder: after a download or update,
-  on the panel's *Rebuild rough cuts* button (`POST /api/meshes/rough-cut`,
-  status in `GET /api/meshes` `rough_cut`), and by a route that needs one;
-  not at start (the owner's choice). The forecast and currents a mesh leg
-  reads are loaded for the corridor's box.
+- **The mesh read on demand, no search area** (docs/drafts/mesh-no-gshhg-design.md
+  part 4 revised; `engine/mesh/paged.ts`): the mesh search, the sailed
+  stretches' land (`MeshLand`) and the final depth check read the mesh a
+  tile at a time as they reach it, with global triangle ids; the search
+  (`astar.ts`) keeps its bookkeeping per tile and drops a tile's chart data
+  when no node of its frontier lies there (checked every 1024 expansions),
+  the leg drops its tiles after each stretch, the depth check after each
+  5 km piece. Replaces the boxes of 0.5°, 1° and 2° around a leg's ends,
+  their 16 M triangle cap and the corridor of the first part 4 build.
+  Measured on brain with read-only scripts (31 legs): every leg routed,
+  median 1.16 M triangles read, the largest leg 1.1 GB held instead of
+  2.8 GB, route cost unchanged by the dropping.
+- **The rough cut** (`engine/mesh/coarse.ts`, `plugin/meshcoarse.ts`, child
+  tasks `mesh-coarse` and `mesh-reach`): per mesh build, draught and air
+  draft, the usable water as pieces per tile linked across tile edges,
+  in `mesh-coarse/` in the data folder (`<key>-v2-d…-a….json`, and `.bnd`
+  with the tile-boundary triangles blocked for the boat and the opening
+  bridges among them). Before a leg inside one mesh is searched it says
+  whether water connects the ends (else the leg fails with the reason)
+  and gives the box of the tiles that water runs through, added to the
+  forecast and currents area. The buffer from unusable water is grown per
+  tile as it is read, seeded across tile edges from the `.bnd` file
+  (`growBlocked` `outerSeeds`). Built after a download or update, on the
+  panel's *Rebuild rough cuts* button (`POST /api/meshes/rough-cut`,
+  status in `GET /api/meshes` `rough_cut`), and by a route that needs
+  one; not at start (the owner's choice). Version 1 files are removed by
+  the next rebuild's prune.
 - **Final depth check** (`engine/mesh/check.ts`, `plugin/meshchecktask.ts`,
   child task `mesh-check`): every finished route is walked through every
   mesh it meets, triangle by triangle with `MeshLand.forEachTriangleAlong`

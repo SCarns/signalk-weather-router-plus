@@ -88,10 +88,10 @@ export function squareTile(i: number, j: number): Tri[] {
 /**
  * A mesh of 1° tiles at the given cells (each tile two triangles split along
  * its rising diagonal, squareTile), neighbours joined across every shared
- * tile edge; per cell an optional depth for both its triangles (default
- * 10 m). Index origin (0, 0), xScale 1. Returns the mesh folder.
+ * tile edge; per cell an optional depth and flags for both its triangles
+ * (default 10 m, 0). Index origin (0, 0), xScale 1. Returns the mesh folder.
  */
-export function writeGridMesh(dir: string, cells: { i: number; j: number; depth?: number }[]): string {
+export function writeGridMesh(dir: string, cells: { i: number; j: number; depth?: number; flags?: number }[]): string {
   const id = new Map(cells.map((c, k) => [`${c.i},${c.j}`, k]));
   // Global ids: cell k's lower triangle 2k, upper 2k + 1.
   const lower = (i: number, j: number): number => (id.has(`${i},${j}`) ? 2 * id.get(`${i},${j}`)! : -1);
@@ -108,7 +108,8 @@ export function writeGridMesh(dir: string, cells: { i: number; j: number; depth?
     const rev = nb.map((row, t) => row.map((g, e) => (g < 0 ? -1 : t === 0 ? [1, 2, 0][e] : [2, 0, 1][e])));
     const file = `t_${i}_${j}.bin`;
     const d = c.depth ?? 10;
-    writeTile(dir, file, squareTile(i, j), nb, rev, [d, d]);
+    const f = c.flags ?? 0;
+    writeTile(dir, file, squareTile(i, j), nb, rev, [d, d], [f, f]);
     return { i, j, file, first: 2 * k, n: 2, bbox: [i, j, i + 1, j + 1] };
   });
   fs.writeFileSync(

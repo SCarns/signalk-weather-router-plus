@@ -18,10 +18,11 @@
 - **Long trips on the charts.** A trip whose water route swings far out
   (from the Bahamas round the Florida Keys into the Gulf, from Chicago
   through the Straits of Mackinac into Lake Huron) used to be too big for
-  the charts. The router now first finds which part of the charts the
-  water runs through and routes inside that. The map it uses is built
-  after each chart download; *Rebuild rough cuts* on the plugin
-  configuration page builds it again.
+  the charts. The router now reads the charts piece by piece as its
+  search reaches them, so no trip is too long for them. A small map of
+  the water your boat can use tells it at once when no water joins the
+  start and the end. That map is built after each chart download;
+  *Rebuild rough cuts* on the plugin configuration page builds it again.
 - **A failed request no longer looks like a result.** When a new request
   fails, the route still on the map is marked as the earlier route.
 

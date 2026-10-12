@@ -4,6 +4,8 @@
  * route has to go round. Checks the funnel on hand-made portals, the
  * search's choice of the open passage, the blocking rules and the tile
  * reader (a tile written in the on-disk format, read back and joined).
+ * The in-memory meshes run as one tile of the paged mesh (paged.ts
+ * fromLoaded).
  */
 
 import { test } from 'node:test';
@@ -13,6 +15,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { funnel, type XY } from './funnel';
 import { meshAstar } from './astar';
+import { PagedMesh } from './paged';
 import { blockedTriangles, growBlocked, meshRoute } from './route';
 import { MAX_SCAN_M, passageWidths } from './width';
 import {
@@ -137,15 +140,23 @@ test('A* goes round a blocked column and the funnel straightens the path', () =>
   const ey = 0.25; // lower triangle of cell (3, 0)
   const st = 0;
   const et = 3 * 2;
-  const r = meshAstar(m, blocked, st, et, sx, sy, ex, ey, 1);
+  const r = meshAstar(PagedMesh.fromLoaded(m, blocked), st, et, sx, sy, ex, ey, 1);
   assert.ok(r.goalNode >= 0, 'a route exists');
-  // Follow the crossings back: every triangle on the way is open, and the route reaches row 2.
+  // The crossings from the start: every triangle on the way is open, and the route reaches row 2.
   let top = false;
-  for (let node = r.goalNode; node >= 0; node = r.came[node]) {
-    const t = Math.floor(r.via[node] / 3);
+  const crossings = r.crossings();
+  assert.ok(crossings.length > 0);
+  for (const [t, k] of crossings) {
+    const into = m.neighbours[t * 3 + k];
     assert.equal(blocked[t], 0);
-    if (Math.floor(t / 2) >= 2 * W) top = true;
+    assert.equal(blocked[into], 0);
+    if (Math.floor(into / 2) >= 2 * W) top = true;
   }
+  assert.equal(
+    m.neighbours[crossings[crossings.length - 1][0] * 3 + crossings[crossings.length - 1][1]],
+    et,
+    'the last crossing enters the end'
+  );
   assert.ok(top, 'the route went over the blocked column');
   // The straight line is 3 m; going over the top at least reaches y = 2 and back: longer than 3 and under 3 + 2 * 2.
   assert.ok(r.goalG > 3 && r.goalG < 7, `cost ${r.goalG}`);
@@ -303,10 +314,10 @@ test('tile files: written in the on-disk format, read back, joined and routed', 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('meshRoute: a route that must swing outside the box around its ends is found by widening the box, up to the triangle cap', () => {
+test('meshRoute: a route that must swing away from its ends is found with no area given, the tiles read as the search reaches them', () => {
   // Four 1° tiles in a 2×2 block. Bottom row: A (0,0) and B (1,0); top row: D (0,1) and C (1,1). A's lower
   // triangle (id 0, the only one touching B in the bottom row) is 1 m deep, so from A's upper triangle the
-  // only way to B is up through D and C: lat 1 to 2, outside the 0.5° box around ends at lat 0.45.
+  // only way to B is up through D and C: lat 1 to 2, well away from ends at lat 0.45.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-'));
   writeTile(
     dir,
@@ -387,8 +398,7 @@ test('meshRoute: a route that must swing outside the box around its ends is foun
   const r = meshRoute(store, [0.25, 0.45], [1.25, 0.45], rules);
   assert.ok(r.ok, r.ok ? '' : r.reason);
   if (r.ok) {
-    assert.equal(r.stats.attempts, 2);
-    assert.equal(r.stats.padDeg, 1.0);
+    assert.equal(r.stats.tiles, 4);
     assert.equal(r.stats.trianglesLoaded, 8);
     assert.ok(
       r.path.some(p => p[1] >= 1),
@@ -400,17 +410,10 @@ test('meshRoute: a route that must swing outside the box around its ends is foun
   const near = meshRoute(store, [0.25, 0.45], [1.25, 0.45], { ...rules, bufferM: 1000 });
   assert.ok(!near.ok);
   if (!near.ok) assert.equal(near.reason, 'start point is within the buffer ({length:1000}) of unusable water');
-  // With the cap under the wider box's 8 triangles the widening is refused and says so.
-  const capped = meshRoute(store, [0.25, 0.45], [1.25, 0.45], { ...rules, maxTriangles: 6 });
-  assert.ok(!capped.ok);
-  if (!capped.ok) {
-    assert.match(
-      capped.reason,
-      /^no route on the mesh within \{angle:0\.00872664625997164[0-9]*\} of the leg's ends; a box \{angle:0\.0174532925199432[0-9]*\} around them would read 8 triangles, over the 6 cap$/
-    );
-    assert.equal(capped.stats.attempts, 1);
-    assert.equal(capped.stats.padDeg, 0.5);
-  }
+  // A start on the 1 m triangle is refused before any search.
+  const none = meshRoute(store, [0.25, 0.1], [1.25, 0.45], rules);
+  assert.ok(!none.ok);
+  if (!none.ok) assert.equal(none.reason, 'start point is in a blocked triangle');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -429,7 +432,7 @@ test('passageWidths: water to each side of the track up to the first blocked tri
     [8, 1.5],
   ];
   const startTri = 1 * W * 2 + 1; // upper triangle of cell (0, 1): holds (0.5, 1.5)
-  const w = passageWidths(m, blocked, path, startTri);
+  const w = passageWidths(PagedMesh.fromLoaded(m, blocked), path, startTri);
   const near = (a: number, b: number): boolean => Math.abs(a - b) < 1e-6;
   assert.ok(near(w[0][0], 4.5) && near(w[0][1], 1.5), `point 0: ${w[0]}`);
   assert.ok(near(w[1][0], 4.5) && near(w[1][1], 1.5), `point 1: ${w[1]}`);
@@ -442,8 +445,7 @@ test('passageWidths: water to each side of the track up to the first blocked tri
     big.y[k] *= 10000;
   }
   const wb = passageWidths(
-    big,
-    new Uint8Array(big.n),
+    PagedMesh.fromLoaded(big, new Uint8Array(big.n)),
     [
       [100, 100],
       [19000, 100],

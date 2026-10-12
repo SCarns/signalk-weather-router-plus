@@ -1,13 +1,18 @@
 /**
- * The rough cut of a chart mesh for one boat (docs/drafts/mesh-no-gshhg-design.md, part 4): the water the boat
- * can use, as pieces joined across tile edges. A piece is a set of usable triangles (route.ts blockedTriangles under
- * the boat's draught and air draft, opening bridges as open, no buffer) connected inside one 0.25° tile; two pieces
- * are linked where a usable triangle of one shares an edge with a usable triangle of the other in the next tile.
+ * The rough cut of a chart mesh for one boat (docs/drafts/mesh-no-gshhg-design.md, part 4 revised): the water the
+ * boat can use, as pieces joined across tile edges. A piece is a set of usable triangles (route.ts blockedTriangles
+ * under the boat's draught and air draft, opening bridges as open, no buffer) connected inside one 0.25° tile; two
+ * pieces are linked where a usable triangle of one shares an edge with a usable triangle of the other in the next
+ * tile.
  *
- * What it is for: a leg's water route can swing far outside the box around its two ends (the Bahamas to the Gulf
- * round the Florida Keys, Chicago to Lake Huron through the Straits of Mackinac), where the mesh search's growing
- * boxes never reach. A search on the rough cut gives the tiles the water passes through; the mesh search then reads
- * only those tiles and a ring of their neighbours (the corridor).
+ * What it is for:
+ *  - whether any water connects a leg's ends for this boat, answered before the mesh search (which reads tiles as
+ *    it reaches them, paged.ts, and would otherwise read every tile it can reach before saying no);
+ *  - the extent of that water (the reach: the tiles of the shortest chain of pieces), so the worker loads the
+ *    forecast and currents for a leg whose water runs far from its ends (the Bahamas to the Gulf round the Keys)
+ *    before the mesh process starts; it is not a search area;
+ *  - the triangles with an edge on another tile that are blocked for the boat, and the opening bridges among them
+ *    (BoundarySeeds): the buffer grown in a tile as it is read starts from them across its edges.
  *
  * Pieces are numbered tile by tile, in index order, and inside a tile in the order of their first triangle, so the
  * piece under a point is found again from its own tile alone (pieceAt).
@@ -15,10 +20,11 @@
 
 import { haversineDistanceM, type BBox } from '../../geo/geodesy';
 import { MinHeap } from '../heap';
+import type { BoundarySeeds } from './paged';
 import { blockedTriangles, type MeshRules } from './route';
-import type { MeshStore, MeshTileInfo, TileArrays } from './store';
+import { FLAG_OPENING_BRIDGE, type MeshStore, type TileArrays } from './store';
 
-export const COARSE_VERSION = 1;
+export const COARSE_VERSION = 2;
 
 /** The rules a rough cut is built for (route.ts blockedTriangles; opening bridges as open, no avoid areas). */
 export type CoarseRules = Pick<MeshRules, 'draughtM' | 'airDraftM'>;
@@ -85,8 +91,11 @@ function tilePieces(t: TileArrays, first: number, rules: CoarseRules): { pieceOf
   return { pieceOf, count, blocked };
 }
 
-/** Build the rough cut of one mesh for the rules. Reads every tile once; holds one piece id per triangle of the mesh. */
-export function buildCoarseMap(store: MeshStore, rules: CoarseRules): CoarseMap {
+/**
+ * Build the rough cut of one mesh for the rules, and its record of the tile-boundary triangles. Reads every tile
+ * once; holds one piece id per triangle of the mesh.
+ */
+export function buildCoarseMap(store: MeshStore, rules: CoarseRules): { map: CoarseMap; boundary: BoundarySeeds } {
   const ix = store.index;
   const infos = [...ix.tiles].sort((a, b) => a.first - b.first);
   const total = infos.reduce((m, t) => Math.max(m, t.first + t.n), 0);
@@ -96,9 +105,23 @@ export function buildCoarseMap(store: MeshStore, rules: CoarseRules): CoarseMap 
   // Edges that leave a tile, as (global triangle, global neighbour), resolved once every tile has its pieces.
   let cross = new Int32Array(1 << 20);
   let nc = 0;
+  // Triangles with an edge on another tile: blocked for the boat, and opening bridges (ascending: tiles in id order).
+  const bBlocked: number[] = [];
+  const bBridges: number[] = [];
   for (const info of infos) {
     const t = store.readTileArrays(info);
-    const { pieceOf, count } = tilePieces(t, info.first, rules);
+    const { pieceOf, count, blocked } = tilePieces(t, info.first, rules);
+    for (let a = 0; a < t.n; a++) {
+      let outer = false;
+      for (let k = 0; k < 3 && !outer; k++) {
+        const g = t.nb[a * 3 + k];
+        const b = g - info.first;
+        outer = g >= 0 && (b < 0 || b >= t.n);
+      }
+      if (!outer) continue;
+      if (blocked[a]) bBlocked.push(info.first + a);
+      if (t.flags[a] & FLAG_OPENING_BRIDGE) bBridges.push(info.first + a);
+    }
     if (!count) continue;
     const base = pieces.length;
     tiles.push([info.i, info.j, base, count]);
@@ -141,7 +164,10 @@ export function buildCoarseMap(store: MeshStore, rules: CoarseRules): CoarseMap 
     seen.add(key);
     links.push([lo, hi]);
   }
-  return { version: COARSE_VERSION, draughtM: rules.draughtM, airDraftM: rules.airDraftM, triangles: ix.triangles, tiles, pieces, links };
+  return {
+    map: { version: COARSE_VERSION, draughtM: rules.draughtM, airDraftM: rules.airDraftM, triangles: ix.triangles, tiles, pieces, links },
+    boundary: { blocked: Int32Array.from(bBlocked), bridges: Int32Array.from(bBridges) },
+  };
 }
 
 /** Where a point lies for the rough cut: its piece, or the triangle that blocks it, or outside the mesh. */
@@ -239,48 +265,33 @@ function tileOfPiece(map: CoarseMap, p: number): [number, number] {
   return [map.tiles[lo][0], map.tiles[lo][1]];
 }
 
-export interface Corridor {
-  /** The tiles of the chain of pieces. */
+/** A leg's reach on the rough cut: the tiles of its chain of pieces, the box they span, the chain's length. */
+export interface Reach {
   chainTiles: [number, number][];
-  /** Each ring: the chain's tiles and every tile of the mesh within that many tiles of them (Chebyshev), as [i, j]. */
-  rings: [number, number][][];
-  /** The box of the widest ring's tiles (their vertex extents). */
+  /** The box of the chain's tiles (their vertex extents). */
   box: BBox;
   /** The chain's length between piece centres, metres. */
   lengthM: number;
 }
 
-/** The corridor of a chain of pieces: its tiles grown by 1, 2, … `maxRing` rings, only tiles the mesh has. */
-export function corridorOf(store: MeshStore, map: CoarseMap, chain: number[], maxRing: number): Corridor {
-  const chainKeys = new Set<string>();
+/** The reach of a chain of pieces (coarseRoute). */
+export function reachOf(store: MeshStore, map: CoarseMap, chain: number[]): Reach {
+  const keys = new Set<string>();
   const chainTiles: [number, number][] = [];
+  const box: BBox = { west: Infinity, south: Infinity, east: -Infinity, north: -Infinity };
   for (const p of chain) {
     const t = tileOfPiece(map, p);
     const k = `${t[0]},${t[1]}`;
-    if (chainKeys.has(k)) continue;
-    chainKeys.add(k);
+    if (keys.has(k)) continue;
+    keys.add(k);
     chainTiles.push(t);
+    const info = store.tile(t[0], t[1]);
+    if (!info) continue;
+    box.west = Math.min(box.west, info.bbox[0]);
+    box.south = Math.min(box.south, info.bbox[1]);
+    box.east = Math.max(box.east, info.bbox[2]);
+    box.north = Math.max(box.north, info.bbox[3]);
   }
-  const rings: [number, number][][] = [];
-  let widest: MeshTileInfo[] = [];
-  for (let r = 1; r <= maxRing; r++) {
-    const keys = new Map<string, MeshTileInfo>();
-    for (const [i, j] of chainTiles)
-      for (let di = -r; di <= r; di++)
-        for (let dj = -r; dj <= r; dj++) {
-          const info = store.tile(i + di, j + dj);
-          if (info) keys.set(`${info.i},${info.j}`, info);
-        }
-    const infos = [...keys.values()];
-    rings.push(infos.map(t => [t.i, t.j]));
-    widest = infos;
-  }
-  const box: BBox = {
-    west: Math.min(...widest.map(t => t.bbox[0])),
-    south: Math.min(...widest.map(t => t.bbox[1])),
-    east: Math.max(...widest.map(t => t.bbox[2])),
-    north: Math.max(...widest.map(t => t.bbox[3])),
-  };
   let lengthM = 0;
   for (let k = 1; k < chain.length; k++)
     lengthM += haversineDistanceM(
@@ -289,5 +300,5 @@ export function corridorOf(store: MeshStore, map: CoarseMap, chain: number[], ma
       map.pieces[chain[k]][0],
       map.pieces[chain[k]][1]
     );
-  return { chainTiles, rings, box, lengthM };
+  return { chainTiles, box, lengthM };
 }

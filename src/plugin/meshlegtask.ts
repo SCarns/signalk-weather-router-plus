@@ -22,7 +22,7 @@ import type { LegWind } from '../engine/horizon';
 import { LayeredWind, type RegionalWind } from '../engine/layeredwind';
 import type { SimOptions } from '../engine/legsim';
 import { MeshLand } from '../engine/mesh/land';
-import { isRefusal, type LegCorridor, type MeshLegArgs, type MeshRefusal } from '../engine/mesh/leg';
+import { isRefusal, type MeshLegArgs, type MeshRefusal } from '../engine/mesh/leg';
 import { runMeshLeg } from '../engine/mesh/legrun';
 import { type DrawbridgeChoice, type MeshRules, searchMesh } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
@@ -33,6 +33,7 @@ import type { RouterKind } from '../engine/router';
 import { type BBox, bboxFromLonLat } from '../geo/geodesy';
 import { PolarDiagram } from '../vessel/polar';
 import type { VesselParams } from '../vessel/vessel';
+import { readBoundary } from './meshcoarse';
 import { regionalRunsFor } from './worker/regionalwind';
 
 /** Everything the child needs, serialisable (dates as ms, the polar as its three arrays). */
@@ -58,8 +59,8 @@ export interface MeshLegTask {
   smootherTolerance: number;
   drawbridges: DrawbridgeChoice;
   bridgeWaitS: number;
-  /** The leg's corridor of tiles (rough cut, coarse.ts): the search reads exactly these; absent: boxes around the ends. */
-  corridor?: LegCorridor;
+  /** The rough cut's tile-boundary file for this mesh and boat (meshcoarse.ts): seeds of the buffer across tile edges. */
+  boundaryFile?: string;
   /** The decoded run and the area to read, or null for calm wind (motor, or no forecast). */
   forecast: { runDir: string; area: BBox; params: string[] } | null;
   /** Regional runs root and the global grid spacing, or null when regional wind is off. */
@@ -88,10 +89,10 @@ const CURRENTS_MARGIN_DEG = 0.25;
 export async function runMeshLegTask(t: MeshLegTask, emit: (e: MeshLegEvent) => void): Promise<MeshLegResult> {
   const progress = (stage: number, total: number, message: string): void => emit({ event: 'progress', stage, total, message });
   const store = MeshStore.open(t.dir);
-  const search = searchMesh(store, t.legStart, t.plan.end, t.rules, t.corridor?.rings);
-  const land = search.result.ok && search.mesh ? new MeshLand(search.mesh.m, search.mesh.blocked) : null;
+  const search = searchMesh(store, t.legStart, t.plan.end, t.rules, t.boundaryFile ? readBoundary(t.boundaryFile) : null);
+  const land = search.result.ok ? new MeshLand(search.paged) : null;
   if (land)
-    progress(0, 0, `${t.tag}chart mesh: the search's every move is tested against the mesh (index {dataSize:${land.indexBytes()}})`);
+    progress(0, 0, `${t.tag}chart mesh: the search's every move is tested against the mesh, its tiles read as the moves reach them`);
   const departure = new Date(t.legDepartureMs);
   const wind = await loadWind(t, progress);
   const current = await loadCurrents(t, search.box, progress);

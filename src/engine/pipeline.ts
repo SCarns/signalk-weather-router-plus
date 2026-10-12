@@ -25,7 +25,7 @@ import { RouteError } from './errors';
 import { forecastHorizonNote, type LegWind } from './horizon';
 import type { ModePolicy } from './legsim';
 import { findHandover, HANDOVER_SCAN_M, sliceCorridor, stitchLegParts } from './mesh/handover';
-import { isRefusal, type LegCorridor, type MeshLegRunner, type MeshRefusal, meshRulesFor } from './mesh/leg';
+import { isRefusal, type LegReach, type MeshLegRunner, type MeshRefusal, meshRulesFor } from './mesh/leg';
 import { type DrawbridgeChoice, MESH_BOX_PAD_MAX_DEG } from './mesh/route';
 import { legLabel, type LegPlan } from './multileg';
 import { DEFAULT_ROUTER, makeRouter, type RouterKind } from './router';
@@ -103,8 +103,8 @@ async function meshLeg(
   legStart: [number, number],
   legDeparture: Date,
   tag: string,
-  /** A leg inside one mesh: its corridor from the rough cut, when the runner offers one (part 4); the handover's mesh part keeps the boxes. */
-  useCorridor = false
+  /** A leg inside one mesh: its reach on the rough cut, when the runner offers one (part 4); the handover's mesh part has none. */
+  useReach = false
 ): Promise<Route | MeshRefusal> {
   const { progress, shouldCancel, multi, stages } = inp;
   const r = meshRulesFor(inp.vessel, plan.vias.length > 0);
@@ -118,10 +118,10 @@ async function meshLeg(
     0,
     `${tag}chart mesh: routing on charted depths (draught {depth:${r.rules.draughtM}}, air draft {length:${r.rules.airDraftM}})`
   );
-  // The corridor of tiles the leg's water passes through (the rough cut, coarse.ts), when there is one.
-  let corridor: LegCorridor | undefined;
-  if (useCorridor && inp.mesh!.corridor) {
-    const c = await inp.mesh!.corridor({
+  // Whether water connects the ends for this boat, and the extent of that water (the rough cut, coarse.ts).
+  let reach: LegReach | undefined;
+  if (useReach && inp.mesh!.reach) {
+    const c = await inp.mesh!.reach({
       legStart,
       legEnd: plan.end,
       rules: r.rules,
@@ -131,15 +131,22 @@ async function meshLeg(
     });
     if (shouldCancel()) throw new RouteCancelled();
     if (isRefusal(c)) return c;
-    corridor = c;
+    reach = c;
   }
-  // The area the mesh process may search: the mesh process reads the
-  // forecast and the currents from this worker's files only, so what is
-  // loaded here must cover it: the corridor's tiles, or the widest box the
-  // search can widen to (MESH_BOX_PAD_MAX_DEG around the ends).
-  const bbox = corridor
-    ? bboxFromLonLat([corridor.box.west, corridor.box.east], [corridor.box.south, corridor.box.north], 0.1)
-    : bboxFromLonLat([legStart[0], plan.end[0]], [legStart[1], plan.end[1]], MESH_BOX_PAD_MAX_DEG);
+  // The weather the mesh process reads: it reads the forecast and the
+  // currents from this worker's files only, so what is loaded here must
+  // cover where the leg can go: the box around its ends
+  // (MESH_BOX_PAD_MAX_DEG), and the tiles its water runs through when the
+  // rough cut gave them. The search itself has no area (paged.ts).
+  const ends = bboxFromLonLat([legStart[0], plan.end[0]], [legStart[1], plan.end[1]], MESH_BOX_PAD_MAX_DEG);
+  const bbox: BBox = reach
+    ? {
+        west: Math.min(ends.west, reach.box.west),
+        south: Math.min(ends.south, reach.box.south),
+        east: Math.max(ends.east, reach.box.east),
+        north: Math.max(ends.north, reach.box.north),
+      }
+    : ends;
   await inp.loadAreas(bbox, multi ? `${tag}area` : 'route area');
   const { names: currentNames } = inp.currents();
   if (currentNames && plan.index === 0) progress(0, 0, `currents: ${currentNames.join(' > ')}`);
@@ -169,7 +176,7 @@ async function meshLeg(
       smootherTolerance: inp.smootherTolerance,
       drawbridges: inp.drawbridges ?? 'ask',
       bridgeWaitS: inp.bridgeWaitS ?? 0,
-      corridor,
+      reach,
       progress,
       shouldCancel,
     });

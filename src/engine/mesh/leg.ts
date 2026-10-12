@@ -47,21 +47,20 @@ export interface MeshLegArgs {
   smootherTolerance: number;
   drawbridges: DrawbridgeChoice;
   bridgeWaitS: number;
-  /** The corridor of tiles the leg's water passes through (coarse.ts), when the runner gave one: the mesh search reads exactly these. */
-  corridor?: LegCorridor;
+  /** The leg's reach on the rough cut (coarse.ts), when the runner gave one: the extent of its water, for the forecast area. */
+  reach?: LegReach;
   progress: ProgressFn;
   shouldCancel: () => boolean;
 }
 
-/** A leg's corridor (coarse.ts corridorOf): its rings of tiles ([i, j]), the box they span, the chain's length. */
-export interface LegCorridor {
-  rings: [number, number][][];
+/** A leg's reach (coarse.ts reachOf): the box of the tiles its water runs through, the chain's length. Not a search area. */
+export interface LegReach {
   box: BBox;
   lengthM: number;
 }
 
 /**
- * Why the mesh cannot take a leg: no route in the box, an end on a blocked
+ * Why the mesh cannot take a leg: no route on the mesh, an end on a blocked
  * triangle, a stretch that cannot be made against the current, no mesh or
  * no forecast for the mesh process. A sentence for the user, without the
  * leg's tag.
@@ -87,18 +86,18 @@ export interface MeshLegRunner {
   covers(points: [number, number][]): boolean;
   leg(args: MeshLegArgs): Promise<Route | MeshRefusal>;
   /**
-   * The corridor of a leg inside one mesh, from the rough cut for these rules (built first when missing), or why
-   * there is none (an end on water the boat cannot use, no water connecting the ends). Absent: the leg's mesh
-   * search grows boxes around its ends instead.
+   * The reach of a leg inside one mesh, from the rough cut for these rules (built first when missing), or why there
+   * is none (an end on water the boat cannot use, no water connecting the ends). Absent: the forecast area is the
+   * box around the leg's ends.
    */
-  corridor?(args: {
+  reach?(args: {
     legStart: [number, number];
     legEnd: [number, number];
     rules: MeshRules;
     tag: string;
     progress: ProgressFn;
     shouldCancel: () => boolean;
-  }): Promise<LegCorridor | MeshRefusal>;
+  }): Promise<LegReach | MeshRefusal>;
 }
 
 /**

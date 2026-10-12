@@ -44,13 +44,15 @@ import type { DrawbridgeChoice, MeshRouteResult, MeshRules } from './route';
 export interface MeshLegLand extends LandTest {
   depthAt(lon: number, lat: number): number | null;
   openingBridgesAlong(lonA: number, latA: number, lonB: number, latB: number): { lon: number; lat: number; clearM: number | null }[];
+  /** Let go of the mesh tiles held (land.ts MeshLand on the paged mesh): called after each stretch planned. */
+  release?(): void;
 }
 
 /** What a mesh leg is planned from, wherever it runs. */
 export interface MeshLegInputs {
   /** The mesh search's answer for the leg (route.ts); null when the mesh cannot take it. */
   result: MeshRouteResult;
-  /** The mesh as land (land.ts), on the box the search read; null when the search failed. */
+  /** The mesh as land (land.ts), on the paged mesh the search ran on; null when the search failed. */
   land: MeshLegLand | null;
   plan: LegPlan;
   legStart: [number, number];
@@ -88,15 +90,7 @@ export interface MeshLegInputs {
 export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
   const { result: res, land, plan, legStart, legDeparture, tag, progress, shouldCancel, stages } = inp;
   const st = res.stats;
-  const timing = `${st.trianglesLoaded} triangles read in {time:${(st.readMs + st.prepMs) / 1000}}${
-    st.corridorTiles !== undefined ? ` from a corridor of ${st.corridorTiles} tiles (${st.corridorRing} ring(s) of neighbours)` : ''
-  }, ${st.blocked} blocked, search {time:${st.searchMs / 1000}} (${st.expanded} edges)${
-    st.attempts > 1
-      ? st.corridorTiles !== undefined
-        ? `; the corridor widened after ${st.attempts - 1} search(es) found no route`
-        : `; the box around the leg's ends widened to {angle:${(st.padDeg * Math.PI) / 180}} after ${st.attempts - 1} search(es) found no route`
-      : ''
-  }`;
+  const timing = `${st.trianglesLoaded} triangles in ${st.tiles} tiles read as the search reached them (${st.tileReads} reads, at most ${st.peakTriangles} triangles held at once) in {time:${(st.readMs + st.prepMs) / 1000}}, ${st.blocked} blocked, search {time:${st.searchMs / 1000}} (${st.expanded} edges)`;
   if (!res.ok || !land) return { refused: `${res.ok ? 'no mesh land' : res.reason} (${timing})` };
   progress(0, 0, `${tag}chart mesh: {distance:${res.lengthM.toFixed(0)}}, ${res.path.length} points; ${timing}`);
   if (st.bufferM > 0)
@@ -248,6 +242,8 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
     }
     parts.push(part);
     at = part.waypoints[part.waypoints.length - 1].time;
+    // The tiles this stretch's search and layout read go; the next stretch reads its own.
+    land.release?.();
   }
   const route = parts.length === 1 ? parts[0] : stitchMeshSegments(parts, wind);
   route.meshLeg = true;

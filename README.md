@@ -710,7 +710,7 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   a blocked one is blocked for the leg, by exact distance from the
   boundary, before anything is routed: the mesh route, the passage widths
   and the sailed stretches all keep it, and a passage narrower than twice
-  the buffer closes (the mesh then finds no route, or widens its box).
+  the buffer closes (the mesh then finds no route).
 - **Depth:** each waypoint of a mesh leg carries the charted depth of the
   triangle under it (`depth_m` in the GeoJSON, Depth in the itinerary); a
   waypoint on a depth contour reports the usable side.
@@ -737,27 +737,34 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   water 5 km from any land has no mesh part. A leg still near land
   after 50 km hands over there (the mesh part's memory limit), and the log
   says so.
-- **The corridor (rough cut).** A leg both of whose ends one mesh holds
-  is searched in the tiles its water actually passes through, not in a
-  box around its ends (a box never reaches a route that swings far out:
-  the Bahamas to the Gulf round the Keys, Chicago to Lake Huron through
-  the Straits of Mackinac). Each mesh has a rough cut for the boat: the
-  usable water as pieces, one set of connected triangles per 0.25° tile,
-  linked across tile edges, built under the boat's draught and air draft
-  (no buffer). A leg finds the pieces under its ends, the chain of pieces
-  between them, and the mesh search reads those tiles plus one ring of
-  neighbours (two when the first finds no route); an end on water the
-  boat cannot use, or no water connecting the ends, fails with that
-  reason. Rough cuts are built in a child process after a mesh is
-  downloaded or updated, on the configuration panel's *Rebuild rough
+- **No search area.** The mesh search reads the chart a 0.25° tile at a
+  time, as it reaches each tile, and lets a tile go once nothing it still
+  has to look at lies there (read again if it comes back), so a route
+  that swings far from its ends (the Bahamas to the Gulf round the Keys,
+  Chicago to Lake Huron through the Straits of Mackinac) is found without
+  any box being chosen first. On the test box the longest legs held about
+  1.1 GB at most this way (31 legs, 2026-10-12). The sailed stretches and
+  the final depth check read the tiles the same way.
+- **The rough cut.** Each mesh has a rough cut for the boat: the usable
+  water as pieces, one set of connected triangles per tile, linked across
+  tile edges, built under the boat's draught and air draft (no buffer).
+  It answers three things before a leg is searched: whether any water
+  connects the leg's ends for this boat (an end on water the boat cannot
+  use, or no water connecting the ends, fails with that reason without a
+  search), where that water runs (the forecast and currents are loaded
+  over its tiles as well as around the ends), and which triangles on each
+  tile's edge the boat cannot use, so the buffer from unusable water
+  (Defaults) carries across tile edges. An area to avoid in the next tile
+  is not carried across a tile edge by the buffer (its triangles are
+  still blocked). Rough cuts are built in a child process after a mesh
+  is downloaded or updated, on the configuration panel's *Rebuild rough
   cuts* button (`POST /api/meshes/rough-cut`), and by a route that needs
-  one not built yet (2–12 s once per mesh and boat on a Raspberry Pi 5);
-  never at start. They are kept in `mesh-coarse/` in the plugin's data
-  folder (16–301 KB each), one per mesh build, draught and air draft.
-  Legs that leave the mesh still use boxes around their ends.
+  one not built yet; never at start. They are kept in `mesh-coarse/` in
+  the plugin's data folder, two files (`.json`, `.bnd`) per mesh build,
+  draught and air draft; a rough cut of an earlier version is rebuilt.
 - **No coastline search inside the mesh.** A leg both of whose ends one
   mesh holds is routed on the mesh or fails: when the mesh cannot take it
-  (no route in its corridor, a start or end in a blocked triangle, a
+  (no water connecting its ends, a start or end in a blocked triangle, a
   stretch that cannot be made against the current, no draught or air
   draft, the forecast still being decoded, the mesh process failing) the
   route fails with that reason; it is no longer handed to the coastline
