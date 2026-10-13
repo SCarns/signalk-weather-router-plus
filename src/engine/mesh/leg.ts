@@ -22,6 +22,7 @@ import type { CorridorInput } from '../search/types';
 import { MAX_SCAN_M } from './width';
 import { enrichLegRanges, enrichWaypoints } from '../propagator';
 import { haversineDistanceM, type BBox } from '../../geo/geodesy';
+import type { CellMask } from '../../geo/landmask';
 import { recomputePerWaypointMetadata, type Route, type RouteWarning, type Waypoint } from '../route';
 import { recomputeTotals } from '../smoother';
 import type { DrawbridgeChoice, MeshRules } from './route';
@@ -103,6 +104,21 @@ export interface MeshLegRunner {
     progress: ProgressFn;
     shouldCancel: () => boolean;
   }): Promise<LegReach | MeshRefusal>;
+  /**
+   * Where a leg with one end in a mesh (`inside`) and the other outside every mesh (`outside`) leaves the mesh
+   * (part 5, engine/mesh/exit.ts), for the coastline search's land over `box`: the crossing point, and the mesh's
+   * water as cells the coastline part must treat as land; or why there is none.
+   */
+  exit?(args: {
+    inside: [number, number];
+    outside: [number, number];
+    names: { inside: string; outside: string };
+    rules: MeshRules;
+    box: BBox;
+    tag: string;
+    progress: ProgressFn;
+    shouldCancel: () => boolean;
+  }): Promise<{ exit: [number, number]; mask: CellMask } | MeshRefusal>;
 }
 
 /**

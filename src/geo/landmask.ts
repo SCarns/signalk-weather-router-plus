@@ -828,6 +828,30 @@ export class LandMask implements LandTest {
     return view;
   }
 
+  /**
+   * This mask with the cells of `extra` set to 1 answering as land too (part 5: the chart mesh's water, which the
+   * coastline search must not enter; a cell is the mesh's when a mesh triangle holds its centre). The four checks
+   * the router makes, and the room along a bearing, say "land" in such a cell or for a move through one (the cells a
+   * move passes are walked exactly). A view over this mask, as withAvoid.
+   */
+  withExtraLand(extra: CellMask): LandMask {
+    const view = Object.create(this) as LandMask;
+    const at = (lon: number, lat: number): boolean => {
+      const c = cellOf(extra, lon, lat);
+      return c >= 0 && extra.cells[c] === 1;
+    };
+    view.isLand = (lon: number, lat: number): boolean => this.isLand(lon, lat) || at(lon, lat);
+    view.isLandExact = (lon: number, lat: number): boolean => this.isLandExact(lon, lat) || at(lon, lat);
+    view.legCrossesLandExact = (lonA: number, latA: number, lonB: number, latB: number): boolean =>
+      this.legCrossesLandExact(lonA, latA, lonB, latB) || moveMeetsCells(extra, lonA, latA, lonB, latB);
+    view.legsCrossLandBulk = (lonsA, latsA, lonsB, latsB): Uint8Array => {
+      const out = this.legsCrossLandBulk(lonsA, latsA, lonsB, latsB);
+      for (let k = 0; k < out.length; k++) if (!out[k] && moveMeetsCells(extra, lonsA[k], latsA[k], lonsB[k], latsB[k])) out[k] = 1;
+      return out;
+    };
+    return view;
+  }
+
   /** Fraction of raster cells that are land (diagnostics). */
   landFraction(): number {
     let c = 0;
@@ -1003,5 +1027,57 @@ function segmentsTouch(p1x: number, p1y: number, p2x: number, p2y: number, q1x: 
   if (o2 === 0 && on(p1x, p1y, p2x, p2y, q2x, q2y)) return true;
   if (o3 === 0 && on(q1x, q1y, q2x, q2y, p1x, p1y)) return true;
   if (o4 === 0 && on(q1x, q1y, q2x, q2y, p2x, p2y)) return true;
+  return false;
+}
+
+/** A grid of cells over a box, 1 = marked (row 0 the southernmost, as the mask's raster). */
+export interface CellMask {
+  bbox: BBox;
+  resolutionDeg: number;
+  nx: number;
+  ny: number;
+  cells: Uint8Array;
+}
+
+/** The cell of a position in a cell mask, or -1 outside it. */
+export function cellOf(m: CellMask, lon: number, lat: number): number {
+  const i = Math.floor((lat - m.bbox.south) / m.resolutionDeg);
+  if (i < 0 || i >= m.ny) return -1;
+  const j = Math.floor(lonOffsetFromWest(m.bbox, lon) / m.resolutionDeg);
+  if (j < 0 || j >= m.nx) return -1;
+  return i * m.nx + j;
+}
+
+/** Does the straight move a→b (in degrees, a short leg) pass through a marked cell? Every cell it crosses, in order. */
+export function moveMeetsCells(m: CellMask, lonA: number, latA: number, lonB: number, latB: number): boolean {
+  const r = m.resolutionDeg;
+  const x0 = lonOffsetFromWest(m.bbox, lonA) / r;
+  const y0 = (latA - m.bbox.south) / r;
+  let dx = lonOffsetFromWest(m.bbox, lonB) / r - x0;
+  if (dx > 180 / r) dx -= 360 / r;
+  else if (dx < -180 / r) dx += 360 / r;
+  const dy = (latB - m.bbox.south) / r - y0;
+  let i = Math.floor(x0);
+  let j = Math.floor(y0);
+  const iEnd = Math.floor(x0 + dx);
+  const jEnd = Math.floor(y0 + dy);
+  const marked = (ii: number, jj: number): boolean => ii >= 0 && jj >= 0 && ii < m.nx && jj < m.ny && m.cells[jj * m.nx + ii] === 1;
+  if (marked(i, j)) return true;
+  const si = dx > 0 ? 1 : -1;
+  const sj = dy > 0 ? 1 : -1;
+  const tdx = dx !== 0 ? Math.abs(1 / dx) : Infinity;
+  const tdy = dy !== 0 ? Math.abs(1 / dy) : Infinity;
+  let tx = dx !== 0 ? (dx > 0 ? Math.floor(x0) + 1 - x0 : x0 - Math.floor(x0)) * tdx : Infinity;
+  let ty = dy !== 0 ? (dy > 0 ? Math.floor(y0) + 1 - y0 : y0 - Math.floor(y0)) * tdy : Infinity;
+  for (let n = Math.abs(iEnd - i) + Math.abs(jEnd - j); n > 0; n--) {
+    if (tx < ty) {
+      i += si;
+      tx += tdx;
+    } else {
+      j += sj;
+      ty += tdy;
+    }
+    if (marked(i, j)) return true;
+  }
   return false;
 }

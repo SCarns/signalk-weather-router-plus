@@ -728,15 +728,18 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   own mode: sailed under sail_max (tacks where needed, motor only below a
   positive threshold), walked under fastest; when it cannot be sailed the
   route fails naming the segment rather than motoring it.
-- **One end outside the mesh:** the leg runs on the mesh as far as the
-  first point after the last narrow passage that is open water with no
-  land within 5 km (and stays so at the next point), within 50 km of the
-  covered end, and the coastline search takes it from there (the corridor
-  cut at that point). A start off an open coast is therefore routed on
-  the mesh until it is 5 km out; a leg whose covered end is already open
-  water 5 km from any land has no mesh part. A leg still near land
-  after 50 km hands over there (the mesh part's memory limit), and the log
-  says so.
+- **One end outside the mesh:** the mesh decides wherever it has
+  triangles, the coastline data only where it has none. The router floods
+  the coastline's water from the leg's end outside the charts, on the
+  coastline search's own raster for the leg, never entering a cell a mesh
+  triangle covers; where that water meets a side of mesh water the boat
+  can use is an exit (a shoreline never is: beyond it is land, or water
+  that does not connect out). The mesh plans the leg from its stop to the
+  cheapest exit towards the far end, and the coastline search from there,
+  with the mesh's water as land, so it cannot come back into charted
+  water and never sees the stop. Legs whose ends lie in two different
+  meshes still use the older handover (the mesh to open water clear of the
+  shore) until district-to-district routing is built.
 - **No search area.** The mesh search reads the chart a 0.25° tile at a
   time, as it reaches each tile, and lets a tile go once nothing it still
   has to look at lies there (read again if it comes back), so a route

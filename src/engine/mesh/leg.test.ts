@@ -722,6 +722,34 @@ test('pipeline: a leg whose ends lie in two different meshes is not planned as o
   );
 });
 
+test('pipeline: a leg with one end beyond the charts is planned on the mesh to the exit, then on the coastline with the mesh water as land', async () => {
+  // The mesh covers lon < 0.5; the leg runs east to (1, 0.5). The exit is at (0.5, 0.5); the mesh's water is a
+  // cell mask over lon 0–0.5 the coastline part may not enter.
+  const exitAt: [number, number] = [0.5, 0.5];
+  const { mesh, calls } = fakeMeshOk([[0, 0.5], exitAt]);
+  const nx = 20;
+  const ny = 20;
+  const cells = new Uint8Array(nx * ny);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < 10; i++) cells[j * nx + i] = 1;
+  const exits: unknown[] = [];
+  const runner: MeshLegRunner = {
+    ...mesh,
+    covers: pts => pts.every(p => p[0] < 0.5),
+    exit: async a => {
+      exits.push(a);
+      return { exit: exitAt, mask: { bbox: { west: 0, south: 0, east: 1, north: 1 }, resolutionDeg: 0.05, nx, ny, cells } };
+    },
+  };
+  const { inp, messages } = inputs(runner);
+  const r = await runLegPipeline(inp, PLAN, 0, [0, 0.5], T0);
+  assert.equal(exits.length, 1, 'the exit was asked for');
+  assert.deepEqual((calls[0] as { end: [number, number] }).end, exitAt, 'the mesh part ends at the exit');
+  const last = r.waypoints[r.waypoints.length - 1];
+  assert.ok(Math.abs(last.lon - 1) < 1e-6 && Math.abs(last.lat - 0.5) < 1e-6, 'the leg ends on its end');
+  assert.deepEqual(r.legSources, ['mixed']);
+  assert.ok(!messages.some(m => /the leg leaves the mesh and its start is already in open water/.test(m)), 'not the old handover');
+});
+
 test('stitchMeshSegments: the smoother drops of every segment are summed', () => {
   const a = routeFromMeshPath(
     [

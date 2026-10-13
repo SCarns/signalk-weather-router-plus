@@ -221,6 +221,48 @@ function meshLegRunner(
         clearInterval(poll);
       }
     },
+    // Where a leg leaving the charts crosses to the coastline (part 5): in a child process (plugin/meshexit.ts), on the
+    // coastline search's own land raster for the leg's area; the rough cut first when missing (its boundary record).
+    exit: async c => {
+      const m = meshFor([c.inside]);
+      if (!m) return { refused: 'no mesh covers the leg' };
+      const ac = new AbortController();
+      const poll = setInterval(() => {
+        if (c.shouldCancel()) ac.abort();
+      }, 500);
+      try {
+        const file = await roughCut(m, c.rules, c.tag, c.progress, ac.signal);
+        if (typeof file !== 'string') return file;
+        const r = await runChildTask(
+          {
+            task: 'mesh-exit',
+            dir: m.dir,
+            mapFile: file,
+            rules: c.rules,
+            inside: c.inside,
+            outside: c.outside,
+            names: c.names,
+            land: {
+              shapefiles: cfg.landShapefiles,
+              bbox: c.box,
+              maxCells: cfg.routing.landRasterMaxCells,
+              bufferM: cfg.routing.landBufferM,
+            },
+          },
+          10 * 60_000,
+          ac.signal
+        );
+        if (!r.ok) return { refused: r.reason };
+        c.progress(
+          0,
+          0,
+          `${c.tag}chart mesh: the leg leaves the charts at ${r.exit[1].toFixed(4)}, ${r.exit[0].toFixed(4)} (${r.exits} places where the chart mesh's water meets the coastline's water that reaches ${c.names.outside}; {time:${r.ms / 1000}})`
+        );
+        return { exit: r.exit, mask: r.mask };
+      } finally {
+        clearInterval(poll);
+      }
+    },
     // The leg's reach on the rough cut (part 4): whether water connects its ends for the boat, and where it runs;
     // the rough cut built first when this boat has none for the mesh, both in child processes (meshcoarse.ts), so
     // no mesh tile is read in this worker.

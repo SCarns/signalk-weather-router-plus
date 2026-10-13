@@ -39,6 +39,8 @@ export interface MeshSearchResult {
   goalNode: number;
   /** The start triangle the route leaves from (global id). */
   startTri: number;
+  /** The goal triangle the route arrives in (global id; -1 when no route). */
+  goalTri: number;
   /** Cost of the whole route, seconds. */
   goalG: number;
   expanded: number;
@@ -54,7 +56,13 @@ export function meshAstar(
   sy: number,
   ex: number,
   ey: number,
-  speedMs: number
+  speedMs: number,
+  /**
+   * Goals with their own end points (part 5: the exits where the chart mesh's water meets the coastline's): reaching
+   * goal triangle t ends at (x, y) and adds `restS` (a lower bound of the rest of the leg beyond it). Then `ends` is
+   * ignored and (ex, ey), the leg's far end, only guides the search (the straight time to it never overestimates).
+   */
+  exits?: Map<number, { x: number; y: number; restS: number }>
 ): MeshSearchResult {
   const states = new Map<number, TileState>();
   const stateOf = (T: PagedTile): TileState => {
@@ -71,16 +79,23 @@ export function meshAstar(
   let goalG = Infinity;
   let goalNode = -2;
   const st = Array.isArray(starts) ? starts : [starts];
-  const goals = new Set(Array.isArray(ends) ? ends : [ends]);
+  const goals = new Set(exits ? exits.keys() : Array.isArray(ends) ? ends : [ends]);
+  /** The cost of finishing in goal triangle t from (hx, hy): to its end point, and on beyond it for an exit. */
+  const finish = (t: number, hx: number, hy: number, mult: number): number => {
+    const e = exits?.get(t);
+    return e ? (Math.hypot(e.x - hx, e.y - hy) * mult) / speedMs + e.restS : (Math.hypot(ex - hx, ey - hy) * mult) / speedMs;
+  };
+  let goalTri = -1;
   let direct = st[0];
   for (const s0 of st) {
     if (!goals.has(s0)) continue;
     const S0 = pm.tileOf(s0);
-    const g = (Math.hypot(ex - sx, ey - sy) * S0.mult[s0 - S0.first]) / speedMs;
+    const g = finish(s0, sx, sy, S0.mult[s0 - S0.first]);
     if (g < goalG) {
       goalG = g;
       goalNode = -1;
       direct = s0;
+      goalTri = s0;
     }
   }
   // Leaving triangle (T, l) through its edges other than kin, from cost g0 at (hx, hy), reached from node `from`.
@@ -115,7 +130,8 @@ export function meshAstar(
     relax(S0, s0 - S0.first, -1, 0, sx, sy, -2 - k);
   });
   let expanded = 0;
-  const pinnedTiles = new Set([...st, ...goals].map(t => pm.tileIndexOf(t)));
+  // The start and end tiles stay held; with exits (possibly many tiles along a coverage edge) only the start's.
+  const pinnedTiles = new Set([...st, ...(exits ? [] : goals)].map(t => pm.tileIndexOf(t)));
   const pinned = (idx: number): boolean => pinnedTiles.has(idx);
   while (heap.size > 0) {
     const f = heap.peekKey();
@@ -134,10 +150,11 @@ export function meshAstar(
     const hx = midX(T, l, kin);
     const hy = midY(T, l, kin);
     if (goals.has(t)) {
-      const gg = S.g[q] + (Math.hypot(ex - hx, ey - hy) * T.mult[l]) / speedMs;
+      const gg = S.g[q] + finish(t, hx, hy, T.mult[l]);
       if (gg < goalG) {
         goalG = gg;
         goalNode = node;
+        goalTri = t;
       }
     }
     relax(T, l, kin, S.g[q], hx, hy, node);
@@ -161,6 +178,7 @@ export function meshAstar(
   }
   return {
     goalNode,
+    goalTri,
     startTri,
     goalG,
     expanded,

@@ -25,6 +25,17 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Leaving the charts** (docs/drafts/mesh-no-gshhg-design.md part 5;
+  `engine/mesh/exit.ts`, `plugin/meshexit.ts`, child task `mesh-exit`): a
+  leg with one end in a mesh and the other outside every mesh crosses where
+  the mesh's water meets the coastline's water that reaches the far end
+  (flooded on the coastline search's own raster, never through a mesh
+  triangle); the mesh part runs to the cheapest such exit
+  (`meshAstar` with exits), the coastline part from it with the mesh's
+  water as land (`LandMask.withExtraLand`). Replaces the GSHHG-corridor
+  handover for these legs, which started the corridor at the stop: a
+  harbour stop on GSHHG's land failed ("start point … is on land",
+  Marquette replays) once part 2 stopped GSHHG moving stops in mesh water.
 - **A stop the mesh snap moved is reached on its circle** (`multileg.ts`
   `Stop.snapped`; the owner's choice): a moved waypoint or destination
   becomes approximate, its circle the distance it was moved, in either
