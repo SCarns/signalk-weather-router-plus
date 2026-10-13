@@ -4,17 +4,15 @@
  * usable; where they do not connect there, across the water between them on the coastline search, from the first
  * mesh's exit to the second's entry, for which it builds the coastline search's own land raster for the leg's area
  * (the same polygons, resolution and land buffer the worker's landMaskFor and withBuffer give). It opens both meshes
- * and the end mesh's rough cut; mesh tiles never enter the route worker.
+ * and their rough cuts; mesh tiles never enter the route worker.
  */
 
-import * as fs from 'node:fs';
 import type { BBox } from '../geo/geodesy';
 import { type CellMask, LandMask } from '../geo/landmask';
-import { type CoarseMap, COARSE_VERSION } from '../engine/mesh/coarse';
 import type { MeshRules } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
-import { findMeshGap, findMeshTransfer } from '../engine/mesh/transfer';
-import { boundaryFile, coarseRulesOf, readBoundary } from './meshcoarse';
+import { findMeshGap, findMeshTransfer, type TransferMesh } from '../engine/mesh/transfer';
+import { boundaryFile, coarseRulesOf, readBoundary, readCoarseMap } from './meshcoarse';
 
 export interface MeshTransferTask {
   task: 'mesh-transfer';
@@ -30,7 +28,16 @@ export interface MeshTransferTask {
 }
 
 export type MeshTransferTaskResult =
-  | { ok: true; kind: 'transfer'; point: [number, number]; sharedTiles: number; tested: number; transfers: number; ms: number }
+  | {
+      ok: true;
+      kind: 'transfer';
+      point: [number, number];
+      sharedTiles: number;
+      candidateTiles: number;
+      tested: number;
+      transfers: number;
+      ms: number;
+    }
   | {
       ok: true;
       kind: 'gap';
@@ -47,23 +54,17 @@ export type MeshTransferTaskResult =
 
 export function runMeshTransferTask(t: MeshTransferTask): MeshTransferTaskResult {
   const t0 = Date.now();
-  const toStore = MeshStore.open(t.to.dir);
-  const map = JSON.parse(fs.readFileSync(t.to.mapFile, 'utf8')) as CoarseMap;
   const r = coarseRulesOf(t.rules);
-  if (
-    map.version !== COARSE_VERSION ||
-    map.triangles !== toStore.index.triangles ||
-    map.draughtM !== r.draughtM ||
-    map.airDraftM !== r.airDraftM ||
-    map.bufferM !== r.bufferM ||
-    map.openingBridges !== r.openingBridges
-  )
-    return {
-      ok: false,
-      reason: `the rough cut of ${t.to.name} on disk is for another build of the mesh or other rules; rebuild it in the plugin configuration`,
-    };
-  const from = { store: MeshStore.open(t.from.dir), boundary: readBoundary(boundaryFile(t.from.mapFile)), name: t.from.name };
-  const to = { store: toStore, boundary: readBoundary(boundaryFile(t.to.mapFile)), name: t.to.name, map };
+  /** A mesh and its rough cut, or why the rough cut cannot be used. */
+  const open = (m: MeshTransferTask['from']): TransferMesh | string => {
+    const store = MeshStore.open(m.dir);
+    const map = readCoarseMap(m.mapFile, store, r, m.name);
+    return typeof map === 'string' ? map : { store, boundary: readBoundary(boundaryFile(m.mapFile)), map, name: m.name };
+  };
+  const from = open(t.from);
+  if (typeof from === 'string') return { ok: false, reason: from };
+  const to = open(t.to);
+  if (typeof to === 'string') return { ok: false, reason: to };
   const x = findMeshTransfer(from, to, t.rules, t.start, t.end, t.names);
   if (x.ok)
     return {
@@ -71,6 +72,7 @@ export function runMeshTransferTask(t: MeshTransferTask): MeshTransferTaskResult
       kind: 'transfer',
       point: x.point,
       sharedTiles: x.sharedTiles,
+      candidateTiles: x.candidateTiles,
       tested: x.tested,
       transfers: x.transfers,
       ms: Date.now() - t0,

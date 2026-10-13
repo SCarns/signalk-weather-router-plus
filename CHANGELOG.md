@@ -23,8 +23,34 @@ uses [Semantic Versioning](https://semver.org/).
   log)". Unchanged until their own parts: legs through waypoint circles,
   and legs with one end outside the mesh or the ends in two meshes.
 
+- **The final depth check fails a stretch any covering mesh blocks**
+  (`check.ts` `cover`). Where two districts' meshes overlap, the first mesh
+  walked decided a stretch and the second was not heard: water one
+  district's charts call too shallow passed if the other's called it
+  usable. Their charts disagree in 3.6% of points in the 07CGD/08CGD
+  overlap, 3.2% in 01CGD/05CGD, 0.1% in 05CGD/07CGD (test box, 100 points
+  per shared tile, 2026-10-12).
+
 ### Added
 
+- **From one district's mesh to another** (docs/drafts/mesh-no-gshhg-design.md
+  part 5 step 2; `engine/mesh/transfer.ts`, `plugin/meshtransfer.ts`, child
+  task `mesh-transfer`, `pipeline.ts` `meshTransferLeg`): a leg whose ends
+  lie in two meshes stays on the charts. In their overlap it changes meshes
+  at a triangle of the first whose centre the second also calls usable and
+  connects to the end (the cheapest by `meshAstar` with the transfer test
+  as its goals); the leg is the first mesh's part to it and the second's
+  from it. Where they do not connect in the overlap, the first mesh's exit
+  and the second's entry, with the coastline's water between them flooded
+  from the second mesh's edge water connected to the end, and the coastline
+  search between them with both meshes' water as land. Both rough cuts are
+  asked first, tile by tile (`PieceGraph.tilesOf`), whether a transfer
+  point or an exit and entry can exist; only then is anything searched. On
+  the test box: Charleston → the Chesapeake entrance (07CGD → 05CGD)
+  changed meshes at 32.9928, -79.2471 in 6.2 s, 512 MB peak; a Miami →
+  New Orleans test with no way through failed in 16.1 s, 558 MB (289 s and
+  3.1 GB before the rough-cut checks). Replaces the GSHHG handover for these
+  legs, which routed them on the coastline search inside mesh water.
 - **Leaving the charts** (docs/drafts/mesh-no-gshhg-design.md part 5;
   `engine/mesh/exit.ts`, `plugin/meshexit.ts`, child task `mesh-exit`): a
   leg with one end in a mesh and the other outside every mesh crosses where
@@ -36,6 +62,10 @@ uses [Semantic Versioning](https://semver.org/).
   handover for these legs, which started the corridor at the stop: a
   harbour stop on GSHHG's land failed ("start point … is on land",
   Marquette replays) once part 2 stopped GSHHG moving stops in mesh water.
+  Only edge water the rough cut connects to the stop counts as an exit,
+  looked for in the tiles holding that water; with none the leg fails
+  before any search (a search with no reachable exit read every triangle
+  connected to the stop first).
 - **A stop the mesh snap moved is reached on its circle** (`multileg.ts`
   `Stop.snapped`; the owner's choice): a moved waypoint or destination
   becomes approximate, its circle the distance it was moved, in either

@@ -138,6 +138,21 @@ export function pruneCoarse(dataDir: string, liveKeys: Set<string>): number {
   return removed;
 }
 
+/** A rough cut read from disk for a mesh and the rules, or why it cannot be used (another build or other rules). */
+export function readCoarseMap(file: string, store: MeshStore, rules: CoarseRules, name: string): CoarseMap | string {
+  const map = JSON.parse(fs.readFileSync(file, 'utf8')) as CoarseMap;
+  if (
+    map.version !== COARSE_VERSION ||
+    map.triangles !== store.index.triangles ||
+    map.draughtM !== rules.draughtM ||
+    map.airDraftM !== rules.airDraftM ||
+    map.bufferM !== rules.bufferM ||
+    map.openingBridges !== rules.openingBridges
+  )
+    return `the rough cut of ${name} on disk is for another build of the mesh or other rules; rebuild it in the plugin configuration`;
+  return map;
+}
+
 export interface MeshCoarseTask {
   task: 'mesh-coarse';
   dir: string;

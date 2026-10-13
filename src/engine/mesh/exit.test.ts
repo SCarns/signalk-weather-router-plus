@@ -13,7 +13,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ShapePolygon } from '../../geo/shapefile';
 import { LandMask, moveMeetsCells } from '../../geo/landmask';
+import { boundarySeeds, buildCoarseMap, type CoarseMap, type CoarseRules, meshRulesOf } from './coarse';
 import { findMeshExit } from './exit';
+import { PagedMesh } from './paged';
 import { writeGridMesh } from './fixture';
 import { MeshStore } from './store';
 
@@ -32,23 +34,29 @@ function rect(recordNumber: number, lon0: number, lat0: number, lon1: number, la
 const RULES = { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 };
 const BOX = { west: -1, south: -1, east: 5, north: 3 };
 
-function withMesh(fn: (store: MeshStore) => void): void {
-  const dir = writeGridMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-exit-')), [
+const COARSE: CoarseRules = { draughtM: 2, airDraftM: 18, bufferM: 0, openingBridges: 'open' };
+
+function withMesh(
+  fn: (store: MeshStore, map: CoarseMap) => void,
+  cells = [
     { i: 0, j: 0 },
     { i: 1, j: 0 },
-  ]);
+  ] as { i: number; j: number; depth?: number }[]
+): void {
+  const dir = writeGridMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-exit-')), cells);
   try {
-    fn(MeshStore.open(dir));
+    const store = MeshStore.open(dir);
+    fn(store, buildCoarseMap(store, COARSE, new PagedMesh(store, meshRulesOf(COARSE), 1, boundarySeeds(store, COARSE))));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
 test('findMeshExit: a leg to open water beyond the charts leaves through the edge that meets it, never a shoreline', () => {
-  withMesh(store => {
+  withMesh((store, map) => {
     // Land south (lat < 0) and west (lon < 0) of the mesh, and a blob the coastline data calls land round the stop.
     const land = LandMask.fromPolygons([rect(1, -1, -1, 5, 0), rect(2, -1, -1, 0, 3), rect(3, 0.4, 0.4, 0.6, 0.6)], BOX, 0.05);
-    const r = findMeshExit(store, RULES, null, land, [0.5, 0.5], [3.5, 0.5], { inside: 'the start', outside: 'the end' });
+    const r = findMeshExit(store, RULES, null, map, land, [0.5, 0.5], [3.5, 0.5], { inside: 'the start', outside: 'the end' });
     assert.ok(r.ok, r.ok ? '' : r.reason);
     if (!r.ok) return;
     const [lon, lat] = r.exit;
@@ -61,15 +69,36 @@ test('findMeshExit: a leg to open water beyond the charts leaves through the edg
 });
 
 test('findMeshExit: a far end the coastline data calls land is refused, naming it', () => {
-  withMesh(store => {
+  withMesh((store, map) => {
     // Land round the mesh, the far end (4.5, 2.5) inside it.
     const land = LandMask.fromPolygons(
       [rect(1, -1, -1, 5, -0.5), rect(2, -1, -1, 0, 3), rect(3, 2, -1, 5, 1.2), rect(4, -1, 1, 5, 3)],
       BOX,
       0.05
     );
-    const r = findMeshExit(store, RULES, null, land, [0.5, 0.5], [4.5, 2.5], { inside: 'the start', outside: 'the end' });
+    const r = findMeshExit(store, RULES, null, map, land, [0.5, 0.5], [4.5, 2.5], { inside: 'the start', outside: 'the end' });
     assert.ok(!r.ok);
     if (!r.ok) assert.equal(r.reason, 'the end is not on open water to the coastline data outside the chart mesh');
   });
+});
+
+test("findMeshExit: a stop whose water does not reach the mesh's edge facing the far end fails before any search", () => {
+  // Three tiles in a row; the middle one 1 m deep cuts the stop's water (lon 0–1) off from the east edge (lon 3).
+  withMesh(
+    (store, map) => {
+      const land = LandMask.fromPolygons([rect(1, -1, -1, 5, 0), rect(2, -1, -1, 0, 3), rect(4, -1, 1, 5, 3)], BOX, 0.05);
+      const r = findMeshExit(store, RULES, null, map, land, [0.5, 0.5], [4, 0.5], { inside: 'the start', outside: 'the end' });
+      assert.ok(!r.ok);
+      if (!r.ok)
+        assert.equal(
+          r.reason,
+          'no water on the chart mesh connects the start to where the charts meet the water that reaches the end, within the area'
+        );
+    },
+    [
+      { i: 0, j: 0 },
+      { i: 1, j: 0, depth: 1 },
+      { i: 2, j: 0 },
+    ]
+  );
 });

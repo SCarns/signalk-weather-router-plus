@@ -302,7 +302,7 @@ function meshLegRunner(
           c.progress(
             0,
             0,
-            `${c.tag}chart mesh: the leg changes from ${a.name} to ${b.name} at ${r.point[1].toFixed(4)}, ${r.point[0].toFixed(4)}, water both call usable for this boat (${r.transfers} such triangles of ${r.tested} tested in ${r.sharedTiles} shared tiles; {time:${r.ms / 1000}})`
+            `${c.tag}chart mesh: the leg changes from ${a.name} to ${b.name} at ${r.point[1].toFixed(4)}, ${r.point[0].toFixed(4)}, water both call usable for this boat (${r.transfers} such triangles of ${r.tested} tested in ${r.candidateTiles} of ${r.sharedTiles} shared tiles, those the rough cuts connect to both ends; {time:${r.ms / 1000}})`
           );
           return { point: r.point };
         }

@@ -737,9 +737,24 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   that does not connect out). The mesh plans the leg from its stop to the
   cheapest exit towards the far end, and the coastline search from there,
   with the mesh's water as land, so it cannot come back into charted
-  water and never sees the stop. Legs whose ends lie in two different
-  meshes still use the older handover (the mesh to open water clear of the
-  shore) until district-to-district routing is built.
+  water and never sees the stop.
+- **From one mesh to another.** A leg that starts in one district's mesh
+  and ends in another's stays on the charts. Where the two meshes overlap,
+  it changes meshes at a point both call usable for the boat: neighbouring
+  districts' charts disagree in a few percent of their overlap (one
+  calls the water usable, the other does not), and such water is never
+  used. The point is reached on the first mesh and connects on the second
+  to the end; the mesh plans the leg on the first mesh to it and on the
+  second from it, with no coastline search. Where the meshes do not connect
+  in their overlap, or do not overlap, the leg leaves the first mesh at an
+  exit and enters the second at an entry (found as for one end outside the
+  mesh, from both sides), with the coastline search between them and both
+  meshes' water as land. Both rough cuts are asked first whether such a
+  point, or such an exit and entry, exists at all, so a leg that cannot be
+  made fails without a long search (on the test box a two-district leg with
+  no way through took 16 s and 558 MB to say so). The log has a line
+  "chart mesh: the leg changes from … to … at …" or "… leaves … and enters
+  … at …".
 - **No search area.** The mesh search reads the chart a 0.25° tile at a
   time, as it reaches each tile, and lets a tile go once nothing it still
   has to look at lies there (read again if it comes back), so a route
@@ -779,8 +794,8 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   draft, the forecast still being decoded, the mesh process failing) the
   route fails with that reason; it is no longer handed to the coastline
   search, which knows no depths. One case still uses the coastline search
-  for now: a leg with one end outside the mesh or its points in two
-  different meshes (the handover above).
+  for now: a leg through waypoint circles (Approximate precision) whose
+  points are not all in one mesh; the final depth check still applies.
 - **Approximate waypoints on the mesh.** A leg through waypoint circles
   (Approximate precision) is planned on the mesh like any other: the mesh
   route runs from the start to the first circle, on from where it entered
@@ -801,8 +816,9 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   that crosses any triangle the boat cannot use fails, naming the places
   and what blocks them; nothing unchecked is returned. Water with no
   charted depth and depths inside fairways, dredged areas and recommended
-  tracks pass, as the blocking rules pass them. Where the route leaves the
-  mesh the stretch is counted, not judged. The log has a "depth check:"
+  tracks pass, as the blocking rules pass them. Where two meshes overlap,
+  a stretch either one blocks fails, whichever covers it first. Where the
+  route leaves the mesh the stretch is counted, not judged. The log has a "depth check:"
   line, and the result strip a *Chart depth checked* line: the shallowest
   charted depth crossed, the distance with no charted depth and the
   distance outside the mesh.
@@ -818,11 +834,14 @@ once with the panel's "Check for updates" button
 (`POST /api/meshes/refresh`). The panel's per-mesh buttons (Download,
 Update, Download again, Remove, Cancel; `POST /api/meshes/{name}/{action}`)
 change the download list at once, without a restart. A leg is covered when one downloaded mesh (or the
-`meshDir` folder) holds its points, and that mesh is used.
+`meshDir` folder) holds its points, and that mesh is used; a leg whose ends
+lie in two meshes uses both (above).
 The job log says what the mesh did ("chart mesh: …") and the summary's
 `mesh` is true when any leg used it. When a mesh meets the route, the
 summary's `depth_checked` is true and `legs_detail` gives, per leg, what
-planned it (`mesh`, `coastline`, or `mixed` for a handover leg), the
+planned it (`mesh`, `coastline`, or `mixed` for a leg partly on the
+coastline search: leaving the charts, or between two meshes across water
+neither charts), the
 metres on the mesh, with no charted depth and outside the mesh, and the
 shallowest charted depth crossed with its position; the route's GeoJSON
 carries the same as `depth_check`.

@@ -17,7 +17,6 @@ import { writeGridMesh } from './fixture';
 import { PagedMesh } from './paged';
 import { MeshStore } from './store';
 import { findMeshGap, findMeshTransfer, type TransferMesh } from './transfer';
-import type { CoarseMap } from './coarse';
 
 const RULES = { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 };
 const COARSE: CoarseRules = { draughtM: 2, airDraftM: 18, bufferM: 0, openingBridges: 'open' };
@@ -32,11 +31,7 @@ function cells(i0: number, i1: number, depth: (i: number, j: number) => number =
   return out;
 }
 
-function withPair(
-  a: ReturnType<typeof cells>,
-  b: ReturnType<typeof cells>,
-  fn: (from: TransferMesh, to: TransferMesh & { map: CoarseMap }) => void
-): void {
+function withPair(a: ReturnType<typeof cells>, b: ReturnType<typeof cells>, fn: (from: TransferMesh, to: TransferMesh) => void): void {
   const da = writeGridMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-xfer-a-')), a);
   const db = writeGridMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-xfer-b-')), b);
   try {
@@ -44,8 +39,9 @@ function withPair(
     const sb = MeshStore.open(db);
     const ba = boundarySeeds(sa, COARSE);
     const bb = boundarySeeds(sb, COARSE);
-    const map = buildCoarseMap(sb, COARSE, new PagedMesh(sb, meshRulesOf(COARSE), 1, bb));
-    fn({ store: sa, boundary: ba, name: 'A' }, { store: sb, boundary: bb, name: 'B', map });
+    const ma = buildCoarseMap(sa, COARSE, new PagedMesh(sa, meshRulesOf(COARSE), 1, ba));
+    const mb = buildCoarseMap(sb, COARSE, new PagedMesh(sb, meshRulesOf(COARSE), 1, bb));
+    fn({ store: sa, boundary: ba, map: ma, name: 'A' }, { store: sb, boundary: bb, map: mb, name: 'B' });
   } finally {
     fs.rmSync(da, { recursive: true, force: true });
     fs.rmSync(db, { recursive: true, force: true });
@@ -152,6 +148,22 @@ test("findMeshGap: the second mesh's edge water not connected on it to the end i
         assert.equal(
           r.reason,
           "no water on B that this boat can use and that connects to the end meets the coastline's water within the area"
+        );
+    }
+  );
+});
+
+test("findMeshTransfer: the start's water cut off from the overlap is refused from the rough cuts", () => {
+  // A's column lon 1–2 is 1 m deep: the start's water (lon 0–1) never reaches the overlap.
+  withMeshes(
+    cells(0, 3, i => (i === 1 ? 1 : 10)),
+    cells(2, 5),
+    r => {
+      assert.ok(!r.ok);
+      if (!r.ok)
+        assert.equal(
+          r.reason,
+          'no water on A connects the start to water that both A and B call usable for this boat and that connects on B to the end'
         );
     }
   );

@@ -383,6 +383,13 @@ export class PieceGraph {
     return this.comp[p];
   }
 
+  /** The tiles (positions in the mesh's tile list) holding a piece of any of these connected groups; no tile is read. */
+  tilesOf(groups: number[]): Set<number> {
+    const out = new Set<number>();
+    for (let p = 0; p < this.pieces.length; p++) if (groups.includes(this.component(p))) out.add(this.tileOfPiece[p]);
+    return out;
+  }
+
   /** The reach of chains of pieces: their tiles, the box of those tiles' extents, their length. */
   reach(chains: number[][]): Reach {
     const tiles = new Set<number>();

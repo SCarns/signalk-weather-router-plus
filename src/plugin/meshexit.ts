@@ -11,11 +11,11 @@ import { type CellMask, LandMask } from '../geo/landmask';
 import { findMeshExit } from '../engine/mesh/exit';
 import type { MeshRules } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
-import { boundaryFile, readBoundary } from './meshcoarse';
+import { boundaryFile, coarseRulesOf, readBoundary, readCoarseMap } from './meshcoarse';
 
 export interface MeshExitTask {
   task: 'mesh-exit';
-  /** The mesh folder, and its rough cut for the route's rules (its boundary record seeds the buffer). */
+  /** The mesh folder, and its rough cut for the route's rules (which water connects to the stop; its boundary record seeds the buffer). */
   dir: string;
   mapFile: string;
   rules: MeshRules;
@@ -33,6 +33,9 @@ export function runMeshExitTask(t: MeshExitTask): MeshExitTaskResult {
   const t0 = Date.now();
   const res = LandMask.chooseResolution(t.land.bbox, t.land.maxCells);
   const land = LandMask.fromShapefiles(t.land.shapefiles, t.land.bbox, { resolutionDeg: res }).withBuffer(t.land.bufferM);
-  const r = findMeshExit(MeshStore.open(t.dir), t.rules, readBoundary(boundaryFile(t.mapFile)), land, t.inside, t.outside, t.names);
+  const store = MeshStore.open(t.dir);
+  const map = readCoarseMap(t.mapFile, store, coarseRulesOf(t.rules), 'the mesh');
+  if (typeof map === 'string') return { ok: false, reason: map };
+  const r = findMeshExit(store, t.rules, readBoundary(boundaryFile(t.mapFile)), map, land, t.inside, t.outside, t.names);
   return r.ok ? { ...r, ms: Date.now() - t0 } : r;
 }

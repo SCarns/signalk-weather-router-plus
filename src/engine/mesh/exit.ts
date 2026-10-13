@@ -13,7 +13,10 @@
  *
  * The leg's exit: the mesh search from the stop inside the mesh to any exit, each costed as its mesh route plus the
  * straight run from it to the far end (which never overestimates the rest), so the cheapest way out towards the far
- * end. The coastline part starts there, with the mesh's water as land (the cell mask returned; the exit's own cell is
+ * end. Only sides on water the rough cut (coarse.ts PieceGraph) connects to the stop count, looked for only in the
+ * tiles holding that water; when there are none the leg fails before any search (a search with no reachable exit
+ * would read every triangle connected to the stop first; the same fault took 289 s and 3.1 GB on the two-mesh search,
+ * transfer.ts). The coastline part starts there, with the mesh's water as land (the cell mask returned; the exit's own cell is
  * left to the coastline search, where the two meet).
  *
  * Measured first (2026-10-12, a read-only experiment on brain, Lake Superior, 09CGD): 11,726 exits of 42,265 sides of
@@ -24,6 +27,7 @@
 import { haversineDistanceM } from '../../geo/geodesy';
 import { cellOf, type CellMask, type LandMask } from '../../geo/landmask';
 import { meshAstar } from './astar';
+import { type CoarseMap, PieceGraph } from './coarse';
 import { type BoundarySeeds, PagedMesh } from './paged';
 import type { MeshRules } from './route';
 import { M_PER_DEG_MESH, type MeshStore } from './store';
@@ -44,6 +48,8 @@ export function findMeshExit(
   store: MeshStore,
   rules: MeshRules,
   boundary: BoundarySeeds | null,
+  /** The mesh's rough cut for the leg's rules (without the areas to avoid: PieceGraph applies them). */
+  map: CoarseMap,
   /** The coastline search's land for the leg's area (its raster, at its resolution, with its land buffer). */
   land: LandMask,
   /** The leg's end inside the mesh, and its end outside every mesh. */
@@ -51,6 +57,18 @@ export function findMeshExit(
   outside: [number, number],
   names: { inside: string; outside: string }
 ): MeshExitResult {
+  const cl = Math.cos((((inside[1] + outside[1]) / 2) * Math.PI) / 180);
+  const pm = new PagedMesh(store, rules, cl, boundary);
+  // The stop's water on the rough cut, and the tiles holding it.
+  const [sx, sy] = pm.toXY(inside[0], inside[1]);
+  const starts = pm.locateAll(sx, sy);
+  if (!starts.length) return { ok: false, reason: `${names.inside} is not on water this boat can use on the chart mesh` };
+  const graph = new PieceGraph(map, pm);
+  const groupOf = (g: number): number | null => {
+    const p = graph.pieceOf(g);
+    return p === null ? null : graph.component(p);
+  };
+  const startGroups = [...new Set(starts.map(groupOf))].filter((c): c is number => c !== null);
   const mask = emptyMask(land);
   markMeshWater(store, mask);
   // The coastline's water outside the mesh, flooded from the far end.
@@ -58,32 +76,32 @@ export function findMeshExit(
   if (start < 0 || !isFree(land, mask, start))
     return { ok: false, reason: `${names.outside} is not on open water to the coastline data outside the chart mesh` };
   const reached = floodFree(land, mask, [start]);
-  // The exits: sides of usable mesh water with no neighbour whose outside the flood reached.
-  const cl = Math.cos((((inside[1] + outside[1]) / 2) * Math.PI) / 180);
-  const pm = new PagedMesh(store, rules, cl, boundary);
+  // The exits: sides of mesh water connected to the stop with no neighbour whose outside the flood reached.
   const [ox, oy] = pm.toXY(outside[0], outside[1]);
   const exits = new Map<number, { x: number; y: number; restS: number }>();
-  forEachEdgeSide(pm, mask, (g, mx, my, c) => {
-    if (c < 0 || !reached[c]) return;
-    const [mLon, mLat] = pm.fromXY(mx, my);
-    const restS = haversineDistanceM(mLon, mLat, outside[0], outside[1]) / rules.motorSpeedMs;
-    const prev = exits.get(g);
-    if (!prev || restS < prev.restS) exits.set(g, { x: mx, y: my, restS });
-  });
+  forEachEdgeSide(
+    pm,
+    mask,
+    (g, mx, my, c) => {
+      if (c < 0 || !reached[c] || !startGroups.includes(groupOf(g) ?? -1)) return;
+      const [mLon, mLat] = pm.fromXY(mx, my);
+      const restS = haversineDistanceM(mLon, mLat, outside[0], outside[1]) / rules.motorSpeedMs;
+      const prev = exits.get(g);
+      if (!prev || restS < prev.restS) exits.set(g, { x: mx, y: my, restS });
+    },
+    graph.tilesOf(startGroups)
+  );
   if (!exits.size)
     return {
       ok: false,
-      reason: `no water this boat can use on the chart mesh within the area meets the coastline's water that reaches ${names.outside}`,
+      reason: `no water on the chart mesh connects ${names.inside} to where the charts meet the water that reaches ${names.outside}, within the area`,
     };
   // The mesh search from the stop to the cheapest exit towards the far end.
-  const [sx, sy] = pm.toXY(inside[0], inside[1]);
-  const starts = pm.locateAll(sx, sy);
-  if (!starts.length) return { ok: false, reason: `${names.inside} is not on water this boat can use on the chart mesh` };
   const res = meshAstar(pm, starts, [], sx, sy, ox, oy, rules.motorSpeedMs, exits);
   if (res.goalNode === -2 || res.goalTri < 0)
     return {
       ok: false,
-      reason: `no water on the chart mesh connects ${names.inside} to where the charts meet the water that reaches ${names.outside}`,
+      reason: `the rough cut says water connects ${names.inside} to where the charts meet the water that reaches ${names.outside}, but the search found none; rebuild the rough cut in the plugin configuration`,
     };
   const e = exits.get(res.goalTri)!;
   const exit = pm.fromXY(e.x, e.y);
@@ -165,10 +183,17 @@ export function floodFree(land: LandMask, mask: CellMask, seeds: number[]): Uint
  * the side's middle (the mesh's frame), and the raster cell half a cell outside it (-1 off the raster; half a cell is
  * the raster's own resolution, the narrower east-west way). Each tile is let go once scanned.
  */
-export function forEachEdgeSide(pm: PagedMesh, mask: CellMask, fn: (g: number, mx: number, my: number, cell: number) => void): void {
+export function forEachEdgeSide(
+  pm: PagedMesh,
+  mask: CellMask,
+  fn: (g: number, mx: number, my: number, cell: number) => void,
+  /** Only these tiles (positions in the tile list), when given. */
+  only?: Set<number>
+): void {
   const box = mask.bbox;
   const half = (mask.resolutionDeg / 2) * M_PER_DEG_MESH * pm.cl;
   for (let idx = 0; idx < pm.tileCount; idx++) {
+    if (only && !only.has(idx)) continue;
     const info = pm.infoAt(idx)!;
     if (info.bbox[2] < box.west || info.bbox[0] > box.east || info.bbox[3] < box.south || info.bbox[1] > box.north) continue;
     const held = pm.isHeld(idx);
