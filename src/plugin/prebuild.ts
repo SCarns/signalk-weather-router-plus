@@ -2,9 +2,9 @@
  * Map tiles built ahead of time (main thread scheduler + `tiles` worker
  * threads).
  *
- * Areas: the view the map shows (inferred from the tile requests the page
- * sends: the deepest zoom asked for in the last seconds and the middle of
- * those tiles) and the boat (navigation.position, kept across restarts).
+ * Areas: the view a map shows (ViewTracker: inferred from the tile requests
+ * of any map, this plugin's page or a chartplotter drawing the PNG tiles)
+ * and the boat (navigation.position, kept across restarts).
  * Each area is a pyramid of web-map tiles: the full radius down to zoom 8,
  * half the radius at each deeper zoom, to the deepest zoom set. Every
  * hour of the window is built at every level.
@@ -65,8 +65,8 @@ const QUERY_TIMEOUT_MS = 120_000;
 const READY_TIMEOUT_MS = 60_000;
 /** After a builder failed to start, no new one is started for this long (a lasting error does not respawn in a loop). */
 const START_RETRY_MS = 5 * 60_000;
-/** A view is the deepest zoom the page asked for within this long. */
-const VIEW_WINDOW_MS = 5_000;
+/** Tile requests no further apart than this are one burst: one view drawn. */
+const VIEW_GAP_MS = 5_000;
 /** Consecutive errors after which a layer is left out until the walk restarts. */
 const LAYER_ERROR_LIMIT = 3;
 
@@ -104,8 +104,69 @@ interface Area {
   kind: 'view' | 'boat';
   lat: number;
   lon: number;
-  /** view: the deepest zoom the page asked for. */
+  /** view: the deepest zoom the map asked for. */
   z?: number;
+}
+
+/**
+ * The view a map shows, from the tiles it asks for. A burst is a run of tile requests no further apart than
+ * VIEW_GAP_MS: the tiles of one view drawn. The view is taken from a burst only when it has ended, from all its
+ * distinct tiles at its deepest zoom (a tile asked for several layers counts once): their middle, rounded to a
+ * quarter of the build's radius at that zoom so small pans do not restart the walk. A view shallower than the
+ * shallowest zoom built (PYRAMID_MIN_ZOOM) has nothing of the build on screen and leaves the last view as it is;
+ * so does no request at all (the map closed: the last view is kept).
+ *
+ * Until 2026-10-13 the view was the deepest zoom asked for in the last 5 s, read every second: with the requests
+ * of a whole-Atlantic view at zoom 4 trickling in over half a minute (the server answering in 12–21 s), the last
+ * 5 s held only the view's north-east corner tile, 4/9/4, and the prebuild built northwest Russia down to zoom 15 for
+ * every hour (brain, journal and /api/status).
+ */
+export class ViewTracker {
+  private burst: { z: number; tiles: Map<string, { x: number; y: number }>; lastAt: number } | null = null;
+  private last: Area | null = null;
+
+  /** `radiusM`: the build's radius now (the rounding step follows it). */
+  constructor(private readonly radiusM: () => number) {}
+
+  /** A map asked for tile z/x/y at `atMs`. */
+  note(z: number, x: number, y: number, atMs: number): void {
+    if (this.burst && atMs - this.burst.lastAt > VIEW_GAP_MS) this.close();
+    if (!this.burst) this.burst = { z, tiles: new Map(), lastAt: atMs };
+    const b = this.burst;
+    b.lastAt = atMs;
+    if (z > b.z) {
+      b.z = z;
+      b.tiles.clear();
+    }
+    if (z === b.z) b.tiles.set(`${x}/${y}`, { x, y });
+  }
+
+  /** The view at `nowMs`: from the last burst that has ended, or null when there has been none. */
+  view(nowMs: number): Area | null {
+    if (this.burst && nowMs - this.burst.lastAt > VIEW_GAP_MS) this.close();
+    return this.last;
+  }
+
+  private close(): void {
+    const b = this.burst;
+    this.burst = null;
+    if (!b || b.z < PYRAMID_MIN_ZOOM || !b.tiles.size) return;
+    // Mean of the tile centres, on the unit circle for longitude (date line).
+    let sx = 0;
+    let sy = 0;
+    let lat = 0;
+    for (const { x, y } of b.tiles.values()) {
+      const box = tileBBox(b.z, x, y);
+      const lon = ((box.west + box.east) / 2) * DEG;
+      sx += Math.cos(lon);
+      sy += Math.sin(lon);
+      lat += (box.north + box.south) / 2;
+    }
+    const step = pyramidRadius(this.radiusM(), b.z) / 4 / M_PER_DEG;
+    const cLat = lat / b.tiles.size;
+    const cLon = (Math.atan2(sy, sx) * 180) / Math.PI;
+    this.last = { kind: 'view', lat: Math.round(cLat / step) * step, lon: Math.round(cLon / step) * step, z: b.z };
+  }
 }
 
 interface TilesWorker {
@@ -219,9 +280,8 @@ export class TilePrebuilder {
   /** No new builder before this time (a builder failed to start). */
   private noStartUntil = 0;
   private boat: VesselPosition | null = null;
-  private readonly recent: { z: number; x: number; y: number; at: number }[] = [];
+  private readonly views = new ViewTracker(() => this.settings.radiusM);
   private areas: Area[] = [];
-  private lastView: Area | null = null;
   private window: { fromMs: number; toMs: number } | null = null;
   /** The last messages to replay to a (re)started worker, by type. */
   private broadcastLog = new Map<string, MainToWorker>();
@@ -282,12 +342,10 @@ export class TilePrebuilder {
     for (const w of this.workers) if (w.ready) this.post(w, msg);
   }
 
-  /** The page asked for this tile (view inference). */
+  /** A map asked for this tile (view inference). */
   noteRequest(z: number, x: number, y: number): void {
     if (!this.settings.followView) return;
-    const now = Date.now();
-    this.recent.push({ z, x, y, at: now });
-    while (this.recent.length && (this.recent.length > 400 || now - this.recent[0].at > VIEW_WINDOW_MS)) this.recent.shift();
+    this.views.note(z, x, y, Date.now());
   }
 
   private readBoat(): VesselPosition | null {
@@ -401,31 +459,9 @@ export class TilePrebuilder {
     }, ms);
   }
 
-  /** The view: middle of the deepest-zoom tiles asked for in the last seconds. */
+  /** The view a map shows (ViewTracker), when the walk follows it. */
   private viewArea(): Area | null {
-    if (!this.settings.followView) return null;
-    const now = Date.now();
-    const recent = this.recent.filter(r => now - r.at <= VIEW_WINDOW_MS);
-    if (!recent.length) return this.lastView; // keep the last view
-    const z = Math.max(...recent.map(r => r.z));
-    const at = recent.filter(r => r.z === z);
-    // Mean of tile centres on the unit circle for longitude (date line).
-    let sx = 0;
-    let sy = 0;
-    let lat = 0;
-    for (const r of at) {
-      const b = tileBBox(r.z, r.x, r.y);
-      const lon = ((b.west + b.east) / 2) * DEG;
-      sx += Math.cos(lon);
-      sy += Math.sin(lon);
-      lat += (b.north + b.south) / 2;
-    }
-    // Round the centre to a quarter of the radius at its zoom so small pans do not restart the walk.
-    const step = pyramidRadius(this.settings.radiusM, z) / 4 / M_PER_DEG;
-    const cLat = lat / at.length;
-    const cLon = (Math.atan2(sy, sx) * 180) / Math.PI;
-    this.lastView = { kind: 'view', lat: Math.round(cLat / step) * step, lon: Math.round(cLon / step) * step, z };
-    return this.lastView;
+    return this.settings.followView ? this.views.view(Date.now()) : null;
   }
 
   /** What the walk depends on; a change starts it again. */
