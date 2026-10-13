@@ -124,3 +124,21 @@ test('check: an area to avoid blocks the triangles whose centroid lies in it', (
     );
   });
 });
+
+test('check: where two meshes overlap, a stretch either one blocks is a violation, whichever is walked first', () => {
+  withMesh([10, 10, 10, 10], undefined, deep =>
+    withMesh([10, 10, 1, 1], undefined, shallow => {
+      for (const stores of [
+        [deep, shallow],
+        [shallow, deep],
+      ]) {
+        const r = checkRouteOnMeshes(stores, ACROSS, [0], 1, RULES);
+        assert.deepEqual(
+          r.violations.map(v => [Number(v.lon.toFixed(3)), v.kind, v.value]),
+          [[1, 'depth', 1]]
+        );
+        assert.ok(near(r.legs[0].onMeshM, ACROSS_M), `${r.legs[0].onMeshM} of ${ACROSS_M}`);
+      }
+    })
+  );
+});

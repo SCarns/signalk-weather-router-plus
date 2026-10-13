@@ -33,7 +33,9 @@
  *              connected to the route (part 2);
  *  - mesh-exit: where a leg leaving the chart mesh crosses to the
  *              coastline, and the mesh's water as land for the coastline
- *              part (part 5).
+ *              part (part 5);
+ *  - mesh-transfer: where a leg from one chart mesh to another changes
+ *              meshes in their overlap (part 5 step 2).
  */
 
 import { fork } from 'node:child_process';
@@ -46,6 +48,7 @@ import type { MeshCheckTask } from './meshchecktask';
 import type { MeshCoarseResult, MeshCoarseTask, MeshReachResult, MeshReachTask, MeshSnapResult, MeshSnapTask } from './meshcoarse';
 import type { MeshExitTask, MeshExitTaskResult } from './meshexit';
 import type { MeshLegEvent, MeshLegResult, MeshLegTask } from './meshlegtask';
+import type { MeshTransferTask, MeshTransferTaskResult } from './meshtransfer';
 
 export type ChildTask =
   | { task: 'rmtree'; dir: string }
@@ -56,6 +59,7 @@ export type ChildTask =
   | MeshReachTask
   | MeshSnapTask
   | MeshExitTask
+  | MeshTransferTask
   | { task: 'mesh-download'; base: string; dest: string; build: string; fresh?: boolean };
 
 /** A message a task sends before its answer (the mesh leg's progress and stage fronts). */
@@ -86,9 +90,11 @@ export type ChildTaskResult<T extends ChildTask> = T extends { task: 'rmtree' }
             ? MeshSnapResult
             : T extends { task: 'mesh-exit' }
               ? MeshExitTaskResult
-              : T extends { task: 'mesh-download' }
-                ? MeshDownloadResult
-                : RegionalDecodeResult;
+              : T extends { task: 'mesh-transfer' }
+                ? MeshTransferTaskResult
+                : T extends { task: 'mesh-download' }
+                  ? MeshDownloadResult
+                  : RegionalDecodeResult;
 
 const isTs = __filename.endsWith('.ts');
 
@@ -317,6 +323,10 @@ async function runTask(t: ChildTask): Promise<unknown> {
     case 'mesh-exit': {
       const { runMeshExitTask } = await import('./meshexit');
       return runMeshExitTask(t);
+    }
+    case 'mesh-transfer': {
+      const { runMeshTransferTask } = await import('./meshtransfer');
+      return runMeshTransferTask(t);
     }
     case 'mesh-download':
       return downloadMesh(t.base, t.dest, t.build, t.fresh === true);

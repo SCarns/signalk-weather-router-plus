@@ -24,7 +24,12 @@ import { MinHeap } from '../heap';
 import type { PagedMesh, PagedTile } from './paged';
 
 /** How often (expansions) tiles with no open node left are dropped: a batch, not a tuning of the route. */
-const DROP_EVERY = 1024;
+export const DROP_EVERY = 1024;
+
+/** Goals with their own end points, looked up by triangle (a Map, or a test answered as the search reaches each). */
+export interface SearchExits {
+  get(t: number): { x: number; y: number; restS: number } | undefined;
+}
 
 /** Per tile touched: cost per node, the node each was reached from (-1: the start point), state 0 new, 1 open, 2 closed. */
 interface TileState {
@@ -61,8 +66,10 @@ export function meshAstar(
    * Goals with their own end points (part 5: the exits where the chart mesh's water meets the coastline's): reaching
    * goal triangle t ends at (x, y) and adds `restS` (a lower bound of the rest of the leg beyond it). Then `ends` is
    * ignored and (ex, ey), the leg's far end, only guides the search (the straight time to it never overestimates).
+   * Asked only of the triangles the search reaches, so it may be a test (transfer.ts: water another mesh also calls
+   * usable) rather than a list made in advance.
    */
-  exits?: Map<number, { x: number; y: number; restS: number }>
+  exits?: SearchExits
 ): MeshSearchResult {
   const states = new Map<number, TileState>();
   const stateOf = (T: PagedTile): TileState => {
@@ -79,7 +86,8 @@ export function meshAstar(
   let goalG = Infinity;
   let goalNode = -2;
   const st = Array.isArray(starts) ? starts : [starts];
-  const goals = new Set(exits ? exits.keys() : Array.isArray(ends) ? ends : [ends]);
+  const endSet = exits ? null : new Set(Array.isArray(ends) ? ends : [ends]);
+  const isGoal = (t: number): boolean => (exits ? exits.get(t) !== undefined : endSet!.has(t));
   /** The cost of finishing in goal triangle t from (hx, hy): to its end point, and on beyond it for an exit. */
   const finish = (t: number, hx: number, hy: number, mult: number): number => {
     const e = exits?.get(t);
@@ -88,7 +96,7 @@ export function meshAstar(
   let goalTri = -1;
   let direct = st[0];
   for (const s0 of st) {
-    if (!goals.has(s0)) continue;
+    if (!isGoal(s0)) continue;
     const S0 = pm.tileOf(s0);
     const g = finish(s0, sx, sy, S0.mult[s0 - S0.first]);
     if (g < goalG) {
@@ -131,7 +139,7 @@ export function meshAstar(
   });
   let expanded = 0;
   // The start and end tiles stay held; with exits (possibly many tiles along a coverage edge) only the start's.
-  const pinnedTiles = new Set([...st, ...(exits ? [] : goals)].map(t => pm.tileIndexOf(t)));
+  const pinnedTiles = new Set([...st, ...(endSet ?? [])].map(t => pm.tileIndexOf(t)));
   const pinned = (idx: number): boolean => pinnedTiles.has(idx);
   while (heap.size > 0) {
     const f = heap.peekKey();
@@ -149,7 +157,7 @@ export function meshAstar(
     expanded++;
     const hx = midX(T, l, kin);
     const hy = midY(T, l, kin);
-    if (goals.has(t)) {
+    if (isGoal(t)) {
       const gg = S.g[q] + finish(t, hx, hy, T.mult[l]);
       if (gg < goalG) {
         goalG = gg;

@@ -119,6 +119,22 @@ export interface MeshLegRunner {
     progress: ProgressFn;
     shouldCancel: () => boolean;
   }): Promise<{ exit: [number, number]; mask: CellMask } | MeshRefusal>;
+  /**
+   * Where a leg with its start in one mesh and its end in another changes meshes (part 5 step 2,
+   * engine/mesh/transfer.ts): in their overlap, a point both meshes call usable, reached on the start's mesh and
+   * connected on the end's to the end; else across the water between them, the start mesh's exit and the end mesh's
+   * entry, with both meshes' water as cells the coastline part over `box` must treat as land; or why neither.
+   */
+  transfer?(args: {
+    start: [number, number];
+    end: [number, number];
+    names: { start: string; end: string };
+    rules: MeshRules;
+    box: BBox;
+    tag: string;
+    progress: ProgressFn;
+    shouldCancel: () => boolean;
+  }): Promise<{ point: [number, number] } | { exit: [number, number]; entry: [number, number]; mask: CellMask } | MeshRefusal>;
 }
 
 /**

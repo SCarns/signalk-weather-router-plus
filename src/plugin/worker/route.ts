@@ -263,6 +263,59 @@ function meshLegRunner(
         clearInterval(poll);
       }
     },
+    // Where a leg from one mesh to another changes meshes in their overlap (part 5 step 2): in a child process
+    // (plugin/meshtransfer.ts) holding both; the two rough cuts first when missing.
+    transfer: async c => {
+      const a = meshFor([c.start]);
+      const b = meshFor([c.end]);
+      if (!a || !b) return { refused: 'no mesh covers the leg' };
+      const ac = new AbortController();
+      const poll = setInterval(() => {
+        if (c.shouldCancel()) ac.abort();
+      }, 500);
+      try {
+        const fa = await roughCut(a, c.rules, c.tag, c.progress, ac.signal);
+        if (typeof fa !== 'string') return fa;
+        const fb = await roughCut(b, c.rules, c.tag, c.progress, ac.signal);
+        if (typeof fb !== 'string') return fb;
+        const r = await runChildTask(
+          {
+            task: 'mesh-transfer',
+            from: { dir: a.dir, mapFile: fa, name: a.name },
+            to: { dir: b.dir, mapFile: fb, name: b.name },
+            rules: c.rules,
+            start: c.start,
+            end: c.end,
+            names: c.names,
+            land: {
+              shapefiles: cfg.landShapefiles,
+              bbox: c.box,
+              maxCells: cfg.routing.landRasterMaxCells,
+              bufferM: cfg.routing.landBufferM,
+            },
+          },
+          10 * 60_000,
+          ac.signal
+        );
+        if (!r.ok) return { refused: r.reason };
+        if (r.kind === 'transfer') {
+          c.progress(
+            0,
+            0,
+            `${c.tag}chart mesh: the leg changes from ${a.name} to ${b.name} at ${r.point[1].toFixed(4)}, ${r.point[0].toFixed(4)}, water both call usable for this boat (${r.transfers} such triangles of ${r.tested} tested in ${r.sharedTiles} shared tiles; {time:${r.ms / 1000}})`
+          );
+          return { point: r.point };
+        }
+        c.progress(
+          0,
+          0,
+          `${c.tag}chart mesh: the leg cannot change from ${a.name} to ${b.name} in their overlap (${r.overlap}); it leaves ${a.name} at ${r.exit[1].toFixed(4)}, ${r.exit[0].toFixed(4)} and enters ${b.name} at ${r.entry[1].toFixed(4)}, ${r.entry[0].toFixed(4)}, the coastline search between them with both meshes' water as land (${r.exits} exits, ${r.entries} entries; {time:${r.ms / 1000}})`
+        );
+        return { exit: r.exit, entry: r.entry, mask: r.mask };
+      } finally {
+        clearInterval(poll);
+      }
+    },
     // The leg's reach on the rough cut (part 4): whether water connects its ends for the boat, and where it runs;
     // the rough cut built first when this boat has none for the mesh, both in child processes (meshcoarse.ts), so
     // no mesh tile is read in this worker.

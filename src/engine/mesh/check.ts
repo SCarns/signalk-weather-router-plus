@@ -113,8 +113,25 @@ function meets(a: BBox, b: BBox): boolean {
   return a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north;
 }
 
-/** Add [f0, f1) to the piece unless another mesh already covers it (the first mesh to cover a stretch decides it). */
+/**
+ * Add [f0, f1) to the piece. Usable water fills only what no mesh covers yet; water a mesh blocks takes its stretch
+ * whatever another mesh said there (part 5: where two districts' meshes overlap and their charts disagree, a stretch
+ * either calls unusable fails the route).
+ */
 function cover(p: Piece, f0: number, f1: number, tri: TriInfo): void {
+  // The stretches already recorded that this one does not replace: all of them for usable water, the blocked ones
+  // for blocked water (a blocked stretch cuts the usable ones it overlaps).
+  if (tri.blocked) {
+    const kept: Piece['covered'] = [];
+    for (const c of p.covered) {
+      if (c.tri.blocked || c.f1 <= f0 || c.f0 >= f1) kept.push(c);
+      else {
+        if (c.f0 < f0) kept.push({ ...c, f1: f0 });
+        if (c.f1 > f1) kept.push({ ...c, f0: f1 });
+      }
+    }
+    p.covered = kept;
+  }
   let parts: [number, number][] = [[f0, f1]];
   for (const c of p.covered) {
     const next: [number, number][] = [];

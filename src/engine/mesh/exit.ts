@@ -26,7 +26,7 @@ import { cellOf, type CellMask, type LandMask } from '../../geo/landmask';
 import { meshAstar } from './astar';
 import { type BoundarySeeds, PagedMesh } from './paged';
 import type { MeshRules } from './route';
-import type { MeshStore } from './store';
+import { M_PER_DEG_MESH, type MeshStore } from './store';
 
 export type MeshExitResult =
   | {
@@ -51,96 +51,25 @@ export function findMeshExit(
   outside: [number, number],
   names: { inside: string; outside: string }
 ): MeshExitResult {
-  const box = land.bbox;
-  const r = land.resolutionDeg;
-  const { nx, ny } = land;
-  const mask: CellMask = { bbox: box, resolutionDeg: r, nx, ny, cells: new Uint8Array(nx * ny) };
-  const K = store.index.xScale;
-  const tiles = store.index.tiles.filter(
-    t => !(t.bbox[2] < box.west || t.bbox[0] > box.east || t.bbox[3] < box.south || t.bbox[1] > box.north)
-  );
-  // The mesh's water: every cell whose centre a mesh triangle holds.
-  for (const info of tiles) {
-    const t = store.readTileArrays(info);
-    for (let a = 0; a < t.n; a++) {
-      const c = a * 6;
-      const xs = [t.corners[c] / K, t.corners[c + 2] / K, t.corners[c + 4] / K];
-      const ys = [t.corners[c + 1], t.corners[c + 3], t.corners[c + 5]];
-      const i0 = Math.max(0, Math.floor((Math.min(...xs) - box.west) / r));
-      const i1 = Math.min(nx - 1, Math.floor((Math.max(...xs) - box.west) / r));
-      const j0 = Math.max(0, Math.floor((Math.min(...ys) - box.south) / r));
-      const j1 = Math.min(ny - 1, Math.floor((Math.max(...ys) - box.south) / r));
-      for (let j = j0; j <= j1; j++)
-        for (let i = i0; i <= i1; i++) {
-          const px = box.west + (i + 0.5) * r;
-          const py = box.south + (j + 0.5) * r;
-          const d1 = (xs[1] - xs[0]) * (py - ys[0]) - (ys[1] - ys[0]) * (px - xs[0]);
-          const d2 = (xs[2] - xs[1]) * (py - ys[1]) - (ys[2] - ys[1]) * (px - xs[1]);
-          const d3 = (xs[0] - xs[2]) * (py - ys[2]) - (ys[0] - ys[2]) * (px - xs[2]);
-          if (d1 >= 0 && d2 >= 0 && d3 >= 0) mask.cells[j * nx + i] = 1;
-        }
-    }
-  }
+  const mask = emptyMask(land);
+  markMeshWater(store, mask);
   // The coastline's water outside the mesh, flooded from the far end.
-  const free = (c: number): boolean => land.raster[c] === 0 && mask.cells[c] === 0;
   const start = cellOf(mask, outside[0], outside[1]);
-  if (start < 0 || !free(start))
+  if (start < 0 || !isFree(land, mask, start))
     return { ok: false, reason: `${names.outside} is not on open water to the coastline data outside the chart mesh` };
-  const reached = new Uint8Array(nx * ny);
-  const queue = new Int32Array(nx * ny);
-  let qh = 0;
-  let qt = 0;
-  reached[start] = 1;
-  queue[qt++] = start;
-  const visit = (n: number): void => {
-    if (reached[n] || !free(n)) return;
-    reached[n] = 1;
-    queue[qt++] = n;
-  };
-  while (qh < qt) {
-    const c = queue[qh++];
-    const i = c % nx;
-    const j = (c - i) / nx;
-    if (i > 0) visit(c - 1);
-    if (i < nx - 1) visit(c + 1);
-    if (j > 0) visit(c - nx);
-    if (j < ny - 1) visit(c + nx);
-  }
+  const reached = floodFree(land, mask, [start]);
   // The exits: sides of usable mesh water with no neighbour whose outside the flood reached.
   const cl = Math.cos((((inside[1] + outside[1]) / 2) * Math.PI) / 180);
   const pm = new PagedMesh(store, rules, cl, boundary);
-  const half = (r / 2) * 111320 * cl; // half a raster cell, metres, the narrower (east-west) way
   const [ox, oy] = pm.toXY(outside[0], outside[1]);
   const exits = new Map<number, { x: number; y: number; restS: number }>();
-  for (let idx = 0; idx < pm.tileCount; idx++) {
-    const info = pm.infoAt(idx)!;
-    if (info.bbox[2] < box.west || info.bbox[0] > box.east || info.bbox[3] < box.south || info.bbox[1] > box.north) continue;
-    const T = pm.tile(idx);
-    for (let l = 0; l < T.n; l++) {
-      if (T.blocked[l]) continue;
-      for (let k = 0; k < 3; k++) {
-        if (T.nb[l * 3 + k] >= 0) continue;
-        const a = l * 3 + k;
-        const b = l * 3 + ((k + 1) % 3);
-        const dx = T.x[b] - T.x[a];
-        const dy = T.y[b] - T.y[a];
-        const L = Math.hypot(dx, dy);
-        if (!(L > 0)) continue;
-        const mx = (T.x[a] + T.x[b]) / 2;
-        const my = (T.y[a] + T.y[b]) / 2;
-        // Corners wind counter-clockwise: the outside is to the right of the side.
-        const [lon, lat] = pm.fromXY(mx + (dy / L) * half, my - (dx / L) * half);
-        const c = cellOf(mask, lon, lat);
-        if (c < 0 || !reached[c]) continue;
-        const [mLon, mLat] = pm.fromXY(mx, my);
-        const restS = haversineDistanceM(mLon, mLat, outside[0], outside[1]) / rules.motorSpeedMs;
-        const g = T.first + l;
-        const prev = exits.get(g);
-        if (!prev || restS < prev.restS) exits.set(g, { x: mx, y: my, restS });
-      }
-    }
-    pm.drop(idx);
-  }
+  forEachEdgeSide(pm, mask, (g, mx, my, c) => {
+    if (c < 0 || !reached[c]) return;
+    const [mLon, mLat] = pm.fromXY(mx, my);
+    const restS = haversineDistanceM(mLon, mLat, outside[0], outside[1]) / rules.motorSpeedMs;
+    const prev = exits.get(g);
+    if (!prev || restS < prev.restS) exits.set(g, { x: mx, y: my, restS });
+  });
   if (!exits.size)
     return {
       ok: false,
@@ -162,4 +91,105 @@ export function findMeshExit(
   const ec = cellOf(mask, exit[0], exit[1]);
   if (ec >= 0) mask.cells[ec] = 0;
   return { ok: true, exit, exits: exits.size, mask };
+}
+
+/** An empty cell mask on the coastline search's raster. */
+export function emptyMask(land: LandMask): CellMask {
+  return { bbox: land.bbox, resolutionDeg: land.resolutionDeg, nx: land.nx, ny: land.ny, cells: new Uint8Array(land.nx * land.ny) };
+}
+
+/** A mesh's water on the raster: every cell whose centre a triangle of the mesh holds is set in the mask. */
+export function markMeshWater(store: MeshStore, mask: CellMask): void {
+  const box = mask.bbox;
+  const r = mask.resolutionDeg;
+  const { nx, ny } = mask;
+  const K = store.index.xScale;
+  const tiles = store.index.tiles.filter(
+    t => !(t.bbox[2] < box.west || t.bbox[0] > box.east || t.bbox[3] < box.south || t.bbox[1] > box.north)
+  );
+  for (const info of tiles) {
+    const t = store.readTileArrays(info);
+    for (let a = 0; a < t.n; a++) {
+      const c = a * 6;
+      const xs = [t.corners[c] / K, t.corners[c + 2] / K, t.corners[c + 4] / K];
+      const ys = [t.corners[c + 1], t.corners[c + 3], t.corners[c + 5]];
+      const i0 = Math.max(0, Math.floor((Math.min(...xs) - box.west) / r));
+      const i1 = Math.min(nx - 1, Math.floor((Math.max(...xs) - box.west) / r));
+      const j0 = Math.max(0, Math.floor((Math.min(...ys) - box.south) / r));
+      const j1 = Math.min(ny - 1, Math.floor((Math.max(...ys) - box.south) / r));
+      for (let j = j0; j <= j1; j++)
+        for (let i = i0; i <= i1; i++) {
+          const px = box.west + (i + 0.5) * r;
+          const py = box.south + (j + 0.5) * r;
+          const d1 = (xs[1] - xs[0]) * (py - ys[0]) - (ys[1] - ys[0]) * (px - xs[0]);
+          const d2 = (xs[2] - xs[1]) * (py - ys[1]) - (ys[2] - ys[1]) * (px - xs[1]);
+          const d3 = (xs[0] - xs[2]) * (py - ys[2]) - (ys[0] - ys[2]) * (px - xs[2]);
+          if (d1 >= 0 && d2 >= 0 && d3 >= 0) mask.cells[j * nx + i] = 1;
+        }
+    }
+  }
+}
+
+/** The coastline's water outside the meshes: not land to it, and not mesh water. */
+export function isFree(land: LandMask, mask: CellMask, c: number): boolean {
+  return land.raster[c] === 0 && mask.cells[c] === 0;
+}
+
+/** The coastline's water outside the meshes reached from the seed cells (4-connected). */
+export function floodFree(land: LandMask, mask: CellMask, seeds: number[]): Uint8Array {
+  const { nx, ny } = mask;
+  const reached = new Uint8Array(nx * ny);
+  const queue = new Int32Array(nx * ny);
+  let qh = 0;
+  let qt = 0;
+  const visit = (n: number): void => {
+    if (reached[n] || !isFree(land, mask, n)) return;
+    reached[n] = 1;
+    queue[qt++] = n;
+  };
+  for (const s of seeds) visit(s);
+  while (qh < qt) {
+    const c = queue[qh++];
+    const i = c % nx;
+    const j = (c - i) / nx;
+    if (i > 0) visit(c - 1);
+    if (i < nx - 1) visit(c + 1);
+    if (j > 0) visit(c - nx);
+    if (j < ny - 1) visit(c + nx);
+  }
+  return reached;
+}
+
+/**
+ * Every side of usable mesh water with no neighbour, in the tiles meeting the mask's box: its triangle (global id),
+ * the side's middle (the mesh's frame), and the raster cell half a cell outside it (-1 off the raster; half a cell is
+ * the raster's own resolution, the narrower east-west way). Each tile is let go once scanned.
+ */
+export function forEachEdgeSide(pm: PagedMesh, mask: CellMask, fn: (g: number, mx: number, my: number, cell: number) => void): void {
+  const box = mask.bbox;
+  const half = (mask.resolutionDeg / 2) * M_PER_DEG_MESH * pm.cl;
+  for (let idx = 0; idx < pm.tileCount; idx++) {
+    const info = pm.infoAt(idx)!;
+    if (info.bbox[2] < box.west || info.bbox[0] > box.east || info.bbox[3] < box.south || info.bbox[1] > box.north) continue;
+    const held = pm.isHeld(idx);
+    const T = pm.tile(idx);
+    for (let l = 0; l < T.n; l++) {
+      if (T.blocked[l]) continue;
+      for (let k = 0; k < 3; k++) {
+        if (T.nb[l * 3 + k] >= 0) continue;
+        const a = l * 3 + k;
+        const b = l * 3 + ((k + 1) % 3);
+        const dx = T.x[b] - T.x[a];
+        const dy = T.y[b] - T.y[a];
+        const L = Math.hypot(dx, dy);
+        if (!(L > 0)) continue;
+        const mx = (T.x[a] + T.x[b]) / 2;
+        const my = (T.y[a] + T.y[b]) / 2;
+        // Corners wind counter-clockwise: the outside is to the right of the side.
+        const [lon, lat] = pm.fromXY(mx + (dy / L) * half, my - (dx / L) * half);
+        fn(T.first + l, mx, my, cellOf(mask, lon, lat));
+      }
+    }
+    if (!held) pm.drop(idx);
+  }
 }
