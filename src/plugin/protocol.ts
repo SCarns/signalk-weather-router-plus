@@ -27,6 +27,7 @@ import type { SerializedRtofs } from '../currents/rtofs';
 import type { SerializedHarmonic } from '../currents/harmonic';
 import type { TideStatus } from '../tides/sealevel';
 import type { ArcoRun } from '../data/arco';
+import type { TileId } from './tiles';
 
 /** data: forecast, currents, map queries; route: the engine; tiles: builds map tiles ahead of time (prebuild.ts). */
 export type WorkerRole = 'data' | 'route' | 'tiles';
@@ -333,6 +334,11 @@ export type MainToWorker =
   /** avoid: the areas to avoid marked on Signal K notes, read by the main thread (the workers have no Resources API). */
   | { type: 'route'; id: string; request: RouteRequest; avoid?: AvoidArea[]; self?: SelfDesign }
   | { type: 'query'; id: number; kind: QueryKind; args: QueryArgs[QueryKind] }
+  /**
+   * tiles workers: answer a tile's query, encode it as the store saves it (tiles.ts encodeTile) and write it to `tmp`
+   * (the store's temporary file beside the tile); the main thread moves it into place (TileStore.adopt).
+   */
+  | { type: 'build-tile'; id: number; tile: TileId; tmp: string }
   /** tiles workers: the data worker's tide run (null: tides off or not loaded). */
   | { type: 'tides-run'; run: ArcoRun | null }
   /** Drop a query that has not started (its HTTP client went away); one that has started completes. */
@@ -376,4 +382,6 @@ export type WorkerToMain =
   | { type: 'error'; id: string; message: string; cancelled?: boolean }
   /** `complete`: false when an on-demand current / tide load missed its deadline or failed (do not cache). */
   | { type: 'query-result'; id: number; result: unknown; complete: boolean }
+  /** tiles worker: a 'build-tile' answered; `complete` false: nothing written (do not keep), else `bytes` written to its `tmp`. */
+  | { type: 'tile-built'; id: number; bytes: number; complete: boolean }
   | { type: 'query-error'; id: number; message: string };

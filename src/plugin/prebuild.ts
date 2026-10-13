@@ -15,6 +15,13 @@
  * generation), a new hour, a boat move of more than a kilometre, a new
  * view or a settings change starts the walk again from the top.
  *
+ * Each builder finishes its tiles: answers the query, encodes the tile and
+ * writes it to a temporary file beside it; the main thread only moves the
+ * file into place and counts it (TileStore.adopt). Until 2026-10-13 the
+ * answer crossed to the main thread, which encoded and wrote every tile:
+ * Signal K's main thread at 47–100 % while the prebuild ran, 6 % a minute
+ * after it was turned off (brain, top).
+ *
  * Priority: the builders are separate processes, so the map's own queries
  * (data worker) and routes (route worker) never queue behind them; no new
  * tile is started while a route runs or the data worker has map queries
@@ -36,18 +43,7 @@ import * as path from 'node:path';
 import { fork, type ChildProcess } from 'node:child_process';
 import type { MainToWorker, VesselPosition, WorkerToMain } from './protocol';
 import { PRESSURE_TILE_ZOOM } from './tilejoin';
-import {
-  encodeTile,
-  PYRAMID_MIN_ZOOM,
-  pyramidRadius,
-  pyramidTiles,
-  tileBBox,
-  tileGroup,
-  tileQuery,
-  type TileId,
-  type TileLayer,
-  type TileStore,
-} from './tiles';
+import { PYRAMID_MIN_ZOOM, pyramidRadius, pyramidTiles, tileBBox, tileGroup, type TileId, type TileLayer, type TileStore } from './tiles';
 
 /** Layers the page draws, built ahead of time; `msl` only at the zoom the isobars read. */
 export const PREBUILD_LAYERS: readonly TileLayer[] = [
@@ -117,10 +113,10 @@ interface TilesWorker {
   ready: boolean;
   /** Stopped on purpose (walk complete, plugin stopped): its exit is not an error and it is not replaced. */
   retiring: boolean;
-  /** Query in flight. */
+  /** Tile build in flight. */
   pending: {
     id: number;
-    resolve: (v: { result: unknown; complete: boolean }) => void;
+    resolve: (v: { bytes: number; complete: boolean }) => void;
     reject: (e: Error) => void;
     timer: NodeJS.Timeout;
   } | null;
@@ -358,12 +354,12 @@ export class TilePrebuilder {
       case 'log':
         if (m.level === 'error') this.deps.error(m.message);
         return;
-      case 'query-result':
+      case 'tile-built':
         if (h.pending && h.pending.id === m.id) {
           const p = h.pending;
           h.pending = null;
           clearTimeout(p.timer);
-          p.resolve({ result: m.result, complete: m.complete });
+          p.resolve({ bytes: m.bytes, complete: m.complete });
         }
         return;
       case 'query-error':
@@ -379,8 +375,8 @@ export class TilePrebuilder {
     }
   }
 
-  private workerQuery(h: TilesWorker, t: TileId): Promise<{ result: unknown; complete: boolean }> {
-    const { kind, args } = tileQuery(t);
+  /** Build a tile in a builder, written to `tmp` (complete: false, nothing written). */
+  private workerBuild(h: TilesWorker, t: TileId, tmp: string): Promise<{ bytes: number; complete: boolean }> {
     const id = ++this.queryId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -392,7 +388,7 @@ export class TilePrebuilder {
         h.proc.kill('SIGKILL');
       }, QUERY_TIMEOUT_MS);
       h.pending = { id, resolve, reject, timer };
-      this.post(h, { type: 'query', id, kind, args } as MainToWorker);
+      this.post(h, { type: 'build-tile', id, tile: t, tmp });
     });
   }
 
@@ -561,11 +557,13 @@ export class TilePrebuilder {
     const { t, area } = item;
     this.at = { area: area.kind, hour: hourIso(t.hourMs), z: t.z };
     const generation = this.deps.store.generation(tileGroup(t.layer));
+    const tmp = this.deps.store.tmpFile(t);
     const t0 = Date.now();
     try {
-      const { result, complete } = await this.workerQuery(h, t);
+      if (!tmp) throw new Error('its data is not loaded');
+      const { bytes, complete } = await this.workerBuild(h, t, tmp);
       if (complete) {
-        await this.deps.store.write(t, await encodeTile(t, result), generation);
+        await this.deps.store.adopt(t, tmp, bytes, generation);
         this.counts.built++;
         this.builtTotal++;
         this.buildMsTotal += Date.now() - t0;
@@ -575,6 +573,8 @@ export class TilePrebuilder {
       }
       this.layerErrors.delete(t.layer);
     } catch (err) {
+      // A builder stopped or failed while writing may have left part of the file.
+      if (tmp) await fs.promises.rm(tmp, { force: true }).catch(() => undefined);
       this.counts.errors++;
       this.lastError = `${t.layer} ${t.z}/${t.x}/${t.y} ${t.layer === 'land' ? '' : hourIso(t.hourMs)}: ${(err as Error).message}`;
       const n = (this.layerErrors.get(t.layer) ?? 0) + 1;

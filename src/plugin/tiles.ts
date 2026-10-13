@@ -183,6 +183,11 @@ export function trimPoints<P extends { lon: number; lat: number }>(points: P[], 
   });
 }
 
+/** A temporary file beside `f` (renamed onto it once written). */
+function tempName(f: string): string {
+  return `${f}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+}
+
 function hash(s: string): string {
   return crypto.createHash('sha1').update(s).digest('hex').slice(0, 16);
 }
@@ -416,35 +421,67 @@ export class TileStore {
     if (!f) return;
     try {
       await fs.promises.mkdir(path.dirname(f), { recursive: true });
-      const tmp = `${f}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+      const tmp = tempName(f);
       await fs.promises.writeFile(tmp, gz);
-      // A tile written again (after a corrupt read, or built by the prebuilder
-      // and a page miss at once) replaces its file: the totals take the difference.
-      let replaced = -1;
-      if (this.totals || this.countDelta) {
-        try {
-          replaced = (await fs.promises.stat(f)).size;
-        } catch {
-          // new tile
-        }
-      }
-      await fs.promises.rename(tmp, f);
-      this.writes++;
-      if (this.totals) {
-        if (replaced < 0) this.totals.files++;
-        this.totals.bytes = Math.max(0, this.totals.bytes + gz.length - Math.max(0, replaced));
-        this.scheduleSave();
-        if (this.totals.bytes > this.capBytes) void this.prune();
-      }
-      if (this.countDelta) {
-        // A replacement adds only its growth; a shrink is not subtracted (see countDelta).
-        if (replaced < 0) this.countDelta.files++;
-        this.countDelta.bytes += Math.max(0, gz.length - Math.max(0, replaced));
-      }
-      this.ensureTotals(); // unknown or old totals: counted in the background (and the cap enforced after)
+      await this.place(f, tmp, gz.length);
     } catch (err) {
       this.log(`overlay tiles: could not save ${f}: ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * Where a builder process writes a tile before the store takes it (adopt): a temporary file beside the tile under
+   * the current generation, or null when its data is not loaded.
+   */
+  tmpFile(t: TileId | StoreKey): string | null {
+    const f = this.file(t);
+    return f ? tempName(f) : null;
+  }
+
+  /**
+   * A tile a builder process wrote to `tmp` (tmpFile, `bytes` long) moved into place, as `write` saves one; removed
+   * instead when the data changed meanwhile (`generation` is the one current when the build started).
+   */
+  async adopt(t: TileId | StoreKey, tmp: string, bytes: number, generation: string | null): Promise<void> {
+    const f = generation && generation === this.gens[storeKey(t).group] ? this.file(t) : null;
+    if (!f) {
+      await fs.promises.rm(tmp, { force: true }).catch(() => undefined);
+      return;
+    }
+    try {
+      await this.place(f, tmp, bytes);
+    } catch (err) {
+      await fs.promises.rm(tmp, { force: true }).catch(() => undefined);
+      this.log(`overlay tiles: could not save ${f}: ${(err as Error).message}`);
+    }
+  }
+
+  /** Move a written temporary file onto the tile's file and count it. */
+  private async place(f: string, tmp: string, bytes: number): Promise<void> {
+    // A tile written again (after a corrupt read, or built by the prebuilder
+    // and a page miss at once) replaces its file: the totals take the difference.
+    let replaced = -1;
+    if (this.totals || this.countDelta) {
+      try {
+        replaced = (await fs.promises.stat(f)).size;
+      } catch {
+        // new tile
+      }
+    }
+    await fs.promises.rename(tmp, f);
+    this.writes++;
+    if (this.totals) {
+      if (replaced < 0) this.totals.files++;
+      this.totals.bytes = Math.max(0, this.totals.bytes + bytes - Math.max(0, replaced));
+      this.scheduleSave();
+      if (this.totals.bytes > this.capBytes) void this.prune();
+    }
+    if (this.countDelta) {
+      // A replacement adds only its growth; a shrink is not subtracted (see countDelta).
+      if (replaced < 0) this.countDelta.files++;
+      this.countDelta.bytes += Math.max(0, bytes - Math.max(0, replaced));
+    }
+    this.ensureTotals(); // unknown or old totals: counted in the background (and the cap enforced after)
   }
 
   noteNotKept(): void {
