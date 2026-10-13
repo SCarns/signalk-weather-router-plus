@@ -35,7 +35,12 @@
  *              coastline, and the mesh's water as land for the coastline
  *              part (part 5);
  *  - mesh-transfer: where a leg from one chart mesh to another changes
- *              meshes in their overlap (part 5 step 2).
+ *              meshes in their overlap (part 5 step 2);
+ *  - mesh-joins: one mesh's joins to another for one boat, on their own
+ *              (meshcoarse.ts; the rough-cut build makes them otherwise);
+ *  - mesh-waters: a leg's way across the limits of the charts: the
+ *              waters it goes through, where it crosses between them, and
+ *              every mesh's water as land for the coastline parts (part 5).
  */
 
 import { fork } from 'node:child_process';
@@ -45,10 +50,19 @@ import type { RegionalSource } from '../data/regional';
 import type { RegionalDecodeResult } from '../data/regionaldecode';
 import type { RouteDepthCheck } from '../engine/mesh/check';
 import type { MeshCheckTask } from './meshchecktask';
-import type { MeshCoarseResult, MeshCoarseTask, MeshReachResult, MeshReachTask, MeshSnapResult, MeshSnapTask } from './meshcoarse';
+import type {
+  MeshCoarseResult,
+  MeshCoarseTask,
+  MeshJoinsTask,
+  MeshReachResult,
+  MeshReachTask,
+  MeshSnapResult,
+  MeshSnapTask,
+} from './meshcoarse';
 import type { MeshExitTask, MeshExitTaskResult } from './meshexit';
 import type { MeshLegEvent, MeshLegResult, MeshLegTask } from './meshlegtask';
 import type { MeshTransferTask, MeshTransferTaskResult } from './meshtransfer';
+import type { MeshWatersTask, MeshWatersTaskResult } from './meshwaters';
 
 export type ChildTask =
   | { task: 'rmtree'; dir: string }
@@ -60,6 +74,8 @@ export type ChildTask =
   | MeshSnapTask
   | MeshExitTask
   | MeshTransferTask
+  | MeshJoinsTask
+  | MeshWatersTask
   | { task: 'mesh-download'; base: string; dest: string; build: string; fresh?: boolean };
 
 /** A message a task sends before its answer (the mesh leg's progress and stage fronts). */
@@ -92,9 +108,13 @@ export type ChildTaskResult<T extends ChildTask> = T extends { task: 'rmtree' }
               ? MeshExitTaskResult
               : T extends { task: 'mesh-transfer' }
                 ? MeshTransferTaskResult
-                : T extends { task: 'mesh-download' }
-                  ? MeshDownloadResult
-                  : RegionalDecodeResult;
+                : T extends { task: 'mesh-joins' }
+                  ? { joins: number; ms: number }
+                  : T extends { task: 'mesh-waters' }
+                    ? MeshWatersTaskResult
+                    : T extends { task: 'mesh-download' }
+                      ? MeshDownloadResult
+                      : RegionalDecodeResult;
 
 const isTs = __filename.endsWith('.ts');
 
@@ -327,6 +347,14 @@ async function runTask(t: ChildTask): Promise<unknown> {
     case 'mesh-transfer': {
       const { runMeshTransferTask } = await import('./meshtransfer');
       return runMeshTransferTask(t);
+    }
+    case 'mesh-joins': {
+      const { runMeshJoinsTask } = await import('./meshcoarse');
+      return runMeshJoinsTask(t);
+    }
+    case 'mesh-waters': {
+      const { runMeshWatersTask } = await import('./meshwaters');
+      return runMeshWatersTask(t);
     }
     case 'mesh-download':
       return downloadMesh(t.base, t.dest, t.build, t.fresh === true);

@@ -39,7 +39,8 @@ import { runLastMs, type ArcoRun } from './data/arco';
 import { gshhgInstalled, gshhgInstalledAt, unreadableCoastlines } from './geo/gshhg';
 import { Coastline } from './plugin/coastline';
 import { localMeshes, MeshManager, meshesToOpen, readyMeshDirs } from './plugin/meshes';
-import { coarseFile, coarseKey, coarseRulesOf, pruneCoarse } from './plugin/meshcoarse';
+import { coarseFile, coarseKey, coarseRulesOf, meshesMeet, pruneCoarse } from './plugin/meshcoarse';
+import * as fs from 'node:fs';
 import { runChildTask } from './plugin/childtask';
 import { ChartsProvider } from './plugin/charts';
 import { makePlotterExtension } from './plugin/plotterext';
@@ -233,7 +234,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
    * The rough cuts of the chart meshes (plugin/meshcoarse.ts, docs/drafts/mesh-no-gshhg-design.md part 4): built
    * for the boat's Signal K draught and air draft after a mesh download or update, and on the configuration panel's
    * Rebuild button; never at start (the owner's choice, 2026-10-12). One mesh folder at a time, each in a child
-   * process. A route needing one not built yet builds it itself (worker/route.ts).
+   * process, with its joins to every other mesh folder whose extent meets it (part 5, meshcoarse.ts); after one mesh
+   * is downloaded or updated, the other meshes' joins towards its new build too. A route needing one not built yet
+   * builds it itself (worker/route.ts).
    */
   const roughCut: {
     running: string | null;
@@ -279,7 +282,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
       config.mesh.preferLocal,
       config.mesh.preferDownload
     );
-    const dirs = open.filter(m => !only || m.name === only).flatMap(m => m.dirs.map(d => ({ name: m.name, dir: d })));
+    const all = open.flatMap(m => m.dirs.map(d => ({ name: m.name, dir: d })));
+    const dirs = all.filter(d => !only || d.name === only);
+    /** The other mesh folders whose extent meets this one's, with their rough-cut map files for the rules. */
+    const othersOf = (d: { dir: string }): { dir: string; mapFile: string; name: string }[] =>
+      all
+        .filter(o => o.dir !== d.dir && meshesMeet(o.dir, d.dir))
+        .map(o => ({ dir: o.dir, mapFile: coarseFile(dataDir, o.dir, rules), name: o.name }));
     roughCutCtrl = new AbortController();
     const signal = roughCutCtrl.signal;
     roughCut.error = null;
@@ -291,13 +300,39 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (signal.aborted) return;
         roughCut.running = `${d.name} (${path.basename(d.dir)})`;
         const r = await runChildTask(
-          { task: 'mesh-coarse', dir: d.dir, out: coarseFile(dataDir, d.dir, rules), rules },
+          { task: 'mesh-coarse', dir: d.dir, out: coarseFile(dataDir, d.dir, rules), rules, joins: othersOf(d) },
           15 * 60_000,
           signal
         );
         roughCut.done++;
-        log(`rough cut ${d.name} ${path.basename(d.dir)}: ${r.pieces} pieces, ${r.links} links, ${r.bytes} bytes in ${r.ms} ms`);
+        log(
+          `rough cut ${d.name} ${path.basename(d.dir)}: ${r.pieces} pieces, ${r.links} links, ${r.bytes} bytes in ${r.ms} ms` +
+            (r.joins.length ? `; joins ${r.joins.map(j => `to ${j.name} ${j.joins} (${j.ms} ms)`).join(', ')}` : '')
+        );
       }
+      // One mesh new or updated: the other meshes' joins towards its new build (their rough cuts already built).
+      if (only)
+        for (const o of all.filter(x => x.name !== only)) {
+          const mapFile = coarseFile(dataDir, o.dir, rules);
+          if (!fs.existsSync(mapFile)) continue;
+          for (const d of dirs) {
+            if (signal.aborted) return;
+            if (!meshesMeet(o.dir, d.dir)) continue;
+            roughCut.running = `joins of ${o.name} (${path.basename(o.dir)}) to ${d.name}`;
+            const j = await runChildTask(
+              {
+                task: 'mesh-joins',
+                dir: o.dir,
+                mapFile,
+                rules,
+                other: { dir: d.dir, mapFile: coarseFile(dataDir, d.dir, rules), name: d.name },
+              },
+              15 * 60_000,
+              signal
+            );
+            log(`rough cut joins ${o.name} ${path.basename(o.dir)} to ${d.name}: ${j.joins} in ${j.ms} ms`);
+          }
+        }
       const removed = pruneCoarse(dataDir, new Set(open.flatMap(m => m.dirs.map(d => coarseKey(d)))));
       roughCut.last = {
         at: new Date().toISOString(),

@@ -69,7 +69,12 @@ export function meshAstar(
    * Asked only of the triangles the search reaches, so it may be a test (transfer.ts: water another mesh also calls
    * usable) rather than a list made in advance.
    */
-  exits?: SearchExits
+  exits?: SearchExits,
+  /**
+   * Per start triangle (the order of `starts`), where in it the route starts and what reaching it already cost
+   * (waters.ts: an entry from open water, costed by the straight run to it); absent: every start at (sx, sy), cost 0.
+   */
+  startAt?: { x: number; y: number; g: number }[]
 ): MeshSearchResult {
   const states = new Map<number, TileState>();
   const stateOf = (T: PagedTile): TileState => {
@@ -95,10 +100,13 @@ export function meshAstar(
   };
   let goalTri = -1;
   let direct = st[0];
-  for (const s0 of st) {
+  const at = (k: number): { x: number; y: number; g: number } => startAt?.[k] ?? { x: sx, y: sy, g: 0 };
+  for (let k = 0; k < st.length; k++) {
+    const s0 = st[k];
     if (!isGoal(s0)) continue;
     const S0 = pm.tileOf(s0);
-    const g = finish(s0, sx, sy, S0.mult[s0 - S0.first]);
+    const a = at(k);
+    const g = a.g + finish(s0, a.x, a.y, S0.mult[s0 - S0.first]);
     if (g < goalG) {
       goalG = g;
       goalNode = -1;
@@ -135,7 +143,8 @@ export function meshAstar(
   // From each start triangle; the node came from encodes which: -2 - its index in `st`.
   st.forEach((s0, k) => {
     const S0 = pm.tileOf(s0);
-    relax(S0, s0 - S0.first, -1, 0, sx, sy, -2 - k);
+    const a = at(k);
+    relax(S0, s0 - S0.first, -1, a.g, a.x, a.y, -2 - k);
   });
   let expanded = 0;
   // The start and end tiles stay held; with exits (possibly many tiles along a coverage edge) only the start's.

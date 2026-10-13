@@ -50,6 +50,8 @@ export interface MeshLegArgs {
   bridgeWaitS: number;
   /** The leg's reach on the rough cut (coarse.ts), when the runner gave one: the extent of its water, for the forecast area. */
   reach?: LegReach;
+  /** The mesh to plan it on (the runner's id from `plan`); absent: the mesh holding the leg's points. */
+  meshId?: string;
   progress: ProgressFn;
   shouldCancel: () => boolean;
 }
@@ -100,10 +102,31 @@ export interface MeshLegRunner {
     legStart: [number, number];
     plan: LegPlan;
     rules: MeshRules;
+    /** The mesh (the runner's id from `plan`); absent: the one holding the leg's points. */
+    meshId?: string;
     tag: string;
     progress: ProgressFn;
     shouldCancel: () => boolean;
   }): Promise<LegReach | MeshRefusal>;
+  /** Whether any mesh meets the box (from the meshes' indexes alone). */
+  meets(box: BBox): boolean;
+  /**
+   * A leg's way across the limits of the charts (part 5, engine/mesh/waters.ts), for the coastline search's land over
+   * `box`: one mesh holds the leg (its id, for `leg`); or open water outside every mesh joins its ends; or the
+   * stretches it goes through, each on a mesh (by id) or on open water, with every mesh's water as cells the coastline
+   * parts must treat as land; or why there is none. `rules` null: the boat's draught or air draft is not set (`why`).
+   */
+  plan(args: {
+    start: [number, number];
+    end: [number, number];
+    names: { start: string; end: string };
+    rules: MeshRules | null;
+    why: string;
+    box: BBox;
+    tag: string;
+    progress: ProgressFn;
+    shouldCancel: () => boolean;
+  }): Promise<MeshPlan | MeshRefusal>;
   /**
    * Where a leg with one end in a mesh (`inside`) and the other outside every mesh (`outside`) leaves the mesh
    * (part 5, engine/mesh/exit.ts), for the coastline search's land over `box`: the crossing point, and the mesh's
@@ -136,6 +159,20 @@ export interface MeshLegRunner {
     shouldCancel: () => boolean;
   }): Promise<{ point: [number, number] } | { exit: [number, number]; entry: [number, number]; mask: CellMask } | MeshRefusal>;
 }
+
+/** A leg's way across the limits of the charts, as the runner answers it (meshes named by id). */
+export type MeshPlan =
+  | { kind: 'one-mesh'; mesh: string }
+  | { kind: 'open'; mask: CellMask }
+  | {
+      kind: 'chain';
+      stretches: (
+        | { kind: 'mesh'; mesh: string; from: [number, number]; to: [number, number] }
+        | { kind: 'open'; from: [number, number]; to: [number, number] }
+      )[];
+      /** Null when the leg stays on the charts (no open stretch). */
+      mask: CellMask | null;
+    };
 
 /**
  * The mesh route as the open-water search's corridor (the parent planner's

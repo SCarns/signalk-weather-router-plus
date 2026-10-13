@@ -21,10 +21,13 @@ import {
   COARSE_KEEP_PER_MESH,
   coarseFile,
   coarseKey,
+  joinsFile,
   type MeshReachTask,
   pruneCoarse,
   readBoundary,
+  readJoins,
   runMeshCoarseTask,
+  runMeshJoinsTask,
   runMeshReachTask,
   runMeshSnapTask,
 } from './meshcoarse';
@@ -252,5 +255,55 @@ test('pruneCoarse: rough cuts of builds no longer in use or of another version g
   } finally {
     fs.rmSync(mesh, { recursive: true, force: true });
     fs.rmSync(data, { recursive: true, force: true });
+  }
+});
+
+test('joins: built with the rough cut and on their own alike: which piece of one mesh joins which of another, per direction', () => {
+  // A over cells lon 0–3, B over cells lon 1–4 (lat 0–1): they overlap in cells 1 and 2. B charts cell 2 at 1 m.
+  const a = writeGridMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-a-')), [
+    { i: 0, j: 0 },
+    { i: 1, j: 0 },
+    { i: 2, j: 0 },
+  ]);
+  const b = writeGridMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-b-')), [
+    { i: 1, j: 0 },
+    { i: 2, j: 0, depth: 1 },
+    { i: 3, j: 0 },
+  ]);
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-data-'));
+  try {
+    const outA = coarseFile(data, a, RULES);
+    const outB = coarseFile(data, b, RULES);
+    const r = runMeshCoarseTask({ task: 'mesh-coarse', dir: a, out: outA, rules: RULES, joins: [{ dir: b, mapFile: outB, name: 'B' }] });
+    // A's cell 1 (tile position 1, piece 0) joins B's cell 1 (position 0, piece 0); cell 2 is too shallow in B.
+    assert.deepEqual(
+      r.joins.map(j => [j.name, j.joins]),
+      [['B', 1]]
+    );
+    assert.deepEqual(Array.from(readJoins(joinsFile(outA, b))!), [1, 0, 0, 0]);
+    // B's boundary record was written for it, its map not yet.
+    assert.ok(fs.existsSync(boundaryFile(outB)) && !fs.existsSync(outB));
+    // The other direction, from B's rough cut: B's cell 1 joins A's cell 1.
+    runMeshCoarseTask({ task: 'mesh-coarse', dir: b, out: outB, rules: RULES, joins: [{ dir: a, mapFile: outA, name: 'A' }] });
+    assert.deepEqual(Array.from(readJoins(joinsFile(outB, a))!), [0, 0, 1, 0]);
+    // On their own (the other mesh a newer build): the same joins.
+    fs.rmSync(joinsFile(outA, b));
+    const alone = runMeshJoinsTask({
+      task: 'mesh-joins',
+      dir: a,
+      mapFile: outA,
+      rules: RULES,
+      other: { dir: b, mapFile: outB, name: 'B' },
+    });
+    assert.equal(alone.joins, 1);
+    assert.deepEqual(Array.from(readJoins(joinsFile(outA, b))!), [1, 0, 0, 0]);
+    // Pruned with its map's build, or when the other mesh's build is no longer in use.
+    pruneCoarse(data, new Set([coarseKey(a), coarseKey(b)]));
+    assert.ok(fs.existsSync(joinsFile(outA, b)));
+    pruneCoarse(data, new Set([coarseKey(a)]));
+    assert.ok(!fs.existsSync(joinsFile(outA, b)), "A's joins towards B go when B's build is no longer in use");
+    assert.ok(fs.existsSync(outA));
+  } finally {
+    for (const d of [a, b, data]) fs.rmSync(d, { recursive: true, force: true });
   }
 });

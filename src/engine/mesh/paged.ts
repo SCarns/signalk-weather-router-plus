@@ -464,23 +464,38 @@ export class PagedMesh {
     return found;
   }
 
+  /** Per index cell, the tiles (positions in the tile list) whose vertex extent, within nearExtent's tolerance, meets it. */
+  private cellTiles: Map<string, number[]> | null = null;
+
   /**
-   * The triangle holding a point of the metres frame, global id or -1: the point's own tile first, then the tiles
-   * around it whose vertex extent holds it (a tile's triangles reach a little past its cell). Corners wind
-   * counter-clockwise; a point on a shared edge or corner counts for the first triangle met, unless `preferUsable`:
-   * then a usable triangle holding the point wins over a blocked one (a route corner on a depth contour belongs to
-   * the water the route uses).
+   * The tiles whose vertex extent holds a point (nearExtent), from the index alone: the point's own cell's tile first,
+   * then its eight neighbours' in a fixed order, then any other in tile-list order. A tile's triangles reach past its
+   * cell, offshore by tens of kilometres: 07CGD's tile (4, 42) holds a triangle about 40 km across that covers a point
+   * in cell (2, 43), two cells away (measured on brain, 2026-10-13), which a search of the 3 x 3 cells round the point
+   * never saw.
    */
-  locate(px: number, py: number, preferUsable = false): number {
-    if (!this.store) {
-      const T = this.held.get(0)!;
-      const t = this.locateIn(T, px, py, preferUsable);
-      return t < 0 ? -1 : t;
+  private tilesAt(lon: number, lat: number): number[] {
+    const store = this.store!;
+    if (!this.cellTiles) {
+      const cells = new Map<string, number[]>();
+      this.infos.forEach((info, idx) => {
+        const b = info!.bbox;
+        const tx = U_TOL * (b[2] - b[0]);
+        const ty = U_TOL * (b[3] - b[1]);
+        const [i0, j0] = store.tileIJ(b[0] - tx, b[1] - ty);
+        const [i1, j1] = store.tileIJ(b[2] + tx, b[3] + ty);
+        for (let i = i0; i <= i1; i++)
+          for (let j = j0; j <= j1; j++) {
+            const k = `${i},${j}`;
+            const list = cells.get(k);
+            if (list) list.push(idx);
+            else cells.set(k, [idx]);
+          }
+      });
+      this.cellTiles = cells;
     }
-    const [lon, lat] = this.fromXY(px, py);
-    const [i, j] = this.store.tileIJ(lon, lat);
-    let fallback = -1;
-    for (const [di, dj] of [
+    const [i, j] = store.tileIJ(lon, lat);
+    const near = [
       [0, 0],
       [1, 0],
       [-1, 0],
@@ -490,10 +505,31 @@ export class PagedMesh {
       [1, -1],
       [-1, 1],
       [-1, -1],
-    ]) {
-      const info = this.store.tile(i + di, j + dj);
-      if (!info || !nearExtent(info, lon, lat)) continue;
-      const T = this.tile(this.tileIndexOf(info.first));
+    ];
+    const rank = (idx: number): number => {
+      const info = this.infos[idx]!;
+      const k = near.findIndex(([di, dj]) => info.i === i + di && info.j === j + dj);
+      return k >= 0 ? k : near.length + idx;
+    };
+    return (this.cellTiles.get(`${i},${j}`) ?? []).filter(idx => nearExtent(this.infos[idx]!, lon, lat)).sort((a, b) => rank(a) - rank(b));
+  }
+
+  /**
+   * The triangle holding a point of the metres frame, global id or -1, searched in every tile whose vertex extent
+   * holds the point (tilesAt), the point's own tile first. Corners wind counter-clockwise; a point on a shared edge or
+   * corner counts for the first triangle met, unless `preferUsable`: then a usable triangle holding the point wins
+   * over a blocked one (a route corner on a depth contour belongs to the water the route uses).
+   */
+  locate(px: number, py: number, preferUsable = false): number {
+    if (!this.store) {
+      const T = this.held.get(0)!;
+      const t = this.locateIn(T, px, py, preferUsable);
+      return t < 0 ? -1 : t;
+    }
+    const [lon, lat] = this.fromXY(px, py);
+    let fallback = -1;
+    for (const idx of this.tilesAt(lon, lat)) {
+      const T = this.tile(idx);
       const t = this.locateIn(T, px, py, preferUsable);
       if (t < 0) continue;
       if (!preferUsable || !T.blocked[t]) return T.first + t;
@@ -542,8 +578,8 @@ export class PagedMesh {
   }
 
   /**
-   * Every usable triangle holding a point of the metres frame (global ids, within the walk's tolerance), across the
-   * tiles around it. A point on a corner or an edge belongs to each triangle it touches: a stop or a route corner
+   * Every usable triangle holding a point of the metres frame (global ids, within the walk's tolerance), across every
+   * tile whose vertex extent holds the point (tilesAt). A point on a corner or an edge belongs to each triangle it touches: a stop or a route corner
    * handed on as lon/lat may touch water of two connected groups at one corner (part 2: a snapped waypoint at
    * 41.3297, -70.4388 touched the route's water and a separate pocket), and the caller decides by the water it needs.
    */
@@ -559,13 +595,7 @@ export class PagedMesh {
       return out;
     }
     const [lon, lat] = this.fromXY(px, py);
-    const [i, j] = this.store.tileIJ(lon, lat);
-    for (let di = -1; di <= 1; di++)
-      for (let dj = -1; dj <= 1; dj++) {
-        const info = this.store.tile(i + di, j + dj);
-        if (!info || !nearExtent(info, lon, lat)) continue;
-        collect(this.tile(this.tileIndexOf(info.first)));
-      }
+    for (const idx of this.tilesAt(lon, lat)) collect(this.tile(idx));
     return out;
   }
 

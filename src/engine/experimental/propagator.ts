@@ -185,14 +185,17 @@ export class ExperimentalPropagator {
     const out: Waypoint[] = [{ ...old[0] }];
     let split = 0;
     let tacks = 0;
+    const motored: Waypoint[] = [];
     for (let i = 1; i < old.length; i++) {
       const b: Waypoint = { ...old[i] };
       if (b.mode === 'sailing') {
-        const pts = this.layOut(out[out.length - 1], b, cp, env);
-        const n = pts.filter(p => p.tack).length;
+        const a = out[out.length - 1];
+        const pts = this.layOut(a, b, cp, env);
+        if (pts === null) motored.push(a);
+        const n = (pts ?? []).filter(p => p.tack).length;
         if (n) split++;
         tacks += n;
-        for (const p of pts) out.push(p);
+        for (const p of pts ?? []) out.push(p);
       }
       this.timeLeg(out[out.length - 1], b, env);
       out.push(b);
@@ -204,6 +207,12 @@ export class ExperimentalPropagator {
       0,
       `experimental: convex polar: ${split} leg(s) laid out as tacks (${tacks} tack point(s), {time:${env.sim.tackPenaltyS ?? TACK_PENALTY_S}} each, as long as the wind and the land allow); arrival ${out[out.length - 1].time.toISOString().slice(0, 16).replace('T', ' ')} UTC`
     );
+    for (const a of motored)
+      args.onProgress?.(
+        0,
+        0,
+        `WARNING: experimental: the beat from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} could not be tacked in the water there; it is motored, as the sail threshold allows (the standard router's timing)`
+      );
     return env;
   }
 
@@ -247,8 +256,15 @@ export class ExperimentalPropagator {
    * arrival time. The leg a → last point → b is what the caller times; the
    * straight step points are collinear and the route's simplification
    * thins them afterwards.
+   *
+   * Where no way of tacks can be laid out and the sail threshold is above 0, null: the leg a → b (clear: a leg of the
+   * search or of the mesh route) is then timed straight by the simulator, which motors in the no-go angle, as the
+   * standard router times it (the owner's choice, 2026-10-13: tack where tacks fit, motor where stuck; 2026-10-13,
+   * the Cape Cod Canal's west approach: the first tack ran into a pocket the water closes round and every later one
+   * halved into its corner). With a threshold of 0 (never motor) it fails the route as before.
    */
-  private layOut(a: Waypoint, b: Waypoint, cp: ConvexPolar, env: Env): Waypoint[] {
+  private layOut(a: Waypoint, b: Waypoint, cp: ConvexPolar, env: Env): Waypoint[] | null {
+    const motorIfStuck = env.sim.modePolicy === 'sail_max' && env.sim.sailThreshMs > 0;
     const pts: Waypoint[] = [];
     let at: Waypoint = a;
     let lastHeading = -1;
@@ -326,6 +342,7 @@ export class ExperimentalPropagator {
         // As far as the water allows on the course, else (the wind turning along it) shorter, from where the boat
         // can go on.
         const p = placeOn(theta, D, false, [theta]);
+        if (!p && motorIfStuck) return null;
         if (!p)
           throw new RouteError(
             `${env.who}: the leg from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} to ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be sailed at ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)} under the ${env.sim.modePolicy} policy; ${env.advice}`
@@ -365,6 +382,7 @@ export class ExperimentalPropagator {
         // downwind in a 200 m channel the boat runs straight (2026-10-08,
         // job a0a18bcb, the passage south of Monomoy).
         if (!this.land.legCrossesLandExact(at.lon, at.lat, b.lon, b.lat) && this.sailable(at, b.lon, b.lat, env) !== null) return pts;
+        if (motorIfStuck) return null;
         throw new RouteError(
           `${env.who}: the beat from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} towards ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be tacked at ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)}: every tack tried crossed land or could not be sailed under the ${env.sim.modePolicy} policy, and the course itself cannot be sailed straight; ${env.advice}`
         );

@@ -159,7 +159,13 @@ function pieceCentres(pm: PagedMesh, T: PagedTile, pieceOf: Int32Array, count: n
  * Build the rough cut of one mesh for the rules (`pm`: the mesh read through the paged mesh under meshRulesOf(rules)
  * with the boundary record). Reads every tile once, one at a time; holds one piece id per triangle of the mesh.
  */
-export function buildCoarseMap(store: MeshStore, rules: CoarseRules, pm: PagedMesh): CoarseMap {
+export function buildCoarseMap(
+  store: MeshStore,
+  rules: CoarseRules,
+  pm: PagedMesh,
+  /** Each tile as it is read, with its pieces (local numbers), before it is let go (the joins to other meshes, joins.ts). */
+  onTile?: (idx: number, T: PagedTile, pieceOf: Int32Array) => void
+): CoarseMap {
   const ix = store.index;
   const total = ix.tiles.reduce((m, t) => Math.max(m, t.first + t.n), 0);
   const pieceOfGlobal = new Int32Array(total).fill(-1);
@@ -193,6 +199,7 @@ export function buildCoarseMap(store: MeshStore, rules: CoarseRules, pm: PagedMe
         }
       }
     }
+    onTile?.(idx, T, pieceOf);
     pm.drop(idx);
   }
   const seen = new Set<string>();
@@ -276,6 +283,8 @@ export class PieceGraph {
   private readonly tileOfPiece: number[] = [];
   /** Per tile position read: the piece of each of its triangles (-1 = blocked), local numbers. */
   private readonly local = new Map<number, Int32Array>();
+  /** The tiles recomputed under the request's areas to avoid: their pieces are numbered anew, not as stored. */
+  readonly recomputed = new Set<number>();
   private comp: Int32Array | null = null;
 
   constructor(
@@ -316,6 +325,7 @@ export class PieceGraph {
       this.pieces.push(...pieceCentres(pm, T, pieceOf, count));
       for (let p = 0; p < count; p++) this.tileOfPiece[first + p] = idx;
       recomputed.push(idx);
+      this.recomputed.add(idx);
     }
     // The recomputed tiles' links to their neighbours, from their own tile-edge triangles.
     for (const idx of recomputed) {
@@ -357,6 +367,16 @@ export class PieceGraph {
     }
     const p = pieceOf[g - T.first];
     return p < 0 ? null : this.base.get(T.idx)![0] + p;
+  }
+
+  /**
+   * The piece numbered `local` in a tile as stored (the build's numbering, as joins files record it), or null when the
+   * tile has no stored pieces or was recomputed under the request's areas to avoid.
+   */
+  storedPiece(idx: number, local: number): number | null {
+    if (this.recomputed.has(idx)) return null;
+    const b = this.base.get(idx);
+    return b && local >= 0 && local < b[1] ? b[0] + local : null;
   }
 
   /** The connected group of a piece (pieces linked directly or through others share one). */

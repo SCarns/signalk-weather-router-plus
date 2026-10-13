@@ -17,6 +17,16 @@
  * are there. Built after a mesh is downloaded or updated, on the plugin
  * configuration's Rebuild button, and by a route that needs one not built
  * yet; never at plugin start (the owner's choice, 2026-10-12).
+ *
+ * Beside a map, one joins file per other mesh it overlaps
+ * (engine/mesh/joins.ts, part 5): the same name with `.joins-<the other
+ * mesh's build key>.bin`, raw Int32: JOINS_VERSION, the count, then per
+ * join this mesh's tile position and piece (local number), the other
+ * mesh's tile position and piece. Built in the same pass as the map, before
+ * it is written, and on its own (`mesh-joins`) when the other mesh is a
+ * build the map has none for (downloaded or updated since). The owner
+ * accepted the time, once per boat and build (2026-10-13; measured: 05CGD's
+ * build 18.9 s, with its joins to 07CGD 59.3 s; 08CGD's 30.6 s and 117.5 s).
  */
 
 import { createHash } from 'node:crypto';
@@ -32,8 +42,10 @@ import {
   coarseRoute,
   meshRulesOf,
   PieceGraph,
+  tilePieces,
 } from '../engine/mesh/coarse';
-import { type BoundarySeeds, PagedMesh } from '../engine/mesh/paged';
+import { JoinFinder, JOINS_VERSION } from '../engine/mesh/joins';
+import { type BoundarySeeds, PagedMesh, type PagedTile } from '../engine/mesh/paged';
 import type { MeshRules } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
 
@@ -94,10 +106,91 @@ export function readBoundary(file: string): BoundarySeeds {
   return { blocked: all.subarray(2, 2 + nb), bridges: all.subarray(2 + nb) };
 }
 
+/** Whether two mesh folders' extents (their indexes) meet: only then can their waters join. */
+export function meshesMeet(dirA: string, dirB: string): boolean {
+  const a = MeshStore.open(dirA).index;
+  const b = MeshStore.open(dirB).index;
+  return a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north;
+}
+
+/** The joins file of a rough cut (its map file) towards another mesh folder. */
+export function joinsFile(mapFile: string, otherDir: string): string {
+  return mapFile.replace(/\.json$/, `.joins-${coarseKey(otherDir)}.bin`);
+}
+
+export function writeJoins(file: string, joins: Int32Array): void {
+  const out = new Int32Array(2 + joins.length);
+  out[0] = JOINS_VERSION;
+  out[1] = joins.length / 4;
+  out.set(joins, 2);
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, Buffer.from(out.buffer, out.byteOffset, out.byteLength));
+  fs.renameSync(tmp, file);
+}
+
+/** A joins file's joins (4 numbers each), or null when there is none or it is of another version. */
+export function readJoins(file: string): Int32Array | null {
+  let buf: Buffer;
+  try {
+    buf = fs.readFileSync(file);
+  } catch {
+    return null;
+  }
+  const all = new Int32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength));
+  if (all.length < 2 || all[0] !== JOINS_VERSION || all.length !== 2 + 4 * all[1]) return null;
+  return all.subarray(2);
+}
+
+/** The other mesh's tile-boundary record for the rules: from its rough cut's `.bnd` when there, else read and written now. */
+function boundaryOf(store: MeshStore, mapFile: string, rules: CoarseRules): BoundarySeeds {
+  const f = boundaryFile(mapFile);
+  if (fs.existsSync(f)) return readBoundary(f);
+  const b = boundarySeeds(store, rules);
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  writeBoundary(f, b);
+  return b;
+}
+
+/**
+ * The joins from mesh A (paged under the rules, its boundary record) to another mesh: a finder in A's frame, and a
+ * record of each join as A's tile position and piece, B's tile position and piece, each once.
+ */
+function joinsTo(pa: PagedMesh, storeA: MeshStore, other: { dir: string; mapFile: string }, rules: CoarseRules) {
+  const storeB = MeshStore.open(other.dir);
+  const pb = new PagedMesh(storeB, meshRulesOf(rules), pa.cl, boundaryOf(storeB, other.mapFile, rules));
+  const finder = new JoinFinder({ store: storeA, pm: pa }, { store: storeB, pm: pb });
+  const bPieces = new Map<number, Int32Array>();
+  const seen = new Set<string>();
+  const out: number[] = [];
+  let ms = 0;
+  return {
+    /** Record the joins of one tile of A (its pieces, local numbers), when it meets B. */
+    tile(idx: number, T: PagedTile, pieceOf: Int32Array): void {
+      if (!finder.meetsB(T.bbox)) return;
+      const t0 = Date.now();
+      finder.scanTile(T, (a, u) => {
+        const U = pb.tileOf(u);
+        let up = bPieces.get(U.idx);
+        if (!up) {
+          up = tilePieces(U).pieceOf;
+          bPieces.set(U.idx, up);
+        }
+        const k = `${idx},${pieceOf[a - T.first]},${U.idx},${up[u - U.first]}`;
+        if (seen.has(k)) return;
+        seen.add(k);
+        out.push(idx, pieceOf[a - T.first], U.idx, up[u - U.first]);
+      });
+      ms += Date.now() - t0;
+    },
+    result: (): { joins: Int32Array; ms: number } => ({ joins: Int32Array.from(out), ms }),
+  };
+}
+
 /**
  * Remove the rough cuts of builds no longer in use (`liveKeys`) or of
  * another version, and beyond COARSE_KEEP_PER_MESH per build the oldest
- * (a map and its boundary file go together). Returns how many maps went.
+ * (a map, its boundary file and its joins files go together); and joins
+ * files towards a build no longer in use. Returns how many maps went.
  */
 export function pruneCoarse(dataDir: string, liveKeys: Set<string>): number {
   const dir = path.join(dataDir, COARSE_DIR);
@@ -108,11 +201,24 @@ export function pruneCoarse(dataDir: string, liveKeys: Set<string>): number {
     return 0;
   }
   let removed = 0;
+  const joinsOf = (n: string): string[] => {
+    const base = n.replace(/\.json$/, '.joins-');
+    try {
+      return fs.readdirSync(dir).filter(f => f.startsWith(base) && f.endsWith('.bin'));
+    } catch {
+      return [];
+    }
+  };
   const rm = (n: string): void => {
     fs.rmSync(path.join(dir, n), { force: true });
     fs.rmSync(boundaryFile(path.join(dir, n)), { force: true });
+    for (const j of joinsOf(n)) fs.rmSync(path.join(dir, j), { force: true });
     removed++;
   };
+  // Joins towards a build no longer in use go on their own.
+  for (const n of names)
+    for (const j of joinsOf(n))
+      if (!liveKeys.has(j.replace(/^.*\.joins-/, '').replace(/\.bin$/, ''))) fs.rmSync(path.join(dir, j), { force: true });
   const byKey = new Map<string, { name: string; mtimeMs: number }[]>();
   for (const n of names) {
     const [key, version] = n.split('-');
@@ -158,6 +264,8 @@ export interface MeshCoarseTask {
   dir: string;
   out: string;
   rules: CoarseRules;
+  /** The other meshes whose extent meets this one's, each with its rough-cut map file for the rules: joins to each. */
+  joins?: { dir: string; mapFile: string; name: string }[];
 }
 
 export interface MeshCoarseResult {
@@ -169,6 +277,8 @@ export interface MeshCoarseResult {
   /** Bytes of the two files. */
   bytes: number;
   ms: number;
+  /** The joins to each other mesh: how many, and the time they took inside the build. */
+  joins: { name: string; joins: number; ms: number }[];
 }
 
 /**
@@ -184,7 +294,17 @@ export function runMeshCoarseTask(t: MeshCoarseTask): MeshCoarseResult {
   writeBoundary(boundaryFile(t.out), boundary);
   const ix = store.index;
   const pm = new PagedMesh(store, meshRulesOf(t.rules), Math.cos((((ix.south + ix.north) / 2) * Math.PI) / 180), boundary);
-  const map = buildCoarseMap(store, t.rules, pm);
+  // The joins to the other meshes, found in the same tile reads as the map.
+  const others = (t.joins ?? []).map(o => ({ ...o, rec: joinsTo(pm, store, o, t.rules) }));
+  const map = buildCoarseMap(store, t.rules, pm, (idx, T, pieceOf) => {
+    for (const o of others) o.rec.tile(idx, T, pieceOf);
+  });
+  const joins: MeshCoarseResult['joins'] = [];
+  for (const o of others) {
+    const r = o.rec.result();
+    writeJoins(joinsFile(t.out, o.dir), r.joins);
+    joins.push({ name: o.name, joins: r.joins.length / 4, ms: r.ms });
+  }
   const text = JSON.stringify(map);
   const tmp = `${t.out}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, text);
@@ -196,7 +316,43 @@ export function runMeshCoarseTask(t: MeshCoarseTask): MeshCoarseResult {
     boundaryBridges: boundary.bridges.length,
     bytes: text.length + 4 * (2 + boundary.blocked.length + boundary.bridges.length),
     ms: Date.now() - t0,
+    joins,
   };
+}
+
+export interface MeshJoinsTask {
+  task: 'mesh-joins';
+  /** The mesh the joins are from, with its rough-cut map file (built: its boundary record is used). */
+  dir: string;
+  mapFile: string;
+  rules: CoarseRules;
+  /** The other mesh, with its rough-cut map file for the rules (its boundary record, read or written). */
+  other: { dir: string; mapFile: string; name: string };
+}
+
+/**
+ * One mesh's joins to another on their own (the other is a build the rough cut has none for): every tile of this mesh
+ * meeting the other read under the rules with its boundary record, as the build reads it.
+ */
+export function runMeshJoinsTask(t: MeshJoinsTask): { joins: number; ms: number } {
+  const t0 = Date.now();
+  const store = MeshStore.open(t.dir);
+  const ix = store.index;
+  const pm = new PagedMesh(
+    store,
+    meshRulesOf(t.rules),
+    Math.cos((((ix.south + ix.north) / 2) * Math.PI) / 180),
+    readBoundary(boundaryFile(t.mapFile))
+  );
+  const rec = joinsTo(pm, store, t.other, t.rules);
+  for (let idx = 0; idx < pm.tileCount; idx++) {
+    const T = pm.tile(idx);
+    rec.tile(idx, T, tilePieces(T).pieceOf);
+    pm.drop(idx);
+  }
+  const r = rec.result();
+  writeJoins(joinsFile(t.mapFile, t.other.dir), r.joins);
+  return { joins: r.joins.length / 4, ms: Date.now() - t0 };
 }
 
 export interface MeshReachTask {
@@ -324,7 +480,11 @@ export interface MeshSnapTask {
   maxMoveM: number;
 }
 
-/** Per point: where it goes (itself when its water is usable and connected), how far, and why it moved. */
+/**
+ * Per point: where it goes (itself when its water is usable and connected), how far, and why it moved;
+ * `outsideGroup`: its water is not the route's on this mesh (moved to the route's with a warning, or, when that is
+ * farther than the limit, left where it is for the leg's plan through other waters).
+ */
 export type MeshSnapResult =
   | { ok: true; points: { lon: number; lat: number; movedM: number; why: string | null; outsideGroup: boolean }[] }
   | { ok: false; reason: string };
@@ -335,7 +495,8 @@ export type MeshSnapResult =
  * triangle), or on water not connected to the route's, moves to the nearest usable water connected to the route,
  * at most `maxMoveM`. The route's water is the connected group of the last stop in this mesh (the destination, or
  * where the route leaves the mesh): its own when it is usable, else that of the usable water nearest it. So a start
- * in a pond moves out to water connected to the destination.
+ * in a pond moves out to water connected to the destination. A stop on usable water whose nearest route water is
+ * farther than the limit stays (part 5: this mesh alone does not say whether open water or another mesh joins them).
  */
 export function runMeshSnapTask(t: MeshSnapTask): MeshSnapResult {
   const store = MeshStore.open(t.dir);
@@ -395,6 +556,13 @@ export function runMeshSnapTask(t: MeshSnapTask): MeshSnapResult {
         reason: `${p.name}, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}, ${why}, and no usable water connected to the route was found`,
       };
     const [lon, lat] = pm.fromXY(nu.x, nu.y);
+    // Usable water of its own that this mesh does not connect to the route's within the limit: the stop stays; its
+    // leg is planned through the other waters (other charts, open water beyond them; engine/mesh/waters.ts), or fails
+    // there saying the two waters do not connect.
+    if (usable && nu.distM > t.maxMoveM) {
+      out.push({ lon: p.lon, lat: p.lat, movedM: 0, why: null, outsideGroup: true });
+      continue;
+    }
     if (nu.distM > t.maxMoveM)
       return {
         ok: false,

@@ -6,10 +6,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { clearAlongByHalving, type LandTest } from '../../geo/landmask';
-import { projectAlongBearing } from '../../geo/geodesy';
+import { haversineBearing, haversineDistanceM, projectAlongBearing } from '../../geo/geodesy';
 import { NoCurrent, type WindSource } from '../environment';
 import { PolarDiagram } from '../../vessel/polar';
 import { makeVessel } from '../../vessel/vessel';
+import { ConvexPolar } from '../../vessel/convexpolar';
 import { ExperimentalPropagator } from './propagator';
 
 const POLAR = PolarDiagram.parse(
@@ -170,4 +171,73 @@ test('sailPolyline under sail only: a beat round a right-angle bend in a narrow 
   const last = r.waypoints[r.waypoints.length - 1];
   assert.ok(Math.abs(last.lat - 600 * m) < 1e-9 && Math.abs(last.lon - 550 * m) < 1e-9, 'ends on the point');
   assert.equal(r.motoringTimeS, 0);
+});
+
+test('sailPolyline under sail_max: a beat whose tacks lead into a pocket is motored above a positive threshold, and fails at 0', () => {
+  // Water is three lines (no width): the course itself, 1 km north into 12 kn from the north; an arm 100 m up the
+  // first tack's heading from the start; and a stub 20 m up the second tack's heading from the arm's end. The first
+  // tack runs up the arm (the next heading has room: the stub), the second up the stub, and there neither heading has
+  // room and the end cannot be reached straight: a pocket (the Cape Cod Canal's west approach, 2026-10-13).
+  const cp = new ConvexPolar(POLAR);
+  const ms = 12 * 0.5144444444;
+  const mix = cp.mixFor(0, ms)!;
+  const [h1, h2] = mix.a1 >= mix.a2 ? [mix.a1, mix.a2] : [mix.a2, mix.a1];
+  const B: [number, number] = [0, 0.009];
+  const P1 = projectAlongBearing(0, 0, (h1 + 360) % 360, 100);
+  const P2 = projectAlongBearing(P1[0], P1[1], (h2 + 360) % 360, 20);
+  const segs: [number, number, number, number][] = [
+    [0, 0, B[0], B[1]],
+    [0, 0, P1[0], P1[1]],
+    [P1[0], P1[1], P2[0], P2[1]],
+  ];
+  const onSeg = (lon: number, lat: number, [ax, ay, bx, by]: [number, number, number, number]): boolean => {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const t = Math.max(0, Math.min(1, ((lon - ax) * dx + (lat - ay) * dy) / (dx * dx + dy * dy)));
+    return Math.hypot(lon - (ax + t * dx), lat - (ay + t * dy)) < 1e-9;
+  };
+  const clear = (la: number, pa: number, lb: number, pb: number): boolean => segs.some(g => onSeg(la, pa, g) && onSeg(lb, pb, g));
+  const pocket: LandTest = {
+    isLand: (lon, lat) => !segs.some(g => onSeg(lon, lat, g)),
+    isLandExact: (lon, lat) => !segs.some(g => onSeg(lon, lat, g)),
+    legCrossesLandExact: (la, pa, lb, pb) => !clear(la, pa, lb, pb),
+    legsCrossLandBulk: (la, pa, lb, pb) => Uint8Array.from({ length: la.length }, (_v, k) => (clear(la[k], pa[k], lb[k], pb[k]) ? 0 : 1)),
+    // Exact, as the mesh walk is: along a line of water the room runs to its end; off its direction there is none.
+    clearAlong: (lon, lat, b, maxM) => {
+      let best = { m: 0, end: [lon, lat] as [number, number] };
+      for (const g of segs) {
+        if (!onSeg(lon, lat, g)) continue;
+        const [ax, ay, bx, by] = g;
+        for (const [ex, ey] of [
+          [bx, by],
+          [ax, ay],
+        ]) {
+          const d = haversineDistanceM(lon, lat, ex, ey);
+          if (!(d > 0) || Math.abs(((haversineBearing(lon, lat, ex, ey) - b + 540) % 360) - 180) > 1e-6) continue;
+          const m = Math.min(d, maxM);
+          if (m > best.m) best = { m, end: m < d ? projectAlongBearing(lon, lat, b, m) : [ex, ey] };
+        }
+      }
+      return best;
+    },
+  };
+  const run = (sailThreshMs: number) =>
+    new ExperimentalPropagator(pocket, { stages: 10 }).sailPolyline([[0, 0], B], T0, {
+      vessel: VESSEL,
+      polar: POLAR,
+      wind: wind(12, 0),
+      current: new NoCurrent(),
+      sim: { modePolicy: 'sail_max', sailThreshMs, simStepM: 200 },
+      who: 'test',
+      advice: 'none',
+    });
+  // Sail-mostly (threshold 2.5 m/s): the whole beat motored straight up the course, as the standard router times it.
+  const r = run(2.5);
+  assert.deepEqual(
+    r.waypoints.map(w => [w.lon, w.lat]),
+    [[0, 0], B]
+  );
+  assert.ok(r.motoringTimeS > 0 && r.sailingTimeS === 0, 'motored');
+  // Sail only (threshold 0): no motoring allowed, so it fails as before.
+  assert.throws(() => run(0), /cannot be tacked/);
 });

@@ -11,7 +11,7 @@ import { validateRouteRequest } from '../request_schema';
 import { runLegPipeline, type LegPipelineInputs, type LegWind } from '../../engine/pipeline';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { boundaryFile, coarseFile, coarseRulesOf } from '../meshcoarse';
+import { boundaryFile, coarseFile, coarseRulesOf, joinsFile } from '../meshcoarse';
 import { ForecastStore } from '../../data/forecast';
 import { loadForecastForBBox, resolveCycle } from '../../data/loader';
 import type { WindowOptions } from '../../data/decoded';
@@ -79,9 +79,17 @@ function openMeshes(cfg: ResolvedConfig, progress: (m: string) => void): OpenMes
   return stores;
 }
 
+/** Whether two opened meshes' extents meet (their indexes): only then can their waters join. */
+function extentsMeet(a: OpenMesh, b: OpenMesh): boolean {
+  const x = a.store.index;
+  const y = b.store.index;
+  return x.west <= y.east && y.west <= x.east && x.south <= y.north && y.south <= x.north;
+}
+
 /**
- * The rough cut of a mesh for the route's rules (parts 2–4): built first, in a child process (meshcoarse.ts), when
- * it is not on disk. Its file, or a refusal when it could not be built.
+ * The rough cut of a mesh for the route's rules (parts 2–5): built first, in a child process (meshcoarse.ts), when
+ * it is not on disk, with its joins to every other opened mesh whose extent meets it. Its file, or a refusal when it
+ * could not be built.
  */
 async function ensureRoughCut(
   st: WorkerState,
@@ -89,22 +97,28 @@ async function ensureRoughCut(
   rules: MeshRules,
   tag: string,
   progress: MeshLegArgs['progress'],
-  signal: AbortSignal
+  signal: AbortSignal,
+  /** Every opened mesh (the joins go to those whose extent meets this one's). */
+  all: OpenMesh[]
 ): Promise<string | MeshRefusal> {
   const r = coarseRulesOf(rules);
   const file = coarseFile(st.cacheRoot, m.dir, r);
   if (fs.existsSync(file)) return file;
+  const joins = all
+    .filter(o => o !== m && extentsMeet(o, m))
+    .map(o => ({ dir: o.dir, mapFile: coarseFile(st.cacheRoot, o.dir, r), name: o.name }));
   progress(
     0,
     0,
     `${tag}chart mesh: building the rough cut of ${m.name} for this boat (draught {depth:${r.draughtM}}, air draft {length:${r.airDraftM}}, buffer {length:${r.bufferM}}, opening bridges ${r.openingBridges === 'avoid' ? 'avoided' : 'open'}), once`
   );
   try {
-    const b = await runChildTask({ task: 'mesh-coarse', dir: m.dir, out: file, rules: r }, 15 * 60_000, signal);
+    const b = await runChildTask({ task: 'mesh-coarse', dir: m.dir, out: file, rules: r, joins }, 15 * 60_000, signal);
     progress(
       0,
       0,
-      `${tag}chart mesh: rough cut built: ${b.pieces} pieces of water, ${b.links} links, ${b.boundaryBlocked} blocked triangles on tile edges, {dataSize:${b.bytes}} in {time:${b.ms / 1000}}`
+      `${tag}chart mesh: rough cut built: ${b.pieces} pieces of water, ${b.links} links, ${b.boundaryBlocked} blocked triangles on tile edges, {dataSize:${b.bytes}} in {time:${b.ms / 1000}}` +
+        b.joins.map(j => `; ${j.joins} joins to ${j.name} ({time:${j.ms / 1000}})`).join('')
     );
   } catch (err) {
     if (signal.aborted) throw err;
@@ -135,18 +149,113 @@ function meshLegRunner(
   const meshFor = (points: [number, number][]): (typeof stores)[number] | undefined => stores.find(s => meshCovers(s.store, points));
   const useForecast = !request.no_forecast && request.mode !== 'motor';
   const roughCut = (m: OpenMesh, rules: MeshRules, tag: string, progress: MeshLegArgs['progress'], signal: AbortSignal) =>
-    ensureRoughCut(st, m, rules, tag, progress, signal);
+    ensureRoughCut(st, m, rules, tag, progress, signal, stores);
   return {
     covers: points => meshFor(points) !== undefined,
+    meets: box =>
+      stores.some(s => {
+        const ix = s.store.index;
+        return ix.west <= box.east && box.west <= ix.east && ix.south <= box.north && box.south <= ix.north;
+      }),
+    // A leg's way across the limits of the charts (part 5): in a child process (plugin/meshwaters.ts) holding every
+    // mesh meeting the leg's area; their rough cuts and joins first when missing. Meshes go to the pipeline by folder.
+    plan: async c => {
+      const near = stores.filter(s => {
+        const ix = s.store.index;
+        return ix.west <= c.box.east && c.box.west <= ix.east && ix.south <= c.box.north && c.box.south <= ix.north;
+      });
+      const ac = new AbortController();
+      const poll = setInterval(() => {
+        if (c.shouldCancel()) ac.abort();
+      }, 500);
+      try {
+        const meshes: { dir: string; mapFile: string | null; name: string }[] = [];
+        if (c.rules) {
+          const r = coarseRulesOf(c.rules);
+          for (const m of near) {
+            const file = await roughCut(m, c.rules, c.tag, c.progress, ac.signal);
+            if (typeof file !== 'string') return file;
+            meshes.push({ dir: m.dir, mapFile: file, name: m.name });
+          }
+          // Joins towards a mesh whose build the rough cut has none for (downloaded or updated since): built now.
+          for (const a of near)
+            for (const b of near) {
+              if (a === b || !extentsMeet(a, b)) continue;
+              const mapFile = coarseFile(st.cacheRoot, a.dir, r);
+              if (fs.existsSync(joinsFile(mapFile, b.dir))) continue;
+              c.progress(0, 0, `${c.tag}chart mesh: finding where ${a.name}'s water joins ${b.name}'s for this boat, once`);
+              const j = await runChildTask(
+                {
+                  task: 'mesh-joins',
+                  dir: a.dir,
+                  mapFile,
+                  rules: r,
+                  other: { dir: b.dir, mapFile: coarseFile(st.cacheRoot, b.dir, r), name: b.name },
+                },
+                15 * 60_000,
+                ac.signal
+              );
+              c.progress(0, 0, `${c.tag}chart mesh: ${j.joins} joins from ${a.name} to ${b.name} ({time:${j.ms / 1000}})`);
+            }
+        } else for (const m of near) meshes.push({ dir: m.dir, mapFile: null, name: m.name });
+        const r = await runChildTask(
+          {
+            task: 'mesh-waters',
+            meshes,
+            rules: c.rules,
+            why: c.why,
+            start: c.start,
+            end: c.end,
+            names: c.names,
+            land: {
+              shapefiles: cfg.landShapefiles,
+              bbox: c.box,
+              maxCells: cfg.routing.landRasterMaxCells,
+              bufferM: cfg.routing.landBufferM,
+            },
+          },
+          10 * 60_000,
+          ac.signal
+        );
+        if (!r.ok) return { refused: r.reason };
+        if (r.kind === 'one-mesh') return { kind: 'one-mesh', mesh: near[r.mesh].dir };
+        if (r.kind === 'open') {
+          c.progress(
+            0,
+            0,
+            `${c.tag}chart mesh: open water outside the charts joins the leg's ends; the coastline search plans it with the charts' water as land ({time:${r.ms / 1000}})`
+          );
+          return { kind: 'open', mask: r.mask };
+        }
+        const at = (p: [number, number]): string => `${p[1].toFixed(4)}, ${p[0].toFixed(4)}`;
+        const words = r.stretches.map(s =>
+          s.kind === 'mesh' ? `${near[s.mesh].name} from ${at(s.from)} to ${at(s.to)}` : `open water from ${at(s.from)} to ${at(s.to)}`
+        );
+        c.progress(
+          0,
+          0,
+          `${c.tag}chart mesh: the leg crosses the limits of the charts with ${r.changes} change(s) between charts and open water and ${r.transfers} from one district's charts to another's${r.ways > 1 ? ` (the cheapest of ${r.ways} ways with as few changes)` : ''}: ${words.join('; ')} ({time:${r.ms / 1000}})`
+        );
+        return {
+          kind: 'chain',
+          stretches: r.stretches.map(s => (s.kind === 'mesh' ? { kind: 'mesh', mesh: near[s.mesh].dir, from: s.from, to: s.to } : s)),
+          mask: r.mask,
+        };
+      } finally {
+        clearInterval(poll);
+      }
+    },
     leg: async (a: MeshLegArgs) => {
       // The child reads the forecast from the decoded run's files; without one it would plan the leg with no wind.
       if (useForecast && !st.run)
         return { refused: 'the forecast is still being decoded, and the mesh process reads only a decoded run; try again shortly' };
-      // The mesh holding both ends; a handover leg has one end outside every mesh, so then the one holding either.
-      const m =
-        meshFor([a.legStart, ...a.plan.vias.map(v => [v.lon, v.lat] as [number, number]), a.plan.end]) ??
-        meshFor([a.legStart]) ??
-        meshFor([a.plan.end]);
+      // The mesh the plan named; else the one holding the leg's points (a handover leg, with one end outside every
+      // mesh: the one holding either).
+      const m = a.meshId
+        ? stores.find(s => s.dir === a.meshId)
+        : (meshFor([a.legStart, ...a.plan.vias.map(v => [v.lon, v.lat] as [number, number]), a.plan.end]) ??
+          meshFor([a.legStart]) ??
+          meshFor([a.plan.end]));
       if (!m) return { refused: 'no mesh covers the leg' };
       a.progress(0, 0, `${a.tag}chart mesh: ${m.name}`);
       // Cancel: the worker's flag, polled; aborting kills the child.
@@ -320,7 +429,9 @@ function meshLegRunner(
     // the rough cut built first when this boat has none for the mesh, both in child processes (meshcoarse.ts), so
     // no mesh tile is read in this worker.
     reach: async c => {
-      const m = meshFor([c.legStart, ...c.plan.vias.map(v => [v.lon, v.lat] as [number, number]), c.plan.end]);
+      const m = c.meshId
+        ? stores.find(s => s.dir === c.meshId)
+        : meshFor([c.legStart, ...c.plan.vias.map(v => [v.lon, v.lat] as [number, number]), c.plan.end]);
       if (!m) return { refused: 'no mesh covers the leg' };
       const ac = new AbortController();
       const poll = setInterval(() => {
@@ -485,7 +596,7 @@ export async function route(
         }, 500);
         try {
           for (const [m, idx] of byMesh) {
-            const file = await ensureRoughCut(st, m, rules, '', progress, ac.signal);
+            const file = await ensureRoughCut(st, m, rules, '', progress, ac.signal, meshes);
             if (typeof file !== 'string') throw new RouteError(file.refused);
             const r = await runChildTask(
               {
@@ -503,6 +614,12 @@ export async function route(
             if (!r.ok) throw new RouteError(r.reason);
             idx.forEach((i, k) => {
               const p = r.points[k];
+              if (p.outsideGroup && !(p.movedM > 0))
+                progress(
+                  0,
+                  0,
+                  `${label(i)} is on water this boat can use that does not connect on the chart mesh to the route's within {length:${SNAP_MAX_M}}; left where it is, its leg looks for a way through other charts or open water`
+                );
               if (!(p.movedM > 0)) return;
               const s = stops[i];
               snaps.push({ index: i, original: [s.lon, s.lat], anchor: [p.lon, p.lat], distanceM: p.movedM });

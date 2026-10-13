@@ -19,12 +19,12 @@ import type { LandMask } from '../geo/landmask';
 import type { WaterGrid } from '../geo/watergrid';
 import type { PolarDiagram } from '../vessel/polar';
 import type { VesselParams } from '../vessel/vessel';
-import { CorridorError, mergeVias, planCorridor, SHORE_CLEAR_M, type ChainVia, type Corridor } from './corridor';
+import { CorridorError, mergeVias, planCorridor, type ChainVia, type Corridor } from './corridor';
 import { NoWind, type CurrentSource } from './environment';
 import { RouteError } from './errors';
 import { forecastHorizonNote, type LegWind } from './horizon';
 import type { ModePolicy } from './legsim';
-import { findHandover, HANDOVER_SCAN_M, sliceCorridor, stitchLegParts } from './mesh/handover';
+import { stitchLegParts } from './mesh/handover';
 import { isRefusal, type LegReach, type MeshLegRunner, type MeshRefusal, meshRulesFor } from './mesh/leg';
 import { type DrawbridgeChoice, MESH_BOX_PAD_MAX_DEG, type MeshRules } from './mesh/route';
 import { legLabel, type LegPlan } from './multileg';
@@ -113,8 +113,10 @@ async function meshLeg(
   legStart: [number, number],
   legDeparture: Date,
   tag: string,
-  /** A leg inside one mesh: its reach on the rough cut, when the runner offers one (part 4); the handover's mesh part has none. */
-  useReach = false
+  /** A leg inside one mesh: its reach on the rough cut, when the runner offers one (part 4); a stretch of a longer leg has none. */
+  useReach = false,
+  /** The mesh to plan it on (the runner's id from its plan); absent: the one holding the leg's points. */
+  meshId?: string
 ): Promise<Route | MeshRefusal> {
   const { progress, shouldCancel, multi, stages } = inp;
   const r = meshRulesFor(inp.vessel);
@@ -137,6 +139,7 @@ async function meshLeg(
       legStart,
       plan,
       rules,
+      ...(meshId ? { meshId } : {}),
       tag,
       progress,
       shouldCancel,
@@ -189,6 +192,7 @@ async function meshLeg(
       drawbridges: inp.drawbridges ?? 'ask',
       bridgeWaitS: inp.bridgeWaitS ?? 0,
       reach,
+      ...(meshId ? { meshId } : {}),
       progress,
       shouldCancel,
     });
@@ -224,42 +228,30 @@ export async function runLegPipeline(
   // A collapsed approximate run passes through its waypoint circles (plan.vias).
   const chain: [number, number][] = [legStart, ...plan.vias.map(v => [v.lon, v.lat] as [number, number]), legEnd];
   const tag = multi ? `${legLabel(plan)} ` : '';
-  // The chart mesh first: a leg inside it is routed on charted depths,
-  // clearances and obstructions (narrow water motored, open water by the
-  // selected router), or fails with the reason the mesh gives: no
-  // coastline search where a mesh covers the water (the owner's rule,
-  // 2026-10-12). A leg through waypoint circles is planned on the mesh
-  // through them (part 3). A leg with one end in a mesh and the other
-  // outside every mesh is planned on the mesh to where its water meets the
-  // coastline's, and on the coastline search from there, which may not
-  // enter the mesh's water (part 5, meshExitLeg). A leg whose ends lie in
-  // two meshes changes meshes where both call the water usable (part 5
-  // step 2, meshTransferLeg). The old handover (mesh/handover.ts) is left
-  // only for a leg through waypoint circles that leaves its mesh. The
-  // worker's final depth check runs on every route either way.
+  // The chart meshes first (docs/drafts/mesh-no-gshhg-design.md, part 5; the owner's design of 2026-10-13): the mesh
+  // decides wherever it has triangles, the coastline search plans only in water outside every mesh, and a leg moves
+  // between them only where a mesh's usable water meets the coastline's open water, or where two meshes both call
+  // the water usable. Any leg whose area a mesh meets is planned that way (chartsLeg): on one mesh when it holds the
+  // leg, else through the waters with the fewest changes between charts and open water. A leg through waypoint
+  // circles that one mesh holds is planned on it through them (part 3); one that no one mesh holds, circle by circle
+  // (circlesLeg). A leg no mesh comes near is the coastline search's, as before. The worker's final depth check runs
+  // on every route either way.
   if (inp.mesh) {
-    // One mesh must hold the leg's start, circles and end for the whole leg
-    // to be planned on it (the runner opens one mesh); points in two
-    // different meshes are the handover case, like one outside any mesh.
-    const both = inp.mesh.covers(chain);
-    const cs = both || inp.mesh.covers([legStart]);
-    const ce = both || inp.mesh.covers([legEnd]);
-    if (both) {
-      const mr = await meshLeg(inp, plan, legIndex, legStart, legDeparture, tag, true);
-      if (!isRefusal(mr)) return mr;
-      // No tag: the worker names the leg of a multi-leg route on every error (worker/route.ts legOne).
-      throw new RouteError(`the chart mesh covers this leg but cannot take it: ${mr.refused}`);
-    } else if (cs !== ce && plan.vias.length === 0 && inp.mesh.exit) {
-      return meshExitLeg(inp, plan, legIndex, legStart, legDeparture, tag, cs ? 'start' : 'end');
-    } else if (cs && ce && plan.vias.length === 0 && inp.mesh.transfer) {
-      return meshTransferLeg(inp, plan, legIndex, legStart, legDeparture, tag);
-    } else if ((cs || ce) && inp.waterGrid && plan.vias.length === 0) {
-      const c = corridorFor(inp, chain, tag);
-      if (c.corridor) {
-        const hr = await meshHandoverLeg(inp, plan, legIndex, legStart, legDeparture, tag, c.corridor, cs ? 'start' : 'end');
-        if (hr) return hr;
+    const box = bboxFromLonLat(
+      chain.map(p => p[0]),
+      chain.map(p => p[1]),
+      1.0
+    );
+    if (inp.mesh.meets(box)) {
+      if (bboxWidth(box) > 120 || bboxHeight(box) > 90) throw new Error('route bounding box is too large (max 120° × 90°)');
+      if (plan.vias.length === 0) return chartsLeg(inp, plan, legIndex, legStart, legDeparture, tag, box);
+      if (inp.mesh.covers(chain)) {
+        const mr = await meshLeg(inp, plan, legIndex, legStart, legDeparture, tag, true);
+        if (!isRefusal(mr)) return mr;
+        // No tag: the worker names the leg of a multi-leg route on every error (worker/route.ts legOne).
+        throw new RouteError(`the chart mesh covers this leg but cannot take it: ${mr.refused}`);
       }
-      return openWaterLeg(inp, plan, legIndex, legStart, legDeparture, tag, c.corridor, c.fallback);
+      return circlesLeg(inp, plan, legIndex, legStart, legDeparture);
     }
   }
   const c = inp.waterGrid ? corridorFor(inp, chain, tag) : { corridor: null, fallback: false };
@@ -267,200 +259,112 @@ export async function runLegPipeline(
 }
 
 /**
- * A leg with one end in a mesh and the other outside every mesh (part 5, mesh/exit.ts): where the mesh's water meets
- * the coastline's water that reaches the outside end (the runner's exit), the mesh part to there and the coastline
- * part beyond it, the coastline part with the mesh's water as land (it may not enter it), joined into one leg. No
- * part of the leg in the mesh's water is planned on the coastline data, and the stop in the mesh is never handed to
- * it. A refusal fails the route with the reason.
+ * A leg whose area a mesh meets (mesh/waters.ts, through the runner's plan): on one mesh when it holds both ends in
+ * one water; on the coastline search with every mesh's water as land when open water joins the ends; else stretch by
+ * stretch through the waters with the fewest changes between charts and open water, each mesh stretch on its mesh,
+ * each open stretch on the coastline search with every mesh's water as land, joined into one leg. A refusal fails the
+ * route with the reason; nothing in charted water goes to the coastline search.
  */
-async function meshExitLeg(
+async function chartsLeg(
   inp: LegPipelineInputs,
   plan: LegPlan,
   legIndex: number,
   legStart: [number, number],
   legDeparture: Date,
   tag: string,
-  covered: 'start' | 'end'
+  box: BBox
 ): Promise<Route> {
   const { progress, shouldCancel } = inp;
   const r = meshRulesFor(inp.vessel);
-  if (!r.rules) throw new RouteError(`the chart mesh covers the leg's ${covered} but cannot take it: ${r.why}`);
-  const rules = legMeshRules(inp, r.rules);
-  const inside = covered === 'start' ? legStart : plan.end;
-  const outside = covered === 'start' ? plan.end : legStart;
-  const names = covered === 'start' ? { inside: 'the start', outside: 'the end' } : { inside: 'the end', outside: 'the start' };
-  // The coastline part's area, as openWaterLeg would take it (the box round the leg's ends); the mesh's water is
-  // marked on the raster the coastline search uses over it.
-  const box = bboxFromLonLat([legStart[0], plan.end[0]], [legStart[1], plan.end[1]], 1.0);
-  if (bboxWidth(box) > 120 || bboxHeight(box) > 90) throw new Error('route bounding box is too large (max 120° × 90°)');
-  const x = await inp.mesh!.exit!({ inside, outside, names, rules, box, tag, progress, shouldCancel });
-  if (shouldCancel()) throw new RouteCancelled();
-  if (isRefusal(x)) throw new RouteError(`the leg leaves the chart mesh, but ${x.refused}`);
-  const coastal: LegPipelineInputs = { ...inp, landFor: b => inp.landFor(b).withExtraLand(x.mask) };
-  const exactAt = (end: [number, number]): LegPlan => ({ ...plan, end, snapToExact: true, arrivalRadiusM: undefined });
-  if (covered === 'start') {
-    const meshPart = await meshLeg(inp, exactAt(x.exit), legIndex, legStart, legDeparture, tag);
-    if (isRefusal(meshPart))
-      throw new RouteError(`the chart mesh covers the start but cannot take it to where the leg leaves the charts: ${meshPart.refused}`);
-    inp.releaseAreas?.();
-    const arrive = meshPart.waypoints[meshPart.waypoints.length - 1].time;
-    const openPart = await openWaterLeg(coastal, plan, legIndex, x.exit, arrive, tag, null, false, box);
-    return stitchLegParts(meshPart, openPart);
-  }
-  const openPart = await openWaterLeg(coastal, exactAt(x.exit), legIndex, legStart, legDeparture, tag, null, false, box);
-  inp.releaseAreas?.();
-  const arrive = openPart.waypoints[openPart.waypoints.length - 1].time;
-  const meshPart = await meshLeg(inp, plan, legIndex, x.exit, arrive, tag);
-  if (isRefusal(meshPart))
-    throw new RouteError(`the chart mesh covers the end but cannot take it from where the leg enters the charts: ${meshPart.refused}`);
-  return stitchLegParts(openPart, meshPart);
-}
-
-/**
- * A leg with its start in one mesh and its end in another (part 5 step 2, mesh/transfer.ts): on the start's mesh to
- * where both meshes call the water usable (the runner's transfer point, connected on the end's mesh to the end), on
- * the end's mesh from there, joined into one leg, no coastline search. Where the meshes do not connect in their
- * overlap: on the start's mesh to its exit, on the coastline search to the end mesh's entry with both meshes' water as
- * land, on the end's mesh from there. A refusal fails the route with the reason.
- */
-async function meshTransferLeg(
-  inp: LegPipelineInputs,
-  plan: LegPlan,
-  legIndex: number,
-  legStart: [number, number],
-  legDeparture: Date,
-  tag: string
-): Promise<Route> {
-  const { progress, shouldCancel } = inp;
-  const r = meshRulesFor(inp.vessel);
-  if (!r.rules) throw new RouteError(`the leg runs from one chart mesh to another, but neither can take it: ${r.why}`);
-  const rules = legMeshRules(inp, r.rules);
-  // The coastline part's area, as openWaterLeg would take it (the box round the leg's ends), for a leg across the
-  // water between the meshes.
-  const box = bboxFromLonLat([legStart[0], plan.end[0]], [legStart[1], plan.end[1]], 1.0);
-  if (bboxWidth(box) > 120 || bboxHeight(box) > 90) throw new Error('route bounding box is too large (max 120° × 90°)');
-  const x = await inp.mesh!.transfer!({
+  // Without the draught and air draft a leg in one mesh's water cannot be judged (open water may still join others).
+  if (!r.rules && inp.mesh!.covers([legStart, plan.end]))
+    throw new RouteError(`the chart mesh covers this leg but cannot take it: ${r.why}`);
+  const rules = r.rules ? legMeshRules(inp, r.rules) : null;
+  const p = await inp.mesh!.plan({
     start: legStart,
     end: plan.end,
     names: { start: 'the start', end: 'the end' },
     rules,
+    why: r.rules ? '' : r.why,
     box,
     tag,
     progress,
     shouldCancel,
   });
   if (shouldCancel()) throw new RouteCancelled();
-  if (isRefusal(x)) throw new RouteError(`the leg runs from one chart mesh to another, but ${x.refused}`);
-  const exactAt = (end: [number, number]): LegPlan => ({ ...plan, end, snapToExact: true, arrivalRadiusM: undefined });
-  if (!('point' in x)) {
-    const out = await meshLeg(inp, exactAt(x.exit), legIndex, legStart, legDeparture, tag);
-    if (isRefusal(out))
-      throw new RouteError(`the chart mesh covers the start but cannot take it to where the leg leaves the charts: ${out.refused}`);
-    inp.releaseAreas?.();
-    const coastal: LegPipelineInputs = { ...inp, landFor: b => inp.landFor(b).withExtraLand(x.mask) };
-    const across = await openWaterLeg(
-      coastal,
-      exactAt(x.entry),
-      legIndex,
-      x.exit,
-      out.waypoints[out.waypoints.length - 1].time,
-      tag,
-      null,
-      false,
-      box
-    );
-    inp.releaseAreas?.();
-    const into = await meshLeg(inp, plan, legIndex, x.entry, across.waypoints[across.waypoints.length - 1].time, tag);
-    if (isRefusal(into))
-      throw new RouteError(`the chart mesh covers the end but cannot take it from where the leg enters the charts: ${into.refused}`);
-    return stitchLegParts(stitchLegParts(out, across), into);
+  if (isRefusal(p)) throw new RouteError(p.refused);
+  if (p.kind === 'one-mesh') {
+    const mr = await meshLeg(inp, plan, legIndex, legStart, legDeparture, tag, true, p.mesh);
+    if (!isRefusal(mr)) return mr;
+    // No tag: the worker names the leg of a multi-leg route on every error (worker/route.ts legOne).
+    throw new RouteError(`the chart mesh covers this leg but cannot take it: ${mr.refused}`);
   }
-  const first = await meshLeg(inp, exactAt(x.point), legIndex, legStart, legDeparture, tag);
-  if (isRefusal(first))
-    throw new RouteError(`the chart mesh covers the start but cannot take it to where the leg changes charts: ${first.refused}`);
-  inp.releaseAreas?.();
-  const arrive = first.waypoints[first.waypoints.length - 1].time;
-  const second = await meshLeg(inp, plan, legIndex, x.point, arrive, tag);
-  if (isRefusal(second))
-    throw new RouteError(`the chart mesh covers the end but cannot take it from where the leg changes charts: ${second.refused}`);
-  const route = stitchLegParts(first, second);
-  route.legSources = ['mesh'];
-  return route;
+  // Every mesh's water is land to the coastline search (a chain on the charts alone has no open stretch, no mask).
+  const mask = p.mask;
+  const coastal: LegPipelineInputs = { ...inp, landFor: b => (mask ? inp.landFor(b).withExtraLand(mask) : inp.landFor(b)) };
+  if (p.kind === 'open') return openWaterLeg(coastal, plan, legIndex, legStart, legDeparture, tag, null, false, box);
+  const exactAt = (end: [number, number]): LegPlan => ({ ...plan, end, snapToExact: true, arrivalRadiusM: undefined });
+  const where = (q: [number, number]): string => `${q[1].toFixed(4)}, ${q[0].toFixed(4)}`;
+  const parts: Route[] = [];
+  let at = legDeparture;
+  for (let k = 0; k < p.stretches.length; k++) {
+    const st = p.stretches[k];
+    const sub = k === p.stretches.length - 1 ? plan : exactAt(st.to);
+    let part: Route;
+    if (st.kind === 'mesh') {
+      const mr = await meshLeg(inp, sub, legIndex, st.from, at, tag, false, st.mesh);
+      if (isRefusal(mr))
+        throw new RouteError(
+          `the chart mesh cannot take the leg's stretch on the charts from ${where(st.from)} to ${where(st.to)}: ${mr.refused}`
+        );
+      part = mr;
+    } else part = await openWaterLeg(coastal, sub, legIndex, st.from, at, tag, null, false, box);
+    inp.releaseAreas?.();
+    parts.push(part);
+    at = part.waypoints[part.waypoints.length - 1].time;
+  }
+  return joinParts(parts);
 }
 
 /**
- * A leg with one end inside the mesh: the mesh as far as the handover
- * point (mesh/handover.ts), the coastline search from there with the
- * corridor cut at that point, stitched into one leg. Null when the mesh
- * part cannot be made, so the caller routes the whole leg as today.
+ * A leg through waypoint circles that no one mesh holds: circle by circle, each piece ending where it enters its circle
+ * and planned as any leg is (runLegPipeline), the next starting there; the point where it entered each circle is
+ * marked as the waypoint.
  */
-async function meshHandoverLeg(
+async function circlesLeg(
   inp: LegPipelineInputs,
   plan: LegPlan,
   legIndex: number,
   legStart: [number, number],
-  legDeparture: Date,
-  tag: string,
-  corridor: Corridor,
-  covered: 'start' | 'end'
-): Promise<Route | null> {
-  const { progress } = inp;
-  const h = findHandover(corridor, covered, inp.mesh!);
-  if (!h) {
-    progress(
-      0,
-      0,
-      `${tag}chart mesh: the leg leaves the mesh and its ${covered} is already in open water at least {distance:${SHORE_CLEAR_M}} from land; the coastline search takes the whole leg`
-    );
-    return null;
+  legDeparture: Date
+): Promise<Route> {
+  const parts: Route[] = [];
+  let from = legStart;
+  let at = legDeparture;
+  for (let k = 0; k <= plan.vias.length; k++) {
+    const v = plan.vias[k];
+    const piece: LegPlan = v
+      ? { ...plan, vias: [], end: [v.lon, v.lat], arrivalRadiusM: v.radiusM, snapToExact: false }
+      : { ...plan, vias: [] };
+    const r = await runLegPipeline(inp, piece, legIndex, from, at);
+    const last = r.waypoints[r.waypoints.length - 1];
+    if (v) last.role = 'via';
+    parts.push(r);
+    from = [last.lon, last.lat];
+    at = last.time;
   }
-  progress(
-    0,
-    0,
-    `${tag}chart mesh: the leg leaves the mesh; its ${covered === 'start' ? 'first' : 'last'} {distance:${h.distanceM.toFixed(0)}} ` +
-      (h.reason === 'clear'
-        ? `to open water at least {distance:${SHORE_CLEAR_M}} from land`
-        : `(the most the mesh part takes, {distance:${HANDOVER_SCAN_M}}, or the mesh's edge; not yet clear of land there)`) +
-      ` at ${h.point[1].toFixed(4)}, ${h.point[0].toFixed(4)} is routed on the mesh, the rest on the coastline search`
-  );
-  const exactAt = (end: [number, number]): LegPlan => ({ ...plan, end, snapToExact: true, arrivalRadiusM: undefined });
-  if (covered === 'start') {
-    const meshPart = await meshLeg(inp, exactAt(h.point), legIndex, legStart, legDeparture, tag);
-    if (isRefusal(meshPart)) {
-      progress(
-        0,
-        0,
-        `WARNING: ${tag}chart mesh: no route on the mesh to the handover point (${meshPart.refused}); the coastline search takes the whole leg`
-      );
-      return null;
-    }
-    inp.releaseAreas?.();
-    const arrive = meshPart.waypoints[meshPart.waypoints.length - 1].time;
-    const openPart = await openWaterLeg(inp, plan, legIndex, h.point, arrive, tag, sliceCorridor(corridor, h.index, 'after'), false);
-    return stitchLegParts(meshPart, openPart);
-  }
-  const openPart = await openWaterLeg(
-    inp,
-    exactAt(h.point),
-    legIndex,
-    legStart,
-    legDeparture,
-    tag,
-    sliceCorridor(corridor, h.index, 'before'),
-    false
-  );
-  inp.releaseAreas?.();
-  const arrive = openPart.waypoints[openPart.waypoints.length - 1].time;
-  const meshPart = await meshLeg(inp, plan, legIndex, h.point, arrive, tag);
-  if (isRefusal(meshPart)) {
-    progress(
-      0,
-      0,
-      `WARNING: ${tag}chart mesh: no route on the mesh from the handover point (${meshPart.refused}); the coastline search takes the whole leg`
-    );
-    return openWaterLeg(inp, plan, legIndex, legStart, legDeparture, tag, corridor, false);
-  }
-  return stitchLegParts(openPart, meshPart);
+  return joinParts(parts);
+}
+
+/** Parts of one leg, each starting where and when the one before ended, as one Route; its source from theirs. */
+function joinParts(parts: Route[]): Route {
+  if (parts.length === 1) return parts[0];
+  const sources = parts.map(r => r.legSources?.[0] ?? (r.meshLeg ? 'mesh' : 'coastline'));
+  const route = parts.slice(1).reduce((a, b) => stitchLegParts(a, b), parts[0]);
+  if (sources.some(x => x !== 'coastline')) route.meshLeg = true;
+  else delete route.meshLeg;
+  route.legSources = [sources.every(x => x === sources[0]) ? sources[0] : 'mixed'];
+  return route;
 }
 
 /** The corridor from the global water grid for the chain, or null (with the fallback flag) when its search failed. */
