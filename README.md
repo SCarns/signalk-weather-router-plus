@@ -22,7 +22,7 @@ much for a plugin; it lives in the separate
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
 
-**Status: beta** (0.2.0-beta.1). Please report
+**Status: beta** (0.2.0-beta.2). Please report
 problems at https://github.com/motamman/signalk-weather-router-plus/issues.
 
 What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
@@ -728,33 +728,27 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   own mode: sailed under sail_max (tacks where needed, motor only below a
   positive threshold), walked under fastest; when it cannot be sailed the
   route fails naming the segment rather than motoring it.
-- **One end outside the mesh:** the mesh decides wherever it has
-  triangles, the coastline data only where it has none. The router floods
-  the coastline's water from the leg's end outside the charts, on the
-  coastline search's own raster for the leg, never entering a cell a mesh
-  triangle covers; where that water meets a side of mesh water the boat
-  can use is an exit (a shoreline never is: beyond it is land, or water
-  that does not connect out). The mesh plans the leg from its stop to the
-  cheapest exit towards the far end, and the coastline search from there,
-  with the mesh's water as land, so it cannot come back into charted
-  water and never sees the stop.
-- **From one mesh to another.** A leg that starts in one district's mesh
-  and ends in another's stays on the charts. Where the two meshes overlap,
-  it changes meshes at a point both call usable for the boat: neighbouring
-  districts' charts disagree in a few percent of their overlap (one
-  calls the water usable, the other does not), and such water is never
-  used. The point is reached on the first mesh and connects on the second
-  to the end; the mesh plans the leg on the first mesh to it and on the
-  second from it, with no coastline search. Where the meshes do not connect
-  in their overlap, or do not overlap, the leg leaves the first mesh at an
-  exit and enters the second at an entry (found as for one end outside the
-  mesh, from both sides), with the coastline search between them and both
-  meshes' water as land. Both rough cuts are asked first whether such a
-  point, or such an exit and entry, exists at all, so a leg that cannot be
-  made fails without a long search (on the test box a two-district leg with
-  no way through took 16 s and 558 MB to say so). The log has a line
-  "chart mesh: the leg changes from … to … at …" or "… leaves … and enters
-  … at …".
+- **Across the limits of the charts.** The mesh decides wherever it has
+  triangles; the coastline data only where it has none. A leg whose area a
+  mesh meets, and that one mesh does not hold, is planned through the waters
+  it crosses: leaving the charts, entering them, crossing open water between
+  them (out and back in, or in, out and in again), or going from one
+  district's mesh to another's. A leg moves between charts and open water
+  only where usable mesh water meets the coastline's open water (an exit or
+  entry: never a shoreline, beyond which is land or water that does not
+  connect out), and between two meshes only where both call the water usable
+  for the boat (a transfer; neighbouring districts' charts disagree in a few
+  percent of their overlap, and such water is never used). Which water of
+  one mesh joins which of another is recorded per boat with the rough cut
+  (the joins). The way taken has the fewest changes between charts and open
+  water, then the fewest transfers between meshes; ways still tied are each
+  planned and the cheapest taken. The charts alone are tried first, and the
+  open-water map (the coastline search's raster, every mesh's water marked
+  as land) is built only when they hold no way. Each mesh stretch is one
+  mesh search, its entry and exit chosen together towards the end; each open
+  stretch is the coastline search with every mesh's water as land, so it
+  never enters charted water. A leg the waters do not join fails with the
+  reason.
 - **No search area.** The mesh search reads the chart a 0.25° tile at a
   time, as it reaches each tile, and lets a tile go once nothing it still
   has to look at lies there (read again if it comes back), so a route
@@ -857,16 +851,22 @@ both ways and compared (the Route tab's *Router*: Standard / Refined):
 1. **Convex polar.** The search runs on the convex hull of the polar
    (per wind speed), so a leg into the wind is a straight line at the
    beat's exact VMG and the search needs no beat handling.
-2. **Legs laid out forward in time.** Afterwards every sailed leg is
-   walked in steps of at most 9,260 m: at each step the wind there and
-   then decides whether the course to the leg's end is a time-share of
-   two polar headings (a tack is placed: alternating sides, 30 s each,
-   the last landing on the leg's end) or a heading the polar sails
-   directly (one straight step), so a wind that veers along a long leg
-   is met where it veers. A tack that would cross land or that the real
-   polar cannot sail is tried on the other side, then shorter; a leg that
-   still cannot be sailed fails the route with a message naming it, never
-   an invented time. Tack points carry `tack: true` in the GeoJSON.
+2. **Legs laid out forward in time.** Afterwards every sailed leg is laid
+   out from its start: at each point the wind there and then decides
+   whether the course to the leg's end is a time-share of two polar
+   headings (a beat: two legs and one tack, the second landing on the
+   leg's end, each tack costing the tack penalty) or a heading the polar
+   sails directly (the rest in one straight leg); a piece is split only
+   where the real polar cannot sail it all the way or it crosses land, so
+   a wind that veers along a long leg is met where it veers. A tack runs
+   as far as the water allows on its heading (exactly, on the chart mesh)
+   and only where the boat can go on from its end; one that would cross
+   land or that the real polar cannot sail is tried on the other side,
+   then shorter. Where no tack fits (the tacks lead into a pocket the
+   water closes round), with a sail threshold above 0 the leg is motored
+   straight, as the standard router times it, with a WARNING naming it;
+   with a threshold of 0 the route fails with a message naming the leg,
+   never an invented time. Tack points carry `tack: true` in the GeoJSON.
 3. **Cross-track polish.** Each interior waypoint is tried a little to
    either side of its track (2 km down to 250 m, capped at a third of the
    shorter adjacent leg) and moved when the route, re-timed from there
@@ -1253,14 +1253,22 @@ still loading: those are answered but not saved. What is built ahead of time: th
 draws (wind, waves, sea state, current, rain, air temperature, sea
 temperature, tide height), wind barbs, current arrows and coastline
 tiles, for every hour from now to the end of the window (tide height:
-to the end of the tide run), at zooms 6 to `maxZoom`. Order: the map
+to the end of the tide run), at zooms 6 to `maxZoom`. The map view is
+worked out from the tiles any map asks for (this plugin's page, or a
+chartplotter drawing the PNG tiles): a burst of requests ends when no new
+tile has come for 5 s, and the view is the middle of all the burst's
+tiles at its deepest zoom; a view zoomed out past zoom 6 leaves the last
+view as it is, and the last view is kept when the map closes. Order: the map
 view's area, then the boat's; within each, nearest hour first, then
 shallower zoom, then nearest the centre. Tiles already saved are
 skipped. A new forecast cycle, currents run or tide run removes the
 tiles made from the old one and the walk starts again; so do a new
 hour, a boat move of more than 1 km, a new view and a settings change.
 No new tile is started while a route runs or the map's own queries are
-waiting. The builders are separate processes, not threads: they are
+waiting. The builders are separate processes, not threads: each answers
+a tile's query, encodes it and writes it to a temporary file beside it,
+and Signal K's own process only moves the file into place (a tile built
+while its data changed is deleted). They are
 started when the walk has a tile to build and exit when it is complete,
 so the memory they used goes back to the system (a thread's memory stays
 with Signal K until it restarts). While they run, each holds its own copy

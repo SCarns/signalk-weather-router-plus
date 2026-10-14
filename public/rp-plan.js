@@ -450,6 +450,8 @@ function _loadRouteJob(id) {
   authFetch(API + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, 'route-load')
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(geojson => {
+      // Another route opened while this body was still being read (the channel cancels only the request): dropped.
+      if (_currentRouteJobId !== id) return;
       displayRoute(geojson);
       _displayedJobId = id;   // a Publish of this saved route writes its itinerary too
       _useRouteAngles(id);
@@ -478,6 +480,7 @@ function _loadRouteJob(id) {
       showTab('itinerarySection');
     })
     .catch(err => {
+      if (_currentRouteJobId !== id) return;   // another route was opened meanwhile
       console.error('Failed to load route:', err);
       const st = document.getElementById('status');
       if (st) st.textContent = 'Could not load route: ' + err.message;
@@ -2377,6 +2380,9 @@ function _jobOnDone(job, d) {
   authFetch(API + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, 'route-load')
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(geojson => {
+      // An answer for a job no longer current (a newer request started while this body was still being read: the
+      // 'route-load' channel cancels only the request, not the body read; PR #40 review) is dropped.
+      if (_currentRouteJobId !== id) return;
       displayRoute(geojson);
       _displayedJobId = id;
       // The itinerary written into the saved route is labelled with this route's polar too.
@@ -2387,7 +2393,13 @@ function _jobOnDone(job, d) {
       _fitRouteInView();
       showTab('itinerarySection');
     })
-    .catch(err => appendLog('Failed to load route: ' + err.message, 'error'));
+    .catch(err => {
+      if (_currentRouteJobId !== id) return;   // a job no longer current: the route shown is another's
+      // No route is shown after all (PR #39 review): the hint and the stale check must not act on one.
+      routeActive = false;
+      updatePlanHint();
+      appendLog('Failed to load route: ' + err.message, 'error');
+    });
   loadSkeleton(id);
   loadPluginStatus();
 }
