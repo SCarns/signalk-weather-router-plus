@@ -33,8 +33,8 @@ import { siText } from './plugin/unittext';
 import { JobManager, type Job } from './plugin/jobs';
 import { registerApi } from './plugin/api';
 import { NotStartedError } from './plugin/errors';
-import { TileService, TileStore, type TileGroup } from './plugin/tiles';
-import { TilePrebuilder } from './plugin/prebuild';
+import { TileService, TileStore, tileGroup, type TileGroup } from './plugin/tiles';
+import { hasStep, TilePrebuilder } from './plugin/prebuild';
 import { runLastMs, type ArcoRun } from './data/arco';
 import { gshhgInstalled, gshhgInstalledAt, unreadableCoastlines } from './geo/gshhg';
 import { Coastline } from './plugin/coastline';
@@ -874,6 +874,14 @@ export = function plugin(app: SkApp): SignalKPlugin {
           if (!forecastRun) return null;
           return forecastRun.index.steps[forecastRun.index.steps.length - 1].validMs;
         },
+        // Each layer at its data's steps (prebuild.ts hasStep); the map draws the hours between on demand.
+        atStep: (layer, hourMs) =>
+          hasStep(tileGroup(layer), hourMs, {
+            forecast: forecastRun ? forecastRun.index.steps.map(s => s.validMs) : null,
+            rtofs: rtofsShared ? rtofsShared.steps.map(s => s.validMs) : [],
+            smocStepMs: smocShared ? smocShared.settings.stepS * 1000 : null,
+            harmonic: !!harmonicShared?.length,
+          }),
         layerAvailable: layer => charts.layerAvailable(layer),
         busy: () => !!jobs?.runningId || pool.pendingCount > 0,
         log,

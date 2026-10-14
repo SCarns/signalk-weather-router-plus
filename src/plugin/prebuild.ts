@@ -43,7 +43,17 @@ import * as path from 'node:path';
 import { fork, type ChildProcess } from 'node:child_process';
 import type { MainToWorker, VesselPosition, WorkerToMain } from './protocol';
 import { PRESSURE_TILE_ZOOM } from './tilejoin';
-import { PYRAMID_MIN_ZOOM, pyramidRadius, pyramidTiles, tileBBox, tileGroup, type TileId, type TileLayer, type TileStore } from './tiles';
+import {
+  PYRAMID_MIN_ZOOM,
+  pyramidRadius,
+  pyramidTiles,
+  tileBBox,
+  tileGroup,
+  type TileGroup,
+  type TileId,
+  type TileLayer,
+  type TileStore,
+} from './tiles';
 
 /** Layers the page draws, built ahead of time; `msl` only at the zoom the isobars read. */
 export const PREBUILD_LAYERS: readonly TileLayer[] = [
@@ -70,6 +80,30 @@ const VIEW_GAP_MS = 5_000;
 /** Consecutive errors after which a layer is left out until the walk restarts. */
 const LAYER_ERROR_LIMIT = 3;
 
+/** The step times of the data the map layers are drawn from, for `atStep`. */
+export interface StepSources {
+  /** The forecast's steps (valid times, ms); null: no forecast loaded. */
+  forecast: number[] | null;
+  /** RTOFS steps (valid times, ms), or none. */
+  rtofs: number[];
+  /** SMOC's step (ms; its steps are the multiples of it from 00Z, data/arco.ts alignedSteps), or null when off. */
+  smocStepMs: number | null;
+  /** Tidal-harmonic current sources loaded: they give a value for every hour. */
+  harmonic: boolean;
+}
+
+/**
+ * Whether a layer's data has a step at this whole hour (`atStep`). The forecast's layers (group `wx`): at its steps.
+ * The current layers (`cur`: current, arrows, sea state): at an RTOFS step or a SMOC step, or every hour with tidal
+ * harmonics (brain's settings, 2026-10-14: SMOC and RTOFS both at 3 h, so hourly current tiles were interpolations).
+ * Tide height and the coastline: every hour (the sea level is hourly).
+ */
+export function hasStep(group: TileGroup, hourMs: number, s: StepSources): boolean {
+  if (group === 'wx') return !!s.forecast?.includes(hourMs);
+  if (group === 'cur') return s.harmonic || s.rtofs.includes(hourMs) || (s.smocStepMs !== null && hourMs % s.smocStepMs === 0);
+  return true;
+}
+
 export interface PrebuildSettings {
   enabled: boolean;
   radiusM: number;
@@ -92,6 +126,12 @@ export interface PrebuildDeps {
   vesselPosition: () => VesselPosition | null;
   /** Hours available: forecast (colour and barb layers), tide run, per layer; null = not loaded. */
   lastHourMs: (layer: TileLayer) => number | null;
+  /**
+   * Whether a layer's data has a step at this whole hour. Hours between a source's steps are not built ahead: the map
+   * draws them on demand, interpolated as always (the forecast's steps are 3 h apart, the tiles hourly: two of every
+   * three wind and wave tiles were interpolations built ahead, and every new cycle built them again; brain, 2026-10-14).
+   */
+  atStep: (layer: TileLayer, hourMs: number) => boolean;
   /** Layers the loaded data can answer (e.g. no waves without wave fields). */
   layerAvailable: (layer: TileLayer) => boolean;
   /** A route is running or the data worker has map queries waiting. */
@@ -503,11 +543,12 @@ export class TilePrebuilder {
       // Isobars read the pressure grid at one zoom (tilejoin.ts joinPressure), whatever the map zoom.
       const pressure = layers.includes('msl') ? pyramidTiles(area.lat, area.lon, this.settings.radiusM, PRESSURE_TILE_ZOOM) : [];
       for (let h = fromMs; h <= lastMs; h += HOUR_MS) {
-        if (h <= (ends.get('msl') ?? -Infinity))
+        if (h <= (ends.get('msl') ?? -Infinity) && this.deps.atStep('msl', h))
           for (const { x, y } of pressure) yield { t: { layer: 'msl', z: PRESSURE_TILE_ZOOM, x, y, hourMs: h }, area };
+        const atH = tileLayers.filter(l => h <= (ends.get(l) as number) && this.deps.atStep(l, h));
+        if (!atH.length) continue;
         for (const { z, tiles } of byZ)
-          for (const { x, y } of tiles)
-            for (const layer of tileLayers) if (h <= (ends.get(layer) as number)) yield { t: { layer, z, x, y, hourMs: h }, area };
+          for (const { x, y } of tiles) for (const layer of atH) yield { t: { layer, z, x, y, hourMs: h }, area };
       }
     }
   }
