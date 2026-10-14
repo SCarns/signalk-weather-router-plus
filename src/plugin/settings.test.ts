@@ -61,7 +61,7 @@ test('defaults resolve to the same engine config the plugin config gave before',
   const c = resolveConfig({ landShapefiles: '/a.shp, /b.shp' }, defaultSettings());
   assert.deepEqual(c.landShapefiles, ['/a.shp', '/b.shp']);
   assert.equal(c.forecast.horizonS, 72 * HOUR_S);
-  assert.equal(c.forecast.refreshIntervalS, 3600);
+  assert.equal(c.forecast.refreshIntervalS, 900);
   assert.equal(c.forecast.keepCycles, 2);
   assert.equal(c.forecast.extraFields, true);
   assert.equal(c.forecast.energyFields, false, 'the solar and radiation fields are opt-in (they about double the download)');

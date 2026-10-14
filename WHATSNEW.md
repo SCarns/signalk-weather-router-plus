@@ -27,6 +27,19 @@
   looking from everything it asked for, not the last few tiles: a zoomed-out
   view of the whole ocean no longer sends it off drawing tiles for one corner
   of it. Zoomed out that far, it keeps drawing where you last looked closer.
+- **Much less map drawing in advance.** Wind and waves are drawn ahead only
+  at the times the forecast actually has (every 3 hours), and currents at
+  the times their own data has (every 3 hours with the usual settings,
+  hourly with tidal harmonics), not every hour; the map still shows the
+  hours between when you look. And when a map, this one or another app,
+  moves somewhere new, only what it shows is drawn ahead there, not a whole
+  region at every zoom. On the test box a new forecast now keeps the
+  computer busy for minutes, not hours, and moving the map for a minute or
+  two.
+- **New forecasts sooner.** A new install checks for a new forecast every
+  15 minutes instead of every hour. If you already use the plugin, your
+  setting stays as it is: change it on the Defaults tab (*Check for a new
+  cycle every*).
 - **Fixes:** a newly computed route can be published, deleted, named and
   exported straight away; a request that fails no longer leaves the old route
   in the GPX export.

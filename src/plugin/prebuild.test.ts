@@ -119,3 +119,141 @@ test('view: a map asking for the same tiles again and again (other hours, a refr
   assert.ok(got, 'taken while the requests go on');
   assert.ok(near(z, got, middle(z, tiles)), JSON.stringify(got));
 });
+
+test('walk: the forecast layers are built ahead at its steps only, the hourly sources every hour', async () => {
+  const { TilePrebuilder } = await import('./prebuild');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-prebuild-'));
+  const H = 3_600_000;
+  const t0 = Date.UTC(2026, 9, 14, 0);
+  const steps = new Set([0, 3, 6, 9, 12].map(h => t0 + h * H)); // the forecast's steps, 3 h apart
+  try {
+    const pb = new TilePrebuilder(
+      { enabled: true, radiusM: 50_000, windowS: null, maxZoom: 6, workers: 1, followView: true },
+      {
+        store: null as never,
+        dataDir: dir,
+        workerPath: '',
+        execArgv: [],
+        initMessage: () => ({ type: 'shutdown' }),
+        replayMessages: () => [],
+        vesselPosition: () => null,
+        lastHourMs: () => t0 + 12 * H,
+        atStep: (layer, h) => layer !== 'wind' || steps.has(h),
+        layerAvailable: () => true,
+        busy: () => false,
+        log: () => undefined,
+        error: () => undefined,
+      }
+    );
+    const walk = (pb as unknown as { tiles: (...a: unknown[]) => Iterable<{ t: { layer: string; hourMs: number } }> }).tiles(
+      [{ kind: 'boat', lat: 41, lon: -71 }],
+      ['wind', 'current'],
+      t0,
+      Infinity
+    );
+    const hours = new Map<string, Set<number>>();
+    for (const { t } of walk) {
+      if (t.layer === 'land') continue;
+      if (!hours.has(t.layer)) hours.set(t.layer, new Set());
+      hours.get(t.layer)!.add((t.hourMs - t0) / H);
+    }
+    assert.deepEqual(
+      [...hours.get('wind')!].sort((a, b) => a - b),
+      [0, 3, 6, 9, 12],
+      'wind at the forecast steps'
+    );
+    assert.equal(hours.get('current')!.size, 13, 'currents every hour from 0 to 12');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('hasStep: the forecast at its steps, currents at an RTOFS or SMOC step or every hour with harmonics, tides every hour', async () => {
+  const { hasStep } = await import('./prebuild');
+  const H = 3_600_000;
+  const t0 = Date.UTC(2026, 9, 14, 0);
+  const at = (h: number): number => t0 + h * H;
+  const base = { forecast: [0, 3, 6].map(at), rtofs: [] as number[], smocStepMs: null as number | null, harmonic: false };
+  assert.deepEqual(
+    [0, 1, 2, 3].map(h => hasStep('wx', at(h), base)),
+    [true, false, false, true],
+    'forecast every 3 h'
+  );
+  assert.equal(hasStep('wx', at(0), { ...base, forecast: null }), false, 'no forecast: none');
+  // SMOC at 3 h: its steps are the multiples of 3 h from 00Z.
+  const smoc = { ...base, smocStepMs: 3 * H };
+  assert.deepEqual(
+    [0, 1, 2, 3, 4].map(h => hasStep('cur', at(h), smoc)),
+    [true, false, false, true, false]
+  );
+  // RTOFS alone, hourly to some time: its own steps.
+  const rtofs = { ...base, rtofs: [1, 2].map(at) };
+  assert.deepEqual(
+    [0, 1, 2, 3].map(h => hasStep('cur', at(h), rtofs)),
+    [false, true, true, false]
+  );
+  // Tidal harmonics: a value every hour.
+  assert.ok([0, 1, 2].every(h => hasStep('cur', at(h), { ...smoc, harmonic: true })));
+  // Tide height and the coastline: every hour.
+  assert.ok([0, 1, 2].every(h => hasStep('tide', at(h), base) && hasStep('land', at(h), base)));
+});
+
+test('walk: a view builds the tiles the map showed, at its zoom; the boat its pyramid', async () => {
+  const { TilePrebuilder, coveringTiles } = await import('./prebuild');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-prebuild-'));
+  const H = 3_600_000;
+  const t0 = Date.UTC(2026, 9, 14, 0);
+  try {
+    const pb = new TilePrebuilder(
+      { enabled: true, radiusM: 50_000, windowS: null, maxZoom: 9, workers: 1, followView: true },
+      {
+        store: null as never,
+        dataDir: dir,
+        workerPath: '',
+        execArgv: [],
+        initMessage: () => ({ type: 'shutdown' }),
+        replayMessages: () => [],
+        vesselPosition: () => null,
+        lastHourMs: () => t0 + 3 * H,
+        atStep: () => true,
+        layerAvailable: () => true,
+        busy: () => false,
+        log: () => undefined,
+        error: () => undefined,
+      }
+    );
+    const shown = screen(11, -71.6, 41.2, 3, 2);
+    const walk = (
+      pb as unknown as { tiles: (...a: unknown[]) => Iterable<{ t: { layer: string; z: number; x: number; y: number } }> }
+    ).tiles(
+      [
+        { kind: 'view', lat: 41.19, lon: -71.58, z: 11, tiles: shown },
+        { kind: 'boat', lat: 40.65, lon: -73.98 },
+      ],
+      ['wind', 'msl'],
+      t0,
+      Infinity
+    );
+    const view = new Set<string>();
+    const boat = new Set<string>();
+    let msl = 0;
+    let inView = true;
+    for (const { t } of walk) {
+      if (t.layer === 'land' && t.z === 6) inView = false; // the boat's pyramid starts at zoom 6
+      if (t.layer === 'msl') msl++;
+      else (inView ? view : boat).add(`${t.layer}/${t.z}/${t.x}/${t.y}`);
+    }
+    const want = new Set(shown.flatMap(({ x, y }) => [`land/11/${x}/${y}`, `wind/11/${x}/${y}`]));
+    assert.deepEqual([...view].sort(), [...want].sort(), 'the view: its own tiles at zoom 11, land and wind, nothing else');
+    assert.ok([...boat].some(k => k.startsWith('wind/6/')) && [...boat].some(k => k.startsWith('wind/9/')), 'the boat: zoom 6 to 9');
+    assert.ok(msl > 0 && coveringTiles(11, shown, 5).length >= 1, 'isobars over the view at their own zoom');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

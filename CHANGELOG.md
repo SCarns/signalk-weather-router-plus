@@ -88,6 +88,32 @@ uses [Semantic Versioning](https://semver.org/).
   Russia down to zoom 15 for every hour (test box, 2026-10-13). Test box
   after: the view followed the map to Jamnagar, the Strait of Messina and the
   Channel Islands, each the middle of the map's own requests.
+- **Each layer built ahead at its own data's steps** (`plugin/prebuild.ts`
+  `hasStep`, the prebuilder's `atStep`): the forecast's layers (wind, waves,
+  rain, air and sea temperature, barbs, isobars) at its 3-hourly steps, the
+  current layers (current, sea state, arrows) at an RTOFS or SMOC step (every
+  3 h with the default settings; every hour when tidal harmonics are
+  loaded), tide height every hour. The map draws the hours between on
+  demand, interpolated as before; routes are unaffected (they never use
+  tiles). Before, every layer was built for every hour, so two of every three
+  wind, wave and current tiles were interpolations built ahead, and every new
+  forecast cycle built them again.
+- **A map view builds what the map showed** (`plugin/prebuild.ts`
+  `ViewTracker`, `coveringTiles`): the view's tiles at its zoom (and the
+  isobar tiles over them), every step of the window; the boat keeps the
+  pyramid round it. Before, every place a map paused on got the boat's whole
+  pyramid (zoom 6 to the deepest, the full radius): on the test box a few pans
+  by another app's map built over 60,000 tiles in 24 minutes, two cores busy,
+  and had not finished. Test box after (2026-10-14): a pan to southwest
+  Florida built 2,127 tiles for its final view in 77 s; the 06Z forecast cycle
+  rebuilt about 70,000 tiles in about 7 minutes at 180–200 a second, and the
+  box went quiet (5.8 % busy) for the rest of the hour. The night before,
+  after the 00Z cycle, the builders were still busy 8½ hours later.
+- **New installs check for a new forecast cycle every 15 minutes**
+  (`plugin/settings.ts`, `forecast.refreshInterval` default 900 s, was
+  3600 s): a check is a few small requests to the mirror, and a new cycle is
+  picked up up to 45 minutes sooner. Existing installs keep the value in
+  their settings.json; it is on the Defaults tab.
 - **A stop the mesh snap moved is reached on its circle** (`multileg.ts`
   `Stop.snapped`; the owner's choice): a moved waypoint or destination
   becomes approximate, its circle the distance it was moved, in either

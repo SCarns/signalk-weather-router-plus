@@ -1238,7 +1238,7 @@ React and needs no build step for it.
 | `forecast.mirror` | `ecmwf`, `aws` or `google` |
 | `weatherProvider.enabled` | register with the Weather API (default on) |
 | `overlayCache.enabled` | build map tiles ahead of time (default on) |
-| `overlayCache.radius` | m, around the boat and the map view at zoom 8 and below; halved at each deeper zoom (default 250000, 1000–2000000) |
+| `overlayCache.radius` | m, around the boat at zoom 8 and below; halved at each deeper zoom (default 250000, 1000–2000000); the map view builds only the tiles it showed |
 | `overlayCache.window` | s, how far ahead tiles are built from now; 0 = the whole forecast (default 0, max 1296000) |
 | `overlayCache.maxZoom` | deepest zoom built ahead (default 15, 6–18) |
 | `overlayCache.diskCap` | bytes for saved tiles, least recently used removed first (default 20e9 = 20 GB, min 100e6) |
@@ -1252,13 +1252,17 @@ ahead, except those computed while an on-demand current or tide area is
 still loading: those are answered but not saved. What is built ahead of time: the colour layers the page
 draws (wind, waves, sea state, current, rain, air temperature, sea
 temperature, tide height), wind barbs, current arrows and coastline
-tiles, for every hour from now to the end of the window (tide height:
-to the end of the tide run), at zooms 6 to `maxZoom`. The map view is
-worked out from the tiles any map asks for (this plugin's page, or a
-chartplotter drawing the PNG tiles): a burst of requests ends when no new
-tile has come for 5 s, and the view is the middle of all the burst's
-tiles at its deepest zoom; a view zoomed out past zoom 6 leaves the last
-view as it is, and the last view is kept when the map closes. Order: the map
+tiles, at each layer's own data steps from now to the end of the window
+(the forecast's layers every 3 hours, the currents at their steps, tide
+height every hour to the end of the tide run; the map draws the hours
+between on demand). Around the boat: zooms 6 to `maxZoom`, the radius
+halved at each zoom past 8. For the map view: only the tiles the map
+showed, at its zoom. The view is worked out from the tiles any map asks
+for (this plugin's page, a chartplotter drawing the PNG tiles, or another
+app): a burst of requests ends when no new tile has come for 5 s, and the
+view is the burst's tiles at its deepest zoom; a view zoomed out past zoom
+6 leaves the last view as it is, and the last view is kept when the map
+closes. Order: the map
 view's area, then the boat's; within each, nearest hour first, then
 shallower zoom, then nearest the centre. Tiles already saved are
 skipped. A new forecast cycle, currents run or tide run removes the

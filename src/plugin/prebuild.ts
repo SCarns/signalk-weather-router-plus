@@ -5,9 +5,12 @@
  * Areas: the view a map shows (ViewTracker: inferred from the tile requests
  * of any map, this plugin's page or a chartplotter drawing the PNG tiles)
  * and the boat (navigation.position, kept across restarts).
- * Each area is a pyramid of web-map tiles: the full radius down to zoom 8,
- * half the radius at each deeper zoom, to the deepest zoom set. Every
- * hour of the window is built at every level.
+ * The boat's area is a pyramid of web-map tiles: the full radius down to
+ * zoom 8, half the radius at each deeper zoom, to the deepest zoom set.
+ * The view is the tiles the map showed, at its zoom (and the isobar tiles
+ * over them). Each layer is built at its data's steps in the window
+ * (hasStep: the forecast's 3-hourly steps, the currents' steps, tide
+ * height hourly); the map draws the hours between on demand.
  *
  * Order: the view's area, then the boat's; within each, nearest hour
  * first, then shallower zoom, then tiles nearest the centre. Tiles already
@@ -43,7 +46,18 @@ import * as path from 'node:path';
 import { fork, type ChildProcess } from 'node:child_process';
 import type { MainToWorker, VesselPosition, WorkerToMain } from './protocol';
 import { PRESSURE_TILE_ZOOM } from './tilejoin';
-import { PYRAMID_MIN_ZOOM, pyramidRadius, pyramidTiles, tileBBox, tileGroup, type TileId, type TileLayer, type TileStore } from './tiles';
+import {
+  PYRAMID_MIN_ZOOM,
+  pyramidRadius,
+  pyramidTiles,
+  tileAt,
+  tileBBox,
+  tileGroup,
+  type TileGroup,
+  type TileId,
+  type TileLayer,
+  type TileStore,
+} from './tiles';
 
 /** Layers the page draws, built ahead of time; `msl` only at the zoom the isobars read. */
 export const PREBUILD_LAYERS: readonly TileLayer[] = [
@@ -70,6 +84,43 @@ const VIEW_GAP_MS = 5_000;
 /** Consecutive errors after which a layer is left out until the walk restarts. */
 const LAYER_ERROR_LIMIT = 3;
 
+/** The step times of the data the map layers are drawn from, for `atStep`. */
+export interface StepSources {
+  /** The forecast's steps (valid times, ms); null: no forecast loaded. */
+  forecast: number[] | null;
+  /** RTOFS steps (valid times, ms), or none. */
+  rtofs: number[];
+  /** SMOC's step (ms; its steps are the multiples of it from 00Z, data/arco.ts alignedSteps), or null when off. */
+  smocStepMs: number | null;
+  /** Tidal-harmonic current sources loaded: they give a value for every hour. */
+  harmonic: boolean;
+}
+
+/**
+ * Whether a layer's data has a step at this whole hour (`atStep`). The forecast's layers (group `wx`): at its steps.
+ * The current layers (`cur`: current, arrows, sea state): at an RTOFS step or a SMOC step, or every hour with tidal
+ * harmonics (brain's settings, 2026-10-14: SMOC and RTOFS both at 3 h, so hourly current tiles were interpolations).
+ * Tide height and the coastline: every hour (the sea level is hourly).
+ */
+export function hasStep(group: TileGroup, hourMs: number, s: StepSources): boolean {
+  if (group === 'wx') return !!s.forecast?.includes(hourMs);
+  if (group === 'cur') return s.harmonic || s.rtofs.includes(hourMs) || (s.smocStepMs !== null && hourMs % s.smocStepMs === 0);
+  return true;
+}
+
+/** The tiles at zoom `zTo` covering the given tiles of zoom `z` (each tile's own extent: no wrap across the date line). */
+export function coveringTiles(z: number, tiles: { x: number; y: number }[], zTo: number): { x: number; y: number }[] {
+  const out = new Map<string, { x: number; y: number }>();
+  for (const t of tiles) {
+    const b = tileBBox(z, t.x, t.y);
+    const nw = tileAt(b.west, b.north, zTo);
+    // The east and south edges belong to the next tile: step back a hair inside.
+    const se = tileAt(b.east - 1e-9, b.south + 1e-9, zTo);
+    for (let x = nw.x; x <= se.x; x++) for (let y = nw.y; y <= se.y; y++) out.set(`${x}/${y}`, { x, y });
+  }
+  return [...out.values()];
+}
+
 export interface PrebuildSettings {
   enabled: boolean;
   radiusM: number;
@@ -92,6 +143,12 @@ export interface PrebuildDeps {
   vesselPosition: () => VesselPosition | null;
   /** Hours available: forecast (colour and barb layers), tide run, per layer; null = not loaded. */
   lastHourMs: (layer: TileLayer) => number | null;
+  /**
+   * Whether a layer's data has a step at this whole hour. Hours between a source's steps are not built ahead: the map
+   * draws them on demand, interpolated as always (the forecast's steps are 3 h apart, the tiles hourly: two of every
+   * three wind and wave tiles were interpolations built ahead, and every new cycle built them again; brain, 2026-10-14).
+   */
+  atStep: (layer: TileLayer, hourMs: number) => boolean;
   /** Layers the loaded data can answer (e.g. no waves without wave fields). */
   layerAvailable: (layer: TileLayer) => boolean;
   /** A route is running or the data worker has map queries waiting. */
@@ -106,6 +163,12 @@ interface Area {
   lon: number;
   /** view: the deepest zoom the map asked for. */
   z?: number;
+  /**
+   * view: the tiles the map showed at that zoom. Only those are built ahead (every layer, every step of the window),
+   * not the pyramid: a pyramid round every place a map paused on cost tens of thousands of tiles each (brain,
+   * 2026-10-14: one pan by ZedDisplay off Block Island, about 30 minutes of two cores).
+   */
+  tiles?: { x: number; y: number }[];
 }
 
 /**
@@ -171,7 +234,13 @@ export class ViewTracker {
     const step = pyramidRadius(this.radiusM(), b.z) / 4 / M_PER_DEG;
     const cLat = lat / b.tiles.size;
     const cLon = (Math.atan2(sy, sx) * 180) / Math.PI;
-    this.last = { kind: 'view', lat: Math.round(cLat / step) * step, lon: Math.round(cLon / step) * step, z: b.z };
+    this.last = {
+      kind: 'view',
+      lat: Math.round(cLat / step) * step,
+      lon: Math.round(cLon / step) * step,
+      z: b.z,
+      tiles: [...b.tiles.values()],
+    };
   }
 }
 
@@ -488,26 +557,36 @@ export class TilePrebuilder {
     this.areas = areas;
     const gens = (['wx', 'cur', 'tide', 'land'] as const).map(g => this.deps.store.generation(g)).join(',');
     const hour = Math.floor(now / HOUR_MS);
-    return JSON.stringify({ gens, hour, areas: areas.map(a => [a.kind, a.lat.toFixed(4), a.lon.toFixed(4)]), s: this.settings });
+    // A view is its tiles: a pan showing other tiles starts the walk again (cheap now: the view's tiles only).
+    const where = (a: Area): unknown =>
+      a.tiles ? [a.kind, a.z, a.tiles.map(t => `${t.x}/${t.y}`).join(',')] : [a.kind, a.lat.toFixed(4), a.lon.toFixed(4)];
+    return JSON.stringify({ gens, hour, areas: areas.map(where), s: this.settings });
   }
 
   private *tiles(areas: Area[], layers: TileLayer[], fromMs: number, windowEndMs: number): Generator<{ t: TileId; area: Area }> {
     const zs: number[] = [];
     for (let z = PYRAMID_MIN_ZOOM; z <= this.settings.maxZoom; z++) zs.push(z);
     for (const area of areas) {
-      const byZ = zs.map(z => ({ z, tiles: pyramidTiles(area.lat, area.lon, this.settings.radiusM, z) }));
+      // The view: the tiles the map showed, at its zoom; the boat: the pyramid round it.
+      const shown = area.tiles && area.z !== undefined ? { z: area.z, tiles: area.tiles } : null;
+      const byZ = shown ? [shown] : zs.map(z => ({ z, tiles: pyramidTiles(area.lat, area.lon, this.settings.radiusM, z) }));
       for (const { z, tiles } of byZ) for (const { x, y } of tiles) yield { t: { layer: 'land', z, x, y, hourMs: 0 }, area };
       const ends = new Map(layers.map(l => [l, Math.min(windowEndMs, this.deps.lastHourMs(l) ?? -Infinity)]));
       const lastMs = Math.max(...ends.values());
       const tileLayers = layers.filter(l => l !== 'msl');
       // Isobars read the pressure grid at one zoom (tilejoin.ts joinPressure), whatever the map zoom.
-      const pressure = layers.includes('msl') ? pyramidTiles(area.lat, area.lon, this.settings.radiusM, PRESSURE_TILE_ZOOM) : [];
+      const pressure = !layers.includes('msl')
+        ? []
+        : shown
+          ? coveringTiles(shown.z, shown.tiles, PRESSURE_TILE_ZOOM)
+          : pyramidTiles(area.lat, area.lon, this.settings.radiusM, PRESSURE_TILE_ZOOM);
       for (let h = fromMs; h <= lastMs; h += HOUR_MS) {
-        if (h <= (ends.get('msl') ?? -Infinity))
+        if (h <= (ends.get('msl') ?? -Infinity) && this.deps.atStep('msl', h))
           for (const { x, y } of pressure) yield { t: { layer: 'msl', z: PRESSURE_TILE_ZOOM, x, y, hourMs: h }, area };
+        const atH = tileLayers.filter(l => h <= (ends.get(l) as number) && this.deps.atStep(l, h));
+        if (!atH.length) continue;
         for (const { z, tiles } of byZ)
-          for (const { x, y } of tiles)
-            for (const layer of tileLayers) if (h <= (ends.get(layer) as number)) yield { t: { layer, z, x, y, hourMs: h }, area };
+          for (const { x, y } of tiles) for (const layer of atH) yield { t: { layer, z, x, y, hourMs: h }, area };
       }
     }
   }
