@@ -36,6 +36,10 @@
   region at every zoom. On the test box a new forecast now keeps the
   computer busy for minutes, not hours, and moving the map for a minute or
   two.
+- **New forecasts sooner.** A new install checks for a new forecast every
+  15 minutes instead of every hour. If you already use the plugin, your
+  setting stays as it is: change it on the Defaults tab (*Check for a new
+  cycle every*).
 - **Fixes:** a newly computed route can be published, deleted, named and
   exported straight away; a request that fails no longer leaves the old route
   in the GPX export.

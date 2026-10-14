@@ -235,7 +235,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     max: 24 * HOUR_S,
     step: 60,
     multipleOf: 60,
-    default: HOUR_S,
+    default: 900,
     help: 'How often ECMWF is checked for a newer cycle.',
     reload: 'refresh_timer',
   },

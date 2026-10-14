@@ -109,6 +109,11 @@ uses [Semantic Versioning](https://semver.org/).
   rebuilt about 70,000 tiles in about 7 minutes at 180–200 a second, and the
   box went quiet (5.8 % busy) for the rest of the hour. The night before,
   after the 00Z cycle, the builders were still busy 8½ hours later.
+- **New installs check for a new forecast cycle every 15 minutes**
+  (`plugin/settings.ts`, `forecast.refreshInterval` default 900 s, was
+  3600 s): a check is a few small requests to the mirror, and a new cycle is
+  picked up up to 45 minutes sooner. Existing installs keep the value in
+  their settings.json; it is on the Defaults tab.
 - **A stop the mesh snap moved is reached on its circle** (`multileg.ts`
   `Stop.snapped`; the owner's choice): a moved waypoint or destination
   becomes approximate, its circle the distance it was moved, in either
