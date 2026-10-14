@@ -1669,6 +1669,10 @@ function showModal() {
   setSelectedRouteFeature(null);
   routeSource.clear();
   _routePoints = [];
+  // No route is shown now (PR #39 review): a failed request left the hint saying "Click the route" and GPX exporting
+  // the old route's points. _jobOnDone sets it again for the new route.
+  routeActive = false;
+  _itineraryFeatures = [];
   skeletonSource.clear();
   frontSource.clear();
   _currentRouteJobId = null;
@@ -1676,6 +1680,7 @@ function showModal() {
   const nameInput = document.getElementById('routeNameInput');
   if (nameInput) nameInput.value = '';
   renderResultStrip(null);
+  updatePlanHint();
   RouteProgress.start();
   cancelBtn.style.display = 'inline-block';
 }
