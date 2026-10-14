@@ -65,7 +65,7 @@ const QUERY_TIMEOUT_MS = 120_000;
 const READY_TIMEOUT_MS = 60_000;
 /** After a builder failed to start, no new one is started for this long (a lasting error does not respawn in a loop). */
 const START_RETRY_MS = 5 * 60_000;
-/** Tile requests no further apart than this are one burst: one view drawn. */
+/** A burst of tile requests ends when no new tile has come for this long: one view drawn. */
 const VIEW_GAP_MS = 5_000;
 /** Consecutive errors after which a layer is left out until the walk restarts. */
 const LAYER_ERROR_LIMIT = 3;
@@ -109,8 +109,10 @@ interface Area {
 }
 
 /**
- * The view a map shows, from the tiles it asks for. A burst is a run of tile requests no further apart than
- * VIEW_GAP_MS: the tiles of one view drawn. The view is taken from a burst only when it has ended, from all its
+ * The view a map shows, from the tiles it asks for. A burst is the tiles of one view drawn: it ends when no new tile
+ * (one it does not hold yet, or one deeper) has come for VIEW_GAP_MS. Requests again for tiles it holds (a map asking
+ * for the same view at other hours, or refreshing it) do not keep it open (PR #39 review: ended by any request, a
+ * map asking at least every 5 s never let the view be taken). The view is taken from a burst only when it has ended, from all its
  * distinct tiles at its deepest zoom (a tile asked for several layers counts once): their middle, rounded to a
  * quarter of the build's radius at that zoom so small pans do not restart the walk. A view shallower than the
  * shallowest zoom built (PYRAMID_MIN_ZOOM) has nothing of the build on screen and leaves the last view as it is;
@@ -122,7 +124,8 @@ interface Area {
  * every hour (brain, journal and /api/status).
  */
 export class ViewTracker {
-  private burst: { z: number; tiles: Map<string, { x: number; y: number }>; lastAt: number } | null = null;
+  /** `newAt`: when the burst last gained a tile. */
+  private burst: { z: number; tiles: Map<string, { x: number; y: number }>; newAt: number } | null = null;
   private last: Area | null = null;
 
   /** `radiusM`: the build's radius now (the rounding step follows it). */
@@ -130,20 +133,23 @@ export class ViewTracker {
 
   /** A map asked for tile z/x/y at `atMs`. */
   note(z: number, x: number, y: number, atMs: number): void {
-    if (this.burst && atMs - this.burst.lastAt > VIEW_GAP_MS) this.close();
-    if (!this.burst) this.burst = { z, tiles: new Map(), lastAt: atMs };
+    if (this.burst && atMs - this.burst.newAt > VIEW_GAP_MS) this.close();
+    if (!this.burst) this.burst = { z, tiles: new Map(), newAt: atMs };
     const b = this.burst;
-    b.lastAt = atMs;
     if (z > b.z) {
       b.z = z;
       b.tiles.clear();
     }
-    if (z === b.z) b.tiles.set(`${x}/${y}`, { x, y });
+    const k = `${x}/${y}`;
+    if (z === b.z && !b.tiles.has(k)) {
+      b.tiles.set(k, { x, y });
+      b.newAt = atMs;
+    }
   }
 
   /** The view at `nowMs`: from the last burst that has ended, or null when there has been none. */
   view(nowMs: number): Area | null {
-    if (this.burst && nowMs - this.burst.lastAt > VIEW_GAP_MS) this.close();
+    if (this.burst && nowMs - this.burst.newAt > VIEW_GAP_MS) this.close();
     return this.last;
   }
 

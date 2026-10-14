@@ -13,39 +13,43 @@ import { writeTile } from './fixture';
 import { PagedMesh } from './paged';
 import { MeshStore } from './store';
 
+/** A mesh on disk of one tile (0, 0) holding one triangle from lon 0 to lon 3 (cells 0 to 2 of a 1° grid); no tile in cells 1, 2. */
+function oneTriangle(dir: string): PagedMesh {
+  writeTile(
+    dir,
+    'a.bin',
+    [
+      [
+        [0, 0],
+        [3, 0],
+        [0, 1],
+      ],
+    ],
+    [[-1, -1, -1]],
+    [[-1, -1, -1]],
+    [10]
+  );
+  fs.writeFileSync(
+    path.join(dir, 'index.json'),
+    JSON.stringify({
+      version: 1,
+      west: 0,
+      south: 0,
+      east: 3,
+      north: 1,
+      tileDeg: 1,
+      xScale: 1,
+      triangles: 1,
+      tiles: [{ i: 0, j: 0, file: 'a.bin', first: 0, n: 1, bbox: [0, 0, 3, 1] }],
+    })
+  );
+  return new PagedMesh(MeshStore.open(dir), { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 }, 1);
+}
+
 test('locate and locateAll find a triangle whose tile lies more than one cell from the point', () => {
-  // Tile (0, 0): one triangle from lon 0 to lon 3 (cells 0 to 2 of a 1° grid); no tile in cell (2, 0) itself.
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-paged-'));
   try {
-    writeTile(
-      dir,
-      'a.bin',
-      [
-        [
-          [0, 0],
-          [3, 0],
-          [0, 1],
-        ],
-      ],
-      [[-1, -1, -1]],
-      [[-1, -1, -1]],
-      [10]
-    );
-    fs.writeFileSync(
-      path.join(dir, 'index.json'),
-      JSON.stringify({
-        version: 1,
-        west: 0,
-        south: 0,
-        east: 3,
-        north: 1,
-        tileDeg: 1,
-        xScale: 1,
-        triangles: 1,
-        tiles: [{ i: 0, j: 0, file: 'a.bin', first: 0, n: 1, bbox: [0, 0, 3, 1] }],
-      })
-    );
-    const pm = new PagedMesh(MeshStore.open(dir), { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 }, 1);
+    const pm = oneTriangle(dir);
     // (2.6, 0.1) lies in cell (2, 0), two cells east of the tile's, inside the triangle.
     const [x, y] = pm.toXY(2.6, 0.1);
     assert.equal(pm.locate(x, y), 0);
@@ -54,6 +58,24 @@ test('locate and locateAll find a triangle whose tile lies more than one cell fr
     const [ox, oy] = pm.toXY(2.6, 0.5);
     assert.equal(pm.locate(ox, oy), -1);
     assert.deepEqual(pm.locateAll(ox, oy), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a point a hair west or south of the tile, on its edge, is found: the lookup grid is clamped (PR #39 review)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-paged-'));
+  try {
+    const pm = oneTriangle(dir);
+    // On the west edge (lon 0) and the south edge (lat 0), each 1e-7 m outside: what a lon/lat round trip leaves.
+    const [wx, wy] = pm.toXY(0, 0.5);
+    assert.equal(pm.locate(wx - 1e-7, wy), 0, 'west');
+    assert.deepEqual(pm.locateAll(wx - 1e-7, wy), [0]);
+    const [sx, sy] = pm.toXY(1.5, 0);
+    assert.equal(pm.locate(sx, sy - 1e-7), 0, 'south');
+    assert.deepEqual(pm.locateAll(sx, sy - 1e-7), [0]);
+    // Far outside, beside the tile: still nothing.
+    assert.equal(pm.locate(wx - 5000, wy), -1);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

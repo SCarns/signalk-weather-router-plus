@@ -101,3 +101,21 @@ test('view: across the date line the middle is at the date line, not the far sid
   const got = v.view(t + 6000)!;
   assert.ok(Math.abs(Math.abs(got.lon) - 180) < 1, `lon ${got.lon}`);
 });
+
+test('view: a map asking for the same tiles again and again (other hours, a refresh) does not hold the view back', () => {
+  // PR #39 review: ended by any request, a map asking at least every 5 s never let the view be taken.
+  const v = new ViewTracker(() => RADIUS_M);
+  const z = 9;
+  const tiles = screen(z, -71.0, 41.5, 4, 3);
+  let t = 0;
+  for (const { x, y } of tiles) v.note(z, x, y, (t += 100));
+  // Then the same tiles every second for a minute, as a map stepping through the hours asks for them.
+  let got = null;
+  for (let k = 0; k < 60 && !got; k++) {
+    const { x, y } = tiles[k % tiles.length];
+    v.note(z, x, y, (t += 1000));
+    got = v.view(t);
+  }
+  assert.ok(got, 'taken while the requests go on');
+  assert.ok(near(z, got, middle(z, tiles)), JSON.stringify(got));
+});

@@ -419,9 +419,11 @@ export class PagedMesh {
   /** The triangle of a tile holding (px, py), local id or -1; with preferUsable a usable one wins over a blocked one. */
   private locateIn(T: PagedTile, px: number, py: number, preferUsable: boolean, all?: number[]): number {
     const G = this.gridOf(T);
-    const i = Math.floor((px - G.x0) / this.cellM);
-    const j = Math.floor((py - G.y0) / this.cellM);
-    if (i < 0 || j < 0 || i >= G.nx || j >= G.ny) return -1;
+    // Clamped to the grid: a point handed on as lon/lat can come back a hair outside the tile's vertex extent, west or
+    // south of the grid's origin (an exit on a straight chart limit, through a frame with another cosine); the
+    // triangle test below, with its tolerance, decides (PR #39 review: the cell was -1 and the point lost first).
+    const i = Math.min(G.nx - 1, Math.max(0, Math.floor((px - G.x0) / this.cellM)));
+    const j = Math.min(G.ny - 1, Math.max(0, Math.floor((py - G.y0) / this.cellM)));
     const c = j * G.nx + i;
     const { x, y } = T;
     let found = -1;

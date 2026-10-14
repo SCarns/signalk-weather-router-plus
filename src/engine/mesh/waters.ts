@@ -20,8 +20,10 @@
  * 2026-10-13, option a); a transfer between meshes is no change. So the charts alone are searched first (their groups
  * and the joins), and the open-water map is built only when they hold no way: the same answer, without the map's cost
  * on legs the charts join (measured on brain, 2026-10-13: the map took 29.8 s on Charleston → Chesapeake, where the
- * transfer alone took 4.8 s). Where several ways tie, each is planned and the
- * cheapest taken (the owner's choice, 2026-10-13): its mesh routes plus the straight runs across open water.
+ * transfer alone took 4.8 s). Of the ways with the fewest changes, those with the fewest transfers between meshes
+ * (the owner's choice, 2026-10-13, PR #39 review: joins weigh nothing, so every detour through more meshes tied and
+ * each tied way was planned, a mesh search per stretch); where several still tie, each is planned and the cheapest
+ * taken (the owner's choice, 2026-10-13): its mesh routes plus the straight runs across open water.
  *
  * Each charted stretch is one mesh search, from where it starts (the leg's start, the transfer point, or any entry
  * from the open piece before it, each costed by the straight run from the previous crossing, which never
@@ -220,25 +222,32 @@ export function planWaters(
    * cheapest of those that tie, with its crossings; null when none links them.
    */
   function solve(startKeys: string[], goalKeys: string[], mask: CellMask | null): WatersPlan | null {
-    const dist = new Map<string, number>();
-    const deque: string[] = [];
-    for (const s of startKeys) {
-      dist.set(s, 0);
-      deque.push(s);
+    // Fewest changes first, then fewest transfers: a change weighs more than all the transfers a way can make (a way
+    // passes each water once), a transfer 1. The links' own weights: 1 an exit or entry, 0 a join.
+    const nodes = new Set<string>([...startKeys, ...goalKeys]);
+    for (const [u, m] of adj) {
+      nodes.add(u);
+      for (const v of m.keys()) nodes.add(v);
     }
-    while (deque.length) {
-      const u = deque.shift()!;
+    const CHANGE = nodes.size + 1;
+    const weigh = (w: number): number => (w === 0 ? 1 : CHANGE);
+    const dist = new Map<string, number>();
+    const settled = new Set<string>();
+    for (const s of startKeys) dist.set(s, 0);
+    for (;;) {
+      let u: string | null = null;
+      for (const [k, d] of dist) if (!settled.has(k) && (u === null || d < dist.get(u)!)) u = k;
+      if (u === null) break;
+      settled.add(u);
       const du = dist.get(u)!;
       for (const [v, w] of adj.get(u) ?? []) {
-        if (dist.has(v) && dist.get(v)! <= du + w) continue;
-        dist.set(v, du + w);
-        if (w === 0) deque.unshift(v);
-        else deque.push(v);
+        const dv = du + weigh(w);
+        if (!dist.has(v) || dist.get(v)! > dv) dist.set(v, dv);
       }
     }
     const best = Math.min(...goalKeys.map(g => dist.get(g) ?? Infinity));
     if (!Number.isFinite(best)) return null;
-    // Every way with that fewest number of changes: the simple paths back from the end's water along links that keep to
+    // Every way with those fewest changes and transfers: the paths back from the end's water along links that keep to
     // it (a link u → v with dist(u) + its weight = dist(v)).
     const into = new Map<string, [string, number][]>();
     for (const [u, m] of adj)
@@ -253,7 +262,8 @@ export function planWaters(
     const back = (v: string, tail: string[]): void => {
       if (startSet.has(v)) ways.push([v, ...tail]);
       onPath.add(v);
-      for (const [u, w] of into.get(v) ?? []) if (!onPath.has(u) && dist.has(u) && dist.get(u)! + w === dist.get(v)) back(u, [v, ...tail]);
+      for (const [u, w] of into.get(v) ?? [])
+        if (!onPath.has(u) && dist.has(u) && dist.get(u)! + weigh(w) === dist.get(v)) back(u, [v, ...tail]);
       onPath.delete(v);
     };
     for (const g of goalKeys) if (dist.get(g) === best) back(g, []);
@@ -270,7 +280,15 @@ export function planWaters(
             const c = cellOf(mask, q[0], q[1]);
             if (c >= 0) mask.cells[c] = 0;
           }
-    return { ok: true, kind: 'chain', stretches: chosen.stretches, mask, changes: best, transfers: chosen.transfers, ways: ways.length };
+    return {
+      ok: true,
+      kind: 'chain',
+      stretches: chosen.stretches,
+      mask,
+      changes: Math.floor(best / CHANGE),
+      transfers: chosen.transfers,
+      ways: ways.length,
+    };
   }
 
   /** The crossings of one way through the waters: one mesh search per charted stretch, entry and exit together. */

@@ -2259,14 +2259,16 @@ function attachToJob(id, jobRow) {
   if (_activeJobId !== id) _jobBeforeAttach = { id: _currentRouteJobId, name: _currentRouteName };
   _closeJobStream();
   _activeJobId = id;
-  _currentRouteJobId = id;
-  _currentRouteName = jobRow && jobRow.request ? (jobRow.request.name || '') : ((document.getElementById('routeName').value || '').trim());
   const btn = document.getElementById('findRoute');
   const statusEl = document.getElementById('status');
   btn.disabled = true;
   btn.textContent = 'Calculating…';
   statusEl.textContent = 'Computing route...';
+  // showModal clears the route on the map with its job id and name: this job's are set after it (PR #39 review: set
+  // before, they were cleared, so a new route's Publish, Delete, name and points of sail had no job).
   showModal();
+  _currentRouteJobId = id;
+  _currentRouteName = jobRow && jobRow.request ? (jobRow.request.name || '') : ((document.getElementById('routeName').value || '').trim());
   appendLog('job ' + id);
   if (jobRow && Array.isArray(jobRow.progress)) {
     // Backfill from the status row; the SSE replay adds the rest.

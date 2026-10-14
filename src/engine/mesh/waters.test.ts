@@ -226,6 +226,18 @@ test('planWaters: through a third mesh between two others, district to district'
   if (r.ok && r.kind === 'chain') assert.deepEqual(kinds(r), ['mesh A', 'mesh B', 'mesh C']);
 });
 
+test('planWaters: of the ways with as few changes, the ones with fewest transfers: no detour through a third mesh', () => {
+  // A lon 0–3, B lon 1–4, C lon 2–5, all lat 0–1, land all round: A joins C directly, and through B. Every way is on
+  // the charts (no change); A → C has one transfer, A → B → C two (PR #39 review: both tied and both were planned).
+  const r = plan([cells(0, 3), cells(1, 4), cells(2, 5)], [[-1, -1, 7, 3]], [0.5, 0.5], [4.5, 0.5]);
+  assert.ok(r.ok && r.kind === 'chain', JSON.stringify(r));
+  if (!r.ok || r.kind !== 'chain') return;
+  assert.equal(r.changes, 0);
+  assert.equal(r.ways, 1, 'only the way with one transfer is planned');
+  assert.equal(r.transfers, 1);
+  assert.deepEqual(kinds(r), ['mesh A', 'mesh C']);
+});
+
 test('planWaters: two ways with as few changes: each planned, the cheaper taken', () => {
   // Open sea west and east of lon 2–3, joined only through two separate charted channels there: cell (2, 0) in the
   // south and cell (2, 2) in the north, land between them (lat 1–2) and beyond (lat < 0, lat > 3). Both ways have two
