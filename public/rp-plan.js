@@ -2387,7 +2387,12 @@ function _jobOnDone(job, d) {
       _fitRouteInView();
       showTab('itinerarySection');
     })
-    .catch(err => appendLog('Failed to load route: ' + err.message, 'error'));
+    .catch(err => {
+      // No route is shown after all (PR #39 review): the hint and the stale check must not act on one.
+      routeActive = false;
+      updatePlanHint();
+      appendLog('Failed to load route: ' + err.message, 'error');
+    });
   loadSkeleton(id);
   loadPluginStatus();
 }
