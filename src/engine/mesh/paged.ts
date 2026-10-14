@@ -566,15 +566,28 @@ export class PagedMesh {
       }
     order.sort((u, v) => u.d - v.d);
     let best: { tri: number; x: number; y: number; distM: number } | null = null;
+    // The tiles this scan reads are let go once checked, but for the one holding the best answer so far (PR #39 review:
+    // with a filter the nearest accepted water can be far or absent, and every tile read stayed held, up to the whole
+    // mesh). Tiles held before the scan stay as they were.
+    let bestTile = -1;
     for (const o of order) {
       if (best && o.d >= best.distM) break;
+      const wasHeld = this.isHeld(o.idx);
       const T = this.tile(o.idx);
+      let improved = false;
       for (let l = 0; l < T.n; l++) {
         if (T.blocked[l]) continue;
         const [qx, qy] = closestOnTriangle(px, py, T.x, T.y, l * 3);
         const d = Math.hypot(qx - px, qy - py);
-        if ((!best || d < best.distM) && accept(T.first + l)) best = { tri: T.first + l, x: qx, y: qy, distM: d };
+        if ((!best || d < best.distM) && accept(T.first + l)) {
+          best = { tri: T.first + l, x: qx, y: qy, distM: d };
+          improved = true;
+        }
       }
+      if (improved) {
+        if (bestTile >= 0 && bestTile !== o.idx) this.drop(bestTile);
+        bestTile = wasHeld ? -1 : o.idx;
+      } else if (!wasHeld) this.drop(o.idx);
     }
     return best;
   }

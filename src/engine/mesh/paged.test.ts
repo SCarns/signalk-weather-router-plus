@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { writeTile } from './fixture';
+import { writeGridMesh, writeTile } from './fixture';
 import { PagedMesh } from './paged';
 import { MeshStore } from './store';
 
@@ -76,6 +76,28 @@ test('a point a hair west or south of the tile, on its edge, is found: the looku
     assert.deepEqual(pm.locateAll(sx, sy - 1e-7), [0]);
     // Far outside, beside the tile: still nothing.
     assert.equal(pm.locate(wx - 5000, wy), -1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('nearestUsable lets go of the tiles it scans, but the one holding its answer (PR #39 review)', () => {
+  // A row of eight 1° tiles; only the farthest one's water is accepted (the route's water, far from a pond).
+  const dir = writeGridMesh(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-paged-')),
+    Array.from({ length: 8 }, (_, i) => ({ i, j: 0 }))
+  );
+  try {
+    const pm = new PagedMesh(MeshStore.open(dir), { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 }, 1);
+    const far = (g: number): boolean => pm.tileIndexOf(g) === pm.tileCount - 1;
+    const [x, y] = pm.toXY(0.5, 0.5);
+    const before = new Set(pm.heldTiles());
+    const nu = pm.nearestUsable(x, y, far);
+    assert.ok(nu && far(nu.tri), 'found in the farthest tile');
+    const held = pm.heldTiles().filter(i => !before.has(i));
+    // The point's own tile (read by the lookup of its triangle) and the answer's: nothing in between.
+    assert.ok(held.includes(pm.tileIndexOf(nu!.tri)), "the answer's tile is kept");
+    assert.ok(held.length <= 2, `held after the scan: ${held}`);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

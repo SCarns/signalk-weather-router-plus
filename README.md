@@ -1596,7 +1596,7 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | Field | Type | Unit | Default | Limits and notes |
 |---|---|---|---|---|
 | `start` | `{lat, lon}` | degrees | required | both numbers |
-| `end` | `{lat, lon}` | degrees | required | both numbers; always reached exactly |
+| `end` | `{lat, lon}` | degrees | required | both numbers; reached exactly, unless the chart mesh's snap moved it: then reached on coming within the distance it was moved (see the stops above) |
 | `waypoints` | array of `{lat, lon, radius_m?}` | degrees, m | none | at most 20; each ends one leg and starts the next ([Waypoints](#waypoints-legs)). `radius_m` 0..5000, overrides `arrival_radius_m` for that waypoint, and must be > 0 with `"approximate"` |
 | `precision` | `"precise"` or `"approximate"` | | `"precise"` | `precise`: each leg ends exactly on its waypoint; `approximate`: the route only has to pass through the waypoint's circle; consecutive approximate waypoints are normally routed as one search through their circles in order, and leg by leg when no branch passes through all of them |
 | `arrival_radius_m` | number | m | 200 | 0..5000; must be > 0 with `"approximate"`. Ignored in precise mode and for the destination |
