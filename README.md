@@ -851,22 +851,22 @@ both ways and compared (the Route tab's *Router*: Standard / Refined):
 1. **Convex polar.** The search runs on the convex hull of the polar
    (per wind speed), so a leg into the wind is a straight line at the
    beat's exact VMG and the search needs no beat handling.
-2. **Legs laid out forward in time.** Afterwards every sailed leg is
-   laid out from its start: at each point the wind there and then decides
+2. **Legs laid out forward in time.** Afterwards every sailed leg is laid
+   out from its start: at each point the wind there and then decides
    whether the course to the leg's end is a time-share of two polar
    headings (a beat: two legs and one tack, the second landing on the
    leg's end, each tack costing the tack penalty) or a heading the polar
    sails directly (the rest in one straight leg); a piece is split only
    where the real polar cannot sail it all the way or it crosses land, so
-   a wind that veers along a long leg is met where it veers. A tack runs as far as the water allows on its
-   heading (exactly, on the chart mesh) and only where the boat can go on
-   from its end; one that would cross land or that the real polar cannot
-   sail is tried on the other side, then shorter. Where no tack fits (the
-   tacks lead into a pocket the water closes round), with a sail threshold
-   above 0 the leg is motored straight, as the standard router times it,
-   with a WARNING naming it; with a threshold of 0 the route fails with a
-   message naming the leg, never an invented time. Tack points carry
-   `tack: true` in the GeoJSON.
+   a wind that veers along a long leg is met where it veers. A tack runs
+   as far as the water allows on its heading (exactly, on the chart mesh)
+   and only where the boat can go on from its end; one that would cross
+   land or that the real polar cannot sail is tried on the other side,
+   then shorter. Where no tack fits (the tacks lead into a pocket the
+   water closes round), with a sail threshold above 0 the leg is motored
+   straight, as the standard router times it, with a WARNING naming it;
+   with a threshold of 0 the route fails with a message naming the leg,
+   never an invented time. Tack points carry `tack: true` in the GeoJSON.
 3. **Cross-track polish.** Each interior waypoint is tried a little to
    either side of its track (2 km down to 250 m, capped at a third of the
    shorter adjacent leg) and moved when the route, re-timed from there
