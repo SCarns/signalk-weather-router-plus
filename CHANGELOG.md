@@ -6,6 +6,192 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **No coastline fallback inside a chart mesh** (the owner's rule,
+  2026-10-12; docs/drafts/mesh-no-gshhg-design.md part 1). A leg both of
+  whose ends one mesh holds is routed on the mesh or fails with the
+  mesh's reason (`pipeline.ts`): no route in the box, an end in a blocked
+  triangle, a stretch against the current, no draught or air draft, no
+  decoded forecast yet, or the mesh process failing. Before, each of these
+  handed the leg to the coastline search with a WARNING line only; on the
+  test box a Bahamas → Gulf route hit the 16 M triangle cap and the
+  coastline search took it 123–140 km through water the mesh blocks for a
+  2 m draught, drying at -1.2 m, marked validated with no warning. The
+  mesh leg's refusal now carries its reason (`MeshRefusal`, `legrun.ts`,
+  `meshlegtask.ts`) instead of "the mesh cannot take the leg (see the
+  log)". Unchanged until their own parts: legs through waypoint circles,
+  and legs with one end outside the mesh or the ends in two meshes.
+
+- **The final depth check fails a stretch any covering mesh blocks**
+  (`check.ts` `cover`). Where two districts' meshes overlap, the first mesh
+  walked decided a stretch and the second was not heard: water one
+  district's charts call too shallow passed if the other's called it
+  usable. Their charts disagree in 3.6% of points in the 07CGD/08CGD
+  overlap, 3.2% in 01CGD/05CGD, 0.1% in 05CGD/07CGD (test box, 100 points
+  per shared tile, 2026-10-12).
+
+### Added
+
+- **From one district's mesh to another** (docs/drafts/mesh-no-gshhg-design.md
+  part 5 step 2; `engine/mesh/transfer.ts`, `plugin/meshtransfer.ts`, child
+  task `mesh-transfer`, `pipeline.ts` `meshTransferLeg`): a leg whose ends
+  lie in two meshes stays on the charts. In their overlap it changes meshes
+  at a triangle of the first whose centre the second also calls usable and
+  connects to the end (the cheapest by `meshAstar` with the transfer test
+  as its goals); the leg is the first mesh's part to it and the second's
+  from it. Where they do not connect in the overlap, the first mesh's exit
+  and the second's entry, with the coastline's water between them flooded
+  from the second mesh's edge water connected to the end, and the coastline
+  search between them with both meshes' water as land. Both rough cuts are
+  asked first, tile by tile (`PieceGraph.tilesOf`), whether a transfer
+  point or an exit and entry can exist; only then is anything searched. On
+  the test box: Charleston → the Chesapeake entrance (07CGD → 05CGD)
+  changed meshes at 32.9928, -79.2471 in 6.2 s, 512 MB peak; a Miami →
+  New Orleans test with no way through failed in 16.1 s, 558 MB (289 s and
+  3.1 GB before the rough-cut checks). Replaces the GSHHG handover for these
+  legs, which routed them on the coastline search inside mesh water.
+- **Leaving the charts** (docs/drafts/mesh-no-gshhg-design.md part 5;
+  `engine/mesh/exit.ts`, `plugin/meshexit.ts`, child task `mesh-exit`): a
+  leg with one end in a mesh and the other outside every mesh crosses where
+  the mesh's water meets the coastline's water that reaches the far end
+  (flooded on the coastline search's own raster, never through a mesh
+  triangle); the mesh part runs to the cheapest such exit
+  (`meshAstar` with exits), the coastline part from it with the mesh's
+  water as land (`LandMask.withExtraLand`). Replaces the GSHHG-corridor
+  handover for these legs, which started the corridor at the stop: a
+  harbour stop on GSHHG's land failed ("start point … is on land",
+  Marquette replays) once part 2 stopped GSHHG moving stops in mesh water.
+  Only edge water the rough cut connects to the stop counts as an exit,
+  looked for in the tiles holding that water; with none the leg fails
+  before any search (a search with no reachable exit read every triangle
+  connected to the stop first).
+- **A stop the mesh snap moved is reached on its circle** (`multileg.ts`
+  `Stop.snapped`; the owner's choice): a moved waypoint or destination
+  becomes approximate, its circle the distance it was moved, in either
+  precision; the mesh routes it as an approximate waypoint (part 3). The
+  moved point is on the edge of unusable water; under sail alone the last
+  2.6 m into a shoal's corner, dead upwind, could not be laid out (test box,
+  replays 1c7e6fa5 and 7443bcb9).
+- **Refined layout: tacks as long as the water allows, no fixed 500 m
+  minimum** (`experimental/propagator.ts`, `LandTest.clearAlong`: exact on
+  the chart mesh, to the raster's cell on the coastline): a tack cut short
+  for land is cut to the room on its heading instead of halved down to
+  500 m, and halving for the wind stops at the simulator's step. A beat up
+  a channel narrower than 500 m can now be laid out (test box: the last
+  97 m into a waypoint, 45 and 137 m of water either side, failed under
+  sail only). A tack ends only where the boat can go on (nearer
+  the target, and the target straight from there or room on the next
+  tack's heading): a tack taken to the bank at a bend boxed the boat in
+  (test box, the Cape Cod Canal replay 7306dc97); the edge is tried first,
+  then ends back along the tack, halving: from the shore down to the walk's
+  own precision, for the wind down to the simulator's step (a 200 m floor on
+  both left a 239.5 m first tack from a corner with no shorter try, though
+  119.7 m left 214.7 m for the next; replay d6d067cb).
+- **A point on a corner or an edge belongs to every triangle it touches**
+  (`PagedMesh.locateAll`; the tile-extent test with the walk's tolerance):
+  the reach and the snap take the route's water if any of those triangles
+  is in it, and the mesh search starts from all of them and arrives at any
+  (`meshAstar` with several start and end triangles). A snapped waypoint on
+  a corner shared with a separate pocket was refused ("no water connects",
+  test box 2026-10-12, replays 1c7e6fa5 and 7443bcb9).
+- **Snapping on the chart mesh** (docs/drafts/mesh-no-gshhg-design.md part 2;
+  child task `mesh-snap`, `plugin/meshcoarse.ts`): in water a mesh covers,
+  the start, destination and exact waypoints are moved, by the mesh and not
+  the coastline, to the nearest water the boat can use that connects to the
+  route (the rough cut's groups), within 1,000 m (the owner's choice; farther
+  is an error naming the nearest usable water); a stop in water that does
+  not connect (a pond) moves out with a WARNING. Approximate waypoints are
+  left to their circles. Stops outside the meshes keep the coastline snap.
+  A point's triangle is now found with the walk's own tolerance
+  (`paged.ts` `locateIn`, width.ts `U_TOL`), and the mesh search finds its
+  ends preferring usable water: a snapped stop lies on the edge of usable
+  water and, handed on as lon/lat, was judged in the buffer (test box,
+  2026-10-12: a start moved 684 m, then refused).
+- **Refined router: light-air motoring under sail_max is kept**
+  (`experimental/propagator.ts` `sailedThrough`, `legsim.ts`
+  `motoringNoGoSeconds`): the tack layout refused any piece the simulator
+  motored, so a stretch the sail threshold motors in light air failed the
+  route ("cannot be sailed under the sail_max policy"; the Gulf coast
+  replays on the test box, 5.1 kt held past the forecast's end). The
+  simulator now books the seconds motored in the polar's no-go angle
+  apart, and only those split a piece into tacks. The error's advice to
+  raise the sail threshold is now what happens.
+- **The mesh's straight walk at corners and edges** (`engine/mesh/width.ts`
+  `walkMesh`, one walk for the land test, the depth check, opening bridges,
+  passage widths and a route's end triangle): a walk starting at, or passing
+  through, a triangle corner or edge enters the triangle its direction goes
+  into, and a direction along an edge (within the walk's own tolerance)
+  takes the usable side: touching blocked water is not crossing it. Before,
+  a mesh route's own segments, which turn at corners of blocked water, were
+  rejected by the land test: 57 of 11,967 segments over the 50 test cases
+  on the test box, 0 after (2026-10-12); 11 of the 13 routes failing in the
+  sail layout failed on such a segment.
+- **The rough cut answers for the search** (docs/drafts/mesh-no-gshhg-design.md):
+  built from the paged mesh's own tile reads (`buildCoarseMap` over
+  `PagedMesh`), so its blocked sets are the search's: the buffer from
+  unusable water and the Drawbridges choice are in it and in its key
+  (`-v3-d…-a…-b<buffer>-<o|x>`); a tile's blocked set and buffer are now
+  computed in the tile's own frame, the same for every leg. Areas to
+  avoid are applied per request (`PieceGraph` recomputes the tiles they
+  touch). The reach task finds each approximate waypoint's aim (the
+  nearest usable water connected to the start, `nearestUsable` with a
+  filter) and the leg searches to it. Fixes a waypoint aimed at a pond and
+  a search that read 42.6 M triangles (2.3 GB, 114 s) before finding no
+  water the rough cut had called connected (test box, 2026-10-12). Rebuild
+  the rough cuts after updating.
+- **Approximate waypoints on the mesh** (docs/drafts/mesh-no-gshhg-design.md
+  part 3): a leg through waypoint circles inside one mesh is no longer sent
+  to the coastline search. `searchMeshRun` searches start → circle → … → end
+  on the paged mesh, each piece cut where it enters its circle
+  (`trimAtCircle`); the open stretches get the circles as vias, the reach
+  (`mesh-reach`) goes through them. An approximate waypoint the boat cannot
+  use is aimed at the nearest usable water (`PagedMesh.nearestUsable`, exact,
+  no distance limit), with a WARNING when that is outside its circle (the
+  owner's choice). `meshRulesFor` no longer refuses legs with vias.
+- **The mesh read on demand, no search area** (docs/drafts/mesh-no-gshhg-design.md
+  part 4 revised; `engine/mesh/paged.ts`): the mesh search, the sailed
+  stretches' land (`MeshLand`) and the final depth check read the mesh a
+  tile at a time as they reach it, with global triangle ids; the search
+  (`astar.ts`) keeps its bookkeeping per tile and drops a tile's chart data
+  when no node of its frontier lies there (checked every 1024 expansions),
+  the leg drops its tiles after each stretch, the depth check after each
+  5 km piece. Replaces the boxes of 0.5°, 1° and 2° around a leg's ends,
+  their 16 M triangle cap and the corridor of the first part 4 build.
+  Measured on brain with read-only scripts (31 legs): every leg routed,
+  median 1.16 M triangles read, the largest leg 1.1 GB held instead of
+  2.8 GB, route cost unchanged by the dropping.
+- **The rough cut** (`engine/mesh/coarse.ts`, `plugin/meshcoarse.ts`, child
+  tasks `mesh-coarse` and `mesh-reach`): per mesh build, draught and air
+  draft, the usable water as pieces per tile linked across tile edges,
+  in `mesh-coarse/` in the data folder (`<key>-v2-d…-a….json`, and `.bnd`
+  with the tile-boundary triangles blocked for the boat and the opening
+  bridges among them). Before a leg inside one mesh is searched it says
+  whether water connects the ends (else the leg fails with the reason)
+  and gives the box of the tiles that water runs through, added to the
+  forecast and currents area. The buffer from unusable water is grown per
+  tile as it is read, seeded across tile edges from the `.bnd` file
+  (`growBlocked` `outerSeeds`). Built after a download or update, on the
+  panel's *Rebuild rough cuts* button (`POST /api/meshes/rough-cut`,
+  status in `GET /api/meshes` `rough_cut`), and by a route that needs
+  one; not at start (the owner's choice). Version 1 files are removed by
+  the next rebuild's prune.
+- **Final depth check** (`engine/mesh/check.ts`, `plugin/meshchecktask.ts`,
+  child task `mesh-check`): every finished route is walked through every
+  mesh it meets, triangle by triangle with `MeshLand.forEachTriangleAlong`
+  (which now reports each triangle's stretch and how far it got), against
+  the route's blocking rules without the buffer. Any blocked crossing
+  fails the route, naming up to three places and the count. Per leg the
+  route records its source (`legSources`: mesh, coastline, mixed) and what
+  it crossed (`depthCheck`); the summary has `depth_checked` and
+  `legs_detail`, the GeoJSON `depth_check`, the log a "depth check:" line.
+- **Web app:** the result strip shows *Chart depth checked* (shallowest
+  depth, distance with no charted depth, distance outside the mesh, legs on
+  coastline data). A new request removes the route on the map (line,
+  skeleton, fronts, strip, name; the markers stay); a failed request leaves
+  no route on the map (the owner's choice, 2026-10-12, replacing the
+  earlier-route mark).
+
 ## [0.2.0-beta.1] - 2026-10-09
 
 ### Added

@@ -1,25 +1,19 @@
 /**
- * The mesh handover: where a leg leaving the mesh switches to the
- * coastline search (on a hand-made corridor), the corridor cut there,
- * the two parts stitched; and the whole leg pipeline on a synthetic coast
- * with a real water grid, a mesh covering the start only.
+ * The mesh handover: where a leg leaving the mesh would switch to the
+ * coastline search (on a hand-made corridor), the corridor cut there, and
+ * the two parts stitched. The pipeline no longer hands legs over this way
+ * (part 5: pipeline.ts chartsLeg, mesh/waters.ts); its two pipeline tests
+ * went with it (2026-10-13).
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
 import { haversineDistanceM } from '../../geo/geodesy';
 import { LandMask } from '../../geo/landmask';
 import type { ShapePolygon } from '../../geo/shapefile';
-import { buildWaterGrid } from '../../geo/watergrid_build';
 import { SHORE_CLEAR_M, shoreProfile, type Corridor } from '../corridor';
 import { NoCurrent } from '../environment';
-import { planLegs } from '../multileg';
-import { runLegPipeline, type LegPipelineInputs } from '../pipeline';
 import type { Route } from '../route';
-import { makeVessel } from '../../vessel/vessel';
 import { findHandover, OPEN_WATER_WIDTH_M, sliceCorridor, stitchLegParts } from './handover';
 import type { MeshLegRunner } from './leg';
 import { runMeshLeg } from './legrun';
@@ -34,12 +28,16 @@ function meshWestOf(eastEdge: number): { mesh: MeshLegRunner; calls: [number, nu
     isLandExact: () => false,
     legCrossesLandExact: () => false,
     legsCrossLandBulk: (la: ArrayLike<number>) => new Uint8Array(la.length),
+    clearAlong: (lon: number, lat: number, _b: number, maxM: number) => ({ m: maxM, end: [lon, lat] as [number, number] }),
     depthAt: () => null,
     openingBridgesAlong: () => [],
   };
   return {
     mesh: {
       covers: pts => pts.every(p => p[0] < eastEdge),
+      // findHandover asks only `covers`; the pipeline no longer hands legs over this way (part 5, chartsLeg).
+      meets: () => true,
+      plan: async () => ({ refused: 'not used by these tests' }),
       leg: async a => {
         const start = a.legStart;
         const end = a.plan.end;
@@ -56,14 +54,15 @@ function meshWestOf(eastEdge: number): { mesh: MeshLegRunner; calls: [number, nu
             costS: 1,
             stats: {
               trianglesLoaded: 1,
+              tiles: 1,
+              tileReads: 1,
+              peakTriangles: 1,
               blocked: 0,
               expanded: 1,
               readMs: 0,
               prepMs: 0,
               searchMs: 0,
               funnelMs: 0,
-              padDeg: 0.5,
-              attempts: 1,
               bufferM: 0,
               buffered: 0,
               bufferMs: 0,
@@ -315,175 +314,4 @@ test('stitchLegParts joins two parts at their shared point, re-bases warnings, r
   assert.equal(r.meshLeg, true);
   assert.equal(r.forecastHorizonExceededS, 100);
   assert.ok(Math.abs(r.totalDistanceM - haversineDistanceM(0, 0, 1, 0)) < 1);
-});
-
-/** Minimal shapefile writer (rectangles), as corridor.test.ts has. */
-function writeShapefile(file: string, polys: number[][][]): void {
-  const recs: Buffer[] = [];
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  polys.forEach((rings, k) => {
-    const pts = rings.map(r => {
-      const c = [...r];
-      if (c[0] !== c[c.length - 2] || c[1] !== c[c.length - 1]) c.push(c[0], c[1]);
-      return c;
-    });
-    const nPts = pts.reduce((acc, r) => acc + r.length / 2, 0);
-    const len = 44 + 4 * pts.length + 16 * nPts;
-    const b = Buffer.alloc(8 + len);
-    b.writeInt32BE(k + 1, 0);
-    b.writeInt32BE(len / 2, 4);
-    const xs = pts.flatMap(r => r.filter((_v, i) => i % 2 === 0));
-    const ys = pts.flatMap(r => r.filter((_v, i) => i % 2 === 1));
-    const bx = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-    minX = Math.min(minX, bx[0]);
-    minY = Math.min(minY, bx[1]);
-    maxX = Math.max(maxX, bx[2]);
-    maxY = Math.max(maxY, bx[3]);
-    b.writeInt32LE(5, 8);
-    bx.forEach((v, i) => b.writeDoubleLE(v, 12 + 8 * i));
-    b.writeInt32LE(pts.length, 44);
-    b.writeInt32LE(nPts, 48);
-    let o = 52;
-    let start = 0;
-    for (const r of pts) {
-      b.writeInt32LE(start, o);
-      o += 4;
-      start += r.length / 2;
-    }
-    for (const r of pts)
-      for (let i = 0; i < r.length; i += 2) {
-        b.writeDoubleLE(r[i], o);
-        b.writeDoubleLE(r[i + 1], o + 8);
-        o += 16;
-      }
-    recs.push(b);
-  });
-  const body = Buffer.concat(recs);
-  const h = Buffer.alloc(100);
-  h.writeInt32BE(9994, 0);
-  h.writeInt32BE((100 + body.length) / 2, 24);
-  h.writeInt32LE(1000, 28);
-  h.writeInt32LE(5, 32);
-  [minX, minY, maxX, maxY].forEach((v, i) => h.writeDoubleLE(v, 36 + 8 * i));
-  fs.writeFileSync(file, Buffer.concat([h, body]));
-}
-
-test('pipeline: a leg starting in a channel inside the mesh is routed on the mesh to open water and handed over', async () => {
-  // A bay closed on three sides: land north and south of lat 0 (a 0.015° = 1.7 km channel) from lon 160 to 161,
-  // open sea east of lon 161. Start inside the channel 33 km from its mouth (within the 50 km handover scan),
-  // end 200 km out at sea. The mesh covers lon < 162.
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-handover-'));
-  const shp = path.join(tmp, 'coast.shp');
-  const rect = (w: number, s: number, e: number, n: number): number[][] => [[w, s, e, s, e, n, w, n]];
-  writeShapefile(shp, [rect(159.5, 0.0075, 161, 1), rect(159.5, -1, 161, -0.0075)]);
-  const grid = buildWaterGrid([shp], { region: { west: 158, east: 165, south: -2, north: 2 } });
-  const { mesh, calls } = meshWestOf(162);
-  const messages: string[] = [];
-  const inp: LegPipelineInputs = {
-    waterGrid: grid,
-    mesh,
-    allowCanals: false,
-    landFor: b => LandMask.fromShapefiles([shp], b, { resolutionDeg: 0.002 }),
-    stages: 12,
-    propagator: { subsectors: 20, headings: 30 },
-    vessel: makeVessel({ motorSpeedMs: 3, draughtM: 2, airDraftM: 18 }),
-    polar: null,
-    sim: { modePolicy: 'motor', sailThreshMs: 2.5, simStepM: 200 },
-    simplifyM: 0,
-    smoother: false,
-    smootherTolerance: 0.05,
-    loadAreas: async () => null,
-    currents: () => ({ source: new NoCurrent(), names: null }),
-    multi: false,
-    progress: (_s, _t, m) => messages.push(m),
-    shouldCancel: () => false,
-  };
-  const [plan] = planLegs(
-    [
-      { lon: 160.7, lat: 0 },
-      { lon: 163, lat: 0 },
-    ],
-    'precise',
-    300
-  );
-  const r = await runLegPipeline(inp, plan, 0, [160.7, 0], T0);
-  assert.equal(r.meshLeg, true, messages.join('\n'));
-  assert.equal(calls.length, 1, 'the mesh was asked once, for the part to the handover');
-  const [meshStart, meshEnd] = calls[0];
-  assert.deepEqual(meshStart, [160.7, 0]);
-  assert.ok(meshEnd[0] > 161 && meshEnd[0] < 162, `handover at lon ${meshEnd[0]}: just outside the channel mouth, inside the mesh`);
-  assert.ok(
-    messages.some(m => /chart mesh: the leg leaves the mesh; its first \{distance:\d+\} to open water/.test(m)),
-    messages.join('\n')
-  );
-  assert.ok(
-    messages.some(m => /^skeleton|^corridor: \{distance/.test(m)),
-    'the coastline search ran for the rest'
-  );
-  assert.deepEqual([r.waypoints[0].lon, r.waypoints[0].lat], [160.7, 0]);
-  const last = r.waypoints[r.waypoints.length - 1];
-  assert.ok(Math.abs(last.lon - 163) < 1e-6 && Math.abs(last.lat) < 1e-6);
-  for (let i = 1; i < r.waypoints.length; i++) assert.ok(r.waypoints[i].time >= r.waypoints[i - 1].time, 'time runs forward');
-  assert.ok(
-    r.waypoints.some(w => Math.abs(w.lon - meshEnd[0]) < 1e-9),
-    'the handover point is a waypoint'
-  );
-  fs.rmSync(tmp, { recursive: true, force: true });
-});
-
-test('pipeline: a leg starting just off a straight open coast inside the mesh is routed on the mesh until clear of the shore', async () => {
-  // Land south of lat 0 (an open, straight coast); the start 0.005° (556 m) north of it, the end 1.5° out at sea.
-  // Across the track (east–west, along the coast) the water is open, so the width alone saw no reason for a
-  // mesh part (as off Lake Superior's south shore, jobs 92491f9c and 19b1d80a); the shore is 556 m away, so there is one now.
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-handover-coast-'));
-  const shp = path.join(tmp, 'coast.shp');
-  writeShapefile(shp, [[[158, -1, 163, -1, 163, 0, 158, 0]]]);
-  const grid = buildWaterGrid([shp], { region: { west: 158, east: 163, south: -1, north: 2 } });
-  const { mesh: base, calls } = meshWestOf(999);
-  const mesh: MeshLegRunner = { ...base, covers: pts => pts.every(p => p[1] < 0.5) };
-  const messages: string[] = [];
-  const inp: LegPipelineInputs = {
-    waterGrid: grid,
-    mesh,
-    allowCanals: false,
-    landFor: b => LandMask.fromShapefiles([shp], b, { resolutionDeg: 0.002 }),
-    stages: 12,
-    propagator: { subsectors: 20, headings: 30 },
-    vessel: makeVessel({ motorSpeedMs: 3, draughtM: 2, airDraftM: 18 }),
-    polar: null,
-    sim: { modePolicy: 'motor', sailThreshMs: 2.5, simStepM: 200 },
-    simplifyM: 0,
-    smoother: false,
-    smootherTolerance: 0.05,
-    loadAreas: async () => null,
-    currents: () => ({ source: new NoCurrent(), names: null }),
-    multi: false,
-    progress: (_s, _t, m) => messages.push(m),
-    shouldCancel: () => false,
-  };
-  const [plan] = planLegs(
-    [
-      { lon: 160.5, lat: 0.005 },
-      { lon: 160.5, lat: 1.5 },
-    ],
-    'precise',
-    300
-  );
-  const r = await runLegPipeline(inp, plan, 0, [160.5, 0.005], T0);
-  assert.equal(r.meshLeg, true, messages.join('\n'));
-  assert.equal(calls.length, 1, 'the mesh was asked once, for the part to the handover');
-  const [meshStart, meshEnd] = calls[0];
-  assert.deepEqual(meshStart, [160.5, 0.005]);
-  const offM = haversineDistanceM(meshEnd[0], meshEnd[1], meshEnd[0], 0);
-  assert.ok(offM >= SHORE_CLEAR_M && meshEnd[1] < 0.5, `handover ${offM.toFixed(0)} m off the coast, inside the mesh`);
-  assert.ok(
-    messages.some(m =>
-      /chart mesh: the leg leaves the mesh; its first \{distance:\d+\} to open water at least \{distance:5000\} from land/.test(m)
-    ),
-    messages.join('\n')
-  );
-  fs.rmSync(tmp, { recursive: true, force: true });
 });

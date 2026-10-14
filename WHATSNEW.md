@@ -1,5 +1,42 @@
 # What's new
 
+## Unreleased
+
+- **No more quiet detours over shallow water.** Until now, when the
+  charts could not route a leg, the plugin quietly used the coastline
+  routing instead, which knows nothing about depths, and a route could
+  cross water too shallow for your boat while still showing "validated".
+  A leg inside the charts is now routed on the charts or fails and tells
+  you why.
+- **Every route is checked against the charts before you see it.** The
+  finished route is followed across the charts, and if any part of it
+  crosses water too shallow for your draft, a bridge too low for your
+  height, a rock, a mark or an area to avoid, the route fails and names
+  the places. A route that passes shows *Chart depth checked* with the
+  shallowest depth it crosses, how much of it has no charted depth, and
+  how much lies outside the charts.
+- **Points in shallow water are moved for you.** A start, destination or
+  waypoint you drop in water too shallow for your boat (or on a rock, a
+  mark, or the land) is moved to the nearest water your boat can use, up to
+  1,000 m, and the dotted line shows where from. This uses the charts'
+  depths, not just the coastline.
+- **Approximate waypoints use the charts.** A trip through approximate
+  waypoints is now routed on the chart depths all the way, instead of on
+  the coastline outline. A waypoint you drop on land or in shallow water
+  is fine: the route goes to the nearest water your boat can use, and
+  tells you when that is outside the waypoint's circle.
+- **Long trips on the charts.** A trip whose water route swings far out
+  (from the Bahamas round the Florida Keys into the Gulf, from Chicago
+  through the Straits of Mackinac into Lake Huron) used to be too big for
+  the charts. The router now reads the charts piece by piece as its
+  search reaches them, so no trip is too long for them. A small map of
+  the water your boat can use tells it at once when no water joins the
+  start and the end. That map is built after each chart download;
+  *Rebuild rough cuts* on the plugin configuration page builds it again.
+- **A new request clears the old route.** When you ask for a new route,
+  the one on the map goes; if the request fails, the map shows no route and
+  the error says why.
+
 ## 0.2.0-beta.1
 
 - **Charts to download.** The plugin configuration lists the navigation

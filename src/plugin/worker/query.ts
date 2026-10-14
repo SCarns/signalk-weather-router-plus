@@ -6,6 +6,8 @@
  * instead of module-level variables.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { ForecastStore } from '../../data/forecast';
 import { LAYER_PARAMS } from '../layers';
 import { type BBox } from '../../geo/geodesy';
@@ -22,6 +24,7 @@ import {
 } from '../overlays';
 import { POINT_FORECAST_PARAMS, pointForecasts } from '../weather';
 import { type DataStatus, type QueryArgs } from '../protocol';
+import { encodeTile, tileQuery, type TileId } from '../tiles';
 import { readWindow, releaseWindow } from './forecast';
 import { currentsStatus, prepareSmocForQuery } from './currents';
 import { conditionsTide, prepareTidesForQuery, tideSeriesQuery } from './tides';
@@ -125,6 +128,43 @@ export async function query(st: WorkerState, id: number, kind: string, args: Que
     st.send({ type: 'query-error', id, message: 'cancelled' });
     return;
   }
+  try {
+    const { result, complete } = await answer(st, kind, args);
+    st.cancelledQueries.delete(id); // a cancel that arrived after the query started
+    st.send({ type: 'query-result', id, result, complete });
+    reportStatus(st, kind);
+  } catch (err) {
+    st.cancelledQueries.delete(id);
+    st.send({ type: 'query-error', id, message: (err as Error).message });
+  }
+}
+
+/**
+ * Tiles worker: a tile built ahead of time (prebuild.ts), finished here rather than on Signal K's main thread: its
+ * query answered, encoded as the store saves it (encodeTile) and written to `tmp`, the store's temporary file beside
+ * the tile; the main thread then only moves it into place (TileStore.adopt). An answer that is not complete is not
+ * written. Before (2026-10-13), the answer crossed to the main thread, which encoded and wrote every tile: Signal K's
+ * main thread at 47–100 % while the prebuild ran, 6 % a minute after it was turned off (brain, top).
+ */
+export async function buildTile(st: WorkerState, id: number, tile: TileId, tmp: string): Promise<void> {
+  try {
+    const { kind, args } = tileQuery(tile);
+    const { result, complete } = await answer(st, kind, args);
+    if (!complete) {
+      st.send({ type: 'tile-built', id, bytes: 0, complete: false });
+      return;
+    }
+    const gz = await encodeTile(tile, result);
+    await fs.promises.mkdir(path.dirname(tmp), { recursive: true });
+    await fs.promises.writeFile(tmp, gz);
+    st.send({ type: 'tile-built', id, bytes: gz.length, complete: true });
+  } catch (err) {
+    st.send({ type: 'query-error', id, message: (err as Error).message });
+  }
+}
+
+/** A query's answer, and whether it is complete (false: an on-demand current or tide load was late or failed, or was evicted meanwhile). */
+async function answer(st: WorkerState, kind: string, args: QueryArgs[keyof QueryArgs]): Promise<{ result: unknown; complete: boolean }> {
   let win: ForecastStore | null = null;
   try {
     const smocComplete = await prepareSmocForQuery(st, kind, args);
@@ -217,30 +257,32 @@ export async function query(st: WorkerState, id: number, kind: string, args: Que
     // On-demand SMOC / tide areas loaded for this query: keep at most a small set.
     st.smoc?.trimOnDemand(QUERY_AREA_RETAIN_BYTES);
     st.tides?.trimOnDemand(QUERY_AREA_RETAIN_BYTES);
-    st.cancelledQueries.delete(id); // a cancel that arrived after the query started
     // A conditions tide series that is still downloading (or failed) is not an answer to keep; outside the grid is.
     const tideComplete = !tide || !!tide.series || /outside the sea-level grid/.test(tide.error ?? '');
-    st.send({ type: 'query-result', id, result, complete: smocComplete && tidesComplete && tideComplete && notEvicted });
-    // A new overlay land raster was built: refresh the status the main thread reports.
-    // …or SMOC loaded an on-demand area.
-    const smocRev = st.smoc ? st.smoc.revision : -1;
-    const tidesRev = st.tides ? st.tides.revision : -1;
-    if (
-      (st.overlayLand && st.overlayLand.builds !== st.reportedLandBuilds) ||
-      smocRev !== st.reportedSmocRev ||
-      tidesRev !== st.reportedTidesRev ||
-      kind === 'conditions' ||
-      kind === 'tide_series' ||
-      kind === 'field' ||
-      kind === 'weather_point'
-    ) {
-      st.reportedLandBuilds = st.overlayLand ? st.overlayLand.builds : 0;
-      st.send({ type: 'data-status', status: dataStatus(st) });
-    }
+    return { result, complete: smocComplete && tidesComplete && tideComplete && notEvicted };
   } catch (err) {
     releaseWindow(st, win);
-    st.cancelledQueries.delete(id);
-    st.send({ type: 'query-error', id, message: (err as Error).message });
+    throw err;
+  }
+}
+
+/** The status the main thread reports, refreshed after a query that may have changed it. */
+function reportStatus(st: WorkerState, kind: string): void {
+  // A new overlay land raster was built: refresh the status the main thread reports.
+  // …or SMOC loaded an on-demand area.
+  const smocRev = st.smoc ? st.smoc.revision : -1;
+  const tidesRev = st.tides ? st.tides.revision : -1;
+  if (
+    (st.overlayLand && st.overlayLand.builds !== st.reportedLandBuilds) ||
+    smocRev !== st.reportedSmocRev ||
+    tidesRev !== st.reportedTidesRev ||
+    kind === 'conditions' ||
+    kind === 'tide_series' ||
+    kind === 'field' ||
+    kind === 'weather_point'
+  ) {
+    st.reportedLandBuilds = st.overlayLand ? st.overlayLand.builds : 0;
+    st.send({ type: 'data-status', status: dataStatus(st) });
   }
 }
 

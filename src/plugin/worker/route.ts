@@ -9,7 +9,9 @@
 import { HOUR_S, NM_M } from '../../geo/units';
 import { validateRouteRequest } from '../request_schema';
 import { runLegPipeline, type LegPipelineInputs, type LegWind } from '../../engine/pipeline';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { boundaryFile, coarseFile, coarseRulesOf, joinsFile } from '../meshcoarse';
 import { ForecastStore } from '../../data/forecast';
 import { loadForecastForBBox, resolveCycle } from '../../data/loader';
 import type { WindowOptions } from '../../data/decoded';
@@ -24,7 +26,8 @@ import { RouteCancelled } from '../../engine/propagator';
 import { RouteError } from '../../engine/errors';
 import { nearestExactWater, waterAround } from '../../engine/corridor';
 import { DEFAULT_ARRIVAL_RADIUS_M, DEFAULT_PRECISION, legLabel, type LegPlan, routeMultiLeg, type Stop } from '../../engine/multileg';
-import type { Route, StageFront, StopSnap } from '../../engine/route';
+import type { LegDepth, Route, StageFront, StopSnap } from '../../engine/route';
+import type { CheckRules, DepthViolation, RouteDepthCheck } from '../../engine/mesh/check';
 import { routeToGeoJSON, routeToSignalKRoute, skeletonToGeoJSON } from '../routeformat';
 import { PolarDiagram } from '../../vessel/polar';
 import { loadPolarCached, resolvePolarPath } from '../polars';
@@ -39,8 +42,9 @@ import { GLOBAL_DLON_DEG } from './regional';
 import { avoidAt, type AvoidArea } from '../../geo/avoid';
 import type { WorkerState } from './state';
 import { MeshStore } from '../../engine/mesh/store';
-import { meshCovers } from '../../engine/mesh/route';
-import type { MeshLegArgs, MeshLegRunner } from '../../engine/mesh/leg';
+import { meshCovers, runTargets } from '../../engine/mesh/route';
+import type { MeshLegArgs, MeshLegRunner, MeshRefusal } from '../../engine/mesh/leg';
+import type { MeshRules } from '../../engine/mesh/route';
 import { runChildTask } from '../childtask';
 import type { MeshLegTask } from '../meshlegtask';
 import { regionalRunsFor } from './regionalwind';
@@ -48,29 +52,18 @@ import { smocSettings } from './currents';
 import { localMeshes, meshesToOpen, readyMeshDirs } from '../meshes';
 import { beamFor, DEFAULT_SEARCH } from '../../engine/search/presets';
 
+/** One opened chart mesh (one cluster of a multi-cluster mesh): its name, folder and index. */
+type OpenMesh = { name: string; dir: string; store: MeshStore };
+
 /**
- * The chart meshes for this route, or undefined when there are none: the
- * downloaded ones with a complete marker under the store directory
- * (plugin/meshes.ts; a multi-cluster mesh is one store per cluster) and
- * the folder configured by hand (where the two share a name, the newer
- * copy: meshes.ts meshesToOpen). Only each mesh's index (one small JSON)
- * is read here; a leg is covered when one mesh covers all its points, and
- * that leg is planned whole in a child process holding that mesh
- * (plugin/meshlegtask.ts), which exits with the leg, so its tile arrays
- * never stay in this worker. The child reads the forecast, the currents
- * and the regional runs from this worker's files; this worker has already
- * fetched what needed the network (loadAreas) before the leg starts.
+ * The chart meshes for this route: the downloaded ones with a complete
+ * marker under the store directory (plugin/meshes.ts; a multi-cluster mesh
+ * is one store per cluster) and the folder configured by hand (where the
+ * two share a name, the newer copy: meshes.ts meshesToOpen). Only each
+ * mesh's index (one small JSON) is read here.
  */
-function meshLegRunner(
-  st: WorkerState,
-  cfg: ResolvedConfig,
-  id: string,
-  request: RouteRequest,
-  progress: (m: string) => void,
-  /** The SMOC area and steps loadAreas loaded for the current leg; the mesh process asks for exactly these. */
-  smocLeg: () => { area: BBox; steps: number[] } | null
-): MeshLegRunner | undefined {
-  const stores: { name: string; dir: string; store: MeshStore }[] = [];
+function openMeshes(cfg: ResolvedConfig, progress: (m: string) => void): OpenMesh[] {
+  const stores: OpenMesh[] = [];
   const open = (name: string, dir: string): void => {
     try {
       stores.push({ name, dir, store: MeshStore.open(dir) });
@@ -83,91 +76,390 @@ function meshLegRunner(
   const downloaded = cfg.mesh.storeDir ? readyMeshDirs(cfg.mesh.storeDir) : [];
   for (const m of meshesToOpen(downloaded, localMeshes(cfg.meshDir), cfg.mesh.disabled, cfg.mesh.preferLocal, cfg.mesh.preferDownload))
     for (const d of m.dirs) open(m.name, d);
+  return stores;
+}
+
+/** Whether two opened meshes' extents meet (their indexes): only then can their waters join. */
+function extentsMeet(a: OpenMesh, b: OpenMesh): boolean {
+  const x = a.store.index;
+  const y = b.store.index;
+  return x.west <= y.east && y.west <= x.east && x.south <= y.north && y.south <= x.north;
+}
+
+/**
+ * The rough cut of a mesh for the route's rules (parts 2–5): built first, in a child process (meshcoarse.ts), when
+ * it is not on disk, with its joins to every other opened mesh whose extent meets it. Its file, or a refusal when it
+ * could not be built.
+ */
+async function ensureRoughCut(
+  st: WorkerState,
+  m: OpenMesh,
+  rules: MeshRules,
+  tag: string,
+  progress: MeshLegArgs['progress'],
+  signal: AbortSignal,
+  /** Every opened mesh (the joins go to those whose extent meets this one's). */
+  all: OpenMesh[]
+): Promise<string | MeshRefusal> {
+  const r = coarseRulesOf(rules);
+  const file = coarseFile(st.cacheRoot, m.dir, r);
+  if (fs.existsSync(file)) return file;
+  const joins = all
+    .filter(o => o !== m && extentsMeet(o, m))
+    .map(o => ({ dir: o.dir, mapFile: coarseFile(st.cacheRoot, o.dir, r), name: o.name }));
+  progress(
+    0,
+    0,
+    `${tag}chart mesh: building the rough cut of ${m.name} for this boat (draught {depth:${r.draughtM}}, air draft {length:${r.airDraftM}}, buffer {length:${r.bufferM}}, opening bridges ${r.openingBridges === 'avoid' ? 'avoided' : 'open'}), once`
+  );
+  try {
+    const b = await runChildTask({ task: 'mesh-coarse', dir: m.dir, out: file, rules: r, joins }, 15 * 60_000, signal);
+    progress(
+      0,
+      0,
+      `${tag}chart mesh: rough cut built: ${b.pieces} pieces of water, ${b.links} links, ${b.boundaryBlocked} blocked triangles on tile edges, {dataSize:${b.bytes}} in {time:${b.ms / 1000}}` +
+        b.joins.map(j => `; ${j.joins} joins to ${j.name} ({time:${j.ms / 1000}})`).join('')
+    );
+  } catch (err) {
+    if (signal.aborted) throw err;
+    return { refused: `the rough cut of ${m.name} could not be built (${(err as Error).message})` };
+  }
+  return file;
+}
+
+/**
+ * The meshes as the leg pipeline's runner, or undefined when there are
+ * none. A leg is covered when one mesh covers all its points, and that leg
+ * is planned whole in a child process holding that mesh
+ * (plugin/meshlegtask.ts), which exits with the leg, so its tile arrays
+ * never stay in this worker. The child reads the forecast, the currents
+ * and the regional runs from this worker's files; this worker has already
+ * fetched what needed the network (loadAreas) before the leg starts.
+ */
+function meshLegRunner(
+  st: WorkerState,
+  cfg: ResolvedConfig,
+  id: string,
+  request: RouteRequest,
+  stores: OpenMesh[],
+  /** The SMOC area and steps loadAreas loaded for the current leg; the mesh process asks for exactly these. */
+  smocLeg: () => { area: BBox; steps: number[] } | null
+): MeshLegRunner | undefined {
   if (!stores.length) return undefined;
   const meshFor = (points: [number, number][]): (typeof stores)[number] | undefined => stores.find(s => meshCovers(s.store, points));
   const useForecast = !request.no_forecast && request.mode !== 'motor';
+  const roughCut = (m: OpenMesh, rules: MeshRules, tag: string, progress: MeshLegArgs['progress'], signal: AbortSignal) =>
+    ensureRoughCut(st, m, rules, tag, progress, signal, stores);
   return {
     covers: points => meshFor(points) !== undefined,
+    meets: box =>
+      stores.some(s => {
+        const ix = s.store.index;
+        return ix.west <= box.east && box.west <= ix.east && ix.south <= box.north && box.south <= ix.north;
+      }),
+    // A leg's way across the limits of the charts (part 5): in a child process (plugin/meshwaters.ts) holding every
+    // mesh meeting the leg's area; their rough cuts and joins first when missing. Meshes go to the pipeline by folder.
+    plan: async c => {
+      const near = stores.filter(s => {
+        const ix = s.store.index;
+        return ix.west <= c.box.east && c.box.west <= ix.east && ix.south <= c.box.north && c.box.south <= ix.north;
+      });
+      const ac = new AbortController();
+      const poll = setInterval(() => {
+        if (c.shouldCancel()) ac.abort();
+      }, 500);
+      try {
+        const meshes: { dir: string; mapFile: string | null; name: string }[] = [];
+        if (c.rules) {
+          const r = coarseRulesOf(c.rules);
+          for (const m of near) {
+            const file = await roughCut(m, c.rules, c.tag, c.progress, ac.signal);
+            if (typeof file !== 'string') return file;
+            meshes.push({ dir: m.dir, mapFile: file, name: m.name });
+          }
+          // Joins towards a mesh whose build the rough cut has none for (downloaded or updated since): built now.
+          for (const a of near)
+            for (const b of near) {
+              if (a === b || !extentsMeet(a, b)) continue;
+              const mapFile = coarseFile(st.cacheRoot, a.dir, r);
+              if (fs.existsSync(joinsFile(mapFile, b.dir))) continue;
+              c.progress(0, 0, `${c.tag}chart mesh: finding where ${a.name}'s water joins ${b.name}'s for this boat, once`);
+              const j = await runChildTask(
+                {
+                  task: 'mesh-joins',
+                  dir: a.dir,
+                  mapFile,
+                  rules: r,
+                  other: { dir: b.dir, mapFile: coarseFile(st.cacheRoot, b.dir, r), name: b.name },
+                },
+                15 * 60_000,
+                ac.signal
+              );
+              c.progress(0, 0, `${c.tag}chart mesh: ${j.joins} joins from ${a.name} to ${b.name} ({time:${j.ms / 1000}})`);
+            }
+        } else for (const m of near) meshes.push({ dir: m.dir, mapFile: null, name: m.name });
+        const r = await runChildTask(
+          {
+            task: 'mesh-waters',
+            meshes,
+            rules: c.rules,
+            why: c.why,
+            start: c.start,
+            end: c.end,
+            names: c.names,
+            land: {
+              shapefiles: cfg.landShapefiles,
+              bbox: c.box,
+              maxCells: cfg.routing.landRasterMaxCells,
+              bufferM: cfg.routing.landBufferM,
+            },
+          },
+          10 * 60_000,
+          ac.signal
+        );
+        if (!r.ok) return { refused: r.reason };
+        if (r.kind === 'one-mesh') return { kind: 'one-mesh', mesh: near[r.mesh].dir };
+        if (r.kind === 'open') {
+          c.progress(
+            0,
+            0,
+            `${c.tag}chart mesh: open water outside the charts joins the leg's ends; the coastline search plans it with the charts' water as land ({time:${r.ms / 1000}})`
+          );
+          return { kind: 'open', mask: r.mask };
+        }
+        const at = (p: [number, number]): string => `${p[1].toFixed(4)}, ${p[0].toFixed(4)}`;
+        const words = r.stretches.map(s =>
+          s.kind === 'mesh' ? `${near[s.mesh].name} from ${at(s.from)} to ${at(s.to)}` : `open water from ${at(s.from)} to ${at(s.to)}`
+        );
+        c.progress(
+          0,
+          0,
+          `${c.tag}chart mesh: the leg crosses the limits of the charts with ${r.changes} change(s) between charts and open water and ${r.transfers} from one district's charts to another's${r.ways > 1 ? ` (the cheapest of ${r.ways} ways with as few changes)` : ''}: ${words.join('; ')} ({time:${r.ms / 1000}})`
+        );
+        return {
+          kind: 'chain',
+          stretches: r.stretches.map(s => (s.kind === 'mesh' ? { kind: 'mesh', mesh: near[s.mesh].dir, from: s.from, to: s.to } : s)),
+          mask: r.mask,
+        };
+      } finally {
+        clearInterval(poll);
+      }
+    },
     leg: async (a: MeshLegArgs) => {
       // The child reads the forecast from the decoded run's files; without one it would plan the leg with no wind.
-      if (useForecast && !st.run) {
-        a.progress(
-          0,
-          0,
-          `WARNING: ${a.tag}chart mesh: no decoded forecast run yet for the mesh process to read; using the coastline search instead`
-        );
-        return null;
-      }
-      // The mesh holding both ends; a handover leg has one end outside every mesh, so then the one holding either.
-      const m = meshFor([a.legStart, a.plan.end]) ?? meshFor([a.legStart]) ?? meshFor([a.plan.end]);
-      if (!m) {
-        a.progress(0, 0, `WARNING: ${a.tag}chart mesh: no mesh covers the leg; using the coastline search instead`);
-        return null;
-      }
+      if (useForecast && !st.run)
+        return { refused: 'the forecast is still being decoded, and the mesh process reads only a decoded run; try again shortly' };
+      // The mesh the plan named; else the one holding the leg's points (a handover leg, with one end outside every
+      // mesh: the one holding either).
+      const m = a.meshId
+        ? stores.find(s => s.dir === a.meshId)
+        : (meshFor([a.legStart, ...a.plan.vias.map(v => [v.lon, v.lat] as [number, number]), a.plan.end]) ??
+          meshFor([a.legStart]) ??
+          meshFor([a.plan.end]));
+      if (!m) return { refused: 'no mesh covers the leg' };
       a.progress(0, 0, `${a.tag}chart mesh: ${m.name}`);
-      const bbox = bboxFromLonLat([a.legStart[0], a.plan.end[0]], [a.legStart[1], a.plan.end[1]], 0.5);
-      const task: MeshLegTask = {
-        task: 'mesh-leg',
-        dir: m.dir,
-        plan: a.plan,
-        legIndex: a.legIndex,
-        legStart: a.legStart,
-        legDepartureMs: a.legDeparture.getTime(),
-        tag: a.tag,
-        multi: a.multi,
-        rules: a.rules,
-        vessel: a.vessel,
-        polar: a.polar ? { twa: Array.from(a.polar.twa), tws: Array.from(a.polar.tws), speeds: Array.from(a.polar.speeds) } : null,
-        sim: a.sim,
-        router: a.router,
-        propagator: a.propagator,
-        stages: a.stages,
-        simplifyM: a.simplifyM,
-        smoother: a.smoother,
-        smootherTolerance: a.smootherTolerance,
-        drawbridges: a.drawbridges,
-        bridgeWaitS: a.bridgeWaitS,
-        forecast: useForecast ? { runDir: st.run!.dir, area: expandBBox(bbox, ROUTE_FORECAST_MARGIN_DEG), params: ROUTE_PARAMS } : null,
-        regional:
-          useForecast && request.wind_model !== 'ecmwf'
-            ? { root: path.join(st.cacheRoot, REGIONAL_DIR), globalDLon: st.run?.index.grid.dLon ?? GLOBAL_DLON_DEG }
-            : null,
-        currents: request.no_currents
-          ? null
-          : {
-              smoc:
-                st.smoc && cfg.currents.smocEnabled && smocLeg()
-                  ? { cacheDir: path.join(st.cacheRoot, 'smoc'), run: st.smoc.run, settings: smocSettings(cfg), ...smocLeg()! }
-                  : null,
-              rtofs:
-                st.rtofs && cfg.currents.rtofsEnabled
-                  ? {
-                      cacheDir: st.rtofsClient?.cacheDir ?? path.join(st.cacheRoot, 'rtofs'),
-                      region: cfg.currents.rtofsRegion,
-                      runMs: st.rtofs.runMs,
-                      horizonS: cfg.currents.rtofsHorizonS,
-                      stepS: cfg.currents.rtofsStepS,
-                    }
-                  : null,
-              harmonicDir: cfg.currents.harmonicDir,
-            },
-      };
       // Cancel: the worker's flag, polled; aborting kills the child.
       const ac = new AbortController();
       const poll = setInterval(() => {
         if (a.shouldCancel()) ac.abort();
       }, 500);
       try {
+        // The rough cut's tile-boundary triangles seed the buffer across tile edges (paged.ts).
+        const map = await roughCut(m, a.rules, a.tag, a.progress, ac.signal);
+        if (typeof map !== 'string') return map;
+        // The forecast area: the reach's tiles when there is one (the search may run far from the ends), else the ends.
+        const bbox = a.reach ? a.reach.box : bboxFromLonLat([a.legStart[0], a.plan.end[0]], [a.legStart[1], a.plan.end[1]], 0.5);
+        const task: MeshLegTask = {
+          task: 'mesh-leg',
+          dir: m.dir,
+          plan: a.plan,
+          legIndex: a.legIndex,
+          legStart: a.legStart,
+          legDepartureMs: a.legDeparture.getTime(),
+          tag: a.tag,
+          multi: a.multi,
+          rules: a.rules,
+          vessel: a.vessel,
+          polar: a.polar ? { twa: Array.from(a.polar.twa), tws: Array.from(a.polar.tws), speeds: Array.from(a.polar.speeds) } : null,
+          sim: a.sim,
+          router: a.router,
+          propagator: a.propagator,
+          stages: a.stages,
+          simplifyM: a.simplifyM,
+          smoother: a.smoother,
+          smootherTolerance: a.smootherTolerance,
+          drawbridges: a.drawbridges,
+          bridgeWaitS: a.bridgeWaitS,
+          boundaryFile: boundaryFile(map),
+          ...(a.reach ? { aims: a.reach.aims } : {}),
+          forecast: useForecast ? { runDir: st.run!.dir, area: expandBBox(bbox, ROUTE_FORECAST_MARGIN_DEG), params: ROUTE_PARAMS } : null,
+          regional:
+            useForecast && request.wind_model !== 'ecmwf'
+              ? { root: path.join(st.cacheRoot, REGIONAL_DIR), globalDLon: st.run?.index.grid.dLon ?? GLOBAL_DLON_DEG }
+              : null,
+          currents: request.no_currents
+            ? null
+            : {
+                smoc:
+                  st.smoc && cfg.currents.smocEnabled && smocLeg()
+                    ? { cacheDir: path.join(st.cacheRoot, 'smoc'), run: st.smoc.run, settings: smocSettings(cfg), ...smocLeg()! }
+                    : null,
+                rtofs:
+                  st.rtofs && cfg.currents.rtofsEnabled
+                    ? {
+                        cacheDir: st.rtofsClient?.cacheDir ?? path.join(st.cacheRoot, 'rtofs'),
+                        region: cfg.currents.rtofsRegion,
+                        runMs: st.rtofs.runMs,
+                        horizonS: cfg.currents.rtofsHorizonS,
+                        stepS: cfg.currents.rtofsStepS,
+                      }
+                    : null,
+                harmonicDir: cfg.currents.harmonicDir,
+              },
+        };
         const r = await runChildTask(task, 15 * 60_000, ac.signal, e => {
           if (e.event === 'progress') a.progress(e.stage, e.total, e.message);
           else st.send({ type: 'frontier', id, leg: a.legIndex, ...compactFront(e.front) });
         });
         if (!r.ok) {
           if (r.fatal) throw new RouteError(r.reason);
-          a.progress(0, 0, `WARNING: ${a.tag}chart mesh: ${r.reason}; using the coastline search instead`);
-          return null;
+          return { refused: r.reason };
         }
         return r.route;
+      } finally {
+        clearInterval(poll);
+      }
+    },
+    // Where a leg leaving the charts crosses to the coastline (part 5): in a child process (plugin/meshexit.ts), on the
+    // coastline search's own land raster for the leg's area; the rough cut first when missing (its boundary record).
+    exit: async c => {
+      const m = meshFor([c.inside]);
+      if (!m) return { refused: 'no mesh covers the leg' };
+      const ac = new AbortController();
+      const poll = setInterval(() => {
+        if (c.shouldCancel()) ac.abort();
+      }, 500);
+      try {
+        const file = await roughCut(m, c.rules, c.tag, c.progress, ac.signal);
+        if (typeof file !== 'string') return file;
+        const r = await runChildTask(
+          {
+            task: 'mesh-exit',
+            dir: m.dir,
+            mapFile: file,
+            rules: c.rules,
+            inside: c.inside,
+            outside: c.outside,
+            names: c.names,
+            land: {
+              shapefiles: cfg.landShapefiles,
+              bbox: c.box,
+              maxCells: cfg.routing.landRasterMaxCells,
+              bufferM: cfg.routing.landBufferM,
+            },
+          },
+          10 * 60_000,
+          ac.signal
+        );
+        if (!r.ok) return { refused: r.reason };
+        c.progress(
+          0,
+          0,
+          `${c.tag}chart mesh: the leg leaves the charts at ${r.exit[1].toFixed(4)}, ${r.exit[0].toFixed(4)} (${r.exits} places where the chart mesh's water meets the coastline's water that reaches ${c.names.outside}; {time:${r.ms / 1000}})`
+        );
+        return { exit: r.exit, mask: r.mask };
+      } finally {
+        clearInterval(poll);
+      }
+    },
+    // Where a leg from one mesh to another changes meshes in their overlap (part 5 step 2): in a child process
+    // (plugin/meshtransfer.ts) holding both; the two rough cuts first when missing.
+    transfer: async c => {
+      const a = meshFor([c.start]);
+      const b = meshFor([c.end]);
+      if (!a || !b) return { refused: 'no mesh covers the leg' };
+      const ac = new AbortController();
+      const poll = setInterval(() => {
+        if (c.shouldCancel()) ac.abort();
+      }, 500);
+      try {
+        const fa = await roughCut(a, c.rules, c.tag, c.progress, ac.signal);
+        if (typeof fa !== 'string') return fa;
+        const fb = await roughCut(b, c.rules, c.tag, c.progress, ac.signal);
+        if (typeof fb !== 'string') return fb;
+        const r = await runChildTask(
+          {
+            task: 'mesh-transfer',
+            from: { dir: a.dir, mapFile: fa, name: a.name },
+            to: { dir: b.dir, mapFile: fb, name: b.name },
+            rules: c.rules,
+            start: c.start,
+            end: c.end,
+            names: c.names,
+            land: {
+              shapefiles: cfg.landShapefiles,
+              bbox: c.box,
+              maxCells: cfg.routing.landRasterMaxCells,
+              bufferM: cfg.routing.landBufferM,
+            },
+          },
+          10 * 60_000,
+          ac.signal
+        );
+        if (!r.ok) return { refused: r.reason };
+        if (r.kind === 'transfer') {
+          c.progress(
+            0,
+            0,
+            `${c.tag}chart mesh: the leg changes from ${a.name} to ${b.name} at ${r.point[1].toFixed(4)}, ${r.point[0].toFixed(4)}, water both call usable for this boat (${r.transfers} such triangles of ${r.tested} tested in ${r.candidateTiles} of ${r.sharedTiles} shared tiles, those the rough cuts connect to both ends; {time:${r.ms / 1000}})`
+          );
+          return { point: r.point };
+        }
+        c.progress(
+          0,
+          0,
+          `${c.tag}chart mesh: the leg cannot change from ${a.name} to ${b.name} in their overlap (${r.overlap}); it leaves ${a.name} at ${r.exit[1].toFixed(4)}, ${r.exit[0].toFixed(4)} and enters ${b.name} at ${r.entry[1].toFixed(4)}, ${r.entry[0].toFixed(4)}, the coastline search between them with both meshes' water as land (${r.exits} exits, ${r.entries} entries; {time:${r.ms / 1000}})`
+        );
+        return { exit: r.exit, entry: r.entry, mask: r.mask };
+      } finally {
+        clearInterval(poll);
+      }
+    },
+    // The leg's reach on the rough cut (part 4): whether water connects its ends for the boat, and where it runs;
+    // the rough cut built first when this boat has none for the mesh, both in child processes (meshcoarse.ts), so
+    // no mesh tile is read in this worker.
+    reach: async c => {
+      const m = c.meshId
+        ? stores.find(s => s.dir === c.meshId)
+        : meshFor([c.legStart, ...c.plan.vias.map(v => [v.lon, v.lat] as [number, number]), c.plan.end]);
+      if (!m) return { refused: 'no mesh covers the leg' };
+      const ac = new AbortController();
+      const poll = setInterval(() => {
+        if (c.shouldCancel()) ac.abort();
+      }, 500);
+      try {
+        const file = await roughCut(m, c.rules, c.tag, c.progress, ac.signal);
+        if (typeof file !== 'string') return file;
+        const t0 = Date.now();
+        const r = await runChildTask(
+          {
+            task: 'mesh-reach',
+            dir: m.dir,
+            mapFile: file,
+            points: [{ lon: c.legStart[0], lat: c.legStart[1], name: 'the start' }, ...runTargets(c.plan)],
+            rules: coarseRulesOf(c.rules),
+            ...(c.rules.avoid?.length ? { avoid: c.rules.avoid } : {}),
+          },
+          5 * 60_000,
+          ac.signal
+        );
+        if (!r.ok) return { refused: r.reason };
+        c.progress(
+          0,
+          0,
+          `${c.tag}chart mesh: rough cut: water connects the leg's points through ${r.chainTiles} tiles, {distance:${r.lengthM.toFixed(0)}} between their pieces; the forecast and currents are loaded over them ({time:${(Date.now() - t0) / 1000}})`
+        );
+        return { box: r.box, lengthM: r.lengthM, aims: r.aims };
       } finally {
         clearInterval(poll);
       }
@@ -267,6 +559,8 @@ export async function route(
     // a land cell and no final leg to it is ever clear (job 6ea0c875, the
     // East River: "boxed in … 0 km from the destination"). Further than
     // SNAP_MAX_M is an error that names the point.
+    const vessel = routeVessel(cfg, request.vessel, self);
+    const meshes = openMeshes(cfg, m => progress(0, 0, m));
     const snaps: StopSnap[] = [];
     {
       const SNAP_MAX_M = 1000;
@@ -274,8 +568,82 @@ export async function route(
       const SNAP_CLEAR_M = Math.max(150, cfg.routing.landBufferM);
       const label = (i: number): string =>
         i === 0 ? 'the start point' : i === stops.length - 1 ? 'the destination' : `your point ${i + 1} of ${stops.length} (waypoint ${i})`;
+      const meshOf = (p: Stop): OpenMesh | undefined => meshes.find(m => m.store.covers(p.lon, p.lat));
+      // Stops in mesh water are snapped on the mesh (docs/drafts/mesh-no-gshhg-design.md, part 2; the owner's
+      // choices of 2026-10-12): the start, the destination and exact waypoints, each mesh's stops together, to the
+      // nearest water the boat can use connected to the route, at most SNAP_MAX_M. An approximate waypoint is not
+      // snapped: its circle is aimed at usable water when its leg is planned (part 3). No coastline snap in mesh
+      // water; without the draught and air draft the mesh cannot judge, and the leg says so.
+      const approximate = (request.precision ?? DEFAULT_PRECISION) === 'approximate';
+      const byMesh = new Map<OpenMesh, number[]>();
+      for (let i = 0; i < stops.length; i++) {
+        const m = meshOf(stops[i]);
+        if (!m || (approximate && i > 0 && i < stops.length - 1)) continue;
+        byMesh.set(m, [...(byMesh.get(m) ?? []), i]);
+      }
+      if (byMesh.size && vessel.draughtM !== null && vessel.airDraftM !== null) {
+        const rules: MeshRules = {
+          draughtM: vessel.draughtM,
+          airDraftM: vessel.airDraftM,
+          motorSpeedMs: vessel.motorSpeedMs,
+          bufferM: cfg.routing.navigableBufferM,
+          openingBridges: (request.drawbridges ?? cfg.routing.drawbridges) === 'avoid' ? 'avoid' : 'open',
+          ...(avoid.length ? { avoid: avoid.map(a => ({ lon: a.lon, lat: a.lat, radiusM: a.radiusM })) } : {}),
+        };
+        const ac = new AbortController();
+        const poll = setInterval(() => {
+          if (shouldCancel()) ac.abort();
+        }, 500);
+        try {
+          for (const [m, idx] of byMesh) {
+            const file = await ensureRoughCut(st, m, rules, '', progress, ac.signal, meshes);
+            if (typeof file !== 'string') throw new RouteError(file.refused);
+            const r = await runChildTask(
+              {
+                task: 'mesh-snap',
+                dir: m.dir,
+                mapFile: file,
+                points: idx.map(i => ({ lon: stops[i].lon, lat: stops[i].lat, name: label(i) })),
+                rules: coarseRulesOf(rules),
+                ...(rules.avoid ? { avoid: rules.avoid } : {}),
+                maxMoveM: SNAP_MAX_M,
+              },
+              5 * 60_000,
+              ac.signal
+            );
+            if (!r.ok) throw new RouteError(r.reason);
+            idx.forEach((i, k) => {
+              const p = r.points[k];
+              if (p.outsideGroup && !(p.movedM > 0))
+                progress(
+                  0,
+                  0,
+                  `${label(i)} is on water this boat can use that does not connect on the chart mesh to the route's within {length:${SNAP_MAX_M}}; left where it is, its leg looks for a way through other charts or open water`
+                );
+              if (!(p.movedM > 0)) return;
+              const s = stops[i];
+              snaps.push({ index: i, original: [s.lon, s.lat], anchor: [p.lon, p.lat], distanceM: p.movedM });
+              // A moved stop after the start sits on the edge of unusable water: its leg ends on entering the circle
+              // of the distance moved round it (the owner's choice, 2026-10-12; multileg.ts Stop.snapped).
+              stops[i] = i > 0 ? { ...s, lon: p.lon, lat: p.lat, radiusM: p.movedM, snapped: true } : { ...s, lon: p.lon, lat: p.lat };
+              progress(
+                0,
+                0,
+                `${p.outsideGroup ? 'WARNING: ' : ''}${label(i)} ${p.why} according to the chart mesh; moved {length:${p.movedM.toFixed(0)}} to water this boat can use, connected to the route, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}${i > 0 ? `; its leg ends on coming within {length:${p.movedM.toFixed(0)}} of it` : ''}`
+              );
+            });
+          }
+        } catch (err) {
+          if (shouldCancel()) throw new RouteCancelled();
+          throw err;
+        } finally {
+          clearInterval(poll);
+        }
+      }
       for (let i = 0; i < stops.length; i++) {
         const s = stops[i];
+        // Mesh water: the mesh decides (above), never the coastline.
+        if (meshOf(s)) continue;
         // Only the polygons near this stop (0.02° ≈ 2 km covers SNAP_MAX_M +
         // SNAP_CLEAR_M): one box over every stop would decode the coastline
         // of the whole route, both coasts of an ocean for a crossing. The
@@ -299,6 +667,7 @@ export async function route(
           `${label(i)} ${why} according to the coastline data; moved {length:${d.toFixed(0)}} to open water at ${near[1].toFixed(4)}, ${near[0].toFixed(4)} (route points keep {length:${SNAP_CLEAR_M}} of water around them)`
         );
       }
+      snaps.sort((a, b) => a.index - b.index);
       if (snaps.length) {
         start[0] = stops[0].lon;
         start[1] = stops[0].lat;
@@ -307,7 +676,6 @@ export async function route(
       }
     }
 
-    const vessel = routeVessel(cfg, request.vessel, self);
     // Per-route polar: a library token from GET /api/polars, else the configured default.
     let routePolar: PolarDiagram | null = st.polar;
     let polarLabel: string | null = cfg.polarFile ? path.basename(cfg.polarFile) : null;
@@ -495,14 +863,7 @@ export async function route(
     const pipeline: LegPipelineInputs = {
       waterGrid: st.waterGrid,
       router,
-      mesh: meshLegRunner(
-        st,
-        cfg,
-        id,
-        request,
-        m => progress(0, 0, m),
-        () => smocLeg
-      ),
+      mesh: meshLegRunner(st, cfg, id, request, meshes, () => smocLeg),
       avoidAreas: avoid.map(a => ({ lon: a.lon, lat: a.lat, radiusM: a.radiusM })),
       meshBufferM: cfg.routing.navigableBufferM,
       drawbridges: request.drawbridges ?? cfg.routing.drawbridges,
@@ -559,6 +920,19 @@ export async function route(
     });
     if (cycleLabel) result.forecastCycle = cycleLabel;
     if (snaps.length) result.snaps = snaps;
+    // The final depth check: whatever planned each leg, a route that crosses
+    // water a chart mesh blocks for this boat fails here and is never returned.
+    await finalDepthCheck(
+      result,
+      meshes,
+      vessel,
+      {
+        openingBridges: (request.drawbridges ?? cfg.routing.drawbridges) === 'avoid' ? 'avoid' : 'open',
+        avoid: avoid.map(a => ({ lon: a.lon, lat: a.lat, radiusM: a.radiusM })),
+      },
+      progress,
+      shouldCancel
+    );
     // Which model answered the wind, over every leg's samples.
     let regionalWind: { name: string; run: string; share: number }[] | undefined;
     if (layers.length) {
@@ -586,7 +960,7 @@ export async function route(
     result.precision = precision;
     result.stops = stops.map((s, i) => {
       const inner = i > 0 && i < stops.length - 1;
-      return inner && precision === 'approximate'
+      return (inner && precision === 'approximate') || s.snapped
         ? { lon: s.lon, lat: s.lat, radiusM: s.radiusM ?? defaultRadius }
         : { lon: s.lon, lat: s.lat };
     });
@@ -617,6 +991,18 @@ export async function route(
       summary.precision = request.precision ?? DEFAULT_PRECISION;
     }
     if (result.meshLeg) summary.mesh = true;
+    if (result.depthCheck) {
+      summary.depth_checked = true;
+      summary.legs_detail = result.depthCheck.legs.map(l => ({
+        leg: l.leg,
+        source: result.legSources?.[l.leg] ?? 'coastline',
+        on_mesh_m: Math.round(l.onMeshM),
+        unknown_depth_m: Math.round(l.unknownDepthM),
+        outside_mesh_m: Math.round(l.outsideMeshM),
+        shallowest_m: l.shallowestM,
+        shallowest_at: l.shallowestAt,
+      }));
+    }
     if (result.drawbridges?.length) {
       summary.drawbridges = result.drawbridges.map(b => ({ lat: b.lat, lon: b.lon, clear_m: b.clearM, leg_index: b.legIndex }));
       summary.drawbridges_rule = request.drawbridges ?? cfg.routing.drawbridges;
@@ -656,6 +1042,123 @@ export async function route(
     releaseMemory();
     st.send({ type: 'forecast-memory', memory: { ...st.forecastMemory } });
   }
+}
+
+/** A blocked crossing in words, quantities as unit tokens (the web app writes them in its user's units). */
+function violationText(v: DepthViolation): string {
+  switch (v.kind) {
+    case 'depth':
+      return `charted depth {depth:${v.value}}${v.value !== null && v.value < 0 ? ' (dries)' : ''}`;
+    case 'hazard':
+      return v.value === null ? 'a rock, wreck or obstruction with no charted depth' : `a rock, wreck or obstruction at {depth:${v.value}}`;
+    case 'clearance':
+      return `vertical clearance {length:${v.value}}`;
+    case 'opening bridge':
+      return 'an opening bridge (Drawbridges is set to Avoid)';
+    case 'mark':
+      return 'within 20 m of a buoy, beacon or light';
+    case 'structure':
+      return 'a structure (pier, pile, pontoon or the like)';
+    case 'area to avoid':
+      return 'an area to avoid (a Signal K note)';
+  }
+}
+
+/**
+ * The final depth check (docs/drafts/mesh-no-gshhg-design.md, part 1): the
+ * finished route walked through every chart mesh it meets, in a child
+ * process (plugin/meshchecktask.ts). A crossing of water a mesh blocks
+ * for this boat fails the route (RouteError naming the places); otherwise
+ * what each leg crossed is recorded on the route (`depthCheck`). Nothing
+ * happens when no mesh meets the route.
+ */
+async function finalDepthCheck(
+  route: Route,
+  meshes: OpenMesh[],
+  vessel: { draughtM: number | null; airDraftM: number | null },
+  rules: Pick<CheckRules, 'openingBridges' | 'avoid'>,
+  progress: (stage: number, total: number, message: string) => void,
+  shouldCancel: () => boolean
+): Promise<void> {
+  const wps = route.waypoints;
+  if (wps.length < 2 || !meshes.length) return;
+  const path: [number, number][] = wps.map(w => [w.lon, w.lat]);
+  const box = bboxFromLonLat(
+    path.map(p => p[0]),
+    path.map(p => p[1]),
+    0.01
+  );
+  const near = meshes.filter(m => {
+    const ix = m.store.index;
+    return ix.west <= box.east && box.west <= ix.east && ix.south <= box.north && box.south <= ix.north;
+  });
+  if (!near.length) return;
+  if (vessel.draughtM === null || vessel.airDraftM === null) {
+    if (path.some(p => near.some(m => m.store.covers(p[0], p[1]))))
+      throw new RouteError(
+        `the route passes through water a chart mesh covers, but the vessel's ${vessel.draughtM === null ? 'draught' : 'air draft'} is not set, so it cannot be checked against charted depth; set the draught and air draft (Signal K design.draft.maximum and design.airHeight)`
+      );
+    return;
+  }
+  // The leg of each segment: a leg ends at each waypoint of role 'via' (multileg.ts stitchLegs).
+  const legOf: number[] = [];
+  let leg = 0;
+  for (let k = 0; k + 1 < wps.length; k++) {
+    if (k > 0 && wps[k].role === 'via') leg++;
+    legOf.push(leg);
+  }
+  const legCount = Math.max(leg + 1, route.legSources?.length ?? 0);
+  const ac = new AbortController();
+  const poll = setInterval(() => {
+    if (shouldCancel()) ac.abort();
+  }, 500);
+  const t0 = Date.now();
+  let check: RouteDepthCheck;
+  try {
+    check = await runChildTask(
+      {
+        task: 'mesh-check',
+        dirs: near.map(m => m.dir),
+        path,
+        legOf,
+        legCount,
+        rules: { draughtM: vessel.draughtM, airDraftM: vessel.airDraftM, ...rules },
+      },
+      10 * 60_000,
+      ac.signal
+    );
+  } catch (err) {
+    if (shouldCancel()) throw new RouteCancelled();
+    throw new RouteError(
+      `the final depth check against the chart mesh could not run (${(err as Error).message}); no route is returned unchecked`
+    );
+  } finally {
+    clearInterval(poll);
+  }
+  const multi = legCount > 1;
+  if (check.violations.length) {
+    const first = check.violations
+      .slice(0, 3)
+      .map(v => `${multi ? `leg ${v.leg + 1} ` : ''}at ${v.lat.toFixed(4)}, ${v.lon.toFixed(4)}: ${violationText(v)}`)
+      .join('; ');
+    const more = check.violations.length > 3 ? `; and ${check.violations.length - 3} more place(s)` : '';
+    throw new RouteError(
+      `the route crosses water the chart mesh says this boat cannot use (draught {depth:${vessel.draughtM}}, so at least {depth:${vessel.draughtM + 0.5}} of water; air draft {length:${vessel.airDraftM}}): ${first}${more}`
+    );
+  }
+  const sum = (f: (l: LegDepth) => number): number => check.legs.reduce((a, l) => a + f(l), 0);
+  let shallow: LegDepth | null = null;
+  for (const l of check.legs) if (l.shallowestM !== null && (shallow === null || l.shallowestM < shallow.shallowestM!)) shallow = l;
+  progress(
+    0,
+    0,
+    `depth check: {distance:${sum(l => l.onMeshM).toFixed(0)}} on the chart mesh` +
+      (shallow
+        ? `, shallowest charted depth {depth:${shallow.shallowestM}}${multi ? ` (leg ${shallow.leg + 1})` : ''} at ${shallow.shallowestAt![1].toFixed(4)}, ${shallow.shallowestAt![0].toFixed(4)}`
+        : '') +
+      `, {distance:${sum(l => l.unknownDepthM).toFixed(0)}} with no charted depth, {distance:${sum(l => l.outsideMeshM).toFixed(0)}} outside the chart mesh; nothing the boat cannot use ({time:${(Date.now() - t0) / 1000}})`
+  );
+  route.depthCheck = { legs: check.legs };
 }
 
 export function expandBBox(b: BBox, d: number): BBox {

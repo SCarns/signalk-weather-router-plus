@@ -13,9 +13,17 @@ export type Tri = number[][];
 
 /**
  * Write one tile file: unit-square triangles, mult 1, no clearance, no
- * hazard, flags 0; depth per triangle (default none).
+ * hazard; depth per triangle (default none), flags per triangle (default 0).
  */
-export function writeTile(dir: string, file: string, tris: Tri[], nb: number[][], rev: number[][], depths?: number[]): void {
+export function writeTile(
+  dir: string,
+  file: string,
+  tris: Tri[],
+  nb: number[][],
+  rev: number[][],
+  depths?: number[],
+  flags?: number[]
+): void {
   const n = tris.length;
   const buf = Buffer.alloc(32 + n * (48 + 12 + 16 + 3 + 1));
   buf.write('WRPMESH1', 0, 'latin1');
@@ -53,7 +61,10 @@ export function writeTile(dir: string, file: string, tris: Tri[], nb: number[][]
       buf.writeInt8(v, at);
       at += 1;
     }
-  at += n; // flags 0
+  for (let i = 0; i < n; i++) {
+    buf.writeUInt8(flags ? flags[i] : 0, at);
+    at += 1;
+  }
   if (at !== buf.length) throw new Error(`fixture tile: wrote ${at} of ${buf.length} bytes`);
   fs.writeFileSync(path.join(dir, file), buf);
 }
@@ -75,11 +86,59 @@ export function squareTile(i: number, j: number): Tri[] {
 }
 
 /**
+ * A mesh of 1° tiles at the given cells (each tile two triangles split along
+ * its rising diagonal, squareTile), neighbours joined across every shared
+ * tile edge; per cell an optional depth and flags for both its triangles
+ * (default 10 m, 0). Index origin (0, 0), xScale 1. Returns the mesh folder.
+ */
+export function writeGridMesh(dir: string, cells: { i: number; j: number; depth?: number; flags?: number }[]): string {
+  const id = new Map(cells.map((c, k) => [`${c.i},${c.j}`, k]));
+  // Global ids: cell k's lower triangle 2k, upper 2k + 1.
+  const lower = (i: number, j: number): number => (id.has(`${i},${j}`) ? 2 * id.get(`${i},${j}`)! : -1);
+  const upper = (i: number, j: number): number => (id.has(`${i},${j}`) ? 2 * id.get(`${i},${j}`)! + 1 : -1);
+  const tiles = cells.map((c, k) => {
+    const { i, j } = c;
+    // Lower: edges bottom (→ upper of the cell below, its top edge 1), right (→ upper of the cell right, its left
+    // edge 2), diagonal (→ own upper, edge 0). Upper: diagonal (→ own lower, edge 2), top (→ lower of the cell
+    // above, its bottom edge 0), left (→ lower of the cell left, its right edge 1).
+    const nb = [
+      [upper(i, j - 1), upper(i + 1, j), 2 * k + 1],
+      [2 * k, lower(i, j + 1), lower(i - 1, j)],
+    ];
+    const rev = nb.map((row, t) => row.map((g, e) => (g < 0 ? -1 : t === 0 ? [1, 2, 0][e] : [2, 0, 1][e])));
+    const file = `t_${i}_${j}.bin`;
+    const d = c.depth ?? 10;
+    const f = c.flags ?? 0;
+    writeTile(dir, file, squareTile(i, j), nb, rev, [d, d], [f, f]);
+    return { i, j, file, first: 2 * k, n: 2, bbox: [i, j, i + 1, j + 1] };
+  });
+  fs.writeFileSync(
+    path.join(dir, 'index.json'),
+    JSON.stringify({
+      version: 1,
+      west: 0,
+      south: 0,
+      east: Math.max(...cells.map(c => c.i)) + 1,
+      north: Math.max(...cells.map(c => c.j)) + 1,
+      tileDeg: 1,
+      xScale: 1,
+      triangles: cells.length * 2,
+      tiles,
+    })
+  );
+  return dir;
+}
+
+/**
  * Two 1° tiles side by side (A at (0,0): ids 0, 1; B at (1,0): ids 2, 3),
  * sharing the vertex column at lon 1, with the given depths per triangle
- * (default: 10 m everywhere). Returns the mesh folder.
+ * (default: 10 m everywhere) and flags (default 0). Returns the mesh folder.
  */
-export function writeTwoTileMesh(dir: string, depths: [number, number, number, number] = [10, 10, 10, 10]): string {
+export function writeTwoTileMesh(
+  dir: string,
+  depths: [number, number, number, number] = [10, 10, 10, 10],
+  flags: [number, number, number, number] = [0, 0, 0, 0]
+): string {
   writeTile(
     dir,
     'a.bin',
@@ -92,7 +151,8 @@ export function writeTwoTileMesh(dir: string, depths: [number, number, number, n
       [-1, 2, 0],
       [2, -1, -1],
     ],
-    [depths[0], depths[1]]
+    [depths[0], depths[1]],
+    [flags[0], flags[1]]
   );
   writeTile(
     dir,
@@ -106,7 +166,8 @@ export function writeTwoTileMesh(dir: string, depths: [number, number, number, n
       [-1, -1, 0],
       [2, -1, 1],
     ],
-    [depths[2], depths[3]]
+    [depths[2], depths[3]],
+    [flags[2], flags[3]]
   );
   fs.writeFileSync(
     path.join(dir, 'index.json'),

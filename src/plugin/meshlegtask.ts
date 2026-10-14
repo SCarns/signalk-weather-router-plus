@@ -22,9 +22,9 @@ import type { LegWind } from '../engine/horizon';
 import { LayeredWind, type RegionalWind } from '../engine/layeredwind';
 import type { SimOptions } from '../engine/legsim';
 import { MeshLand } from '../engine/mesh/land';
-import type { MeshLegArgs } from '../engine/mesh/leg';
+import { isRefusal, type MeshLegArgs, type MeshRefusal } from '../engine/mesh/leg';
 import { runMeshLeg } from '../engine/mesh/legrun';
-import { type DrawbridgeChoice, type MeshRules, searchMesh } from '../engine/mesh/route';
+import { type DrawbridgeChoice, type MeshRules, runTargets, searchMeshRun } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
 import type { LegPlan } from '../engine/multileg';
 import type { PropagatorOptions } from '../engine/propagator';
@@ -33,6 +33,7 @@ import type { RouterKind } from '../engine/router';
 import { type BBox, bboxFromLonLat } from '../geo/geodesy';
 import { PolarDiagram } from '../vessel/polar';
 import type { VesselParams } from '../vessel/vessel';
+import { readBoundary } from './meshcoarse';
 import { regionalRunsFor } from './worker/regionalwind';
 
 /** Everything the child needs, serialisable (dates as ms, the polar as its three arrays). */
@@ -58,6 +59,10 @@ export interface MeshLegTask {
   smootherTolerance: number;
   drawbridges: DrawbridgeChoice;
   bridgeWaitS: number;
+  /** The rough cut's tile-boundary file for this mesh and boat (meshcoarse.ts): seeds of the buffer across tile edges. */
+  boundaryFile?: string;
+  /** Per target after the start (route.ts runTargets), the point the rough cut aimed an approximate waypoint at. */
+  aims?: ({ lon: number; lat: number; tri: number; movedM: number } | null)[];
   /** The decoded run and the area to read, or null for calm wind (motor, or no forecast). */
   forecast: { runDir: string; area: BBox; params: string[] } | null;
   /** Regional runs root and the global grid spacing, or null when regional wind is off. */
@@ -73,7 +78,11 @@ export interface MeshLegTask {
 
 export type MeshLegEvent = { event: 'progress'; stage: number; total: number; message: string } | { event: 'frontier'; front: StageFront };
 
-/** fatal: the leg cannot be made as asked (a RouteError: a stretch that cannot be sailed); the route fails with the reason. Otherwise the mesh cannot take the leg and the coastline search does. */
+/**
+ * fatal: the leg cannot be made as asked (a RouteError: a stretch that cannot be sailed); the route fails with the
+ * reason. Otherwise the mesh cannot take the leg, and `reason` says why (legrun.ts's refusal); the worker decides
+ * what follows.
+ */
 export type MeshLegResult = { ok: true; route: Route } | { ok: false; reason: string; fatal?: boolean };
 
 /** Degrees added around the leg's box for the currents read from complete files on disk (RTOFS, harmonics); SMOC uses the worker's area. */
@@ -82,10 +91,15 @@ const CURRENTS_MARGIN_DEG = 0.25;
 export async function runMeshLegTask(t: MeshLegTask, emit: (e: MeshLegEvent) => void): Promise<MeshLegResult> {
   const progress = (stage: number, total: number, message: string): void => emit({ event: 'progress', stage, total, message });
   const store = MeshStore.open(t.dir);
-  const search = searchMesh(store, t.legStart, t.plan.end, t.rules);
-  const land = search.result.ok && search.mesh ? new MeshLand(search.mesh.m, search.mesh.blocked) : null;
+  // The leg's end, through its waypoint circles when it is a run of approximate legs (part 3).
+  const targets = runTargets(t.plan).map((g, i) => {
+    const aim = t.aims?.[i];
+    return aim ? { ...g, aim: { lon: aim.lon, lat: aim.lat, tri: aim.tri } } : g;
+  });
+  const search = searchMeshRun(store, t.legStart, targets, t.rules, t.boundaryFile ? readBoundary(t.boundaryFile) : null);
+  const land = search.result.ok ? new MeshLand(search.paged) : null;
   if (land)
-    progress(0, 0, `${t.tag}chart mesh: the search's every move is tested against the mesh (index {dataSize:${land.indexBytes()}})`);
+    progress(0, 0, `${t.tag}chart mesh: the search's every move is tested against the mesh, its tiles read as the moves reach them`);
   const departure = new Date(t.legDepartureMs);
   const wind = await loadWind(t, progress);
   const current = await loadCurrents(t, search.box, progress);
@@ -112,7 +126,7 @@ export async function runMeshLegTask(t: MeshLegTask, emit: (e: MeshLegEvent) => 
     progress,
     shouldCancel: () => false, // cancel kills the process (childtask.ts)
   };
-  let route: Route | null;
+  let route: Route | MeshRefusal;
   try {
     route = runMeshLeg({
       result: search.result,
@@ -126,7 +140,7 @@ export async function runMeshLegTask(t: MeshLegTask, emit: (e: MeshLegEvent) => 
     if (err instanceof RouteError) return { ok: false, reason: err.message, fatal: true };
     throw err;
   }
-  if (!route) return { ok: false, reason: 'the mesh cannot take the leg (see the log)' };
+  if (isRefusal(route)) return { ok: false, reason: route.refused };
   return { ok: true, route };
 }
 

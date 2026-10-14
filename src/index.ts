@@ -38,7 +38,10 @@ import { TilePrebuilder } from './plugin/prebuild';
 import { runLastMs, type ArcoRun } from './data/arco';
 import { gshhgInstalled, gshhgInstalledAt, unreadableCoastlines } from './geo/gshhg';
 import { Coastline } from './plugin/coastline';
-import { MeshManager } from './plugin/meshes';
+import { localMeshes, MeshManager, meshesToOpen, readyMeshDirs } from './plugin/meshes';
+import { coarseFile, coarseKey, coarseRulesOf, meshesMeet, pruneCoarse } from './plugin/meshcoarse';
+import * as fs from 'node:fs';
+import { runChildTask } from './plugin/childtask';
 import { ChartsProvider } from './plugin/charts';
 import { makePlotterExtension } from './plugin/plotterext';
 import { refreshPublicFileDates } from './plugin/webfiles';
@@ -222,7 +225,139 @@ export = function plugin(app: SkApp): SignalKPlugin {
   const execArgv = isTs ? ['--import', 'tsx'] : [];
 
   const coast = new Coastline(app, log);
-  const meshes = new MeshManager(m => log(`meshes: ${m}`));
+  const meshes = new MeshManager(
+    m => log(`meshes: ${m}`),
+    name => void rebuildRoughCuts(name)
+  );
+
+  /**
+   * The rough cuts of the chart meshes (plugin/meshcoarse.ts, docs/drafts/mesh-no-gshhg-design.md part 4): built
+   * for the boat's Signal K draught and air draft after a mesh download or update, and on the configuration panel's
+   * Rebuild button; never at start (the owner's choice, 2026-10-12). One mesh folder at a time, each in a child
+   * process, with its joins to every other mesh folder whose extent meets it (part 5, meshcoarse.ts); after one mesh
+   * is downloaded or updated, the other meshes' joins towards its new build too. A route needing one not built yet
+   * builds it itself (worker/route.ts).
+   */
+  const roughCut: {
+    running: string | null;
+    done: number;
+    total: number;
+    again: boolean;
+    last: {
+      at: string;
+      built: number;
+      ms: number;
+      draught_m: number;
+      air_draft_m: number;
+      buffer_m: number;
+      drawbridges: 'open' | 'avoid';
+      removed: number;
+    } | null;
+    error: string | null;
+  } = { running: null, done: 0, total: 0, again: false, last: null, error: null };
+  let roughCutCtrl: AbortController | null = null;
+  async function rebuildRoughCuts(only?: string): Promise<void> {
+    if (!config || stopped) return;
+    if (roughCut.running) {
+      roughCut.again = true;
+      return;
+    }
+    const dataDir = app.getDataDirPath();
+    const self = selfDesign();
+    if (self.draughtM === null || self.airDraftM === null) {
+      roughCut.error = "the boat's draught or air draft is not set in Signal K (design.draft.maximum, design.airHeight)";
+      return;
+    }
+    // The routes' own rules by default: the buffer from unusable water and the Drawbridges choice (Defaults).
+    const rules = coarseRulesOf({
+      draughtM: self.draughtM,
+      airDraftM: self.airDraftM,
+      bufferM: config.routing.navigableBufferM,
+      openingBridges: config.routing.drawbridges === 'avoid' ? 'avoid' : 'open',
+    });
+    const open = meshesToOpen(
+      config.mesh.storeDir ? readyMeshDirs(config.mesh.storeDir) : [],
+      localMeshes(config.meshDir),
+      config.mesh.disabled,
+      config.mesh.preferLocal,
+      config.mesh.preferDownload
+    );
+    const all = open.flatMap(m => m.dirs.map(d => ({ name: m.name, dir: d })));
+    const dirs = all.filter(d => !only || d.name === only);
+    /** The other mesh folders whose extent meets this one's, with their rough-cut map files for the rules. */
+    const othersOf = (d: { dir: string }): { dir: string; mapFile: string; name: string }[] =>
+      all
+        .filter(o => o.dir !== d.dir && meshesMeet(o.dir, d.dir))
+        .map(o => ({ dir: o.dir, mapFile: coarseFile(dataDir, o.dir, rules), name: o.name }));
+    roughCutCtrl = new AbortController();
+    const signal = roughCutCtrl.signal;
+    roughCut.error = null;
+    roughCut.done = 0;
+    roughCut.total = dirs.length;
+    const t0 = Date.now();
+    try {
+      for (const d of dirs) {
+        if (signal.aborted) return;
+        roughCut.running = `${d.name} (${path.basename(d.dir)})`;
+        const r = await runChildTask(
+          { task: 'mesh-coarse', dir: d.dir, out: coarseFile(dataDir, d.dir, rules), rules, joins: othersOf(d) },
+          15 * 60_000,
+          signal
+        );
+        roughCut.done++;
+        log(
+          `rough cut ${d.name} ${path.basename(d.dir)}: ${r.pieces} pieces, ${r.links} links, ${r.bytes} bytes in ${r.ms} ms` +
+            (r.joins.length ? `; joins ${r.joins.map(j => `to ${j.name} ${j.joins} (${j.ms} ms)`).join(', ')}` : '')
+        );
+      }
+      // One mesh new or updated: the other meshes' joins towards its new build (their rough cuts already built).
+      if (only)
+        for (const o of all.filter(x => x.name !== only)) {
+          const mapFile = coarseFile(dataDir, o.dir, rules);
+          if (!fs.existsSync(mapFile)) continue;
+          for (const d of dirs) {
+            if (signal.aborted) return;
+            if (!meshesMeet(o.dir, d.dir)) continue;
+            roughCut.running = `joins of ${o.name} (${path.basename(o.dir)}) to ${d.name}`;
+            const j = await runChildTask(
+              {
+                task: 'mesh-joins',
+                dir: o.dir,
+                mapFile,
+                rules,
+                other: { dir: d.dir, mapFile: coarseFile(dataDir, d.dir, rules), name: d.name },
+              },
+              15 * 60_000,
+              signal
+            );
+            log(`rough cut joins ${o.name} ${path.basename(o.dir)} to ${d.name}: ${j.joins} in ${j.ms} ms`);
+          }
+        }
+      const removed = pruneCoarse(dataDir, new Set(open.flatMap(m => m.dirs.map(d => coarseKey(d)))));
+      roughCut.last = {
+        at: new Date().toISOString(),
+        built: dirs.length,
+        ms: Date.now() - t0,
+        draught_m: rules.draughtM,
+        air_draft_m: rules.airDraftM,
+        buffer_m: rules.bufferM,
+        drawbridges: rules.openingBridges,
+        removed,
+      };
+    } catch (err) {
+      if (!signal.aborted) {
+        roughCut.error = (err as Error).message;
+        app.error(`rough cut: ${roughCut.error}`);
+      }
+    } finally {
+      roughCut.running = null;
+      roughCutCtrl = null;
+      if (roughCut.again && !stopped) {
+        roughCut.again = false;
+        void rebuildRoughCuts();
+      }
+    }
+  }
   const pool = new WorkerPool({
     workerPath,
     execArgv,
@@ -840,6 +975,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     startGen++;
     coast.abort();
     meshes.stop();
+    roughCutCtrl?.abort();
     if (refreshTimer) clearInterval(refreshTimer);
     if (failedRefreshTimer) clearTimeout(failedRefreshTimer);
     refreshTimer = failedRefreshTimer = null;
@@ -865,6 +1001,20 @@ export = function plugin(app: SkApp): SignalKPlugin {
     dataStatus = null;
     config = null;
     log(`${PLUGIN_ID} stopped`);
+  }
+
+  /** The rough cuts for the panel: what is building, the last build, its error, and the boat they are for. */
+  function roughCutStatus(): Record<string, unknown> {
+    const self = selfDesign();
+    return {
+      running: roughCut.running,
+      done: roughCut.done,
+      total: roughCut.total,
+      last: roughCut.last,
+      error: roughCut.error,
+      draught_m: self.draughtM,
+      air_draft_m: self.airDraftM,
+    };
   }
 
   function registerWithRouter(router: IRouter): void {
@@ -990,8 +1140,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
       query,
       tiles: () => tiles,
       downloadCoastline: () => coast.requestDownload(),
-      meshes: () => meshes.status(),
+      meshes: () => ({ ...meshes.status(), rough_cut: roughCutStatus() }),
       refreshMeshes: () => meshes.refresh(),
+      rebuildRoughCuts: () => {
+        if (!config || stopped) throw new NotStartedError();
+        void rebuildRoughCuts();
+        return roughCutStatus();
+      },
       // A mesh action from the panel: the download list changes in the plugin's own options (saved, no
       // restart), the manager takes the new list, and a pass runs. The answer carries the list so the
       // panel's form does not put an old one back on its next Save.
@@ -1012,7 +1167,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (action === 'download' || action === 'update') meshes.request(name);
         if (action === 'cancel') meshes.cancel(name);
         await meshes.refresh();
-        return { downloads, ...meshes.status() };
+        return { downloads, ...meshes.status(), rough_cut: roughCutStatus() };
       },
       noteTileRequest: (z, x, y) => prebuilder?.noteRequest(z, x, y),
       publicDir,

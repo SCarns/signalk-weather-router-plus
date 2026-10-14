@@ -12,13 +12,35 @@
  *              generation: hundreds of thousands of files);
  *  - regional: decode one signalk-grib-downloader run (decodeRegionalRun);
  *  - mesh-leg: plan one leg on the chart mesh (plugin/meshlegtask.ts,
- *              engine/mesh/legrun.ts): the tiles of the leg's box are
- *              about 1 GB of typed arrays for 6 M triangles (brain,
- *              2026-10-08), which the route worker must not keep; the
- *              task streams its progress before its answer;
+ *              engine/mesh/legrun.ts): the tiles the search reads, up to
+ *              about 1.1 GB on the longest leg measured (brain,
+ *              2026-10-12, tiles dropped as the search leaves them),
+ *              which the route worker must not keep; the task streams
+ *              its progress before its answer;
  *  - mesh-download: mirror one published mesh folder (plugin/meshes.ts)
  *              file by file into a folder, resumable, progress in
- *              `.progress.json` there.
+ *              `.progress.json` there;
+ *  - mesh-check: the final depth check of a finished route on the chart
+ *              meshes (plugin/meshchecktask.ts, engine/mesh/check.ts),
+ *              reading the tiles along the route as the walk reaches them;
+ *  - mesh-coarse: build one mesh's rough cut for one boat
+ *              (plugin/meshcoarse.ts, engine/mesh/coarse.ts): every tile
+ *              read once, 0.25–0.53 GB on brain (2026-10-12);
+ *  - mesh-reach: a leg's reach on the rough cut (whether water connects
+ *              its ends for the boat, and the box of the tiles it runs
+ *              through);
+ *  - mesh-snap: the route's exact stops in one mesh moved to usable water
+ *              connected to the route (part 2);
+ *  - mesh-exit: where a leg leaving the chart mesh crosses to the
+ *              coastline, and the mesh's water as land for the coastline
+ *              part (part 5);
+ *  - mesh-transfer: where a leg from one chart mesh to another changes
+ *              meshes in their overlap (part 5 step 2);
+ *  - mesh-joins: one mesh's joins to another for one boat, on their own
+ *              (meshcoarse.ts; the rough-cut build makes them otherwise);
+ *  - mesh-waters: a leg's way across the limits of the charts: the
+ *              waters it goes through, where it crosses between them, and
+ *              every mesh's water as land for the coastline parts (part 5).
  */
 
 import { fork } from 'node:child_process';
@@ -26,12 +48,34 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { RegionalSource } from '../data/regional';
 import type { RegionalDecodeResult } from '../data/regionaldecode';
+import type { RouteDepthCheck } from '../engine/mesh/check';
+import type { MeshCheckTask } from './meshchecktask';
+import type {
+  MeshCoarseResult,
+  MeshCoarseTask,
+  MeshJoinsTask,
+  MeshReachResult,
+  MeshReachTask,
+  MeshSnapResult,
+  MeshSnapTask,
+} from './meshcoarse';
+import type { MeshExitTask, MeshExitTaskResult } from './meshexit';
 import type { MeshLegEvent, MeshLegResult, MeshLegTask } from './meshlegtask';
+import type { MeshTransferTask, MeshTransferTaskResult } from './meshtransfer';
+import type { MeshWatersTask, MeshWatersTaskResult } from './meshwaters';
 
 export type ChildTask =
   | { task: 'rmtree'; dir: string }
   | { task: 'regional'; src: RegionalSource; srcDir: string; dataDir: string; keepRuns: number }
   | MeshLegTask
+  | MeshCheckTask
+  | MeshCoarseTask
+  | MeshReachTask
+  | MeshSnapTask
+  | MeshExitTask
+  | MeshTransferTask
+  | MeshJoinsTask
+  | MeshWatersTask
   | { task: 'mesh-download'; base: string; dest: string; build: string; fresh?: boolean };
 
 /** A message a task sends before its answer (the mesh leg's progress and stage fronts). */
@@ -52,9 +96,25 @@ export type ChildTaskResult<T extends ChildTask> = T extends { task: 'rmtree' }
   ? RmtreeResult
   : T extends { task: 'mesh-leg' }
     ? MeshLegResult
-    : T extends { task: 'mesh-download' }
-      ? MeshDownloadResult
-      : RegionalDecodeResult;
+    : T extends { task: 'mesh-check' }
+      ? RouteDepthCheck
+      : T extends { task: 'mesh-coarse' }
+        ? MeshCoarseResult
+        : T extends { task: 'mesh-reach' }
+          ? MeshReachResult
+          : T extends { task: 'mesh-snap' }
+            ? MeshSnapResult
+            : T extends { task: 'mesh-exit' }
+              ? MeshExitTaskResult
+              : T extends { task: 'mesh-transfer' }
+                ? MeshTransferTaskResult
+                : T extends { task: 'mesh-joins' }
+                  ? { joins: number; ms: number }
+                  : T extends { task: 'mesh-waters' }
+                    ? MeshWatersTaskResult
+                    : T extends { task: 'mesh-download' }
+                      ? MeshDownloadResult
+                      : RegionalDecodeResult;
 
 const isTs = __filename.endsWith('.ts');
 
@@ -263,6 +323,38 @@ async function runTask(t: ChildTask): Promise<unknown> {
     case 'mesh-leg': {
       const { runMeshLegTask } = await import('./meshlegtask');
       return runMeshLegTask(t, event => process.send!({ event }));
+    }
+    case 'mesh-check': {
+      const { runMeshCheckTask } = await import('./meshchecktask');
+      return runMeshCheckTask(t);
+    }
+    case 'mesh-coarse': {
+      const { runMeshCoarseTask } = await import('./meshcoarse');
+      return runMeshCoarseTask(t);
+    }
+    case 'mesh-reach': {
+      const { runMeshReachTask } = await import('./meshcoarse');
+      return runMeshReachTask(t);
+    }
+    case 'mesh-snap': {
+      const { runMeshSnapTask } = await import('./meshcoarse');
+      return runMeshSnapTask(t);
+    }
+    case 'mesh-exit': {
+      const { runMeshExitTask } = await import('./meshexit');
+      return runMeshExitTask(t);
+    }
+    case 'mesh-transfer': {
+      const { runMeshTransferTask } = await import('./meshtransfer');
+      return runMeshTransferTask(t);
+    }
+    case 'mesh-joins': {
+      const { runMeshJoinsTask } = await import('./meshcoarse');
+      return runMeshJoinsTask(t);
+    }
+    case 'mesh-waters': {
+      const { runMeshWatersTask } = await import('./meshwaters');
+      return runMeshWatersTask(t);
     }
     case 'mesh-download':
       return downloadMesh(t.base, t.dest, t.build, t.fresh === true);

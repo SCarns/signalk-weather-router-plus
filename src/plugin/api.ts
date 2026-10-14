@@ -7,6 +7,7 @@
  *   PUT  /api/settings              partial update → validated, saved, applied live
  *   GET  /api/forecast              forecast metadata (+ series at ?lat=&lon=)
  *   POST /api/forecast/refresh      re-check ECMWF / NOMADS
+ *   POST /api/meshes/rough-cut      rebuild the chart meshes' rough cuts for the boat (background)
  *   GET  /api/polars                polar library (default polar, library, user polars)
  *   GET  /api/polar-angles?path=    no-go and best VMG angles per TWS
  *   GET  /api/polars/table?path=    polar table in m/s
@@ -85,6 +86,8 @@ export interface ApiDeps {
   refreshMeshes: () => Promise<void>;
   /** The panel's per-mesh action: changes the download list in the plugin's options, then runs a pass; answers the list as GET /api/meshes plus `downloads`. */
   meshAction: (name: string, action: MeshAction) => Promise<unknown>;
+  /** The panel's Rebuild rough cuts button: rebuilds every mesh's rough cut for the boat in the background; answers its status. */
+  rebuildRoughCuts: () => unknown;
   /** The page asked for this tile (the prebuilder follows the view). */
   noteTileRequest: (z: number, x: number, y: number) => void;
   publicDir: string;
@@ -280,6 +283,16 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const readError = (list as { catalog_error?: string | null } | null)?.catalog_error ?? null;
       if (readError) json(res, 502, { error: `catalogue not read: ${readError}`, ...(list as object) });
       else json(res, 200, list);
+    } catch (err) {
+      fail(res, err, 500);
+    }
+  });
+
+  // The panel's Rebuild rough cuts button: every mesh's rough cut (corridor search) for the boat's Signal K draught
+  // and air draft, in the background; progress in GET /api/meshes `rough_cut`.
+  rw.post('/api/meshes/rough-cut', (_req: Request, res: Response) => {
+    try {
+      json(res, 202, deps.rebuildRoughCuts());
     } catch (err) {
       fail(res, err, 500);
     }

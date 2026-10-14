@@ -21,7 +21,8 @@ import type { RouterKind } from '../router';
 import type { CorridorInput } from '../search/types';
 import { MAX_SCAN_M } from './width';
 import { enrichLegRanges, enrichWaypoints } from '../propagator';
-import { haversineDistanceM } from '../../geo/geodesy';
+import { haversineDistanceM, type BBox } from '../../geo/geodesy';
+import type { CellMask } from '../../geo/landmask';
 import { recomputePerWaypointMetadata, type Route, type RouteWarning, type Waypoint } from '../route';
 import { recomputeTotals } from '../smoother';
 import type { DrawbridgeChoice, MeshRules } from './route';
@@ -47,21 +48,131 @@ export interface MeshLegArgs {
   smootherTolerance: number;
   drawbridges: DrawbridgeChoice;
   bridgeWaitS: number;
+  /** The leg's reach on the rough cut (coarse.ts), when the runner gave one: the extent of its water, for the forecast area. */
+  reach?: LegReach;
+  /** The mesh to plan it on (the runner's id from `plan`); absent: the mesh holding the leg's points. */
+  meshId?: string;
   progress: ProgressFn;
   shouldCancel: () => boolean;
 }
 
 /**
+ * A leg's reach (coarse.ts PieceGraph): the box of the tiles its water runs through, the chains' length (not a search
+ * area), and per target after the start (route.ts runTargets) the point an approximate waypoint is aimed at: itself,
+ * or the nearest usable water connected to the start; null for an exact one.
+ */
+export interface LegReach {
+  box: BBox;
+  lengthM: number;
+  aims: ({ lon: number; lat: number; tri: number; movedM: number } | null)[];
+}
+
+/**
+ * Why the mesh cannot take a leg: no route on the mesh, an end on a blocked
+ * triangle, a stretch that cannot be made against the current, no mesh or
+ * no forecast for the mesh process. A sentence for the user, without the
+ * leg's tag.
+ */
+export interface MeshRefusal {
+  refused: string;
+}
+
+export function isRefusal<T extends object>(r: T | MeshRefusal): r is MeshRefusal {
+  return (r as MeshRefusal).refused !== undefined;
+}
+
+/**
  * The chart mesh for the pipeline: which legs it covers, and the whole leg
  * planned on it (the plugin: in the child process holding the mesh,
- * plugin/meshlegtask.ts; the tests: in-process). Null when the mesh cannot
- * take the leg: the pipeline then routes it on the coastline search.
+ * plugin/meshlegtask.ts; the tests: in-process). A refusal when the mesh
+ * cannot take the leg: a leg inside the mesh then fails with that reason
+ * (no fallback to the coastline search, the owner's rule of 2026-10-12);
+ * the mesh part of a handover leg goes to the coastline search as before.
  */
 export interface MeshLegRunner {
   /** Every point lies in the mesh (a tile exists and holds the point). */
   covers(points: [number, number][]): boolean;
-  leg(args: MeshLegArgs): Promise<Route | null>;
+  leg(args: MeshLegArgs): Promise<Route | MeshRefusal>;
+  /**
+   * The reach of a leg inside one mesh, from the rough cut for these rules (built first when missing), through the
+   * plan's waypoint circles, or why there is none (an end on water the boat cannot use, no water connecting two of its
+   * points). Absent: the forecast area is the box around the leg's points.
+   */
+  reach?(args: {
+    legStart: [number, number];
+    plan: LegPlan;
+    rules: MeshRules;
+    /** The mesh (the runner's id from `plan`); absent: the one holding the leg's points. */
+    meshId?: string;
+    tag: string;
+    progress: ProgressFn;
+    shouldCancel: () => boolean;
+  }): Promise<LegReach | MeshRefusal>;
+  /** Whether any mesh meets the box (from the meshes' indexes alone). */
+  meets(box: BBox): boolean;
+  /**
+   * A leg's way across the limits of the charts (part 5, engine/mesh/waters.ts), for the coastline search's land over
+   * `box`: one mesh holds the leg (its id, for `leg`); or open water outside every mesh joins its ends; or the
+   * stretches it goes through, each on a mesh (by id) or on open water, with every mesh's water as cells the coastline
+   * parts must treat as land; or why there is none. `rules` null: the boat's draught or air draft is not set (`why`).
+   */
+  plan(args: {
+    start: [number, number];
+    end: [number, number];
+    names: { start: string; end: string };
+    rules: MeshRules | null;
+    why: string;
+    box: BBox;
+    tag: string;
+    progress: ProgressFn;
+    shouldCancel: () => boolean;
+  }): Promise<MeshPlan | MeshRefusal>;
+  /**
+   * Where a leg with one end in a mesh (`inside`) and the other outside every mesh (`outside`) leaves the mesh
+   * (part 5, engine/mesh/exit.ts), for the coastline search's land over `box`: the crossing point, and the mesh's
+   * water as cells the coastline part must treat as land; or why there is none.
+   */
+  exit?(args: {
+    inside: [number, number];
+    outside: [number, number];
+    names: { inside: string; outside: string };
+    rules: MeshRules;
+    box: BBox;
+    tag: string;
+    progress: ProgressFn;
+    shouldCancel: () => boolean;
+  }): Promise<{ exit: [number, number]; mask: CellMask } | MeshRefusal>;
+  /**
+   * Where a leg with its start in one mesh and its end in another changes meshes (part 5 step 2,
+   * engine/mesh/transfer.ts): in their overlap, a point both meshes call usable, reached on the start's mesh and
+   * connected on the end's to the end; else across the water between them, the start mesh's exit and the end mesh's
+   * entry, with both meshes' water as cells the coastline part over `box` must treat as land; or why neither.
+   */
+  transfer?(args: {
+    start: [number, number];
+    end: [number, number];
+    names: { start: string; end: string };
+    rules: MeshRules;
+    box: BBox;
+    tag: string;
+    progress: ProgressFn;
+    shouldCancel: () => boolean;
+  }): Promise<{ point: [number, number] } | { exit: [number, number]; entry: [number, number]; mask: CellMask } | MeshRefusal>;
 }
+
+/** A leg's way across the limits of the charts, as the runner answers it (meshes named by id). */
+export type MeshPlan =
+  | { kind: 'one-mesh'; mesh: string }
+  | { kind: 'open'; mask: CellMask }
+  | {
+      kind: 'chain';
+      stretches: (
+        | { kind: 'mesh'; mesh: string; from: [number, number]; to: [number, number] }
+        | { kind: 'open'; from: [number, number]; to: [number, number] }
+      )[];
+      /** Null when the leg stays on the charts (no open stretch). */
+      mask: CellMask | null;
+    };
 
 /**
  * The mesh route as the open-water search's corridor (the parent planner's
@@ -80,15 +191,14 @@ export function meshCorridor(pts: [number, number][], widths: [number, number][]
 /**
  * The rules the mesh needs from the vessel, or null (with why) when the
  * mesh cannot be used for this leg: its blocking rules need the draught
- * and the air draft, and a leg through waypoint circles is not split.
+ * and the air draft.
  */
-export function meshRulesFor(vessel: VesselParams, hasVias: boolean): { rules: MeshRules } | { rules: null; why: string } {
+export function meshRulesFor(vessel: VesselParams): { rules: MeshRules } | { rules: null; why: string } {
   if (vessel.draughtM === null || vessel.airDraftM === null)
     return {
       rules: null,
       why: `the vessel's ${vessel.draughtM === null ? 'draught (Signal K design.draft.maximum' : 'air draft (Signal K design.airHeight'}, or the request's vessel override) is not set`,
     };
-  if (hasVias) return { rules: null, why: 'the leg passes through waypoint circles' };
   return { rules: { draughtM: vessel.draughtM, airDraftM: vessel.airDraftM, motorSpeedMs: vessel.motorSpeedMs } };
 }
 

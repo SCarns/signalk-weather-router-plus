@@ -2,8 +2,9 @@
  * The navigation mesh on disk: one folder of flat binary tiles (0.25°)
  * plus index.json, written by the experiment's converter
  * (~/mesh-experiment/scripts/mesh_to_bin.py; not part of this repo).
- * Nothing is held between routes: a leg reads the tiles in its box into
- * one set of typed arrays and drops them when the leg is done.
+ * Nothing is held between routes: a leg reads its tiles one at a time as
+ * the search reaches them (paged.ts) and drops them as it goes; the tests
+ * also read a box of tiles into one set of typed arrays (load).
  *
  * Tile file (little-endian): 32-byte header (magic 'WRPMESH1', uint32 n,
  * float64 originLon, float64 originLat, 4 bytes pad), then
@@ -94,6 +95,19 @@ export interface LoadedMesh {
   tiles: { info: MeshTileInfo; offset: number }[];
 }
 
+/** One tile as stored on disk (store.ts header); neighbours are global triangle ids. */
+export interface TileArrays {
+  n: number;
+  corners: Float64Array;
+  nb: Int32Array;
+  mult: Float32Array;
+  depth: Float32Array;
+  clear: Float32Array;
+  hazv: Float32Array;
+  rev: Int8Array;
+  flags: Uint8Array;
+}
+
 export class MeshStore {
   private readonly byIJ = new Map<string, MeshTileInfo>();
 
@@ -151,7 +165,16 @@ export class MeshStore {
 
   /** Read every tile whose cell meets the box into one mesh (metres frame about the box's mid-latitude). */
   load(box: BBox): LoadedMesh {
-    const infos = this.tilesIn(box);
+    return this.loadTiles(this.tilesIn(box), box);
+  }
+
+  /**
+   * Read exactly these tiles into one mesh, in the metres frame about the
+   * box's mid-latitude. A neighbour in a tile not read is -1, as at the
+   * edge of a box.
+   */
+  loadTiles(tileInfos: MeshTileInfo[], box: BBox): LoadedMesh {
+    const infos = [...tileInfos].sort((a, b) => a.first - b.first);
     let n = 0;
     const tiles = infos.map(info => {
       const t = { info, offset: n };
@@ -191,7 +214,12 @@ export class MeshStore {
     return m;
   }
 
-  private readTile(info: MeshTileInfo, m: LoadedMesh, offset: number, toLocal: (g: number) => number): void {
+  /**
+   * One tile's arrays as stored: corners (the build's x = lon × xScale, y =
+   * lat), neighbours as global triangle ids (-1 = none), and the per-triangle
+   * fields. Views over one buffer read from disk.
+   */
+  readTileArrays(info: MeshTileInfo): TileArrays {
     let buf: Buffer = fs.readFileSync(path.join(this.dir, info.file));
     if (buf.toString('latin1', 0, 8) !== MAGIC) throw new Error(`mesh tile ${info.file}: bad magic`);
     const n = buf.readUInt32LE(8);
@@ -217,6 +245,11 @@ export class MeshStore {
     const flags = new Uint8Array(buf.buffer, at, n);
     at += n;
     if (at - buf.byteOffset !== buf.length) throw new Error(`mesh tile ${info.file}: ${buf.length} bytes, expected ${at - buf.byteOffset}`);
+    return { n, corners, nb, mult, depth, clear, hazv, rev, flags };
+  }
+
+  private readTile(info: MeshTileInfo, m: LoadedMesh, offset: number, toLocal: (g: number) => number): void {
+    const { n, corners, nb, mult, depth, clear, hazv, rev, flags } = this.readTileArrays(info);
     // The same expression, in the same order, as the experiment's router (parity to the bit).
     const K = this.index.xScale;
     for (let k = 0; k < n * 3; k++) {

@@ -57,7 +57,7 @@ import {
 import { makeSeaLevelClient, refreshTides, tideSettings } from './worker/tides';
 import { refreshRegional } from './worker/regional';
 import { route } from './worker/route';
-import { dataStatus, query } from './worker/query';
+import { buildTile, dataStatus, query } from './worker/query';
 import type { WorkerState } from './worker/state';
 
 /**
@@ -289,6 +289,13 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
     case 'query':
       await query(st, msg.id, msg.kind, msg.args);
       return;
+    case 'build-tile':
+      if (st.role !== 'tiles') {
+        st.send({ type: 'query-error', id: msg.id, message: 'build-tile sent to the data or route worker' });
+        return;
+      }
+      await buildTile(st, msg.id, msg.tile, msg.tmp);
+      return;
     case 'harmonic': {
       // Route / tiles worker: the data worker's tidal-harmonic sources (shared constituent blocks).
       if (st.role === 'data') return;
@@ -362,6 +369,6 @@ port.on('message', (msg: MainToWorker) => {
       st.log('error', `worker: ${(err as Error).stack ?? (err as Error).message}`);
       if (msg.type === 'route') st.send({ type: 'error', id: msg.id, message: (err as Error).message });
       if (msg.type === 'refresh') st.send({ type: 'refresh-error', message: (err as Error).message });
-      if (msg.type === 'query') st.send({ type: 'query-error', id: msg.id, message: (err as Error).message });
+      if (msg.type === 'query' || msg.type === 'build-tile') st.send({ type: 'query-error', id: msg.id, message: (err as Error).message });
     });
 });

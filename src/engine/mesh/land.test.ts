@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { MeshLand } from './land';
+import { PagedMesh } from './paged';
 import { FLAG_OPENING_BRIDGE, fromMeshXY, type LoadedMesh, M_PER_DEG_MESH, NO_HAZARD, NO_VALUE } from './store';
 
 /**
@@ -80,14 +81,16 @@ test('MeshLand: points and moves against blocked triangles, the mesh edge, and t
     blocked[(cy * 10 + 5) * 2] = 1;
     blocked[(cy * 10 + 5) * 2 + 1] = 1;
   }
-  const land = new MeshLand(m, blocked, 250);
-  assert.ok(land.indexBytes() > 0);
+  const land = new MeshLand(PagedMesh.fromLoaded(m, blocked, 250));
+  // The tile's point index is built on its first lookup.
+  assert.equal(land.indexBytes(), 0);
   // Points.
   assert.equal(land.isLand(...ll(m, 2.5, 2.5, side)), false);
   assert.equal(land.isLand(...ll(m, 5.5, 2.5, side)), true, 'in the wall');
   assert.equal(land.isLand(...ll(m, 5.5, 7.5, side)), false, 'in the gap');
   assert.equal(land.isLand(...ll(m, 12, 2, side)), true, 'outside the mesh');
   assert.equal(land.isLandExact(...ll(m, 5.5, 2.5, side)), true);
+  assert.ok(land.indexBytes() > 0);
   // Moves.
   const cross = (x0: number, y0: number, x1: number, y1: number): boolean =>
     land.legCrossesLandExact(...ll(m, x0, y0, side), ...ll(m, x1, y1, side));
@@ -121,7 +124,7 @@ test('MeshLand: depth at a contour corner reports the usable side; a blocked poi
   // Square 0: lower 1.5 m (blocked), upper 8 m; square 1: both 12 m.
   m.depth.set([1.5, 8, 12, 12]);
   const blocked = Uint8Array.of(1, 0, 0, 0);
-  const land = new MeshLand(m, blocked, 250);
+  const land = new MeshLand(PagedMesh.fromLoaded(m, blocked, 250));
   // On the shared diagonal of square 0: locate (first met) gives the blocked lower triangle; preferUsable gives the upper.
   const [dx, dy] = [50, 50];
   assert.equal(land.locate(dx, dy), 0);
@@ -151,7 +154,7 @@ test('MeshLand: the opening bridges a move passes under, one per bridge, with th
         m.flags[t] |= FLAG_OPENING_BRIDGE;
         m.clear[t] = cx === 3 ? 30 : NO_VALUE;
       }
-  const land = new MeshLand(m, new Uint8Array(m.n), 250);
+  const land = new MeshLand(PagedMesh.fromLoaded(m, new Uint8Array(m.n), 250));
   const a = fromMeshXY(m, 0.5 * side, 1.5 * side);
   const b = fromMeshXY(m, 9.5 * side, 1.5 * side);
   const found = land.openingBridgesAlong(a[0], a[1], b[0], b[1]);
@@ -165,4 +168,118 @@ test('MeshLand: the opening bridges a move passes under, one per bridge, with th
   const d = fromMeshXY(m, 0.5 * side, 2.5 * side);
   const e = fromMeshXY(m, 1.5 * side, 2.5 * side);
   assert.equal(land.openingBridgesAlong(d[0], d[1], e[0], e[1]).length, 0);
+});
+
+test('MeshLand: moves from a corner or an edge of blocked water, along its edge, and through its corner', () => {
+  // 10 × 10 squares of 100 m; the square (5, 5) blocked (both its triangles). Its corners are shared by up to six
+  // triangles: a move from one enters the triangle its direction goes into.
+  const side = 100;
+  const m = gridMesh(10, 10, side);
+  const blocked = new Uint8Array(m.n);
+  blocked[(5 * 10 + 5) * 2] = 1;
+  blocked[(5 * 10 + 5) * 2 + 1] = 1;
+  const land = new MeshLand(PagedMesh.fromLoaded(m, blocked, 250));
+  const cross = (x0: number, y0: number, x1: number, y1: number): boolean =>
+    land.legCrossesLandExact(...ll(m, x0, y0, side), ...ll(m, x1, y1, side));
+  // From each corner of the blocked square: away from it clear, into it not.
+  assert.equal(cross(5, 5, 4, 4), false, 'from the lower-left corner, away');
+  assert.equal(cross(5, 5, 5.5, 5.5), true, 'from the lower-left corner, into the square');
+  assert.equal(cross(6, 6, 7, 7), false, 'from the upper-right corner, away');
+  assert.equal(cross(6, 5, 7, 4), false, 'from the lower-right corner, away');
+  assert.equal(cross(5, 6, 4, 6.5), false, 'from the upper-left corner, away');
+  // Along its edges: touching blocked water is not crossing it.
+  assert.equal(cross(5, 5, 5, 7), false, 'up its left edge and on');
+  assert.equal(cross(3, 5, 8, 5), false, 'along its bottom edge');
+  // From a point on its edge: out clear, in not.
+  assert.equal(cross(5, 5.5, 4, 5.5), false, 'from its left edge, out');
+  assert.equal(cross(5, 5.5, 6, 5.5), true, 'from its left edge, in');
+  // Through its corner: touching only the corner is clear; through the corner into it is not.
+  assert.equal(cross(3, 7, 7, 3), false, 'through the corner (5, 5) diagonally past the square');
+  assert.equal(cross(3, 3, 7, 7), true, 'through the corner (5, 5) into the square');
+  // Every triangle the walk reports along a move past the corner is usable (the depth check's walk).
+  const [ax, ay] = [3 * side, 7 * side];
+  const [bx, by] = [7 * side, 3 * side];
+  land.forEachTriangleAlong(ax, ay, bx, by, t => assert.equal(blocked[t], 0, `triangle ${t} reported`));
+});
+
+test('MeshLand: a move exactly along an edge between usable and blocked water, through a lon/lat round trip, is clear', () => {
+  // The lower triangle of square (5, 5) blocked, its upper one usable: they share the square's diagonal (5, 5)–(6, 6).
+  // A mesh route hugging blocked water runs corner to corner along such edges; its points come back from lon/lat, so
+  // the direction is a hair off the edge and must still count as along it. Real-scale coordinates (a leg frame at
+  // about 40° N, 70° W) and irregular square sizes leave the noise real routes carry: the walk before this rule
+  // rejected 187 of these 600 moves.
+  let checked = 0;
+  for (let k = 0; k < 200; k++) {
+    const side = 20 + k * 1.37;
+    const m = gridMesh(10, 10, side);
+    const [x0, y0] = [-7.3e6, 4.6e6];
+    for (let q = 0; q < m.n * 3; q++) {
+      m.x[q] += x0;
+      m.y[q] += y0;
+    }
+    m.cl = Math.cos(((40 + k * 0.01) * Math.PI) / 180);
+    const blocked = new Uint8Array(m.n);
+    blocked[(5 * 10 + 5) * 2] = 1;
+    const land = new MeshLand(PagedMesh.fromLoaded(m, blocked, 250));
+    const at = (gx: number, gy: number): [number, number] => fromMeshXY(m, x0 + gx * side, y0 + gy * side);
+    const cross = (a: [number, number], b: [number, number]): boolean => land.legCrossesLandExact(...at(...a), ...at(...b));
+    assert.equal(cross([5, 5], [6, 6]), false, `side ${side}: along the diagonal, corner to corner`);
+    assert.equal(cross([6, 6], [5, 5]), false, `side ${side}: back along it`);
+    assert.equal(cross([4, 4], [7, 7]), false, `side ${side}: through it from corner to corner beyond`);
+    assert.equal(cross([5, 5], [6, 5.5]), true, `side ${side}: off the edge into the blocked triangle`);
+    checked += 4;
+  }
+  assert.equal(checked, 800);
+});
+
+test('a point snapped to the nearest usable water, handed on as lon/lat, is found in usable water', () => {
+  // The lower triangle of square (5, 5) blocked: from a point inside it, the nearest usable water is a point on the
+  // diagonal it shares with the usable upper triangle. That point goes on as lon/lat (the snapped stop); found again,
+  // it must lie in usable water, and a move from it into the usable side must be clear. Real-scale coordinates.
+  for (let k = 0; k < 200; k++) {
+    const side = 20 + k * 1.37;
+    const m = gridMesh(10, 10, side);
+    const [x0, y0] = [-7.3e6, 4.6e6];
+    for (let q = 0; q < m.n * 3; q++) {
+      m.x[q] += x0;
+      m.y[q] += y0;
+    }
+    m.cl = Math.cos(((27 + k * 0.01) * Math.PI) / 180);
+    const blocked = new Uint8Array(m.n);
+    blocked[(5 * 10 + 5) * 2] = 1;
+    const pm = PagedMesh.fromLoaded(m, blocked, 250);
+    const land = new MeshLand(pm);
+    // (5.6, 5.45): nearer the diagonal (0.11 of a side) than the square's bottom (0.45) or right (0.4) edge.
+    const nu = pm.nearestUsable(x0 + 5.6 * side, y0 + 5.45 * side)!;
+    assert.ok(nu.distM > 0, 'moved out of the blocked triangle');
+    assert.equal(nu.tri, (5 * 10 + 5) * 2 + 1, 'onto the diagonal, in the upper triangle');
+    const [lon, lat] = pm.fromXY(nu.x, nu.y);
+    assert.equal(land.isLand(lon, lat), false, `side ${side}: the snapped point is usable water`);
+    const t = land.triangleAt(lon, lat, true);
+    assert.equal(blocked[t], 0, `side ${side}: found in a usable triangle`);
+    const [ul, ua] = pm.fromXY(x0 + 5.2 * side, y0 + 5.8 * side);
+    assert.equal(land.legCrossesLandExact(lon, lat, ul, ua), false, `side ${side}: a move into the usable side is clear`);
+  }
+});
+
+test('MeshLand.clearAlong: the room along a bearing, to the first blocked triangle or the mesh edge', () => {
+  // 10 × 10 squares of 100 m; column 5 blocked. From (2.5, 2.5) the water runs 250 m east, 250 m west to the mesh's
+  // edge, 750 m north; none from inside the blocked column.
+  const side = 100;
+  const m = gridMesh(10, 10, side);
+  const blocked = new Uint8Array(m.n);
+  for (let cy = 0; cy < 10; cy++) blocked[(cy * 10 + 5) * 2] = blocked[(cy * 10 + 5) * 2 + 1] = 1;
+  const land = new MeshLand(PagedMesh.fromLoaded(m, blocked, 250));
+  const [lon, lat] = ll(m, 2.5, 2.5, side);
+  // The frame's metres (M_PER_DEG_MESH a degree) are 0.11 % longer than haversine's: compare as shares of 1,000 m.
+  const share = (b: number): number => land.clearAlong(lon, lat, b, 1000).m / 1000;
+  const frame = (mFrame: number): number => mFrame / 1000;
+  assert.ok(Math.abs(share(90) - frame(250)) < 0.003, `east ${share(90)}`);
+  assert.ok(Math.abs(share(270) - frame(250)) < 0.003, `west ${share(270)}`);
+  assert.ok(Math.abs(share(0) - frame(750)) < 0.003, `north ${share(0)}`);
+  assert.equal(land.clearAlong(lon, lat, 90, 100).m, 100, 'all of a shorter move');
+  assert.equal(land.clearAlong(...ll(m, 5.5, 2.5, side), 0, 1000).m, 0, 'none from blocked water');
+  // A tack the water limits ends at the point the walk reached: the move there is clear by the same test.
+  const east = land.clearAlong(lon, lat, 90, 1000);
+  assert.equal(land.legCrossesLandExact(lon, lat, ...east.end), false, 'to where the water ends: clear');
 });

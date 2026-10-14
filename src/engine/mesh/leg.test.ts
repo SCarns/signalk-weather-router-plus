@@ -2,18 +2,21 @@
  * The chart mesh in the leg pipeline: when the mesh takes a leg, the
  * split into narrow and open segments, the Route built from a mesh
  * polyline, the hybrid leg (narrow parts motored, open water sailed by
- * the isochrone search) and the fall-through to the coastline search
- * when the mesh cannot route the leg.
+ * the isochrone search), the failure with the mesh's reason when it
+ * cannot route a leg it covers, a leg leaving the charts and a leg from
+ * one mesh to another (part 5); a leg through waypoint circles is planned
+ * on the mesh.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LandMask } from '../../geo/landmask';
+import { clearAlongByHalving, LandMask } from '../../geo/landmask';
 import type { ShapePolygon } from '../../geo/shapefile';
 import { haversineDistanceM } from '../../geo/geodesy';
 import { makeVessel } from '../../vessel/vessel';
 import { ConstantWind, NoCurrent, NoWind, type CurrentSource } from '../environment';
-import { planLegs } from '../multileg';
+import { RouteError } from '../errors';
+import { collapseRuns, planLegs } from '../multileg';
 import { PolarDiagram } from '../../vessel/polar';
 import { runLegPipeline, type LegPipelineInputs } from '../pipeline';
 import { classifySegments, meshCorridor, type MeshLegRunner, meshRulesFor, routeFromMeshPath, stitchMeshSegments } from './leg';
@@ -39,14 +42,15 @@ function rect(recordNumber: number, lon0: number, lat0: number, lon1: number, la
 
 const STATS = {
   trianglesLoaded: 10,
+  tiles: 1,
+  tileReads: 1,
+  peakTriangles: 10,
   blocked: 2,
   expanded: 5,
   readMs: 1,
   prepMs: 1,
   searchMs: 1,
   funnelMs: 0,
-  padDeg: 0.5,
-  attempts: 1,
   bufferM: 0,
   buffered: 0,
   bufferMs: 0,
@@ -68,6 +72,8 @@ function fakeLand(
     isLandExact: point,
     legCrossesLandExact: leg,
     legsCrossLandBulk: (la, pa, lb, pb) => Uint8Array.from({ length: la.length }, (_v, k) => (leg(la[k], pa[k], lb[k], pb[k]) ? 1 : 0)),
+    // The fake's own resolution: a metre.
+    clearAlong: (lon, lat, b, maxM) => clearAlongByHalving({ isLandExact: point, legCrossesLandExact: leg }, lon, lat, b, maxM, 1),
     depthAt,
     openingBridgesAlong: bridges,
   };
@@ -84,6 +90,9 @@ function fakeMesh(result: MeshRouteResult, covers = true, env: FakeEnv = {}): { 
   return {
     mesh: {
       covers: () => covers,
+      meets: () => covers,
+      // One mesh holds every leg these tests give it.
+      plan: async () => ({ kind: 'one-mesh', mesh: 'the mesh' }),
       leg: async a => {
         calls.push({ start: a.legStart, end: a.plan.end, rules: a.rules });
         return runMeshLeg({
@@ -150,17 +159,16 @@ const PLAN = planLegs(
   300
 )[0];
 
-test('meshRulesFor: both drafts set, no waypoint circles', () => {
-  assert.deepEqual(meshRulesFor(BOAT, false), { rules: { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 } });
+test('meshRulesFor: both drafts set', () => {
+  assert.deepEqual(meshRulesFor(BOAT), { rules: { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 } });
   assert.match(
-    (meshRulesFor(makeVessel({ motorSpeedMs: 3, draughtM: 2 }), false) as { why: string }).why,
+    (meshRulesFor(makeVessel({ motorSpeedMs: 3, draughtM: 2 })) as { why: string }).why,
     /air draft \(Signal K design.airHeight/
   );
   assert.match(
-    (meshRulesFor(makeVessel({ motorSpeedMs: 3, airDraftM: 18 }), false) as { why: string }).why,
+    (meshRulesFor(makeVessel({ motorSpeedMs: 3, airDraftM: 18 })) as { why: string }).why,
     /draught \(Signal K design.draft.maximum/
   );
-  assert.match((meshRulesFor(BOAT, true) as { why: string }).why, /waypoint circles/);
 });
 
 test('classifySegments: narrow where both shores are near, hysteresis by distance, open run-out kept in the narrow segment', () => {
@@ -555,22 +563,46 @@ test('pipeline: an opening bridge on the route is reported with its clearance an
   assert.equal(r.drawbridges, undefined);
 });
 
-test('pipeline: the mesh falls through to the coastline search when it finds no route or does not cover the leg', async () => {
+// The owner's rule of 2026-10-12: no coastline search where a mesh covers the water. A leg inside the mesh that the
+// mesh cannot take fails with the mesh's reason (this test pinned the fall-through to the coastline search before).
+test('pipeline: a leg inside the mesh that the mesh cannot take fails with the reason, the coastline search is not run; outside the mesh it routes as before', async () => {
   {
     const { mesh, calls } = fakeMesh({ ok: false, reason: 'no route on the mesh', stats: STATS });
     const { inp, messages } = inputs(mesh);
-    const r = await runLegPipeline(inp, PLAN, 0, [0, 0.5], T0);
-    assert.equal(r.meshLeg, undefined);
+    await assert.rejects(
+      () => runLegPipeline(inp, PLAN, 0, [0, 0.5], T0),
+      (err: Error) => {
+        assert.ok(err instanceof RouteError, String(err));
+        assert.match(
+          err.message,
+          /^the chart mesh covers this leg but cannot take it: no route on the mesh \(10 triangles in 1 tiles read/
+        );
+        return true;
+      }
+    );
     assert.equal(calls.length, 1);
-    assert.ok(
-      messages.some(m => /^WARNING: chart mesh: no route on the mesh .*using the coastline search instead/.test(m)),
-      messages.join('\n')
+    assert.ok(!messages.some(m => /^skeleton/.test(m)), 'the coastline search did not run: ' + messages.join('\n'));
+  }
+  {
+    // No draught or air draft: the mesh cannot judge the leg, so it fails instead of going to the coastline search.
+    const { mesh, calls } = fakeMeshOk([
+      [0, 0.5],
+      [1, 0.5],
+    ]);
+    const { inp, messages } = inputs(mesh, { vessel: makeVessel({ motorSpeedMs: 3 }) });
+    await assert.rejects(
+      () => runLegPipeline(inp, PLAN, 0, [0, 0.5], T0),
+      (err: Error) => {
+        assert.ok(err instanceof RouteError, String(err));
+        assert.match(
+          err.message,
+          /^the chart mesh covers this leg but cannot take it: the vessel's draught \(Signal K design.draft.maximum/
+        );
+        return true;
+      }
     );
-    assert.ok(
-      messages.some(m => /^skeleton/.test(m)),
-      'the coastline search ran'
-    );
-    assert.ok(r.waypoints.length >= 2);
+    assert.equal(calls.length, 0);
+    assert.ok(!messages.some(m => /^skeleton/.test(m)), messages.join('\n'));
   }
   {
     // Not covered: never asked.
@@ -582,23 +614,253 @@ test('pipeline: the mesh falls through to the coastline search when it finds no 
   }
 });
 
-test('pipeline: a leg whose ends lie in two different meshes is not planned as one mesh leg', async () => {
+// Part 3 of docs/drafts/mesh-no-gshhg-design.md (the owner, 2026-10-12): a leg through waypoint circles inside the
+// mesh is planned on the mesh through them (this test pinned the coastline search before).
+test('pipeline: a leg through waypoint circles inside the mesh is planned on the mesh; the circle is marked, a moved waypoint warned', async () => {
+  const [run] = collapseRuns(
+    planLegs(
+      [
+        { lon: 0, lat: 0.5 },
+        { lon: 0.5, lat: 0.6 },
+        { lon: 1, lat: 0.5 },
+      ],
+      'approximate',
+      300
+    )
+  );
+  assert.equal(run.vias.length, 1);
   const path: [number, number][] = [
     [0, 0.5],
     [0.5, 0.6],
     [1, 0.5],
   ];
-  const { mesh, calls } = fakeMeshOk(path);
-  // Two meshes meeting at 0.5°E: each end is in one, no mesh holds both.
-  const split: MeshLegRunner = { ...mesh, covers: pts => pts.every(p => p[0] < 0.5) || pts.every(p => p[0] >= 0.5) };
-  const { inp, messages } = inputs(split, {});
-  const r = await runLegPipeline(inp, PLAN, 0, [0, 0.5], T0);
-  assert.equal(calls.length, 0, 'the mesh leg was not asked for');
-  assert.ok(!r.meshLeg);
-  assert.ok(
-    messages.some(m => /^skeleton/.test(m)),
-    'the coastline search ran: ' + messages.join('\n')
+  for (const movedM of [0, 500]) {
+    const { mesh, calls } = fakeMesh({
+      ok: true,
+      path,
+      widths: path.map(() => [4000, 4000] as [number, number]),
+      lengthM: 1,
+      costS: 1,
+      stats: STATS,
+      circles: [{ lon: 0.5, lat: 0.6, radiusM: 300, movedM, name: 'waypoint 1', pathIndex: 1 }],
+    });
+    const { inp, messages } = inputs(mesh);
+    const r = await runLegPipeline(inp, run, 0, [0, 0.5], T0);
+    assert.equal(calls.length, 1, 'the mesh leg was asked for');
+    assert.ok(r.meshLeg);
+    assert.ok(!messages.some(m => /^skeleton/.test(m)), 'the coastline search did not run: ' + messages.join('\n'));
+    const via = r.waypoints.filter(w => w.role === 'via');
+    assert.equal(via.length, 1);
+    assert.deepEqual([via[0].lon, via[0].lat], [0.5, 0.6]);
+    const warned = messages.some(m => /^WARNING: chart mesh: waypoint 1: no water the boat can use within \{length:300\} of it/.test(m));
+    assert.equal(warned, movedM > 300, messages.join('\n'));
+  }
+});
+
+test("pipeline: a circle inside an open stretch is the sailing search's via; the route passes through it, marked", async () => {
+  const [run] = collapseRuns(
+    planLegs(
+      [
+        { lon: 0, lat: 0.5 },
+        { lon: 0.5, lat: 0.6 },
+        { lon: 1, lat: 0.5 },
+      ],
+      'approximate',
+      3000
+    )
   );
+  const path: [number, number][] = [
+    [0, 0.5],
+    [0.5, 0.6],
+    [1, 0.5],
+  ];
+  const wind = Object.assign(new ConstantWind(12 * 0.514444, 0), {
+    validRange: [T0, new Date(T0.getTime() + 48 * 3600e3)] as [Date, Date],
+  });
+  const { mesh } = fakeMesh(
+    {
+      ok: true,
+      path,
+      widths: path.map(() => [4000, 4000] as [number, number]),
+      lengthM: 1,
+      costS: 1,
+      stats: STATS,
+      circles: [{ lon: 0.5, lat: 0.6, radiusM: 3000, movedM: 0, name: 'waypoint 1', pathIndex: 1 }],
+    },
+    true,
+    { wind }
+  );
+  const { inp, messages } = inputs(mesh, {
+    polar: PolarDiagram.parse(POLAR_CSV, ','),
+    sim: { modePolicy: 'sail_max', sailThreshMs: 2.5, simStepM: 200 },
+    loadAreas: async () => wind,
+  });
+  const r = await runLegPipeline(inp, run, 0, [0, 0.5], T0);
+  assert.ok(r.meshLeg);
+  assert.ok(
+    messages.some(m => /segment 1\/1: open water, .* the isochrone search made it \d+ waypoints/.test(m)),
+    messages.join('\n')
+  );
+  const via = r.waypoints.filter(w => w.role === 'via');
+  assert.equal(via.length, 1, JSON.stringify(r.waypoints.map(w => [w.lon, w.lat, w.role])));
+  assert.ok(haversineDistanceM(via[0].lon, via[0].lat, 0.5, 0.6) <= 3000 + 1, `${via[0].lon}, ${via[0].lat}`);
+});
+
+// Part 5 (the owner, 2026-10-12 and 2026-10-13): a leg whose area a mesh meets stays on the charts wherever they go
+// and leaves them only where they do not; the runner's plan says how, stretch by stretch (these tests drove the
+// separate exit and transfer legs before).
+test("pipeline: a leg the charts' plan splits is planned stretch by stretch, on its mesh or on the coastline with every mesh's water as land", async () => {
+  const parts: [number, number][][] = [];
+  const meshIds: (string | undefined)[] = [];
+  const runner = (plan: MeshLegRunner['plan']): MeshLegRunner => ({
+    // Two meshes meeting at 0.5°E: each end is in one, no mesh holds both.
+    covers: pts => pts.every(p => p[0] <= 0.5) || pts.every(p => p[0] >= 0.5),
+    meets: () => true,
+    plan,
+    leg: async a => {
+      const path: [number, number][] = [a.legStart, a.plan.end];
+      parts.push(path);
+      meshIds.push(a.meshId);
+      return runMeshLeg({
+        result: { ok: true, path, widths: path.map(() => [4000, 4000] as [number, number]), lengthM: 1, costS: 1, stats: STATS },
+        land: fakeLand(),
+        ...a,
+        wind: null,
+        current: new NoCurrent(),
+      });
+    },
+  });
+  // Charted water west of 0.3 and east of 0.7 on a 0.05° raster.
+  const nx = 20;
+  const ny = 20;
+  const cells = new Uint8Array(nx * ny);
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) if (i < 6 || i >= 14) cells[j * nx + i] = 1;
+  const mask = { bbox: { west: 0, south: 0, east: 1, north: 1 }, resolutionDeg: 0.05, nx, ny, cells };
+  const start: [number, number] = [0, 0.5];
+  const end: [number, number] = [1, 0.5];
+  {
+    // From one mesh to the other in their overlap: two mesh stretches, each on its own mesh, no coastline search.
+    parts.length = 0;
+    meshIds.length = 0;
+    const at: [number, number] = [0.5, 0.55];
+    const asked: unknown[] = [];
+    const { inp, messages } = inputs(
+      runner(async a => {
+        asked.push({ start: a.start, end: a.end, rules: a.rules });
+        return {
+          kind: 'chain',
+          stretches: [
+            { kind: 'mesh', mesh: 'A', from: start, to: at },
+            { kind: 'mesh', mesh: 'B', from: at, to: end },
+          ],
+          mask,
+        };
+      })
+    );
+    const r = await runLegPipeline(inp, PLAN, 0, start, T0);
+    assert.deepEqual(asked, [
+      { start, end, rules: { draughtM: 2, airDraftM: 18, motorSpeedMs: 3, avoid: undefined, openingBridges: 'open' } },
+    ]);
+    assert.deepEqual(parts, [
+      [start, at],
+      [at, end],
+    ]);
+    assert.deepEqual(meshIds, ['A', 'B']);
+    assert.deepEqual(
+      r.waypoints.map(w => [w.lon, w.lat]),
+      [start, at, end]
+    );
+    assert.deepEqual(r.legSources, ['mesh']);
+    assert.ok(!messages.some(m => /^skeleton/.test(m)), 'the coastline search did not run: ' + messages.join('\n'));
+  }
+  {
+    // Out of the first mesh, across open water, into the second: the open stretch keeps out of both meshes' water.
+    parts.length = 0;
+    meshIds.length = 0;
+    const exit: [number, number] = [0.3, 0.6];
+    const entry: [number, number] = [0.7, 0.6];
+    const { inp, messages } = inputs(
+      runner(async () => ({
+        kind: 'chain',
+        stretches: [
+          { kind: 'mesh', mesh: 'A', from: start, to: exit },
+          { kind: 'open', from: exit, to: entry },
+          { kind: 'mesh', mesh: 'B', from: entry, to: end },
+        ],
+        mask,
+      }))
+    );
+    const r = await runLegPipeline(inp, PLAN, 0, start, T0);
+    assert.deepEqual(parts, [
+      [start, exit],
+      [entry, end],
+    ]);
+    const lons = r.waypoints.map(w => w.lon);
+    const i0 = lons.indexOf(exit[0]);
+    const i1 = lons.lastIndexOf(entry[0]);
+    assert.ok(i0 > 0 && i1 > i0, JSON.stringify(r.waypoints.map(w => [w.lon, w.lat])));
+    for (const w of r.waypoints.slice(i0, i1 + 1))
+      assert.ok(w.lon >= 0.3 - 1e-9 && w.lon <= 0.7 + 1e-9, `coastline part in mesh water at ${w.lon}`);
+    const last = r.waypoints[r.waypoints.length - 1];
+    assert.ok(Math.abs(last.lon - 1) < 1e-6 && Math.abs(last.lat - 0.5) < 1e-6, 'the leg ends on its end');
+    assert.deepEqual(r.legSources, ['mixed']);
+    assert.ok(
+      messages.some(m => /^skeleton/.test(m)),
+      'the coastline search ran between the meshes: ' + messages.join('\n')
+    );
+  }
+  {
+    // Leaving the charts: on the mesh to its exit, the coastline search from there to the end.
+    parts.length = 0;
+    meshIds.length = 0;
+    const exit: [number, number] = [0.3, 0.5];
+    const { inp } = inputs(
+      runner(async () => ({
+        kind: 'chain',
+        stretches: [
+          { kind: 'mesh', mesh: 'A', from: start, to: exit },
+          { kind: 'open', from: exit, to: end },
+        ],
+        mask: { ...mask, cells: Uint8Array.from(cells, (c, k) => (k % nx < 6 ? c : 0)) },
+      }))
+    );
+    const r = await runLegPipeline(inp, PLAN, 0, start, T0);
+    assert.deepEqual(parts, [[start, exit]]);
+    const last = r.waypoints[r.waypoints.length - 1];
+    assert.ok(Math.abs(last.lon - 1) < 1e-6 && Math.abs(last.lat - 0.5) < 1e-6, 'the leg ends on its end');
+    assert.deepEqual(r.legSources, ['mixed']);
+  }
+  {
+    // Open water joins the ends outside every mesh: the coastline search alone, the charts' water as land (north of
+    // the line, clear of both ends, as the plan answers 'open' only for ends in open water).
+    parts.length = 0;
+    const north = new Uint8Array(nx * ny);
+    for (let j = 14; j < ny; j++) for (let i = 8; i < 12; i++) north[j * nx + i] = 1;
+    const { inp, messages } = inputs(runner(async () => ({ kind: 'open', mask: { ...mask, cells: north } })));
+    const r = await runLegPipeline(inp, PLAN, 0, start, T0);
+    assert.equal(parts.length, 0, 'no mesh stretch');
+    assert.ok(
+      messages.some(m => /^skeleton/.test(m)),
+      messages.join('\n')
+    );
+    const last = r.waypoints[r.waypoints.length - 1];
+    assert.ok(Math.abs(last.lon - 1) < 1e-6 && Math.abs(last.lat - 0.5) < 1e-6);
+  }
+  {
+    // No way: the route fails with the plan's reason, nothing is planned.
+    parts.length = 0;
+    const { inp, messages } = inputs(runner(async () => ({ refused: "the start's water and the end's water do not connect" })));
+    await assert.rejects(
+      () => runLegPipeline(inp, PLAN, 0, start, T0),
+      (err: Error) => {
+        assert.ok(err instanceof RouteError, String(err));
+        assert.equal(err.message, "the start's water and the end's water do not connect");
+        return true;
+      }
+    );
+    assert.equal(parts.length, 0);
+    assert.ok(!messages.some(m => /^skeleton/.test(m)), messages.join('\n'));
+  }
 });
 
 test('stitchMeshSegments: the smoother drops of every segment are summed', () => {

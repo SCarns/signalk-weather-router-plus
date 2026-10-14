@@ -14,9 +14,14 @@
  * with the forecast's wind, and a course sailable at its start can be in
  * the no-go angle before its end: 2026-10-08, a Bermuda run failed on
  * such a leg when only the start was checked) or when it crosses land.
- * Then the longest piece that can be sailed is taken, halving down to
- * TACK_MIN_M, the other side tried first for a tack, and the layout looks
- * again from there. (Until the evening of 2026-10-08 tacks were chopped
+ * Then the longest piece that can be sailed is taken: as long as the
+ * water allows on its heading (LandTest clearAlong: exact on the chart
+ * mesh, to the raster's cell on the coastline) and, where the wind turns
+ * along it, halved down to the simulator's step; the other side tried
+ * first for a tack, and the layout looks again from there. (Until
+ * 2026-10-12 tacks were halved for land too, down to a fixed 500 m, so a
+ * beat up a channel narrower than that could never be laid out: a 97 m
+ * beat with 45 and 137 m of water either side failed under sail only.) (Until the evening of 2026-10-08 tacks were chopped
  * at a fixed 5 nm whatever they cost, so the tacking penalty could add
  * time but never lengthen a tack.) Every leg is timed with the real
  * polar and each tack costs TACK_PENALTY_S. Anything that still cannot
@@ -46,12 +51,11 @@ import { enrichLegRanges, enrichWaypoints, OceanPropagator } from '../propagator
 import { recomputePerWaypointMetadata, type Route, type Waypoint } from '../route';
 import type { ComputeRouteArgs, PropagatorOptions } from '../search/types';
 import { recomputeTotals } from '../smoother';
+import { U_TOL } from '../mesh/width';
 import { crossTrackPolish } from './polish';
 
 /** Seconds lost per tack or gybe when the request sets none (legsim.ts). */
 export const TACK_PENALTY_S = DEFAULT_TACK_PENALTY_S;
-/** Tacks are shortened for land or an unsailable heading down to this; below it the leg fails. */
-export const TACK_MIN_M = 500;
 /** More tacks than this on one leg is a loop, not a beat. */
 const MAX_TACKS_PER_LEG = 400;
 
@@ -181,14 +185,17 @@ export class ExperimentalPropagator {
     const out: Waypoint[] = [{ ...old[0] }];
     let split = 0;
     let tacks = 0;
+    const motored: Waypoint[] = [];
     for (let i = 1; i < old.length; i++) {
       const b: Waypoint = { ...old[i] };
       if (b.mode === 'sailing') {
-        const pts = this.layOut(out[out.length - 1], b, cp, env);
-        const n = pts.filter(p => p.tack).length;
+        const a = out[out.length - 1];
+        const pts = this.layOut(a, b, cp, env);
+        if (pts === null) motored.push(a);
+        const n = (pts ?? []).filter(p => p.tack).length;
         if (n) split++;
         tacks += n;
-        for (const p of pts) out.push(p);
+        for (const p of pts ?? []) out.push(p);
       }
       this.timeLeg(out[out.length - 1], b, env);
       out.push(b);
@@ -200,6 +207,12 @@ export class ExperimentalPropagator {
       0,
       `experimental: convex polar: ${split} leg(s) laid out as tacks (${tacks} tack point(s), {time:${env.sim.tackPenaltyS ?? TACK_PENALTY_S}} each, as long as the wind and the land allow); arrival ${out[out.length - 1].time.toISOString().slice(0, 16).replace('T', ' ')} UTC`
     );
+    for (const a of motored)
+      args.onProgress?.(
+        0,
+        0,
+        `WARNING: experimental: the beat from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} could not be tacked in the water there; it is motored, as the sail threshold allows (the standard router's timing)`
+      );
     return env;
   }
 
@@ -243,13 +256,20 @@ export class ExperimentalPropagator {
    * arrival time. The leg a → last point → b is what the caller times; the
    * straight step points are collinear and the route's simplification
    * thins them afterwards.
+   *
+   * Where no way of tacks can be laid out and the sail threshold is above 0, null: the leg a → b (clear: a leg of the
+   * search or of the mesh route) is then timed straight by the simulator, which motors in the no-go angle, as the
+   * standard router times it (the owner's choice, 2026-10-13: tack where tacks fit, motor where stuck; 2026-10-13,
+   * the Cape Cod Canal's west approach: the first tack ran into a pocket the water closes round and every later one
+   * halved into its corner). With a threshold of 0 (never motor) it fails the route as before.
    */
-  private layOut(a: Waypoint, b: Waypoint, cp: ConvexPolar, env: Env): Waypoint[] {
+  private layOut(a: Waypoint, b: Waypoint, cp: ConvexPolar, env: Env): Waypoint[] | null {
+    const motorIfStuck = env.sim.modePolicy === 'sail_max' && env.sim.sailThreshMs > 0;
     const pts: Waypoint[] = [];
     let at: Waypoint = a;
     let lastHeading = -1;
-    const stepTo = (h: number, d: number, tack: boolean): Waypoint | null => {
-      const [tLon, tLat] = projectAlongBearing(at.lon, at.lat, h, d);
+    const stepTo = (h: number, d: number, tack: boolean, end?: [number, number]): Waypoint | null => {
+      const [tLon, tLat] = end ?? projectAlongBearing(at.lon, at.lat, h, d);
       if (this.land.legCrossesLandExact(at.lon, at.lat, tLon, tLat)) return null;
       const r = this.sailedThrough(at, tLon, tLat, env);
       if (r === null) return null;
@@ -267,6 +287,40 @@ export class ExperimentalPropagator {
       return p;
     };
     const tackTo = (h: number, d: number): Waypoint | null => stepTo(h, d, true);
+    /** A piece to a given point (where the water ends on a heading). */
+    const stepToPoint = (end: [number, number], tack: boolean): Waypoint | null =>
+      stepTo(haversineBearing(at.lon, at.lat, end[0], end[1]), haversineDistanceM(at.lon, at.lat, end[0], end[1]), tack, end);
+    /**
+     * Can the boat go on from p (placed from `at`)? It is nearer b, and either b can be sailed straight from it or
+     * one of the `next` headings has room from it. A tack ending on the bank at a bend, with no room on the next
+     * tack's heading, boxes the boat in (2026-10-12, the Cape Cod Canal replay 7306dc97: 0 m on 71° and 145°).
+     */
+    const canGoOn = (p: Waypoint, next: number[]): boolean => {
+      const dp = haversineDistanceM(p.lon, p.lat, b.lon, b.lat);
+      if (!(dp < haversineDistanceM(at.lon, at.lat, b.lon, b.lat))) return false;
+      if (!this.land.legCrossesLandExact(p.lon, p.lat, b.lon, b.lat) && this.sailedThrough(p, b.lon, b.lat, env) !== null) return true;
+      return next.some(h => this.land.clearAlong(p.lon, p.lat, h, dp).m > 0);
+    };
+    /**
+     * A piece on heading h, of up to `want` metres, that the boat can go on from: first where the water ends on that
+     * heading (exactly the point the land test reached) or all of `want`, then ends back along it, halving; the first
+     * that can be sailed, is clear and leaves the boat able to go on is taken. Backing off from the shore (the water
+     * ends before `want`: a bend or a corner may leave no room for the next tack at the shore, and some just short of
+     * it) halves down to the walk's own precision (width.ts U_TOL of the room); backing off for the wind (the water
+     * allows all of `want`) stops at the simulator's step, the resolution it reads the wind along a piece at
+     * (2026-10-12: a 200 m floor on both left a 239.5 m tack to a corner's shore with no shorter try, though 119.7 m
+     * had 214.7 m of room for the next; replay d6d067cb).
+     */
+    const placeOn = (h: number, want: number, tack: boolean, next: number[]): Waypoint | null => {
+      const room = this.land.clearAlong(at.lon, at.lat, h, want);
+      if (!(room.m > 0)) return null;
+      const good = (p: Waypoint | null): Waypoint | null => (p && canGoOn(p, next) ? p : null);
+      const shore = room.m < want;
+      const floor = shore ? U_TOL * room.m : env.sim.simStepM;
+      let p = good(shore ? stepToPoint(room.end, tack) : stepTo(h, room.m, tack));
+      for (let d = room.m / 2; !p && d >= floor; d /= 2) p = good(stepTo(h, d, tack));
+      return p;
+    };
     for (let n = 0; n < MAX_TACKS_PER_LEG; n++) {
       const D = haversineDistanceM(at.lon, at.lat, b.lon, b.lat);
       const theta = haversineBearing(at.lon, at.lat, b.lon, b.lat);
@@ -285,8 +339,10 @@ export class ExperimentalPropagator {
         // A direct heading in this wind: the rest in one go when the real polar sails it all the way and it is
         // clear; else the longest straight piece that can be sailed, and look again from there.
         if (!this.land.legCrossesLandExact(at.lon, at.lat, b.lon, b.lat) && this.sailedThrough(at, b.lon, b.lat, env) !== null) return pts;
-        let p: Waypoint | null = null;
-        for (let len = D / 2; len >= TACK_MIN_M && !p; len /= 2) p = stepTo(theta, len, false);
+        // As far as the water allows on the course, else (the wind turning along it) shorter, from where the boat
+        // can go on.
+        const p = placeOn(theta, D, false, [theta]);
+        if (!p && motorIfStuck) return null;
         if (!p)
           throw new RouteError(
             `${env.who}: the leg from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} to ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be sailed at ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)} under the ${env.sim.modePolicy} policy; ${env.advice}`
@@ -307,18 +363,15 @@ export class ExperimentalPropagator {
         pts.push(p);
         return pts;
       }
-      // Neither order works in two legs (land, or the wind changing along a long leg): the longest first tack
-      // that can be sailed and is clear, halving down to TACK_MIN_M, then look again from there.
+      // Neither order works in two legs (land, or the wind changing along a long leg): the longest first tack that
+      // can be sailed, is clear and leaves room for the next (no fixed minimum: in a narrow channel the tacks are as
+      // short as the channel); then look again from there.
       let placed: Waypoint | null = null;
-      for (let len = Math.max(share(first), share(other)); len >= TACK_MIN_M && !placed; len /= 2) {
-        for (const h of [first, other]) {
-          const d = Math.min(len, share(h));
-          if (d < TACK_MIN_M) continue;
-          placed = tackTo(h, d);
-          if (placed) {
-            lastHeading = h;
-            break;
-          }
+      for (const h of [first, other]) {
+        placed = placeOn(h, share(h), true, [h === mix.h1 ? mix.h2 : mix.h1]);
+        if (placed) {
+          lastHeading = h;
+          break;
         }
       }
       if (!placed) {
@@ -329,6 +382,7 @@ export class ExperimentalPropagator {
         // downwind in a 200 m channel the boat runs straight (2026-10-08,
         // job a0a18bcb, the passage south of Monomoy).
         if (!this.land.legCrossesLandExact(at.lon, at.lat, b.lon, b.lat) && this.sailable(at, b.lon, b.lat, env) !== null) return pts;
+        if (motorIfStuck) return null;
         throw new RouteError(
           `${env.who}: the beat from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} towards ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be tacked at ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)}: every tack tried crossed land or could not be sailed under the ${env.sim.modePolicy} policy, and the course itself cannot be sailed straight; ${env.advice}`
         );
@@ -340,17 +394,19 @@ export class ExperimentalPropagator {
   }
 
   /**
-   * As sailable, but under sail_max the piece must be sailed all the way:
-   * a piece the simulator finishes under motor (the wind veered into the
-   * no-go angle before its end) is split instead, so the layout looks at
-   * the wind there and tacks where the hull says it can sail. The narrow
-   * channel's last resort (the course itself, when no tack fits) uses the
-   * plain test: there motoring below the threshold is the policy's own.
+   * As sailable, but under sail_max a piece the simulator motors in the
+   * polar's no-go angle (the wind veered ahead before its end) is split
+   * instead, so the layout looks at the wind there and tacks where the hull
+   * says it can sail. Motoring because the sailing speed is under a positive
+   * threshold (light air) is the policy's own and is kept: before
+   * 2026-10-12 every motored second was refused, so a light-air stretch the
+   * threshold motors failed the route (the Gulf coast replays 730e14fc and
+   * e341dd00, 5.1 kt held past the forecast's end, reproduced on brain).
    */
   private sailedThrough(from: Waypoint, toLon: number, toLat: number, env: Env): LegSimResult | null {
     const r = this.sailable(from, toLon, toLat, env);
     if (r === null) return null;
-    if (env.sim.modePolicy === 'sail_max' && r.motoringSeconds > 0) return null;
+    if (env.sim.modePolicy === 'sail_max' && r.motoringNoGoSeconds > 0) return null;
     return r;
   }
 

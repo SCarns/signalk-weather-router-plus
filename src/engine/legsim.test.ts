@@ -45,3 +45,15 @@ test('sail_max sails only at or above the threshold (no 0.25 / 1.0 m/s shortcut)
   );
   assert.equal(sc.dominant[0], 0, 'scorer: below threshold → motoring');
 });
+
+test('sail_max with a positive threshold: motored seconds in the no-go angle are told apart from light-air motoring', () => {
+  // Due east, wind from the north at 6 kn: polar 1.5 m/s under the 2.5 m/s threshold, so motored, none of it in no-go.
+  const light = simulateLegTime(0, 0, T0, 0.05, 0, VESSEL, POLAR, wind(6 * 0.5144444444), new NoCurrent(), opts(2.5));
+  assert.ok(light.motoringSeconds > 0);
+  assert.equal(light.motoringNoGoSeconds, 0, 'light air is not the no-go angle');
+  // Due north into a 12 kn northerly: the polar gives nothing at 0° (inside its no-go angle); above a positive
+  // threshold the simulator motors there, and all of it is booked as no-go motoring.
+  const ahead = simulateLegTime(0, 0, T0, 0, 0.05, VESSEL, POLAR, wind(12 * 0.5144444444), new NoCurrent(), opts(2.5));
+  assert.ok(ahead.motoringSeconds > 0);
+  assert.equal(ahead.motoringNoGoSeconds, ahead.motoringSeconds);
+});

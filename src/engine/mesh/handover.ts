@@ -149,6 +149,7 @@ export function stitchLegParts(a: Route, b: Route): Route {
     sailingTimeS: 0,
     validated: a.validated && b.validated,
     meshLeg: true,
+    legSources: ['mixed'],
   };
   if (warnings.length) route.warnings = warnings;
   if (drawbridges.length) route.drawbridges = drawbridges;

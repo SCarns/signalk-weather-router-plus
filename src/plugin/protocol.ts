@@ -27,6 +27,7 @@ import type { SerializedRtofs } from '../currents/rtofs';
 import type { SerializedHarmonic } from '../currents/harmonic';
 import type { TideStatus } from '../tides/sealevel';
 import type { ArcoRun } from '../data/arco';
+import type { TileId } from './tiles';
 
 /** data: forecast, currents, map queries; route: the engine; tiles: builds map tiles ahead of time (prebuild.ts). */
 export type WorkerRole = 'data' | 'route' | 'tiles';
@@ -126,6 +127,22 @@ export interface RouteSummary {
   regional_wind?: { name: string; run: string; share: number }[];
   /** At least one leg was routed on the chart mesh (charted depths and obstructions) instead of the coastline search. */
   mesh?: true;
+  /** The finished route passed the final depth check against the chart meshes it meets (absent when no mesh meets it). */
+  depth_checked?: true;
+  /**
+   * Per leg: what planned it (chart mesh, coastline search, or both for a leg leaving the mesh), and what the
+   * check found along it: metres on the mesh, with no charted depth, outside the mesh; the shallowest charted
+   * depth crossed (m) and where ([lon, lat]), null when none was charted.
+   */
+  legs_detail?: {
+    leg: number;
+    source: 'mesh' | 'coastline' | 'mixed';
+    on_mesh_m: number;
+    unknown_depth_m: number;
+    outside_mesh_m: number;
+    shallowest_m: number | null;
+    shallowest_at: [number, number] | null;
+  }[];
   /** Opening bridges the route passes under (mesh legs), and the rule that applied. */
   drawbridges?: { lat: number; lon: number; clear_m: number | null; leg_index: number }[];
   drawbridges_rule?: DrawbridgeChoice;
@@ -317,6 +334,11 @@ export type MainToWorker =
   /** avoid: the areas to avoid marked on Signal K notes, read by the main thread (the workers have no Resources API). */
   | { type: 'route'; id: string; request: RouteRequest; avoid?: AvoidArea[]; self?: SelfDesign }
   | { type: 'query'; id: number; kind: QueryKind; args: QueryArgs[QueryKind] }
+  /**
+   * tiles workers: answer a tile's query, encode it as the store saves it (tiles.ts encodeTile) and write it to `tmp`
+   * (the store's temporary file beside the tile); the main thread moves it into place (TileStore.adopt).
+   */
+  | { type: 'build-tile'; id: number; tile: TileId; tmp: string }
   /** tiles workers: the data worker's tide run (null: tides off or not loaded). */
   | { type: 'tides-run'; run: ArcoRun | null }
   /** Drop a query that has not started (its HTTP client went away); one that has started completes. */
@@ -360,4 +382,6 @@ export type WorkerToMain =
   | { type: 'error'; id: string; message: string; cancelled?: boolean }
   /** `complete`: false when an on-demand current / tide load missed its deadline or failed (do not cache). */
   | { type: 'query-result'; id: number; result: unknown; complete: boolean }
+  /** tiles worker: a 'build-tile' answered; `complete` false: nothing written (do not keep), else `bytes` written to its `tmp`. */
+  | { type: 'tile-built'; id: number; bytes: number; complete: boolean }
   | { type: 'query-error'; id: number; message: string };

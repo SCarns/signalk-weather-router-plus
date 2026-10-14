@@ -1558,6 +1558,24 @@ const RouteProgress = (function () {
 // One line of what the route is, from the LineString properties, plus
 // a badge that opens the validator's warnings.
 let _lastRouteProps = null, _lastNavWarns = null;
+// The final depth check (worker: depth_check on the LineString): one line, totals over the legs, in the user's units.
+function _depthCheckLine(dc) {
+  if (!dc || !Array.isArray(dc.legs) || !dc.legs.length) return '';
+  let onMesh = 0, unknown = 0, outside = 0, shallow = null;
+  for (const l of dc.legs) {
+    onMesh += l.on_mesh_m || 0; unknown += l.unknown_depth_m || 0; outside += l.outside_mesh_m || 0;
+    if (l.shallowest_m != null && (!shallow || l.shallowest_m < shallow.shallowest_m)) shallow = l;
+  }
+  const multi = dc.legs.length > 1;
+  const parts = [];
+  if (shallow) parts.push('shallowest ' + (fmtDepth(shallow.shallowest_m) || UNIT_MISSING) + (multi ? ' (leg ' + (shallow.leg + 1) + ')' : ''));
+  if (unknown > 0) parts.push((fmtDist(unknown) || UNIT_MISSING) + ' with no charted depth');
+  if (outside > 0) parts.push((fmtDist(outside) || UNIT_MISSING) + ' outside the chart mesh');
+  const coast = dc.legs.filter(l => l.source !== 'mesh').map(l => l.leg + 1);
+  if (coast.length && multi) parts.push('leg' + (coast.length > 1 ? 's ' : ' ') + coast.join(', ') + ' partly or wholly on coastline data');
+  else if (coast.length) parts.push('partly or wholly on coastline data');
+  return onMesh > 0 || parts.length ? '<div class="rs-notes">Chart depth checked' + (parts.length ? ': ' + parts.join(' · ') : '') + '</div>' : '';
+}
 function renderResultStrip(p, navWarns) {
   const el = document.getElementById('routeInfo');
   _lastRouteProps = p; _lastNavWarns = navWarns;
@@ -1594,6 +1612,7 @@ function renderResultStrip(p, navWarns) {
       + (p.limits_beyond_forecast ? ', and the wind/wave limit was checked against those held conditions' : '')
       + '. A longer <a id="rsBeyondLink">Forecast horizon</a> in Settings covers more of the passage.</div>';
   }
+  html += _depthCheckLine(p.depth_check);
   if (navWarns && navWarns.length) html += '<div class="rs-notes">' + navWarns.join(' · ') + '</div>';
   if (_routeStale) html += '<div class="rs-stale">Markers changed since this route was computed.</div>';
   if (warns.length) {
@@ -1645,7 +1664,23 @@ function showModal() {
   modalStatus.textContent = 'Starting...';
   _routeStale = false;
   _routeComputing = true;
+  // A new request: the route on the map goes with its strip and name (the owner, 2026-10-12); a request that fails
+  // leaves the map without a route and shows the error. The markers and waypoints stay.
+  setSelectedRouteFeature(null);
+  routeSource.clear();
+  _routePoints = [];
+  // No route is shown now (PR #39 review): a failed request left the hint saying "Click the route" and GPX exporting
+  // the old route's points. _jobOnDone sets it again for the new route.
+  routeActive = false;
+  _itineraryFeatures = [];
+  skeletonSource.clear();
+  frontSource.clear();
+  _currentRouteJobId = null;
+  _currentRouteName = '';
+  const nameInput = document.getElementById('routeNameInput');
+  if (nameInput) nameInput.value = '';
   renderResultStrip(null);
+  updatePlanHint();
   RouteProgress.start();
   cancelBtn.style.display = 'inline-block';
 }
@@ -2215,17 +2250,30 @@ function _computeUiIdle() {
 // Follow a job: its SSE stream (status, progress lines, stage fronts,
 // done / error), backfilled from the status row. The result GeoJSON is
 // fetched separately when the job is done.
+// The route on the map when a job is attached (its job id and name): a job that fails or is cancelled leaves that
+// route on the map, so the page points back at it (Publish, Delete, the name bar act on it, not on the failed job).
+let _jobBeforeAttach = null;
+function _backToEarlierRoute() {
+  const shown = _jobBeforeAttach && routeSource.getFeatures().length;
+  _currentRouteJobId = shown ? _jobBeforeAttach.id : null;
+  _currentRouteName = shown ? _jobBeforeAttach.name : '';
+  _jobBeforeAttach = null;
+}
 function attachToJob(id, jobRow) {
+  // A reconnect to the same job keeps what was on the map before it.
+  if (_activeJobId !== id) _jobBeforeAttach = { id: _currentRouteJobId, name: _currentRouteName };
   _closeJobStream();
   _activeJobId = id;
-  _currentRouteJobId = id;
-  _currentRouteName = jobRow && jobRow.request ? (jobRow.request.name || '') : ((document.getElementById('routeName').value || '').trim());
   const btn = document.getElementById('findRoute');
   const statusEl = document.getElementById('status');
   btn.disabled = true;
   btn.textContent = 'Calculating…';
   statusEl.textContent = 'Computing route...';
+  // showModal clears the route on the map with its job id and name: this job's are set after it (PR #39 review: set
+  // before, they were cleared, so a new route's Publish, Delete, name and points of sail had no job).
   showModal();
+  _currentRouteJobId = id;
+  _currentRouteName = jobRow && jobRow.request ? (jobRow.request.name || '') : ((document.getElementById('routeName').value || '').trim());
   appendLog('job ' + id);
   if (jobRow && Array.isArray(jobRow.progress)) {
     // Backfill from the status row; the SSE replay adds the rest.
@@ -2359,6 +2407,7 @@ function _jobOnError(job, ev) {
     statusEl.textContent = cancelled ? 'Route cancelled.' : 'Error: ' + unitText(msg);
     RouteProgress.fail(cancelled ? 'Cancelled' : 'Failed: ' + unitText(msg));
     _computeUiIdle();
+    _backToEarlierRoute();
     showTab('logSection');
     const rawLog = document.getElementById('rawLog');
     if (rawLog) rawLog.open = true;
@@ -2376,7 +2425,7 @@ function _jobOnError(job, ev) {
       .then(j => {
         if (j.status === 'done') { appendLog('stream closed; job finished — loading result', 'done'); _computeUiIdle(); RouteProgress.hide(); _loadRouteJob(id); }
         else if (j.status === 'queued' || j.status === 'running') { appendLog('stream lost; reconnecting…', 'error'); setTimeout(() => attachToJob(id, j), 2000); }
-        else { appendLog('job ' + j.status + (j.error ? ': ' + j.error : ''), 'error'); RouteProgress.fail(j.status); _computeUiIdle(); }
+        else { appendLog('job ' + j.status + (j.error ? ': ' + j.error : ''), 'error'); RouteProgress.fail(j.status); _computeUiIdle(); _backToEarlierRoute(); }
       })
       .catch(e => { appendLog('Connection error: ' + e.message, 'error'); statusEl.textContent = 'Error: ' + e.message; RouteProgress.fail('Connection error'); _computeUiIdle(); });
   } else {

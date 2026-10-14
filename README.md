@@ -710,7 +710,7 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   a blocked one is blocked for the leg, by exact distance from the
   boundary, before anything is routed: the mesh route, the passage widths
   and the sailed stretches all keep it, and a passage narrower than twice
-  the buffer closes (the mesh then finds no route, or widens its box).
+  the buffer closes (the mesh then finds no route).
 - **Depth:** each waypoint of a mesh leg carries the charted depth of the
   triangle under it (`depth_m` in the GeoJSON, Depth in the itinerary); a
   waypoint on a depth contour reports the usable side.
@@ -728,19 +728,102 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   own mode: sailed under sail_max (tacks where needed, motor only below a
   positive threshold), walked under fastest; when it cannot be sailed the
   route fails naming the segment rather than motoring it.
-- **One end outside the mesh:** the leg runs on the mesh as far as the
-  first point after the last narrow passage that is open water with no
-  land within 5 km (and stays so at the next point), within 50 km of the
-  covered end, and the coastline search takes it from there (the corridor
-  cut at that point). A start off an open coast is therefore routed on
-  the mesh until it is 5 km out; a leg whose covered end is already open
-  water 5 km from any land has no mesh part. A leg still near land
-  after 50 km hands over there (the mesh part's memory limit), and the log
-  says so.
-- Anything the mesh cannot take (a start in a blocked triangle, no route)
-  is logged as a WARNING and the leg runs on the coastline search as
-  before. The mesh search runs in a child process that exits with the
-  leg, so its tile arrays never stay in Signal K's memory.
+- **One end outside the mesh:** the mesh decides wherever it has
+  triangles, the coastline data only where it has none. The router floods
+  the coastline's water from the leg's end outside the charts, on the
+  coastline search's own raster for the leg, never entering a cell a mesh
+  triangle covers; where that water meets a side of mesh water the boat
+  can use is an exit (a shoreline never is: beyond it is land, or water
+  that does not connect out). The mesh plans the leg from its stop to the
+  cheapest exit towards the far end, and the coastline search from there,
+  with the mesh's water as land, so it cannot come back into charted
+  water and never sees the stop.
+- **From one mesh to another.** A leg that starts in one district's mesh
+  and ends in another's stays on the charts. Where the two meshes overlap,
+  it changes meshes at a point both call usable for the boat: neighbouring
+  districts' charts disagree in a few percent of their overlap (one
+  calls the water usable, the other does not), and such water is never
+  used. The point is reached on the first mesh and connects on the second
+  to the end; the mesh plans the leg on the first mesh to it and on the
+  second from it, with no coastline search. Where the meshes do not connect
+  in their overlap, or do not overlap, the leg leaves the first mesh at an
+  exit and enters the second at an entry (found as for one end outside the
+  mesh, from both sides), with the coastline search between them and both
+  meshes' water as land. Both rough cuts are asked first whether such a
+  point, or such an exit and entry, exists at all, so a leg that cannot be
+  made fails without a long search (on the test box a two-district leg with
+  no way through took 16 s and 558 MB to say so). The log has a line
+  "chart mesh: the leg changes from … to … at …" or "… leaves … and enters
+  … at …".
+- **No search area.** The mesh search reads the chart a 0.25° tile at a
+  time, as it reaches each tile, and lets a tile go once nothing it still
+  has to look at lies there (read again if it comes back), so a route
+  that swings far from its ends (the Bahamas to the Gulf round the Keys,
+  Chicago to Lake Huron through the Straits of Mackinac) is found without
+  any box being chosen first. On the test box the longest legs held about
+  1.1 GB at most this way (31 legs, 2026-10-12). The sailed stretches and
+  the final depth check read the tiles the same way.
+- **The rough cut.** Each mesh has a rough cut for the boat: the usable
+  water as pieces, one set of connected triangles per tile, linked across
+  tile edges. It is built from the same tile reads as the mesh search
+  (the boat's draught and air draft, the buffer from unusable water, the
+  Drawbridges choice), so it connects two points exactly when the search
+  can; areas to avoid, which change per request, are applied to it at the
+  time of the request by recomputing the tiles they touch. Before a leg is
+  searched it answers: whether water connects the leg's points for this
+  boat (if not, the leg fails at once with that reason, no search), where
+  an approximate waypoint on water the boat cannot use is aimed (the
+  nearest usable water connected to the start, never a pond), where that
+  water runs (the forecast and currents are loaded over its tiles as well
+  as around the ends), and which triangles on each tile's edge the boat
+  cannot use, so the buffer carries across tile edges. An area to avoid in
+  the next tile is not carried across a tile edge by the buffer (its
+  triangles are still blocked). Rough cuts are built in a child process
+  after a mesh is downloaded or updated and on the configuration panel's
+  *Rebuild rough cuts* button (`POST /api/meshes/rough-cut`), for the
+  boat's Signal K draught and air draft and the Defaults buffer and
+  Drawbridges choice, and by a route that needs one not built yet (another
+  buffer, Drawbridges = Avoid on one request); never at start. They are
+  kept in `mesh-coarse/` in the plugin's data folder, two files (`.json`,
+  `.bnd`) per mesh build, draught, air draft, buffer and Drawbridges
+  choice; a rough cut of an earlier version is rebuilt.
+- **No coastline search inside the mesh.** A leg both of whose ends one
+  mesh holds is routed on the mesh or fails: when the mesh cannot take it
+  (no water connecting its ends, a start or end in a blocked triangle, a
+  stretch that cannot be made against the current, no draught or air
+  draft, the forecast still being decoded, the mesh process failing) the
+  route fails with that reason; it is no longer handed to the coastline
+  search, which knows no depths. One case still uses the coastline search
+  for now: a leg through waypoint circles (Approximate precision) whose
+  points are not all in one mesh; the final depth check still applies.
+- **Approximate waypoints on the mesh.** A leg through waypoint circles
+  (Approximate precision) is planned on the mesh like any other: the mesh
+  route runs from the start to the first circle, on from where it entered
+  it to the next, and so on to the end; narrow passages are motored along
+  it, and each open stretch is sailed by the open-water router, which must
+  pass through the circles on that stretch (where it cannot, the stretch
+  follows the mesh route, which passes through them). The point where the
+  route reaches each circle is marked as the waypoint. A waypoint on water
+  the boat cannot use (land, shallows, a pond cut off from the route) is
+  aimed at the nearest usable water connected to the start; when that
+  lies outside the waypoint's circle the log says so in a WARNING with the
+  distance and position.
+- **Final depth check.** Every finished route, whatever planned it, is
+  walked through every mesh it meets, segment by segment and triangle by
+  triangle (the walk the routers test their moves with), against the same
+  rules: depth, clearance, rocks and wrecks, marks, structures, opening
+  bridges under Drawbridges = Avoid, areas to avoid (no buffer). A route
+  that crosses any triangle the boat cannot use fails, naming the places
+  and what blocks them; nothing unchecked is returned. Water with no
+  charted depth and depths inside fairways, dredged areas and recommended
+  tracks pass, as the blocking rules pass them. Where two meshes overlap,
+  a stretch either one blocks fails, whichever covers it first. Where the
+  route leaves the mesh the stretch is counted, not judged. The log has a "depth check:"
+  line, and the result strip a *Chart depth checked* line: the shallowest
+  charted depth crossed, the distance with no charted depth and the
+  distance outside the mesh.
+- The mesh search and the depth check run in child processes that exit
+  with their work, so their tile arrays never stay in Signal K's memory.
 
 The mesh files are built outside the plugin by the s57Work chart build
 (binary tiles plus an `index.json`; the format is documented in
@@ -751,9 +834,17 @@ once with the panel's "Check for updates" button
 (`POST /api/meshes/refresh`). The panel's per-mesh buttons (Download,
 Update, Download again, Remove, Cancel; `POST /api/meshes/{name}/{action}`)
 change the download list at once, without a restart. A leg is covered when one downloaded mesh (or the
-`meshDir` folder) holds its points, and that mesh is used.
+`meshDir` folder) holds its points, and that mesh is used; a leg whose ends
+lie in two meshes uses both (above).
 The job log says what the mesh did ("chart mesh: …") and the summary's
-`mesh` is true when any leg used it.
+`mesh` is true when any leg used it. When a mesh meets the route, the
+summary's `depth_checked` is true and `legs_detail` gives, per leg, what
+planned it (`mesh`, `coastline`, or `mixed` for a leg partly on the
+coastline search: leaving the charts, or between two meshes across water
+neither charts), the
+metres on the mesh, with no charted depth and outside the mesh, and the
+shallowest charted depth crossed with its position; the route's GeoJSON
+carries the same as `depth_check`.
 
 ### Open-water router: Standard or Refined
 
@@ -920,15 +1011,28 @@ not the nearest one: branches advance a fixed distance per stage, so a
 slow branch crawling straight at the waypoint is nearest while faster
 branches that tacked are further out but ahead in time.
 
-Every stop (start, waypoints, destination) is tested against the exact
-coastline polygons before routing. One on land, or within 150 m of the
-shore, is moved to the nearest point with 150 m of water around it, within
-1,000 m, and reported: in the log (which point, how far), on
+Every stop (start, waypoints, destination) is tested before routing. In
+water a chart mesh covers, the mesh decides: the start, the destination and
+exact waypoints on water the boat cannot use (too shallow, a hazard, mark,
+structure, low clearance or area to avoid, within the buffer from unusable
+water, or on land) or on water that does not connect to the route (a pond
+the boat cannot leave) are moved to the nearest water the boat can use that
+connects to the route, within 1,000 m; a move out of unconnected water is
+logged as a WARNING. The moved point lies on the edge of the unusable water,
+so a moved waypoint or destination is reached on coming within the distance
+it was moved (its leg ends on that circle, as an approximate waypoint's
+does), not exactly: a boat under sail alone may have no room to beat the
+last metres into a corner of a shoal. Approximate waypoints are not moved: their circle is
+aimed at usable water when the leg is planned. Outside the meshes, a stop
+is tested against the exact coastline polygons: one on land, or within
+150 m of the shore, is moved to the nearest point with 150 m of water around
+it, within 1,000 m. Either way the move is reported: in the log (which point, how far), on
 the route (`snaps`, `stop_count`, the `start_`/`end_` original, anchor and
 snap-distance fields) and on the moved point (`snap_distance_m`,
 `original`); the web app draws the tie from the drawn point to the water
-and the itinerary says "moved N m". With no water within 1,000 m the
-route fails naming the point.
+and the itinerary says "moved N m". With no such water within 1,000 m the
+route fails naming the point (on the mesh, also the nearest usable water and
+its distance).
 
 Polar rows closer to the wind than the **Tightest sailable angle**
 setting (Defaults tab, Routing group, default 30°, 0 = off) are ignored
@@ -1492,7 +1596,7 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | Field | Type | Unit | Default | Limits and notes |
 |---|---|---|---|---|
 | `start` | `{lat, lon}` | degrees | required | both numbers |
-| `end` | `{lat, lon}` | degrees | required | both numbers; always reached exactly |
+| `end` | `{lat, lon}` | degrees | required | both numbers; reached exactly, unless the chart mesh's snap moved it: then reached on coming within the distance it was moved (see the stops above) |
 | `waypoints` | array of `{lat, lon, radius_m?}` | degrees, m | none | at most 20; each ends one leg and starts the next ([Waypoints](#waypoints-legs)). `radius_m` 0..5000, overrides `arrival_radius_m` for that waypoint, and must be > 0 with `"approximate"` |
 | `precision` | `"precise"` or `"approximate"` | | `"precise"` | `precise`: each leg ends exactly on its waypoint; `approximate`: the route only has to pass through the waypoint's circle; consecutive approximate waypoints are normally routed as one search through their circles in order, and leg by leg when no branch passes through all of them |
 | `arrival_radius_m` | number | m | 200 | 0..5000; must be > 0 with `"approximate"`. Ignored in precise mode and for the destination |
