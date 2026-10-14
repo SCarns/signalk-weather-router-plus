@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0-beta.2] - 2026-10-13
+
 ### Changed
 
 - **No coastline fallback inside a chart mesh** (the owner's rule,
@@ -33,39 +35,59 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **From one district's mesh to another** (docs/drafts/mesh-no-gshhg-design.md
-  part 5 step 2; `engine/mesh/transfer.ts`, `plugin/meshtransfer.ts`, child
-  task `mesh-transfer`, `pipeline.ts` `meshTransferLeg`): a leg whose ends
-  lie in two meshes stays on the charts. In their overlap it changes meshes
-  at a triangle of the first whose centre the second also calls usable and
-  connects to the end (the cheapest by `meshAstar` with the transfer test
-  as its goals); the leg is the first mesh's part to it and the second's
-  from it. Where they do not connect in the overlap, the first mesh's exit
-  and the second's entry, with the coastline's water between them flooded
-  from the second mesh's edge water connected to the end, and the coastline
-  search between them with both meshes' water as land. Both rough cuts are
-  asked first, tile by tile (`PieceGraph.tilesOf`), whether a transfer
-  point or an exit and entry can exist; only then is anything searched. On
-  the test box: Charleston → the Chesapeake entrance (07CGD → 05CGD)
-  changed meshes at 32.9928, -79.2471 in 6.2 s, 512 MB peak; a Miami →
-  New Orleans test with no way through failed in 16.1 s, 558 MB (289 s and
-  3.1 GB before the rough-cut checks). Replaces the GSHHG handover for these
-  legs, which routed them on the coastline search inside mesh water.
-- **Leaving the charts** (docs/drafts/mesh-no-gshhg-design.md part 5;
-  `engine/mesh/exit.ts`, `plugin/meshexit.ts`, child task `mesh-exit`): a
-  leg with one end in a mesh and the other outside every mesh crosses where
-  the mesh's water meets the coastline's water that reaches the far end
-  (flooded on the coastline search's own raster, never through a mesh
-  triangle); the mesh part runs to the cheapest such exit
-  (`meshAstar` with exits), the coastline part from it with the mesh's
-  water as land (`LandMask.withExtraLand`). Replaces the GSHHG-corridor
-  handover for these legs, which started the corridor at the stop: a
-  harbour stop on GSHHG's land failed ("start point … is on land",
-  Marquette replays) once part 2 stopped GSHHG moving stops in mesh water.
-  Only edge water the rough cut connects to the stop counts as an exit,
-  looked for in the tiles holding that water; with none the leg fails
-  before any search (a search with no reachable exit read every triangle
-  connected to the stop first).
+- **Across the limits of the charts** (docs/drafts/mesh-no-gshhg-design.md
+  part 5; `engine/mesh/waters.ts` `planWaters`, `plugin/meshwaters.ts`, child
+  task `mesh-waters`, `pipeline.ts` `chartsLeg`). Any leg whose area a chart
+  mesh meets is planned through the waters it crosses: a leg leaving the
+  charts, entering them, crossing open water between them (out-in-out,
+  in-out-in), or going from one district's mesh to another. The mesh decides
+  wherever it has triangles; the coastline search plans only water outside
+  every mesh, with every mesh's water as land; a leg moves between them only
+  where a mesh's usable water meets open water (an exit or entry,
+  `engine/mesh/exit.ts`), or between two meshes where both call the water
+  usable (a transfer, from the joins below). The way taken has the fewest
+  changes between charts and open water, then the fewest transfers between
+  meshes; ways still tied are each planned and the cheapest taken (the
+  owner's choices, 2026-10-13). The charts alone are tried first and the
+  open-water map is built only when they hold no way (test box: Charleston →
+  Chesapeake changed meshes in 4.8 s; the open-water map alone took 29.8 s).
+  Replaces the exit and transfer handovers built earlier in this release
+  (`pipeline.ts` `meshExitLeg`, `meshTransferLeg`, now removed; the files
+  `engine/mesh/transfer.ts`, `plugin/meshexit.ts`, `plugin/meshtransfer.ts`
+  and their child tasks are left in place, unused by the pipeline). A leg no
+  mesh comes near is the coastline search's, as before.
+- **Joins between meshes** (`engine/mesh/joins.ts`, child task `mesh-joins`):
+  which piece of one mesh's water joins which piece of another's for this
+  boat, recorded per pair and direction when a rough cut is built (both
+  directions differ: 01CGD → 05CGD 192 piece joins, 05CGD → 01CGD 79) and
+  read by the planner; tiles an area to avoid recomputes are scanned again
+  under the request. Rough-cut builds with joins on the test box: 01CGD 47 s,
+  05CGD 80 s, 07CGD/w090n17 146 s, 08CGD 124 s.
+- **Refined router: motor if stuck** (`experimental/propagator.ts` `layOut`;
+  the owner's choice, 2026-10-13): with a sail threshold above 0, a beat the
+  tack layout cannot tack in the water there is timed straight by the
+  simulator, which motors in the no-go angle, as the standard router does,
+  with a WARNING naming it. At a threshold of 0 such a beat still fails the
+  route (test box: the Cape Cod Canal replay 7306dc97, an open issue).
+- **Tile builders finish their own tiles** (`plugin/worker/query.ts`
+  `buildTile`, `TileStore.adopt`, message `build-tile`): a prebuilt tile is
+  answered, encoded and written to a temporary file beside it by the builder
+  process; Signal K's main thread only checks the data generation and moves
+  the file into place (a tile built while the data changed is deleted).
+  Before, every prebuilt answer crossed to the main thread, which encoded and
+  wrote it. Test box, 180 s each: Signal K's main thread 41.3 % → 31.9 % of a
+  core, the whole process 68.7 % → 43.2 %, 124 → 183 tiles a second (not the
+  same tiles: indicative).
+- **The prebuild follows the map's whole view** (`plugin/prebuild.ts`
+  `ViewTracker`): the view is taken from a burst of tile requests once no new
+  tile has come for 5 s, as the middle of all its distinct tiles at its
+  deepest zoom; a view shallower than zoom 6 (the shallowest built) leaves
+  the last view as it is. Before, the view was the deepest zoom asked for in
+  the last 5 s: with a zoomed-out Atlantic view's tiles answered in 12–21 s,
+  that was its north-east corner tile, and the prebuild built northwest
+  Russia down to zoom 15 for every hour (test box, 2026-10-13). Test box
+  after: the view followed the map to Jamnagar, the Strait of Messina and the
+  Channel Islands, each the middle of the map's own requests.
 - **A stop the mesh snap moved is reached on its circle** (`multileg.ts`
   `Stop.snapped`; the owner's choice): a moved waypoint or destination
   becomes approximate, its circle the distance it was moved, in either
@@ -191,6 +213,28 @@ uses [Semantic Versioning](https://semver.org/).
   skeleton, fronts, strip, name; the markers stay); a failed request leaves
   no route on the map (the owner's choice, 2026-10-12, replacing the
   earlier-route mark).
+
+### Fixed
+
+- **A point's triangle in any tile that reaches it** (`engine/mesh/paged.ts`
+  `tilesAt`): the lookup searches every tile whose extent holds the point.
+  It searched the 3 × 3 index cells round the point, and missed a triangle
+  about 40 km across in 07CGD's tile (4, 42) covering a point two cells away,
+  and two joins in the Gulf for the same reason (test box, 2026-10-13). A
+  point a hair west or south of a tile's extent (a lon/lat round trip) is
+  found too: the lookup grid's cell is clamped and the triangle test decides.
+- **The nearest usable water lets go of what it scans**
+  (`PagedMesh.nearestUsable`): the tiles it reads are dropped once checked,
+  but the one holding its answer; with a filter (water connected to the
+  route) it could otherwise hold every tile of a district mesh.
+- **Web app:** a new route keeps its job: Publish, Delete, the name bar and
+  the points of sail work on it (the job's id and name were cleared as the
+  request started). A request that fails leaves no route behind: the plan
+  hint no longer says "Click the route" and GPX does not export the previous
+  route.
+- **README:** the `POST /api/routes` table says a destination the chart
+  mesh's snap moved is reached within the distance it was moved, not
+  exactly.
 
 ## [0.2.0-beta.1] - 2026-10-09
 
@@ -1697,7 +1741,8 @@ builds before this release, with their measurements, is in
   loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.1...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.2...HEAD
+[0.2.0-beta.2]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.1...v0.2.0-beta.2
 [0.2.0-beta.1]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.2-beta.1...v0.2.0-beta.1
 [0.1.2-beta.1]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.1...v0.1.2-beta.1
 [0.1.1]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.0-beta.9...v0.1.1

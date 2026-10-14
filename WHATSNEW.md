@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## 0.2.0-beta.2
+
+- **Trips across the edge of the charts.** A trip that leaves the charts,
+  comes into them, crosses open water between two charted areas, or goes from
+  one Coast Guard district's charts to the next is now routed on the charts
+  wherever they have water, and on the coastline routing only outside them.
+  It never takes the coastline routing into charted water, where it knows
+  nothing of the depths. Where two ways are equally good, both are worked out
+  and the faster one taken.
+- **Where the charts meet.** The plugin records, for your boat, where one
+  district's charts join the next. It does this when it builds the small map
+  of usable water after a chart download; *Rebuild rough cuts* on the plugin
+  configuration page builds it again.
+- **A beat that cannot be tacked is motored** (refined router, sail threshold
+  above 0): where the tacks would lead into a corner the water closes round,
+  that stretch is motored, as the standard router does, and the log says so.
+  With the sail threshold at 0 the route still fails there.
+- **Lighter map tiles in advance.** The tiles drawn ahead of time are now
+  finished by the background programs that draw them, so Signal K itself does
+  less of the work (on the test box its main thread went from 41 % to 32 % of
+  a core while tiles were built, and tiles were built faster).
+- **Tiles drawn where you look.** The plugin now works out where your map is
+  looking from everything it asked for, not the last few tiles: a zoomed-out
+  view of the whole ocean no longer sends it off drawing tiles for one corner
+  of it. Zoomed out that far, it keeps drawing where you last looked closer.
+- **Fixes:** a newly computed route can be published, deleted, named and
+  exported straight away; a request that fails no longer leaves the old route
+  in the GPX export.
 - **No more quiet detours over shallow water.** Until now, when the
   charts could not route a leg, the plugin quietly used the coastline
   routing instead, which knows nothing about depths, and a route could
