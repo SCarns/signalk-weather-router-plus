@@ -200,3 +200,60 @@ test('hasStep: the forecast at its steps, currents at an RTOFS or SMOC step or e
   // Tide height and the coastline: every hour.
   assert.ok([0, 1, 2].every(h => hasStep('tide', at(h), base) && hasStep('land', at(h), base)));
 });
+
+test('walk: a view builds the tiles the map showed, at its zoom; the boat its pyramid', async () => {
+  const { TilePrebuilder, coveringTiles } = await import('./prebuild');
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-prebuild-'));
+  const H = 3_600_000;
+  const t0 = Date.UTC(2026, 9, 14, 0);
+  try {
+    const pb = new TilePrebuilder(
+      { enabled: true, radiusM: 50_000, windowS: null, maxZoom: 9, workers: 1, followView: true },
+      {
+        store: null as never,
+        dataDir: dir,
+        workerPath: '',
+        execArgv: [],
+        initMessage: () => ({ type: 'shutdown' }),
+        replayMessages: () => [],
+        vesselPosition: () => null,
+        lastHourMs: () => t0 + 3 * H,
+        atStep: () => true,
+        layerAvailable: () => true,
+        busy: () => false,
+        log: () => undefined,
+        error: () => undefined,
+      }
+    );
+    const shown = screen(11, -71.6, 41.2, 3, 2);
+    const walk = (
+      pb as unknown as { tiles: (...a: unknown[]) => Iterable<{ t: { layer: string; z: number; x: number; y: number } }> }
+    ).tiles(
+      [
+        { kind: 'view', lat: 41.19, lon: -71.58, z: 11, tiles: shown },
+        { kind: 'boat', lat: 40.65, lon: -73.98 },
+      ],
+      ['wind', 'msl'],
+      t0,
+      Infinity
+    );
+    const view = new Set<string>();
+    const boat = new Set<string>();
+    let msl = 0;
+    let inView = true;
+    for (const { t } of walk) {
+      if (t.layer === 'land' && t.z === 6) inView = false; // the boat's pyramid starts at zoom 6
+      if (t.layer === 'msl') msl++;
+      else (inView ? view : boat).add(`${t.layer}/${t.z}/${t.x}/${t.y}`);
+    }
+    const want = new Set(shown.flatMap(({ x, y }) => [`land/11/${x}/${y}`, `wind/11/${x}/${y}`]));
+    assert.deepEqual([...view].sort(), [...want].sort(), 'the view: its own tiles at zoom 11, land and wind, nothing else');
+    assert.ok([...boat].some(k => k.startsWith('wind/6/')) && [...boat].some(k => k.startsWith('wind/9/')), 'the boat: zoom 6 to 9');
+    assert.ok(msl > 0 && coveringTiles(11, shown, 5).length >= 1, 'isobars over the view at their own zoom');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
