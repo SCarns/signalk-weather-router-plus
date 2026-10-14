@@ -450,6 +450,8 @@ function _loadRouteJob(id) {
   authFetch(API + '/routes/' + encodeURIComponent(id) + '/result', { cache: 'no-store' }, 'route-load')
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(geojson => {
+      // Another route opened while this body was still being read (the channel cancels only the request): dropped.
+      if (_currentRouteJobId !== id) return;
       displayRoute(geojson);
       _displayedJobId = id;   // a Publish of this saved route writes its itinerary too
       _useRouteAngles(id);
@@ -478,6 +480,7 @@ function _loadRouteJob(id) {
       showTab('itinerarySection');
     })
     .catch(err => {
+      if (_currentRouteJobId !== id) return;   // another route was opened meanwhile
       console.error('Failed to load route:', err);
       const st = document.getElementById('status');
       if (st) st.textContent = 'Could not load route: ' + err.message;
