@@ -7,7 +7,8 @@
  * route's rules (route.ts blockedTriangles: depth, clearance, hazard,
  * mark, structure, opening bridge under Drawbridges = Avoid, area to
  * avoid; no buffer: the buffer is a margin, not a depth) is a violation;
- * the caller fails the route on any. Where no mesh triangle is, the
+ * the caller repairs the segment it is on (worker/route.ts
+ * repairViolations) and fails the route on any left. Where no mesh triangle is, the
  * stretch is counted as outside the mesh and not judged: a mesh edge with
  * no neighbour is either land or the end of the charts, and the mesh does
  * not say which (part 5).
@@ -44,6 +45,8 @@ export type ViolationKind = 'depth' | 'hazard' | 'clearance' | 'opening bridge' 
 /** The first triangle of a run of blocked triangles along the route. */
 export interface DepthViolation {
   leg: number;
+  /** The route segment it is on: waypoint `segment` → `segment + 1` of the checked path (for the repair). */
+  segment: number;
   lon: number;
   lat: number;
   kind: ViolationKind;
@@ -67,6 +70,8 @@ interface Piece {
   a: [number, number];
   b: [number, number];
   leg: number;
+  /** The path segment the piece is cut from (path[seg] → path[seg + 1]). */
+  seg: number;
   lengthM: number;
   /** Covered stretches as fractions of the piece [from, to), each with what covers it, in walking order per store. */
   covered: { f0: number; f1: number; tri: TriInfo }[];
@@ -101,7 +106,7 @@ function cutPieces(path: [number, number][], legOf: number[]): Piece[] {
     for (let i = 0; i < n; i++) {
       const p0: [number, number] = [a[0] + ((b[0] - a[0]) * i) / n, a[1] + ((b[1] - a[1]) * i) / n];
       const p1: [number, number] = [a[0] + ((b[0] - a[0]) * (i + 1)) / n, a[1] + ((b[1] - a[1]) * (i + 1)) / n];
-      out.push({ a: p0, b: p1, leg: legOf[k - 1], lengthM: len / n, covered: [] });
+      out.push({ a: p0, b: p1, leg: legOf[k - 1], seg: k - 1, lengthM: len / n, covered: [] });
     }
   }
   return out;
@@ -236,7 +241,7 @@ export function checkRouteOnMeshes(
       if (c.tri.blocked) {
         if (!inRun || c.f0 > lastEnd + 1e-9) {
           const [lon, lat] = at(p, c.f0);
-          violations.push({ leg: p.leg, lon, lat, kind: c.tri.blocked, value: c.tri.value });
+          violations.push({ leg: p.leg, segment: p.seg, lon, lat, kind: c.tri.blocked, value: c.tri.value });
         }
         inRun = true;
       } else inRun = false;

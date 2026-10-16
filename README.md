@@ -626,6 +626,8 @@ water grid:
    the Strait of Gibraltar, far outside the box around the endpoints).
    The route's land raster, the CMEMS SMOC area loaded for the route and
    the first-boot forecast crop cover the corridor's box plus 1°.
+   Outside that box nothing is loaded, so the router treats it as land:
+   a route never leaves the box.
 2. **Consistency with the route raster.** A flood fill on the route's
    (conservative) land raster, inside a band of grid cells along the
    corridor, must connect start and end. Where it stops, because the
@@ -806,9 +808,15 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   walked through every mesh it meets, segment by segment and triangle by
   triangle (the walk the routers test their moves with), against the same
   rules: depth, clearance, rocks and wrecks, marks, structures, opening
-  bridges under Drawbridges = Avoid, areas to avoid (no buffer). A route
-  that crosses any triangle the boat cannot use fails, naming the places
-  and what blocks them; nothing unchecked is returned. Water with no
+  bridges under Drawbridges = Avoid, areas to avoid (no buffer). Each
+  segment that crosses a triangle the boat cannot use is routed again
+  with the same leg search (sail threshold 0, so the detour motors only
+  where sailing cannot move the boat) and the detour spliced in, the
+  waypoints after it moved by the time it added; the route is then
+  checked again (at most 2 passes and 5 detours). A detour that motors on
+  a sailing route is a `detour_motored` warning. A route that still
+  crosses such a triangle fails, naming the places and what blocks them;
+  nothing unchecked is returned. Water with no
   charted depth and depths inside fairways, dredged areas and recommended
   tracks pass, as the blocking rules pass them. Where two meshes overlap,
   a stretch either one blocks fails, whichever covers it first. Where the
@@ -1292,7 +1300,7 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 | Group | Settings (default) | A change… |
 |---|---|---|
 | `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2) | applies to the next route |
-| `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
+| `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (15 min = 900 s; an existing settings.json keeps its value), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
 | `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), tacking penalty (30 s, charged per tack or gybe by both routers), buffer from land (0 m: the route keeps at least this far from the coastline; a start or end closer is moved out to it, a passage narrower than twice it closes), buffer from unusable water (0 m: on a mesh leg the route keeps at least this far from every triangle the boat cannot use), drawbridges (ask: plan as open and report the ones crossed; open; avoid), wait at a drawbridge (0 s), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (off), comfort weight (1, 0 = off), shortcut may be slower by (0.05 = 5%), finished routes kept (50), max wind (none), max wave height (none) | applies to the next route |
@@ -1798,7 +1806,7 @@ LineString `properties`:
 | `arrival` | string | ISO 8601 | |
 | `waypoint_count` | number | count | route points |
 | `validated` | boolean | | |
-| `repairs_applied` | number | count | always 0 |
+| `repairs_applied` | number | count | detours the final depth check spliced in |
 | `smoother_drops` | number | count | points the shortcut smoother removed |
 | `forecast_cycle` | string | ISO 8601 | when a forecast was used |
 | `auto_vias` | `[{name, lat, lon, width_m, radius_m}]` | degrees, m | automatic vias; present when any |
@@ -1813,7 +1821,7 @@ LineString `properties`:
 | `stop_count` | number | count | start + waypoints + destination; present with `snaps` |
 | `start_original`, `start_anchor`, `start_snap_distance_m` | `[lon, lat]`, `[lon, lat]`, number | degrees, m | present when the start was moved: the drawn point, where the route starts, and the distance between them |
 | `end_original`, `end_anchor`, `end_snap_distance_m` | as above | | present when the destination was moved |
-| `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired}`, `violation` `"leg_crosses_land"` or `"leg_too_shallow"`, `from`/`to` `[lon, lat]` |
+| `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired, detail?}`, `violation` `"leg_crosses_land"`, `"wind_over_limit"`, `"waves_over_limit"` or `"detour_motored"` (a depth-check detour that motored on a sailing route; `detail` its motoring time, seconds), `from`/`to` `[lon, lat]` |
 | `land_crossings` | number | count | present when a warning is `leg_crosses_land` |
 | `has_land_crossing` | boolean | | `true` when `land_crossings` is present |
 | `max_swh_m` | number | m | highest significant wave height at a route point; present when wave data was sampled |

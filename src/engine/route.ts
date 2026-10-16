@@ -62,10 +62,13 @@ export interface Waypoint {
 
 export interface RouteWarning {
   leg_index: number;
-  violation: 'leg_crosses_land' | 'wind_over_limit' | 'waves_over_limit';
+  /** `detour_motored`: a chart-mesh repair detour (worker/route.ts repairViolations) that had to motor because sailing could not move the boat there. */
+  violation: 'leg_crosses_land' | 'wind_over_limit' | 'waves_over_limit' | 'detour_motored';
   from: [number, number];
   to: [number, number];
   repaired: boolean;
+  /** detour_motored: the motoring time, seconds. */
+  detail?: string;
 }
 
 export interface FrontPoint {
@@ -104,6 +107,8 @@ export interface Route {
   sailingTimeS: number;
   warnings?: RouteWarning[];
   validated: boolean;
+  /** Detours the chart-mesh repair spliced in (worker/route.ts repairViolations). */
+  repairsApplied?: number;
   /** Set by the caller when the route runs past the forecast's last step. */
   forecastHorizonExceededS?: number;
   /** The forecast's last valid step (ms since epoch), set by the caller; waypoints after it ran on held conditions. */

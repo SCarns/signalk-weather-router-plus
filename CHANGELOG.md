@@ -6,6 +6,16 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Routes no longer cross land outside the route's box**
+  (`geo/landmask.ts`): a point or leg outside the land raster's box was
+  counted as water, and with no coastline loaded there, routes went over
+  islands (Caribbean, 2026-10-15: Aruba, Curaçao, Bonaire, Venezuela,
+  Barbados); each such check also scanned every coastline ring near the
+  leg (up to 1.8 s a check; the polish took 9 minutes on that route).
+  Outside the box is now land.
+
 ## [0.2.0-beta.2] - 2026-10-13
 
 ### Changed
