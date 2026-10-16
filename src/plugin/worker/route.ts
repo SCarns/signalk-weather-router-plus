@@ -587,6 +587,8 @@ export async function route(
         const rules: MeshRules = {
           draughtM: vessel.draughtM,
           airDraftM: vessel.airDraftM,
+          underKeelClearanceM: vessel.underKeelClearanceM,
+          overheadClearanceM: vessel.overheadClearanceM,
           motorSpeedMs: vessel.motorSpeedMs,
           bufferM: cfg.routing.navigableBufferM,
           openingBridges: (request.drawbridges ?? cfg.routing.drawbridges) === 'avoid' ? 'avoid' : 'open',
@@ -1099,7 +1101,7 @@ function violationText(v: DepthViolation): string {
 async function finalDepthCheck(
   route: Route,
   meshes: OpenMesh[],
-  vessel: { draughtM: number | null; airDraftM: number | null },
+  vessel: { draughtM: number | null; airDraftM: number | null; underKeelClearanceM: number; overheadClearanceM: number },
   rules: Pick<CheckRules, 'openingBridges' | 'avoid'>,
   progress: (stage: number, total: number, message: string) => void,
   shouldCancel: () => boolean,
@@ -1154,7 +1156,13 @@ async function finalDepthCheck(
           path,
           legOf,
           legCount,
-          rules: { draughtM, airDraftM, ...rules },
+          rules: {
+            draughtM,
+            airDraftM,
+            underKeelClearanceM: vessel.underKeelClearanceM,
+            overheadClearanceM: vessel.overheadClearanceM,
+            ...rules,
+          },
         },
         10 * 60_000,
         ac.signal
@@ -1180,7 +1188,7 @@ async function finalDepthCheck(
     const more = check.violations.length > 3 ? `; and ${check.violations.length - 3} more place(s)` : '';
     const tried = route.repairsApplied ? ` (after ${route.repairsApplied} detour(s))` : repair ? ' (no detour cleared it)' : '';
     throw new RouteError(
-      `the route crosses water the chart mesh says this boat cannot use${tried} (draught {depth:${draughtM}}, so at least {depth:${draughtM + 0.5}} of water; air draft {length:${airDraftM}}): ${first}${more}`
+      `the route crosses water the chart mesh says this boat cannot use${tried} (draught {depth:${draughtM}}, so at least {depth:${draughtM + vessel.underKeelClearanceM}} of water; air draft {length:${airDraftM}}): ${first}${more}`
     );
   }
   const sum = (f: (l: LegDepth) => number): number => check.legs.reduce((a, l) => a + f(l), 0);

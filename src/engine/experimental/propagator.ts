@@ -269,7 +269,7 @@ export class ExperimentalPropagator {
     // backtracking in the layout; the route fails and names the setting that lets it motor out).
     const stuck = (what: string): RouteError =>
       new RouteError(
-        `${env.who}: ROUTE FAILED: ${what}. Min sail speed is 0 (never motor), so the boat may not motor where it cannot tack: set Min sail speed above 0`
+        `${env.who}: ROUTE FAILED: ${what}. Min sail speed is 0 (never motor), so the boat may not motor where it cannot tack: set Min sail speed above 0; ${env.advice}`
       );
     const pts: Waypoint[] = [];
     let at: Waypoint = a;

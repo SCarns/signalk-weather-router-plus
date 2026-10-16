@@ -710,7 +710,7 @@ settings; a request can override them with
   crosses and stopping at the first one the boat cannot use (charted depth
   under the draught + the under-keel clearance off a fairway, clearance
   under the air draft + the overhead clearance, a rock or wreck shallower
-  than that or uncharted, a mark, a
+  than the draught + the under-keel clearance or uncharted, a mark, a
   structure, an area to avoid), the same test the mesh route is built
   with. That process reads the forecast window, the regional wind runs,
   the cached currents (RTOFS, CMEMS SMOC, harmonics) and the polar from
