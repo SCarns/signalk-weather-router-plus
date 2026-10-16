@@ -89,6 +89,10 @@ export interface RouteRequest {
     draught_m?: number;
     /** Air draft, m (default: Signal K design.airHeight). */
     air_draft_m?: number;
+    /** Water kept under the keel on chart-mesh legs, m (default: the Under-keel clearance setting). */
+    under_keel_clearance_m?: number;
+    /** Headroom kept above the mast on chart-mesh legs, m (default: the Overhead clearance setting). */
+    overhead_clearance_m?: number;
   };
 }
 

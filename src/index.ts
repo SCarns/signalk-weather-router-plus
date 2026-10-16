@@ -272,6 +272,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
     const rules = coarseRulesOf({
       draughtM: self.draughtM,
       airDraftM: self.airDraftM,
+      underKeelClearanceM: config.vessel.underKeelClearanceM,
+      overheadClearanceM: config.vessel.overheadClearanceM,
       bufferM: config.routing.navigableBufferM,
       openingBridges: config.routing.drawbridges === 'avoid' ? 'avoid' : 'open',
     });

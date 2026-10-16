@@ -58,7 +58,22 @@ test('check: water too shallow for the draught is a violation at the place it st
     assert.equal(v.kind, 'depth');
     assert.equal(v.value, 1);
     assert.equal(v.leg, 0);
+    assert.equal(v.segment, 0);
     assert.ok(Math.abs(v.lon - 1) < 1e-3 && Math.abs(v.lat - 0.1) < 1e-9, `${v.lat}, ${v.lon}`);
+  });
+  // The same crossing as three segments: the violation names the segment it is on.
+  withMesh([10, 10, 1, 1], undefined, store => {
+    const path: [number, number][] = [
+      [0.25, 0.1],
+      [0.75, 0.1],
+      [1.25, 0.1],
+      [1.75, 0.1],
+    ];
+    const r = checkRouteOnMeshes([store], path, [0, 0, 0], 1, RULES);
+    assert.deepEqual(
+      r.violations.map(v => v.segment),
+      [1]
+    );
   });
   // Depths are per tile lower, upper. The lower triangles shallow, the upper deep: A's lower from the start, B's upper
   // (lon 1–1.1) deep, B's lower from lon 1.1: two runs.
@@ -141,4 +156,16 @@ test('check: where two meshes overlap, a stretch either one blocks is a violatio
       }
     })
   );
+});
+
+test('check: the under-keel clearance is the vessel margin, 0.5 m when absent', () => {
+  // 2.6 m of water for a 2 m draught: clear at the default 0.5 m, too shallow at 1 m.
+  withMesh([2.6, 2.6, 2.6, 2.6], undefined, store => {
+    assert.deepEqual(checkRouteOnMeshes([store], ACROSS, [0], 1, RULES).violations, []);
+    const deeper = checkRouteOnMeshes([store], ACROSS, [0], 1, { ...RULES, underKeelClearanceM: 1 });
+    assert.equal(deeper.violations.length, 1);
+    assert.equal(deeper.violations[0].kind, 'depth');
+    // Depths are float32 on disk (2.6 reads 2.5999999): 0.55 m still clears.
+    assert.deepEqual(checkRouteOnMeshes([store], ACROSS, [0], 1, { ...RULES, underKeelClearanceM: 0.55 }).violations, []);
+  });
 });

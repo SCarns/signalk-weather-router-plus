@@ -50,6 +50,7 @@ import { runChildTask } from '../childtask';
 import type { MeshLegTask } from '../meshlegtask';
 import { regionalRunsFor } from './regionalwind';
 import { smocSettings } from './currents';
+import type { ArcoLayout, ArcoResolution } from '../../data/arco';
 import { localMeshes, meshesToOpen, readyMeshDirs } from '../meshes';
 import { beamFor, DEFAULT_SEARCH } from '../../engine/search/presets';
 
@@ -144,7 +145,7 @@ function meshLegRunner(
   request: RouteRequest,
   stores: OpenMesh[],
   /** The SMOC area and steps loadAreas loaded for the current leg; the mesh process asks for exactly these. */
-  smocLeg: () => { area: BBox; steps: number[] } | null
+  smocLeg: () => { area: BBox; steps: number[]; as: { res: ArcoResolution; layout: ArcoLayout } | null } | null
 ): MeshLegRunner | undefined {
   if (!stores.length) return undefined;
   const meshFor = (points: [number, number][]): (typeof stores)[number] | undefined => stores.find(s => meshCovers(s.store, points));
@@ -760,8 +761,12 @@ export async function route(
     // Forecast area and SMOC area for a box, held until releaseAreas().
     // The SMOC box and steps loaded for the leg: the mesh process reads the
     // same from the disk cache, so both sides ask for one area and one step
-    // list and the chunks it wants are the ones written here.
-    let smocLeg: { area: BBox; steps: number[] } | null = null;
+    // list and the chunks it wants are the ones written here. `as`: the
+    // resolution and layout of the area that answered (often the resident
+    // area, loaded from its own layout): the mesh process loads the same, as
+    // the chunks of the layout it would choose for the leg box alone may never
+    // have been downloaded.
+    let smocLeg: { area: BBox; steps: number[]; as: { res: ArcoResolution; layout: ArcoLayout } | null } | null = null;
     const loadAreas = async (bbox: BBox, what: string): Promise<LegWind | null> => {
       if (useForecast) {
         // The route area of the forecast: the corridor box plus a margin, the
@@ -813,7 +818,7 @@ export async function route(
           progress(0, 0, `currents: checking CMEMS SMOC coverage of the ${what}`);
           try {
             await src.ensure(bbox, steps, { reason: `job ${id} ${what}`, shouldCancel });
-            smocLeg = { area: bbox, steps };
+            smocLeg = { area: bbox, steps, as: src.answering(bbox, steps) };
           } catch (err) {
             smocLeg = null;
             if (shouldCancel()) throw new RouteCancelled();

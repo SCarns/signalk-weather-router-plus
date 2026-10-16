@@ -20,7 +20,14 @@ import { type BoundarySeeds, PagedMesh } from './paged';
 import { blockedTriangles, type MeshRules, searchMesh } from './route';
 import { FLAG_OPENING_BRIDGE, MeshStore } from './store';
 
-const RULES: CoarseRules = { draughtM: 2, airDraftM: 18, bufferM: 0, openingBridges: 'open' };
+const RULES: CoarseRules = {
+  draughtM: 2,
+  airDraftM: 18,
+  underKeelClearanceM: 0.5,
+  overheadClearanceM: 1,
+  bufferM: 0,
+  openingBridges: 'open',
+};
 const SEARCH = { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 };
 const U = [
   { i: 0, j: 0 },

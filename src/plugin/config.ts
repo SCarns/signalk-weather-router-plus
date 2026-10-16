@@ -405,6 +405,8 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
     vessel: makeVessel({
       motorSpeedMs: v.motorSpeed,
       polarPerformance: v.polarPerformance,
+      underKeelClearanceM: v.underKeelClearance,
+      overheadClearanceM: v.overheadClearance,
     }),
     forecast: {
       horizonS: f.horizon,
@@ -513,5 +515,7 @@ export function routeVessel(cfg: ResolvedConfig, rv: RouteRequest['vessel'], sel
     polarPerformance: rv?.polar_performance ?? cfg.vessel.polarPerformance,
     draughtM: rv?.draught_m ?? self?.draughtM ?? null,
     airDraftM: rv?.air_draft_m ?? self?.airDraftM ?? null,
+    underKeelClearanceM: rv?.under_keel_clearance_m ?? cfg.vessel.underKeelClearanceM,
+    overheadClearanceM: rv?.overhead_clearance_m ?? cfg.vessel.overheadClearanceM,
   });
 }

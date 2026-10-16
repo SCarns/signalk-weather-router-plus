@@ -199,7 +199,15 @@ export function meshRulesFor(vessel: VesselParams): { rules: MeshRules } | { rul
       rules: null,
       why: `the vessel's ${vessel.draughtM === null ? 'draught (Signal K design.draft.maximum' : 'air draft (Signal K design.airHeight'}, or the request's vessel override) is not set`,
     };
-  return { rules: { draughtM: vessel.draughtM, airDraftM: vessel.airDraftM, motorSpeedMs: vessel.motorSpeedMs } };
+  return {
+    rules: {
+      draughtM: vessel.draughtM,
+      airDraftM: vessel.airDraftM,
+      motorSpeedMs: vessel.motorSpeedMs,
+      underKeelClearanceM: vessel.underKeelClearanceM,
+      overheadClearanceM: vessel.overheadClearanceM,
+    },
+  };
 }
 
 export interface MeshSegment {

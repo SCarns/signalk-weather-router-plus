@@ -38,7 +38,10 @@ import {
 } from './store';
 
 /** The rules the route was planned with, as far as they decide what is blocked. */
-export type CheckRules = Pick<MeshRules, 'draughtM' | 'airDraftM' | 'openingBridges' | 'avoid'>;
+export type CheckRules = Pick<
+  MeshRules,
+  'draughtM' | 'airDraftM' | 'openingBridges' | 'avoid' | 'underKeelClearanceM' | 'overheadClearanceM'
+>;
 
 export type ViolationKind = 'depth' | 'hazard' | 'clearance' | 'opening bridge' | 'mark' | 'structure' | 'area to avoid';
 
@@ -85,8 +88,8 @@ interface TriInfo {
 
 /** Why a blocked triangle is blocked, in the order blockedTriangles tests (route.ts). */
 function blockedKind(flags: number, depth: number, clear: number, hazv: number, rules: CheckRules): ViolationKind {
-  const minClear = rules.airDraftM + 1;
-  const minDepth = rules.draughtM + 0.5;
+  const minClear = rules.airDraftM + (rules.overheadClearanceM ?? 1);
+  const minDepth = rules.draughtM + (rules.underKeelClearanceM ?? 0.5);
   if (rules.openingBridges === 'avoid' && flags & FLAG_OPENING_BRIDGE) return 'opening bridge';
   if (clear !== NO_VALUE && clear < minClear) return 'clearance';
   if (!(flags & FLAG_NAVIGABLE) && depth !== NO_VALUE && depth < minDepth) return 'depth';

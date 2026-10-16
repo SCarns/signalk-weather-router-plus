@@ -28,6 +28,8 @@ export interface AppSettings {
   vessel: {
     motorSpeed: number;
     polarPerformance: number;
+    underKeelClearance: number;
+    overheadClearance: number;
   };
   forecast: {
     horizon: number;
@@ -207,6 +209,34 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     step: 0.01,
     default: 1,
     help: "Share of the polar's boat speeds the boat actually makes under sail (100% = the polar as written). Polars are usually race predictions (flat water, racing sails, full crew); a loaded cruising boat is slower. Motor speed is not affected.",
+    reload: 'next_job',
+  },
+  {
+    key: 'vessel.underKeelClearance',
+    group: 'vessel',
+    label: 'Under-keel clearance',
+    type: 'number',
+    unit: 'm',
+    quantity: 'depth',
+    min: 0,
+    max: 3,
+    step: 0.1,
+    default: 0.5,
+    help: 'Water kept under the keel on chart-mesh legs: charted depth must be at least the draught plus this. A route request can set its own.',
+    reload: 'next_job',
+  },
+  {
+    key: 'vessel.overheadClearance',
+    group: 'vessel',
+    label: 'Overhead clearance',
+    type: 'number',
+    unit: 'm',
+    quantity: 'short_distance',
+    min: 0,
+    max: 10,
+    step: 0.1,
+    default: 1,
+    help: 'Headroom kept above the mast under bridges and overhead cables on chart-mesh legs: charted clearance must be at least the air draft plus this. A route request can set its own.',
     reload: 'next_job',
   },
   {

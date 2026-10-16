@@ -160,7 +160,9 @@ const PLAN = planLegs(
 )[0];
 
 test('meshRulesFor: both drafts set', () => {
-  assert.deepEqual(meshRulesFor(BOAT), { rules: { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 } });
+  assert.deepEqual(meshRulesFor(BOAT), {
+    rules: { draughtM: 2, airDraftM: 18, motorSpeedMs: 3, underKeelClearanceM: 0.5, overheadClearanceM: 1 },
+  });
   assert.match(
     (meshRulesFor(makeVessel({ motorSpeedMs: 3, draughtM: 2 })) as { why: string }).why,
     /air draft \(Signal K design.airHeight/
@@ -250,6 +252,8 @@ test('pipeline: a covered motoring leg is routed on the mesh, the coastline sear
     draughtM: 2,
     airDraftM: 18,
     motorSpeedMs: 3,
+    underKeelClearanceM: 0.5,
+    overheadClearanceM: 1,
     avoid: [{ lon: 0.5, lat: 0.4, radiusM: 500 }],
     openingBridges: 'open',
   });
@@ -471,7 +475,7 @@ test('pipeline: an open stretch whose search fails is not motored under sail_max
     (err: Error) => {
       assert.match(
         err.message,
-        /^chart mesh segment 1\/1: the beat from 0\.5000, 0\.0000 towards 0\.6000, 0\.5000 cannot be tacked at 0\.5000, 0\.0000: every tack tried crossed land or could not be sailed under the sail_max policy, and the course itself cannot be sailed straight; raise the sail threshold \(Route → Options\) so that stretch is motored, or route under motor$/
+        /^chart mesh segment 1\/1: ROUTE FAILED: the beat from 0\.5000, 0\.0000 towards 0\.6000, 0\.5000 cannot be tacked at 0\.5000, 0\.0000: every tack tried crossed land or could not be sailed, and the course itself cannot be sailed straight\. Min sail speed is 0 \(never motor\), so the boat may not motor where it cannot tack: set Min sail speed above 0$/
       );
       return true;
     }
@@ -759,7 +763,19 @@ test("pipeline: a leg the charts' plan splits is planned stretch by stretch, on 
     );
     const r = await runLegPipeline(inp, PLAN, 0, start, T0);
     assert.deepEqual(asked, [
-      { start, end, rules: { draughtM: 2, airDraftM: 18, motorSpeedMs: 3, avoid: undefined, openingBridges: 'open' } },
+      {
+        start,
+        end,
+        rules: {
+          draughtM: 2,
+          airDraftM: 18,
+          motorSpeedMs: 3,
+          underKeelClearanceM: 0.5,
+          overheadClearanceM: 1,
+          avoid: undefined,
+          openingBridges: 'open',
+        },
+      },
     ]);
     assert.deepEqual(parts, [
       [start, at],

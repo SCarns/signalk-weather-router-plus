@@ -138,6 +138,20 @@ export const VESSEL_FIELDS: Record<string, RouteFieldSpec> = {
     max: 100,
     description: "Air draft (height above the waterline), m (default: the vessel's Signal K design.airHeight)",
   },
+  under_keel_clearance_m: {
+    type: 'number',
+    min: 0,
+    max: 3,
+    description:
+      'Water kept under the keel on chart-mesh legs, m: charted depth must be at least the draught plus this (default: the Under-keel clearance setting)',
+  },
+  overhead_clearance_m: {
+    type: 'number',
+    min: 0,
+    max: 10,
+    description:
+      'Headroom kept above the mast on chart-mesh legs, m: charted clearance must be at least the air draft plus this (default: the Overhead clearance setting)',
+  },
 };
 
 const isPoint = (p: unknown): p is { lat: number; lon: number } =>

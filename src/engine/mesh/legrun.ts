@@ -150,7 +150,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
         current,
         sim: inp.sim,
         who: label,
-        advice: 'raise the sail threshold (Route → Options) so that stretch is motored, or route under motor',
+        advice: 'raise Min sail speed so that stretch is motored, or route under motor',
         onProgress: (s: number, tot: number, m: string) => progress(s, tot, `${label}: ${m}`),
       });
       progress(

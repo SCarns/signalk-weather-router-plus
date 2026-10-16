@@ -143,3 +143,58 @@ test('rtofs: a relayed run is used only for the configured region, and only when
   assert.equal(rtofsForRegion(run, false, 'west_atl'), null);
   assert.equal(rtofsForRegion(null, true, 'west_atl'), null);
 });
+
+test('harmonic: points at their own times (per-cell prediction) equal the full-grid prediction exactly', () => {
+  // A synthetic source: 7 × 9 cells, three constituents, one no-data cell.
+  const lats = Float64Array.from({ length: 7 }, (_, i) => 41 + i * 0.05);
+  const lons = Float64Array.from({ length: 9 }, (_, j) => -71.6 + j * 0.05);
+  const constituents = ['m2', 's2', 'k1'];
+  const per = lats.length * lons.length;
+  const n = constituents.length * per;
+  const block = new SharedArrayBuffer(4 * n * 4);
+  const [ea, ep, na, np] = [0, 1, 2, 3].map(k => new Float32Array(block, k * n * 4, n));
+  let seed = 7;
+  const rnd = (): number => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < n; i++) {
+    ea[i] = 80 * rnd();
+    ep[i] = 360 * rnd();
+    na[i] = 80 * rnd();
+    np[i] = 360 * rnd();
+  }
+  for (let c = 0; c < constituents.length; c++) ea[c * per + 3 * lons.length + 4] = NaN;
+  const ser = {
+    name: 'synthetic',
+    priority: 10,
+    resolutionM: 5000,
+    bbox: { south: lats[0], north: lats[lats.length - 1], west: lons[0], east: lons[lons.length - 1] },
+    lats,
+    lons,
+    constituents,
+    dropped: [],
+    block,
+  };
+  const cells = new HarmonicCurrentSource(ser);
+  const grid = new HarmonicCurrentSource(ser);
+  const t0 = Date.parse('2026-10-15T12:00:00Z');
+  const k = 400;
+  const lo = new Float64Array(k);
+  const la = new Float64Array(k);
+  const ts = new Float64Array(k);
+  for (let i = 0; i < k; i++) {
+    lo[i] = lons[0] - 0.02 + (lons[lons.length - 1] - lons[0] + 0.04) * rnd();
+    la[i] = lats[0] - 0.02 + (lats[lats.length - 1] - lats[0] + 0.04) * rnd();
+    ts[i] = t0 + 6 * 3600e3 * rnd();
+  }
+  const a = cells.atManyAt(lo, la, ts); // no grid cached: per-cell path
+  let nonzero = 0;
+  let nodata = 0;
+  for (let i = 0; i < k; i++) {
+    const g = grid.atMany(Float64Array.of(lo[i]), Float64Array.of(la[i]), new Date(ts[i])); // full grid
+    assert.equal(a.u[i], g.u[0], `u ${i}`);
+    assert.equal(a.v[i], g.v[0], `v ${i}`);
+    if (a.u[i] !== 0) nonzero++;
+    else if (cells.contains(lo[i], la[i])) nodata++;
+  }
+  assert.ok(nonzero > 250 && nodata > 0, `${nonzero} with current, ${nodata} next to the no-data cell`);
+  assert.equal(cells.cacheBytes(), 0, 'the per-cell path predicts no whole grid');
+});

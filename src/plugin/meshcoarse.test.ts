@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { COARSE_VERSION } from '../engine/mesh/coarse';
 import { writeGridMesh } from '../engine/mesh/fixture';
 import { searchMesh } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
@@ -21,10 +22,12 @@ import {
   COARSE_KEEP_PER_MESH,
   coarseFile,
   coarseKey,
+  coarseRulesOf,
   joinsFile,
   type MeshReachTask,
   pruneCoarse,
   readBoundary,
+  readCoarseMap,
   readJoins,
   runMeshCoarseTask,
   runMeshJoinsTask,
@@ -32,7 +35,7 @@ import {
   runMeshSnapTask,
 } from './meshcoarse';
 
-const RULES = { draughtM: 2, airDraftM: 18, bufferM: 0, openingBridges: 'open' as const };
+const RULES = { draughtM: 2, airDraftM: 18, underKeelClearanceM: 0.5, overheadClearanceM: 1, bufferM: 0, openingBridges: 'open' as const };
 const U = [
   { i: 0, j: 0 },
   { i: 1, j: 0 },
@@ -51,7 +54,7 @@ test('mesh-coarse and mesh-reach child tasks: a rough cut built into the data fo
   try {
     const out = coarseFile(data, mesh, RULES);
     assert.equal(path.dirname(out), path.join(data, COARSE_DIR));
-    assert.match(path.basename(out), /^[0-9a-f]{16}-v3-d2\.00-a18\.00-b0\.00-o\.json$/);
+    assert.match(path.basename(out), new RegExp(`^[0-9a-f]{16}-v${COARSE_VERSION}-d2\\.00-a18\\.00-u0\\.50-o1\\.00-b0\\.00-o\\.json$`));
     assert.match(path.basename(coarseFile(data, mesh, { ...RULES, bufferM: 10, openingBridges: 'avoid' })), /-b10\.00-x\.json$/);
     const b = await runChildTask({ task: 'mesh-coarse', dir: mesh, out, rules: RULES }, 60_000);
     assert.equal(b.pieces, 9);
@@ -228,6 +231,30 @@ test('a stop on a corner where the route’s water meets a separate pocket belon
   }
 });
 
+test('a boat or buffer that differs only past the centimetre reads the rough cut its file name promises', () => {
+  const mesh = writeGridMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-')), U);
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-data-'));
+  try {
+    // rima, 2026-10-15: a buffer saved in feet (9.999999999999988 m) and a draught of 7.6 ft (2.31648 m).
+    const a = coarseRulesOf({ ...RULES, draughtM: 2.31648, airDraftM: 19.99488, bufferM: 9.999999999999988 });
+    const b = coarseRulesOf({ ...RULES, draughtM: 2.32, airDraftM: 19.99, bufferM: 10 });
+    assert.deepEqual(a, b);
+    assert.equal(a.bufferM, 10);
+    const out = coarseFile(data, mesh, a);
+    assert.equal(out, coarseFile(data, mesh, b));
+    runMeshCoarseTask({ task: 'mesh-coarse', dir: mesh, out, rules: a });
+    const map = readCoarseMap(out, MeshStore.open(mesh), b, 'the mesh');
+    assert.notEqual(typeof map, 'string', String(map));
+    // Another boat at the centimetre is another file, refused if read for the first.
+    const c = coarseRulesOf({ ...RULES, draughtM: 2.33, airDraftM: 19.99, bufferM: 10 });
+    assert.notEqual(coarseFile(data, mesh, c), out);
+    assert.equal(typeof readCoarseMap(out, MeshStore.open(mesh), c, 'the mesh'), 'string');
+  } finally {
+    fs.rmSync(mesh, { recursive: true, force: true });
+    fs.rmSync(data, { recursive: true, force: true });
+  }
+});
+
 test('pruneCoarse: rough cuts of builds no longer in use or of another version go, with their boundary files, and beyond the limit per build the oldest', () => {
   const mesh = writeGridMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-')), U);
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-data-'));
@@ -237,7 +264,7 @@ test('pruneCoarse: rough cuts of builds no longer in use or of another version g
     const key = coarseKey(mesh);
     const names: string[] = [];
     for (let k = 0; k < COARSE_KEEP_PER_MESH + 2; k++) {
-      const n = `${key}-v3-d${(1 + k).toFixed(2)}-a18.00-b0.00-o.json`;
+      const n = `${key}-v${COARSE_VERSION}-d${(1 + k).toFixed(2)}-a18.00-u0.50-o1.00-b0.00-o.json`;
       fs.writeFileSync(path.join(dir, n), '{}');
       fs.writeFileSync(boundaryFile(path.join(dir, n)), '');
       // Older first: each file a second newer than the one before.
@@ -245,9 +272,9 @@ test('pruneCoarse: rough cuts of builds no longer in use or of another version g
       fs.utimesSync(path.join(dir, n), t, t);
       names.push(n, boundaryFile(n));
     }
-    fs.writeFileSync(path.join(dir, 'deadbeefdeadbeef-v3-d2.00-a18.00-b0.00-o.json'), '{}');
+    fs.writeFileSync(path.join(dir, `deadbeefdeadbeef-v${COARSE_VERSION}-d2.00-a18.00-u0.50-o1.00-b0.00-o.json`), '{}');
     // A rough cut of an earlier version of the live build.
-    fs.writeFileSync(path.join(dir, `${key}-v2-d2.00-a18.00.json`), '{}');
+    fs.writeFileSync(path.join(dir, `${key}-v3-d2.00-a18.00-b0.00-o.json`), '{}');
     const removed = pruneCoarse(data, new Set([key]));
     assert.equal(removed, 4);
     const left = fs.readdirSync(dir).sort();

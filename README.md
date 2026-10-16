@@ -537,7 +537,9 @@ and the panel runs in a sandboxed iframe served from
   speed under sail below which the router motors; the plugin's routing
   setting by default, in Freeboard's speed unit), and the **Limits**: a
   maximum wind speed and wave height that no leg may exceed (empty = no
-  limit; the routing settings' values by default). Progress is shown;
+  limit; the routing settings' values by default). With a min sail speed
+  of 0 (never motor) a stretch the boat cannot sail or tack out of fails
+  the route, saying "set Min sail speed above 0". Progress is shown;
   Cancel stops the job. The map
   is fitted to the result; the panel shows distance and time in
   Freeboard's unit preferences, the sailing/motoring split, the arrival
@@ -680,14 +682,18 @@ on the charts rather than the coastline: a constrained triangulation of
 the chart area (`src/engine/mesh/`) whose triangles carry the charted
 depth, vertical clearance, rocks, wrecks and obstructions, marks,
 structures and fairways. A triangle is blocked when its charted depth is
-under the draught + 0.5 m (outside a fairway, dredged area or recommended
-track), its clearance under the air draft + 1 m, a rock or wreck has less
-than draught + 0.5 m over it (or no charted depth), it holds a mark (a
+under the draught + the under-keel clearance (outside a fairway, dredged
+area or recommended track), its clearance under the air draft + the
+overhead clearance, a rock or wreck has less than draught + the under-keel
+clearance over it (or no charted depth), it holds a mark (a
 channel mark inside a fairway or dredged area excepted) or a structure,
 or it lies in an area marked to avoid on a Signal K note. The draught and
 air draft are the vessel's Signal K base data (`design.draft.maximum`,
 `design.airHeight`; a request can override them with `vessel.draught_m`
-and `vessel.air_draft_m`); the mesh is not used until both are set.
+and `vessel.air_draft_m`); the mesh is not used until both are set. The
+under-keel clearance (0.5 m) and overhead clearance (1 m) are vessel
+settings; a request can override them with
+`vessel.under_keel_clearance_m` and `vessel.overhead_clearance_m`.
 
 - **Motor:** the whole leg is an A* over the mesh's triangle edges with a
   shore and shallow-water penalty, pulled tight by the funnel algorithm.
@@ -702,8 +708,9 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   the process that holds the mesh: the search, the tack layout, the polish
   and the smoother test every move by walking the mesh triangles it
   crosses and stopping at the first one the boat cannot use (charted depth
-  under the draught + 0.5 m off a fairway, clearance under the air draft +
-  1 m, a rock or wreck shallower than that or uncharted, a mark, a
+  under the draught + the under-keel clearance off a fairway, clearance
+  under the air draft + the overhead clearance, a rock or wreck shallower
+  than that or uncharted, a mark, a
   structure, an area to avoid), the same test the mesh route is built
   with. That process reads the forecast window, the regional wind runs,
   the cached currents (RTOFS, CMEMS SMOC, harmonics) and the polar from
@@ -718,7 +725,7 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   waypoint on a depth contour reports the usable side.
 - **Opening bridges:** the mesh marks bascule, swing, lift, draw and
   transporter bridges (flag bit 7) and stores their open clearance, or
-  none when the chart gives none. The clearance rule (air draft + 1 m)
+  none when the chart gives none. The clearance rule (air draft + the overhead clearance)
   applies to that open clearance. The Drawbridges setting (Defaults tab;
   a request's `drawbridges` overrides it) is ask, open or avoid: ask plans the route as if
   they open and, when the finished route passes under one, lists the
@@ -1299,7 +1306,7 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 
 | Group | Settings (default) | A change… |
 |---|---|---|
-| `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2) | applies to the next route |
+| `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2), under-keel clearance (0.5 m, 0–3 m), overhead clearance (1 m, 0–10 m) | applies to the next route |
 | `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (15 min = 900 s; an existing settings.json keeps its value), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
@@ -1643,6 +1650,8 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `vessel.polar` | string | | the configured `polarFile` | a token from `GET /api/polars`, at most 200 characters; see below |
 | `vessel.draught_m` | number | m | Signal K `design.draft.maximum` | 0.1..30; with `air_draft_m`, lets the [chart mesh](#chart-mesh-charted-depths-and-obstructions) route the leg |
 | `vessel.air_draft_m` | number | m | Signal K `design.airHeight` | 0.5..100 |
+| `vessel.under_keel_clearance_m` | number | m | setting (0.5) | 0..3; charted depth on chart-mesh legs must be at least the draught plus this |
+| `vessel.overhead_clearance_m` | number | m | setting (1) | 0..10; charted clearance on chart-mesh legs must be at least the air draft plus this |
 | `router` | `"standard"` or `"refined"` | | setting `routing.router` (`standard`) | the [open-water router](#open-water-router-standard-or-refined) |
 | `search` | `"normal"`, `"moderate"` or `"maximum"` | | `normal` | search method (the Route tab's *Method*): `normal` = the routing settings as they are; `moderate` = stages 40, 100 cross-track bins, headings ±60° at 1° (a better route; about 2 min on a 600 nm passage on a Raspberry Pi 5); `maximum` = stages 40, 150 bins, ±60° at 0.5° (the best; about 6 min). An explicit `stages` still wins |
 
@@ -2416,7 +2425,8 @@ started.
 
 Generate a polar with the physics polar calculator
 (`src/vessel/vpp_physics.ts`: ORC 2026 sail forces, Delft hull
-resistance, a heeling limit; see `docs/plans/vpp-physics.md`), write it
+resistance, a heeling limit (where no reef or flattening keeps the heel
+within it, the speed is 0); see `docs/plans/vpp-physics.md`), write it
 to `<polarsDir>/user/<slug>.csv` in the routing server's CSV layout, and
 return it. Access: readwrite.
 

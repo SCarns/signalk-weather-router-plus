@@ -67,16 +67,26 @@ export function coarseFile(dataDir: string, meshDir: string, rules: CoarseRules)
   return path.join(
     dataDir,
     COARSE_DIR,
-    `${coarseKey(meshDir)}-v${COARSE_VERSION}-d${r.draughtM.toFixed(2)}-a${r.airDraftM.toFixed(2)}-b${r.bufferM.toFixed(2)}-${r.openingBridges === 'avoid' ? 'x' : 'o'}.json`
+    `${coarseKey(meshDir)}-v${COARSE_VERSION}-d${r.draughtM.toFixed(2)}-a${r.airDraftM.toFixed(2)}-u${r.underKeelClearanceM.toFixed(2)}-o${r.overheadClearanceM.toFixed(2)}-b${r.bufferM.toFixed(2)}-${r.openingBridges === 'avoid' ? 'x' : 'o'}.json`
   );
 }
 
-/** A rough cut's rules from a mesh leg's (the buffer absent: none; opening bridges absent: open). */
-export function coarseRulesOf(rules: Pick<MeshRules, 'draughtM' | 'airDraftM' | 'bufferM' | 'openingBridges'>): CoarseRules {
+/**
+ * A rough cut's rules from a mesh leg's (the buffer absent: none; opening bridges absent: open), each length to the
+ * centimetre the file name carries (coarseFile): one file is one set of rules, so a boat or buffer that differs
+ * only past the centimetre (2.31648 m, a buffer of 9.999999999999988 m saved in feet) reads the cut the name
+ * promises instead of being refused by it (readCoarseMap compares exactly).
+ */
+export function coarseRulesOf(
+  rules: Pick<MeshRules, 'draughtM' | 'airDraftM' | 'bufferM' | 'openingBridges' | 'underKeelClearanceM' | 'overheadClearanceM'>
+): CoarseRules {
+  const cm = (m: number): number => Math.round(m * 100) / 100;
   return {
-    draughtM: rules.draughtM,
-    airDraftM: rules.airDraftM,
-    bufferM: rules.bufferM ?? 0,
+    draughtM: cm(rules.draughtM),
+    airDraftM: cm(rules.airDraftM),
+    underKeelClearanceM: cm(rules.underKeelClearanceM ?? 0.5),
+    overheadClearanceM: cm(rules.overheadClearanceM ?? 1),
+    bufferM: cm(rules.bufferM ?? 0),
     openingBridges: rules.openingBridges === 'avoid' ? 'avoid' : 'open',
   };
 }
@@ -252,6 +262,8 @@ export function readCoarseMap(file: string, store: MeshStore, rules: CoarseRules
     map.triangles !== store.index.triangles ||
     map.draughtM !== rules.draughtM ||
     map.airDraftM !== rules.airDraftM ||
+    map.underKeelClearanceM !== rules.underKeelClearanceM ||
+    map.overheadClearanceM !== rules.overheadClearanceM ||
     map.bufferM !== rules.bufferM ||
     map.openingBridges !== rules.openingBridges
   )
@@ -397,6 +409,8 @@ export function runMeshReachTask(t: MeshReachTask): MeshReachResult {
     map.triangles !== store.index.triangles ||
     map.draughtM !== t.rules.draughtM ||
     map.airDraftM !== t.rules.airDraftM ||
+    map.underKeelClearanceM !== t.rules.underKeelClearanceM ||
+    map.overheadClearanceM !== t.rules.overheadClearanceM ||
     map.bufferM !== t.rules.bufferM ||
     map.openingBridges !== t.rules.openingBridges
   )
@@ -506,6 +520,8 @@ export function runMeshSnapTask(t: MeshSnapTask): MeshSnapResult {
     map.triangles !== store.index.triangles ||
     map.draughtM !== t.rules.draughtM ||
     map.airDraftM !== t.rules.airDraftM ||
+    map.underKeelClearanceM !== t.rules.underKeelClearanceM ||
+    map.overheadClearanceM !== t.rules.overheadClearanceM ||
     map.bufferM !== t.rules.bufferM ||
     map.openingBridges !== t.rules.openingBridges
   )

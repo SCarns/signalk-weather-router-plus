@@ -1102,6 +1102,21 @@ export class ArcoAreaSet<A extends ArcoArea> {
     return false;
   }
 
+  /**
+   * The resolution and layout of the area in memory that answers `bbox` × `steps` (ensure's test), or null: another
+   * process reading only the disk cache loads the same (ensure `as`), since the chunks of another layout may never
+   * have been downloaded.
+   */
+  answering(bbox: BBox, steps: number[], marginCells: number): { res: ArcoResolution; layout: ArcoLayout } | null {
+    if (steps.length === 0) return null;
+    const full = regionForBBox(this.run.levels.time.grid, bbox, marginCells);
+    const a = full ? this.covered('full', full, steps) : null;
+    if (a) return { res: a.res, layout: a.layout };
+    const ds = this.run.levels.ds4 ? regionForBBox(this.run.levels.ds4.grid, bbox, marginCells) : null;
+    const d = ds ? this.covered('ds4', ds, steps) : null;
+    return d ? { res: d.res, layout: d.layout } : null;
+  }
+
   private covered(res: ArcoResolution, region: Region, steps: number[]): A | null {
     const nLon = this.grid(res).nLon;
     for (const a of this.areas()) {
@@ -1132,13 +1147,22 @@ export class ArcoAreaSet<A extends ArcoArea> {
    * background and serves later queries. `coarseOk` (a zoomed-out
    * view) takes the 1/3° level when it fits. `onIncomplete` is called
    * when the answer will lack data it should have (deadline passed or the
-   * load failed), so the caller does not keep that answer.
+   * load failed), so the caller does not keep that answer. `as` loads at
+   * that resolution from that layout (answering(): what answered the same
+   * area in another process, so the chunks are the ones on disk).
    */
   async ensure(
     bbox: BBox,
     steps: number[],
     marginCells: number,
-    opts: { reason: string; deadlineMs?: number; shouldCancel?: () => boolean; coarseOk?: boolean; onIncomplete?: () => void }
+    opts: {
+      reason: string;
+      deadlineMs?: number;
+      shouldCancel?: () => boolean;
+      coarseOk?: boolean;
+      onIncomplete?: () => void;
+      as?: { res: ArcoResolution; layout: ArcoLayout };
+    }
   ): Promise<boolean> {
     if (steps.length === 0) return false;
     const full = regionForBBox(this.run.levels.time.grid, bbox, marginCells);
@@ -1150,7 +1174,15 @@ export class ArcoAreaSet<A extends ArcoArea> {
     const bytesFor = (r: Region): number => r.nRows * r.nCols * steps.length * 4 * this.opts.vars.length;
     // A coarse overlay view takes the 1/3° level: one chunk per variable and hour for the whole globe.
     const coarse = opts.coarseOk && this.run.levels.ds4 ? regionForBBox(this.run.levels.ds4.grid, bbox, marginCells) : null;
-    if (coarse && bytesFor(coarse) <= maxArea) {
+    if (opts.as) {
+      if (opts.as.res === 'ds4') {
+        const ds = this.run.levels.ds4 ? regionForBBox(this.run.levels.ds4.grid, bbox, marginCells) : null;
+        if (!ds) return false;
+        if (this.covered('ds4', ds, steps)) return true;
+        res = 'ds4';
+        region = ds;
+      }
+    } else if (coarse && bytesFor(coarse) <= maxArea) {
       res = 'ds4';
       region = coarse;
       if (this.covered('ds4', coarse, steps)) return true;
@@ -1174,6 +1206,7 @@ export class ArcoAreaSet<A extends ArcoArea> {
         reason: opts.reason,
         log: this.log,
         shouldCancel: opts.shouldCancel,
+        ...(opts.as && res !== 'ds4' ? { layout: opts.as.layout } : {}),
       })
         .then(({ area, stats }) => {
           this.noteDownload(opts.reason, stats);

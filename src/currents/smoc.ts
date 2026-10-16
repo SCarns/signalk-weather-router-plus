@@ -383,11 +383,23 @@ export class SmocCurrentSource implements CurrentSourceLike {
   ensure(
     bbox: BBox,
     steps: number[],
-    opts: { reason: string; deadlineMs?: number; shouldCancel?: () => boolean; coarseOk?: boolean; onIncomplete?: () => void } = {
+    opts: {
+      reason: string;
+      deadlineMs?: number;
+      shouldCancel?: () => boolean;
+      coarseOk?: boolean;
+      onIncomplete?: () => void;
+      as?: { res: ArcoResolution; layout: ArcoLayout };
+    } = {
       reason: 'on demand',
     }
   ): Promise<boolean> {
     return this.set.ensure(bbox, steps, AREA_MARGIN_CELLS, opts);
+  }
+
+  /** The resolution and layout of the area in memory that answers `bbox` × `steps` (ArcoAreaSet.answering), or null. */
+  answering(bbox: BBox, steps: number[]): { res: ArcoResolution; layout: ArcoLayout } | null {
+    return this.set.answering(bbox, steps, AREA_MARGIN_CELLS);
   }
 
   noteDownload(reason: string, s: DownloadStats): void {

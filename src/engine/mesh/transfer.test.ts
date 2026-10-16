@@ -19,7 +19,14 @@ import { MeshStore } from './store';
 import { findMeshGap, findMeshTransfer, type TransferMesh } from './transfer';
 
 const RULES = { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 };
-const COARSE: CoarseRules = { draughtM: 2, airDraftM: 18, bufferM: 0, openingBridges: 'open' };
+const COARSE: CoarseRules = {
+  draughtM: 2,
+  airDraftM: 18,
+  underKeelClearanceM: 0.5,
+  overheadClearanceM: 1,
+  bufferM: 0,
+  openingBridges: 'open',
+};
 const START: [number, number] = [0.5, 0.5];
 const END: [number, number] = [4.5, 0.5];
 const NAMES = { start: 'the start', end: 'the end' };

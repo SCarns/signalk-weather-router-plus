@@ -10,10 +10,12 @@
  *
  * Blocked triangles (the parent planner's rules, plus the three the grid
  * planner does not check before routing):
- *  - a charted vertical clearance under the air draft + 1 m (an opening
+ *  - a charted vertical clearance under the air draft + 1 m (the overhead
+ *    clearance setting; an opening
  *    bridge's open clearance; the bridge is blocked outright when the
  *    route's rule for opening bridges is 'avoid');
- *  - a charted depth under the draught + 0.5 m, unless the triangle is in
+ *  - a charted depth under the draught + 0.5 m (the under-keel clearance
+ *    setting), unless the triangle is in
  *    a fairway, dredged area or recommended track (is_navigable);
  *  - a rock, wreck or obstruction whose charted depth (VALSOU) is under
  *    the draught + 0.5 m, or not charted (hazv = -1e9 in the build);
@@ -52,6 +54,10 @@ export type DrawbridgeChoice = (typeof DRAWBRIDGE_CHOICES)[number];
 export interface MeshRules {
   draughtM: number;
   airDraftM: number;
+  /** Water kept under the keel, m (absent: 0.5). */
+  underKeelClearanceM?: number;
+  /** Headroom kept above the mast, m (absent: 1). */
+  overheadClearanceM?: number;
   motorSpeedMs: number;
   /** Opening bridges: 'open' (default) passes them under their open clearance; 'avoid' blocks every one. */
   openingBridges?: 'open' | 'avoid';
@@ -129,8 +135,8 @@ export function meshCovers(store: MeshStore, points: [number, number][]): boolea
 
 export function blockedTriangles(m: LoadedMesh, rules: MeshRules): Uint8Array {
   const b = new Uint8Array(m.n);
-  const minClear = rules.airDraftM + 1;
-  const minDepth = rules.draughtM + 0.5;
+  const minClear = rules.airDraftM + (rules.overheadClearanceM ?? 1);
+  const minDepth = rules.draughtM + (rules.underKeelClearanceM ?? 0.5);
   const { flags, depth, clear, hazv } = m;
   const avoidOpening = rules.openingBridges === 'avoid';
   for (let t = 0; t < m.n; t++) {
