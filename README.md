@@ -356,6 +356,19 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   destination, waypoints with their radii, departure) is kept in the
   browser and restored on reload; a departure that has passed is set to
   now, and the status line says so.
+- **Your choices follow the Signal K user.** The vessel (polar, sail or
+  power, the power boat's name and cruise speed), the Route → Options
+  settings and the Route tab's search and router choices are kept in the
+  user's Signal K application data
+  (`/signalk/v1/applicationData/user/signalk-weather-router-plus/1.0.0`)
+  as well as in the browser, so a polar picked in one browser is the one
+  the next browser the same user opens starts with (another device, a
+  kiosk, a private window). The page reads them once when it opens; a
+  server that has not answered within 3 s leaves it with what this
+  browser remembers. The map view, open tabs, layer toggles and the plan
+  stay per browser. Without a login with write access, or with security
+  off (Signal K then keeps no application data), the choices are kept in
+  the browser only, as before.
 - **Header.** The data sources, with how fresh each one is. Collapsed (the
   default): one line, `wind ●● | waves ● | currents ●● | tides ●`, a dot
   per source in its colour, with **Show** on the right. Expanded (**Hide**

@@ -2078,7 +2078,9 @@ function updateLegends() {
 // dispatches bubbling change events) refreshes the box.
 const _layersSec = document.getElementById('layersSection');
 if (_layersSec) _layersSec.addEventListener('change', updateLegends);
-window.addEventListener('load', updateLegends);
+// The page may have loaded already: rp-core.js holds module start-up for the user's choices.
+if (document.readyState === 'complete') updateLegends();
+else window.addEventListener('load', updateLegends);
 
 // The auth gate stops the map from loading more data; repaint once so the frozen state shows.
 AuthGate.onStop(() => map.render());

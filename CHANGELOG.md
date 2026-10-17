@@ -245,6 +245,22 @@ uses [Semantic Versioning](https://semver.org/).
   are still backed up: they change rarely, and offshore they cannot be
   downloaded again.
 
+### Changed
+
+- **Setup choices are kept per Signal K user** (`public/rp-prefs.js`).
+  The polar, sail or power, the power boat, the Route → Options settings
+  and the search and router choices were kept in the browser's
+  localStorage only, so another browser or device, the kiosk, or a private
+  window started again from the default polar. They are now also stored
+  in the user's Signal K application data and read when the page opens:
+  the server's value wins, and a choice only one browser had is sent up
+  the first time that browser opens the page. Changes are sent as JSON
+  Patch, batched (a slider drag is one request). The map view, tabs, layer
+  toggles and the plan stay per browser. Module start-up waits for the one
+  read (3 s at most); the legend box and the position poll, which waited
+  for the page's `load` event, start at once when it has already fired.
+  Without a login with write access the choices stay in the browser.
+
 ## [0.2.0-beta.2] - 2026-10-13
 
 ### Changed
