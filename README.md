@@ -365,10 +365,14 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   the next browser the same user opens starts with (another device, a
   kiosk, a private window). The page reads them once when it opens; a
   server that has not answered within 3 s leaves it with what this
-  browser remembers. The map view, open tabs, layer toggles and the plan
-  stay per browser. Without a login with write access, or with security
-  off (Signal K then keeps no application data), the choices are kept in
-  the browser only, as before.
+  browser remembers. The browser notes whose choices it holds: a
+  choice only it has is sent up for that user, while another user's are
+  dropped when someone else logs in there. Choices a browser held before
+  this change go up only into a user's record that is still empty. The
+  map view, open tabs, layer toggles and the plan stay per browser.
+  Without a login with write access, or with security off (Signal K then
+  keeps no application data), the choices are kept in the browser only,
+  as before.
 - **Header.** The data sources, with how fresh each one is. Collapsed (the
   default): one line, `wind ●● | waves ● | currents ●● | tides ●`, a dot
   per source in its colour, with **Show** on the right. Expanded (**Hide**

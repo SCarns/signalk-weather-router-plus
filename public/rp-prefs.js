@@ -12,14 +12,22 @@
 //
 // load() reads the stored choices once at start-up; rp-core.js awaits it
 // before any module reads them. A choice the server has wins over this
-// browser's; one only this browser has is sent up, so what a browser
-// remembered before is kept. A change is written to localStorage at once
-// and to the server shortly after (a slider drag sends one request).
+// browser's. localStorage is not split by user, so the browser records
+// whose choices it holds (OWNER_KEY): a choice only this browser has is
+// sent up when it is this user's, or, for the choices a browser held
+// before this module (no owner recorded), only into a record that holds
+// none yet. Otherwise it was another user's and is dropped here.
+// A change is written to localStorage at once and to the server shortly
+// after, one request at a time (a slider drag sends one request); a
+// change the server did not take is kept and sent again later.
 // Without a login, with security off (the server keeps no application
 // data) or for a read-only user, the choices stay in this browser, as
 // before. Values are the strings localStorage holds.
 
 export const PREFS_URL = '/signalk/v1/applicationData/user/signalk-weather-router-plus/1.0.0';
+export const LOGIN_STATUS_URL = '/skServer/loginStatus';
+/** localStorage key: the Signal K user whose choices this browser holds. */
+export const OWNER_KEY = 'rp:prefsUser';
 
 // The sail-speed slider's key until 2026-10 (knots); rp-core.js moves it
 // to routeVar:sailThreshMs in this browser, so it is never sent up.
@@ -40,20 +48,27 @@ function _pointer(key) {
 /**
  * The preference store. `storage` is localStorage (or null where the
  * browser blocks it), `fetchFn` the fetch to the Signal K server.
- * @param {{ storage: Pick<Storage, 'getItem' | 'setItem' | 'key' | 'length'> | null,
+ * A change the server refused with another status than 401/403/405 (or
+ * that did not reach it) is sent again after `retryMs`, doubling to 5 min.
+ * @param {{ storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'key' | 'length'> | null,
  *   fetchFn: (url: string, init?: object) => Promise<Response>,
- *   url?: string, delayMs?: number, timeoutMs?: number,
+ *   url?: string, loginUrl?: string, delayMs?: number, timeoutMs?: number, retryMs?: number,
  *   log?: { warn: (...args: any[]) => void } }} opts
  */
-export function createPrefs({ storage, fetchFn, url = PREFS_URL, delayMs = 500, timeoutMs = 3000, log = console }) {
+export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGIN_STATUS_URL, delayMs = 500, timeoutMs = 3000, retryMs = 30_000, log = console }) {
+  const RETRY_MAX_MS = 5 * 60_000;
   const values = new Map();   // the user's choices this page knows, read or set
-  let pending = new Map();    // changes not yet sent to the server
+  let pending = new Map();    // changes the server has not taken yet
+  let inflight = null;        // the batch being sent, while a request runs
+  let inflightDone = null;    // its promise
   let timer = null;
+  let retryWait = retryMs;
   let remote = false;         // the server keeps this user's choices
 
   const local = {
     get(key) { try { return storage ? storage.getItem(key) : null; } catch (_) { return null; } },
     set(key, value) { try { if (storage) storage.setItem(key, value); } catch (_) { /* not remembered here */ } },
+    remove(key) { try { if (storage) storage.removeItem(key); } catch (_) { /* nothing to drop */ } },
     keys() {
       const out = [];
       try { if (storage) for (let i = 0; i < storage.length; i++) out.push(storage.key(i)); } catch (_) { /* none */ }
@@ -61,31 +76,67 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, delayMs = 500, 
     },
   };
 
-  async function send(keepalive) {
-    if (timer !== null) { clearTimeout(timer); timer = null; }
-    if (!remote || pending.size === 0) return;
+  function schedule(ms) {
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => { timer = null; send(); }, ms);
+  }
+
+  function post(batch, keepalive) {
     // JSON Patch `add` sets the member whether or not it exists, so
     // changes from two browsers to different choices both land.
-    const ops = [...pending].map(([key, value]) => ({ op: 'add', path: _pointer(key), value }));
+    const ops = [...batch].map(([key, value]) => ({ op: 'add', path: _pointer(key), value }));
+    return fetchFn(url, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(ops),
+      keepalive,
+    });
+  }
+
+  // One request at a time: changes made while it runs wait for it, so an
+  // older value can never land after a newer one.
+  function send() {
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+    if (!remote || inflight || pending.size === 0) return inflightDone || Promise.resolve();
+    const batch = pending;
     pending = new Map();
-    try {
-      const r = await fetchFn(url, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(ops),
-        keepalive: !!keepalive,
-      });
-      if (r.status === 401 || r.status === 403 || r.status === 405) {
-        // Not logged in, read-only, or security off: this browser only.
-        remote = false;
-        log.warn('[prefs] the server does not keep this user\'s choices (HTTP ' + r.status + '); they stay in this browser');
-      } else if (!r.ok) {
-        log.warn('[prefs] saving choices to the server failed: HTTP ' + r.status);
+    inflight = batch;
+    inflightDone = (async () => {
+      let taken = false;
+      try {
+        const r = await post(batch, false);
+        if (r.status === 401 || r.status === 403 || r.status === 405) {
+          // Not logged in, read-only, or security off: this browser only.
+          remote = false;
+          log.warn('[prefs] the server does not keep this user\'s choices (HTTP ' + r.status + '); they stay in this browser');
+        } else if (!r.ok) {
+          log.warn('[prefs] saving choices to the server failed: HTTP ' + r.status + '; trying again later');
+        } else {
+          taken = true;
+        }
+      } catch (e) {
+        log.warn('[prefs] saving choices to the server failed; trying again later', e);
       }
-    } catch (e) {
-      log.warn('[prefs] saving choices to the server failed', e);
-    }
+      inflight = null;
+      inflightDone = null;
+      if (!remote) { pending.clear(); return; }
+      if (taken) {
+        retryWait = retryMs;
+        if (pending.size) schedule(delayMs);
+        return;
+      }
+      // Kept for the next attempt, unless the key changed again meanwhile.
+      for (const [key, value] of batch) if (!pending.has(key)) pending.set(key, value);
+      schedule(retryWait);
+      retryWait = Math.min(retryWait * 2, RETRY_MAX_MS);
+    })();
+    return inflightDone;
+  }
+
+  async function getJson(u, signal) {
+    const r = await fetchFn(u, { credentials: 'same-origin', signal });
+    return r.ok ? r.json() : null;
   }
 
   return {
@@ -102,46 +153,75 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, delayMs = 500, 
       values.set(key, value);
       if (!remote) return;
       pending.set(key, value);
-      if (timer === null) timer = setTimeout(() => { send(false); }, delayMs);
+      if (!inflight && timer === null) schedule(delayMs);
     },
-    /** Send what is pending now; `keepalive` for a page being closed. */
-    flush(keepalive) {
-      return send(keepalive);
+    /**
+     * Send what is pending now and resolve when the server has answered.
+     * `keepalive` is for a page being closed: everything not yet taken,
+     * the request in flight included, goes in one request that outlives
+     * the page.
+     */
+    async flush(keepalive) {
+      if (!remote) return;
+      if (keepalive) {
+        if (timer !== null) { clearTimeout(timer); timer = null; }
+        const all = new Map([...(inflight || []), ...pending]);
+        if (all.size) post(all, true).catch(() => { /* the page is going */ });
+        return;
+      }
+      while (inflightDone) await inflightDone;
+      await send();
     },
     /** True once load() found the server keeping this user's choices. */
     get remote() { return remote; },
     /**
      * Read the user's choices from the server into this browser. Resolves
      * whether or not the server answers (after `timeoutMs` at most), so a
-     * slow server delays the page by that much and no more.
+     * slow server delays the page by that much and no more; the upload of
+     * this browser's own choices is not waited for.
      */
     async load() {
       let data = null;
+      let login = null;
       const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
       const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+      const signal = ctrl ? ctrl.signal : undefined;
       try {
-        const r = await fetchFn(url, { credentials: 'same-origin', signal: ctrl ? ctrl.signal : undefined });
-        if (r.ok) data = await r.json();
+        [data, login] = await Promise.all([
+          getJson(url, signal),
+          getJson(loginUrl, signal).catch(() => null),
+        ]);
       } catch (_) {
-        data = null;
+        /* no answer in time: this browser only */
       } finally {
         if (t !== null) clearTimeout(t);
       }
       if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
       remote = true;
+      let recordHasChoices = false;
       for (const [key, value] of Object.entries(data)) {
         if (!isUserPref(key) || typeof value !== 'string') continue;
+        recordHasChoices = true;
         values.set(key, value);
         local.set(key, value);
       }
+      const user = login && login.status === 'loggedIn' && typeof login.username === 'string' ? login.username : null;
+      if (user === null) return true;   // the owner of this browser's choices is unknown: leave them be
+      const owner = local.get(OWNER_KEY);
+      const adopt = owner === user || (owner === null && !recordHasChoices);
       for (const key of local.keys()) {
         if (!isUserPref(key) || values.has(key)) continue;
         const value = local.get(key);
         if (value === null) continue;
-        values.set(key, value);
-        pending.set(key, value);
+        if (adopt) {
+          values.set(key, value);
+          pending.set(key, value);
+        } else {
+          local.remove(key);        // another user's choice (or one of unknown owner)
+        }
       }
-      if (pending.size) await send(false);
+      local.set(OWNER_KEY, user);
+      send();
       return true;
     },
   };
