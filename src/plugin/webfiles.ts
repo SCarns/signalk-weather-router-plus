@@ -63,6 +63,9 @@ export function panelFilesHash(publicDir: string): string {
   return h.digest('hex').slice(0, 8);
 }
 
+/** index.html's script and style references tagPublicFiles tags (the tag, when there is one, in group 3). */
+const PAGE_REF = /(<(?:script|link)[^>]+(?:src|href)=")((?:ol|rp-[a-z]+)\.(?:js|css))(?:\?v=([0-9a-z]+))?"/g;
+
 /**
  * Write the version tag into the files on disk: index.html's script and
  * style tags and the ES modules' relative import specifiers get
@@ -97,11 +100,7 @@ export function tagPublicFiles(publicDir: string, tag: string): number {
       throw err;
     }
   };
-  rewrite(
-    path.join(publicDir, 'index.html'),
-    /(<(?:script|link)[^>]+(?:src|href)=")((?:ol|rp-[a-z]+)\.(?:js|css))(?:\?v=[0-9a-z]+)?"/g,
-    `$1$2?v=${tag}"`
-  );
+  rewrite(path.join(publicDir, 'index.html'), PAGE_REF, `$1$2?v=${tag}"`);
   for (const f of fs.readdirSync(publicDir)) {
     if (!/^rp-[a-z]+\.js$/.test(f)) continue;
     rewrite(path.join(publicDir, f), /^(\s*import\b[^'"\n]*['"]\.\/rp-[a-z]+\.js)(?:\?v=[0-9a-z]+)?(['"])/gm, `$1?v=${tag}$2`);
@@ -109,10 +108,11 @@ export function tagPublicFiles(publicDir: string, tag: string): number {
   return n;
 }
 
-/** Whether index.html's script and style tags carry `?v=<tag>` (tagPublicFiles has written this tag). */
+/** Whether every one of index.html's script and style tags carries `?v=<tag>` (tagPublicFiles has written this tag). */
 export function carriesTag(publicDir: string, tag: string): boolean {
   try {
-    return fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8').includes(`?v=${tag}"`);
+    const refs = [...fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8').matchAll(PAGE_REF)];
+    return refs.length > 0 && refs.every(m => m[3] === tag);
   } catch {
     return false;
   }

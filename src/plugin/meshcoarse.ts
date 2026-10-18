@@ -29,7 +29,7 @@
  * build 18.9 s, with its joins to 07CGD 59.3 s; 08CGD's 30.6 s and 117.5 s).
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { type BBox, boxesMeet, latLonText } from '../geo/geodesy';
@@ -106,6 +106,54 @@ function processAlive(pid: number): boolean {
   }
 }
 
+/** The pid on a lock's first line, or 0. */
+function lockPid(text: string): number {
+  const pid = Number(text.split('\n')[0]);
+  return Number.isInteger(pid) && pid > 0 ? pid : 0;
+}
+
+/**
+ * Remove `lock` when `same` holds for its contents and date, holding `<lock>.guard` (created exclusively), so a stale
+ * lock's removal and its owner's release never interleave and neither removes a lock taken anew meanwhile. False
+ * when another holds the guard (try again). A guard left by a process that died inside this synchronous step is
+ * removed.
+ */
+function removeLockIf(lock: string, same: (text: string, mtimeMs: number) => boolean): boolean {
+  const guard = `${lock}.guard`;
+  let fd: number;
+  try {
+    fd = fs.openSync(guard, 'wx');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    try {
+      const pid = lockPid(fs.readFileSync(guard, 'utf8'));
+      if (pid && pid !== process.pid && !processAlive(pid)) fs.rmSync(guard, { force: true });
+    } catch {
+      /* gone meanwhile */
+    }
+    return false;
+  }
+  try {
+    try {
+      fs.writeSync(fd, `${process.pid}\n`);
+    } finally {
+      fs.closeSync(fd);
+    }
+    let text: string;
+    let mtimeMs: number;
+    try {
+      text = fs.readFileSync(lock, 'utf8');
+      mtimeMs = fs.statSync(lock).mtimeMs;
+    } catch {
+      return true; // gone already
+    }
+    if (same(text, mtimeMs)) fs.rmSync(lock, { force: true });
+    return true;
+  } finally {
+    fs.rmSync(guard, { force: true });
+  }
+}
+
 /**
  * Run `build` for `file` (a rough cut, or a joins file) holding `<file>.lock`, created exclusively, so the main
  * thread's rebuild and a route's own build never build the same file at once (each in its own child process, the
@@ -120,6 +168,9 @@ export async function withBuildLock<T>(
 ): Promise<{ waited: boolean; result: T | null }> {
   const lock = `${file}.lock`;
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  // This call's own token (pid first): only the lock that still holds it is this call's to release.
+  const token = `${process.pid}\n${randomUUID()}\n`;
+  const pause = (): Promise<void> => new Promise(r => setTimeout(r, BUILD_LOCK_POLL_MS));
   let waited = false;
   for (;;) {
     if (opts.signal?.aborted) throw new Error('build cancelled');
@@ -131,7 +182,7 @@ export async function withBuildLock<T>(
     }
     if (fd !== null) {
       try {
-        fs.writeSync(fd, `${process.pid}\n`);
+        fs.writeSync(fd, token);
       } finally {
         fs.closeSync(fd);
       }
@@ -140,20 +191,24 @@ export async function withBuildLock<T>(
         if (waited && fs.existsSync(file)) return { waited, result: null };
         return { waited, result: await build() };
       } finally {
-        fs.rmSync(lock, { force: true });
+        while (!removeLockIf(lock, text => text === token)) await pause();
       }
     }
     // Taken: the holder's pid and the lock's age decide whether it is still building.
     let stale: boolean;
+    let text: string;
+    let mtimeMs: number;
     try {
-      const pid = Number(fs.readFileSync(lock, 'utf8').trim());
-      const age = Date.now() - fs.statSync(lock).mtimeMs;
-      stale = age > BUILD_LOCK_STALE_MS || (Number.isInteger(pid) && pid > 0 && pid !== process.pid && !processAlive(pid));
+      text = fs.readFileSync(lock, 'utf8');
+      mtimeMs = fs.statSync(lock).mtimeMs;
+      const pid = lockPid(text);
+      stale = Date.now() - mtimeMs > BUILD_LOCK_STALE_MS || (pid !== 0 && pid !== process.pid && !processAlive(pid));
     } catch {
       continue; // gone meanwhile (or not written yet): try again
     }
     if (stale) {
-      fs.rmSync(lock, { force: true });
+      // Removed only while it is still the lock inspected (same contents and date), not one taken anew since.
+      if (!removeLockIf(lock, (t, m) => t === text && m === mtimeMs)) await pause();
       continue;
     }
     if (!waited) opts.onWait?.();
