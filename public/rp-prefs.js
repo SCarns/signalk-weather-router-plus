@@ -14,9 +14,11 @@
 // before any module reads them. A choice the server has wins over this
 // browser's. localStorage is not split by user, so the browser records
 // whose choices it holds (OWNER_KEY): a choice only this browser has is
-// sent up when it is this user's, or, for the choices a browser held
-// before this module (no owner recorded), only into a record that holds
-// none yet. Otherwise it was another user's and is dropped here.
+// sent up when it is this user's, and dropped when it was another user's.
+// The choices a browser held before this module have no owner: they stay
+// in use in this browser, as before, but go to the user's record only when
+// the user says they are theirs (keepLegacy; rp-core.js asks), or are
+// dropped (discardLegacy).
 // A change is written to localStorage at once and to the server shortly
 // after, one request at a time (a slider drag sends one request); a
 // change the server did not take is kept and sent again later.
@@ -64,6 +66,8 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
   let timer = null;
   let retryWait = retryMs;
   let remote = false;         // the server keeps this user's choices
+  let user = null;            // the logged-in user load() found
+  const legacy = new Map();   // ownerless choices from before this module, waiting for the user's answer
 
   const local = {
     get(key) { try { return storage ? storage.getItem(key) : null; } catch (_) { return null; } },
@@ -149,6 +153,7 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       value = String(value);
       local.set(key, value);
       if (!isUserPref(key)) return;
+      legacy.delete(key);     // set now: the user's own choice
       if (values.get(key) === value) return;
       values.set(key, value);
       if (!remote) return;
@@ -174,6 +179,28 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
     },
     /** True once load() found the server keeping this user's choices. */
     get remote() { return remote; },
+    /** The logged-in user load() found (null: unknown). */
+    get user() { return user; },
+    /** Choices this browser held before they were kept per user, not yet claimed: [key, value] pairs. */
+    legacyChoices() { return [...legacy]; },
+    /** The user says the browser's older choices are theirs: they go to the user's record. */
+    keepLegacy() {
+      if (!user) return;
+      for (const [key, value] of legacy) {
+        values.set(key, value);
+        if (remote) pending.set(key, value);
+      }
+      legacy.clear();
+      local.set(OWNER_KEY, user);
+      send();
+    },
+    /** The user does not want them: dropped from this browser. */
+    discardLegacy() {
+      if (!user) return;
+      for (const key of legacy.keys()) local.remove(key);
+      legacy.clear();
+      local.set(OWNER_KEY, user);
+    },
     /**
      * Read the user's choices from the server into this browser. Resolves
      * whether or not the server answers (after `timeoutMs` at most), so a
@@ -198,29 +225,29 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       }
       if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
       remote = true;
-      let recordHasChoices = false;
       for (const [key, value] of Object.entries(data)) {
         if (!isUserPref(key) || typeof value !== 'string') continue;
-        recordHasChoices = true;
         values.set(key, value);
         local.set(key, value);
       }
-      const user = login && login.status === 'loggedIn' && typeof login.username === 'string' ? login.username : null;
+      user = login && login.status === 'loggedIn' && typeof login.username === 'string' ? login.username : null;
       if (user === null) return true;   // the owner of this browser's choices is unknown: leave them be
       const owner = local.get(OWNER_KEY);
-      const adopt = owner === user || (owner === null && !recordHasChoices);
       for (const key of local.keys()) {
         if (!isUserPref(key) || values.has(key)) continue;
         const value = local.get(key);
         if (value === null) continue;
-        if (adopt) {
+        if (owner === user) {
           values.set(key, value);
           pending.set(key, value);
+        } else if (owner === null) {
+          legacy.set(key, value);   // from before: in use here, sent up only when the user claims it
         } else {
-          local.remove(key);        // another user's choice (or one of unknown owner)
+          local.remove(key);        // another user's choice
         }
       }
-      local.set(OWNER_KEY, user);
+      // With older choices waiting for an answer the browser has no owner yet.
+      if (owner !== null || legacy.size === 0) local.set(OWNER_KEY, user);
       send();
       return true;
     },

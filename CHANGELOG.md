@@ -256,8 +256,10 @@ uses [Semantic Versioning](https://semver.org/).
   the server's value wins. localStorage is not split by user, so the
   browser records whose choices it holds (`rp:prefsUser`, from
   `/skServer/loginStatus`): a choice only it has is sent up for that user
-  and dropped when another user logs in there; choices from before this
-  change go up only into a record that is still empty. Changes are sent as
+  and dropped when another user logs in there. Choices from before this
+  change have no owner: they stay in use in that browser and go up only
+  when the user keeps them (a banner asks: Keep, or Discard and reload
+  with the defaults). Changes are sent as
   JSON Patch, one request at a time and batched (a slider drag is one
   request); a change the server did not take is sent again later. The
   upload at start-up is not waited for. The map view, tabs, layer

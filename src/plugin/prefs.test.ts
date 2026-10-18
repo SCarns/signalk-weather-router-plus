@@ -136,8 +136,7 @@ test('start-up: the server choice wins and is copied into this browser; page sta
   assert.equal(srv.postCalls().length, 0, 'nothing only this browser has, nothing sent');
 });
 
-test('the choices a browser held before (no owner) go up only into a record that has none', async () => {
-  // A fresh record: this user's first browser after the upgrade.
+test('choices from before (no owner) stay in use here, are not sent, and wait for the user to claim them', async () => {
   const storage = new MemStorage();
   storage.setItem('polarPath', 'Lagoon_560.pol');
   storage.setItem('routeVar:mode', 'sail_max');
@@ -146,28 +145,52 @@ test('the choices a browser held before (no owner) go up only into a record that
   const prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
   await prefs.load();
   await prefs.flush();
-  assert.equal(storage.getItem(OWNER_KEY), 'dirk', 'the browser now holds this user’s choices');
-  assert.equal(srv.postCalls().length, 1);
+  assert.equal(srv.postCalls().length, 0, 'an empty record does not make them this user’s');
+  assert.equal(prefs.get('polarPath'), 'Lagoon_560.pol', 'still in use in this browser, as before');
+  assert.equal(prefs.user, 'dirk');
+  assert.deepEqual(prefs.legacyChoices(), [
+    ['polarPath', 'Lagoon_560.pol'],
+    ['routeVar:mode', 'sail_max'],
+  ]);
+  assert.equal(storage.getItem(OWNER_KEY), null, 'no owner until the user answers');
+
+  // Not answered: asked again on the next load.
+  const again = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+  await again.load();
+  assert.equal(again.legacyChoices().length, 2);
+
+  // Claimed: sent up, and the browser is this user's from now on.
+  again.keepLegacy();
+  await again.flush();
   assert.deepEqual(srv.postCalls()[0].body, [
     { op: 'add', path: '/polarPath', value: 'Lagoon_560.pol' },
     { op: 'add', path: '/routeVar:mode', value: 'sail_max' },
   ]);
+  assert.equal(storage.getItem(OWNER_KEY), 'dirk');
+  assert.deepEqual(again.legacyChoices(), []);
+});
 
-  // A record that has choices: the browser's ownerless ones may be
-  // another user's, so they are dropped, not sent.
-  const storage2 = new MemStorage();
-  storage2.setItem('routeVar:mode', 'motor');
-  storage2.setItem('powerBoat', '{"name":"Someone else"}');
-  const srv2 = fakeServer({ polarPath: 'Lagoon_560.pol' });
-  const prefs2 = createPrefs({ storage: storage2, fetchFn: srv2.fetchFn, log: quiet });
-  await prefs2.load();
-  await prefs2.flush();
-  assert.equal(srv2.postCalls().length, 0);
-  assert.equal(storage2.getItem('routeVar:mode'), null);
-  assert.equal(storage2.getItem('powerBoat'), null);
-  assert.equal(prefs2.get('powerBoat'), null);
-  assert.equal(storage2.getItem('polarPath'), 'Lagoon_560.pol');
-  assert.equal(storage2.getItem(OWNER_KEY), 'dirk');
+test('choices from before that the user discards are dropped; one the user sets is theirs', async () => {
+  const storage = new MemStorage();
+  storage.setItem('routeVar:mode', 'motor');
+  storage.setItem('powerBoat', '{"name":"Someone else"}');
+  storage.setItem('rp:view', '{"zoom":5}');
+  const srv = fakeServer({ polarPath: 'Lagoon_560.pol' });
+  const prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+  await prefs.load();
+  assert.equal(storage.getItem('polarPath'), 'Lagoon_560.pol', 'the record’s choice wins');
+  // Setting one makes it the user's own: sent, and no longer waiting.
+  prefs.set('routeVar:mode', 'sail_max');
+  await prefs.flush();
+  assert.deepEqual(srv.postCalls()[0].body, [{ op: 'add', path: '/routeVar:mode', value: 'sail_max' }]);
+  assert.deepEqual(prefs.legacyChoices(), [['powerBoat', '{"name":"Someone else"}']]);
+  prefs.discardLegacy();
+  assert.equal(storage.getItem('powerBoat'), null);
+  assert.equal(prefs.get('powerBoat'), null);
+  assert.equal(storage.getItem('rp:view'), '{"zoom":5}', 'page state untouched');
+  assert.equal(storage.getItem(OWNER_KEY), 'dirk');
+  await prefs.flush();
+  assert.equal(srv.postCalls().length, 1, 'nothing more sent');
 });
 
 test('a browser that held this user’s choices sends up the ones the record lacks', async () => {
@@ -211,6 +234,7 @@ test('the user unknown (no login status): the browser’s choices are left as th
 
 test('start-up does not wait for the upload of this browser’s choices', async () => {
   const storage = new MemStorage();
+  storage.setItem(OWNER_KEY, 'dirk');
   storage.setItem('polarPath', 'Lagoon_560.pol');
   const srv = fakeServer({}, { holdPosts: true });
   const prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });

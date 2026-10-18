@@ -12,6 +12,41 @@ import { CATEGORY_PATH, DURATION_FORMATS, fetchDisplayUnits, fetchPresetUnits, u
 // every module that imports it, for one request (3 s at most).
 await prefs.load();
 
+// Setup choices this browser held before they were kept per user have no
+// owner: they stay in use here, and go to the user's record only when the
+// user says they are theirs. Discard drops them and reloads with the defaults.
+(function legacyChoicesBanner() {
+  const choices = prefs.legacyChoices();
+  const head = document.getElementById('panelHead');
+  const tabs = document.getElementById('tabBar');
+  if (!choices.length || !prefs.user || !prefs.remote || !head || !tabs) return;
+  const polar = choices.find(([k]) => k === 'polarPath');
+  const polarText = polar ? 'the polar ' + polar[1].replace(/\.[^.]+$/, '').replace(/_/g, ' ') : null;
+  const rest = choices.length - (polar ? 1 : 0);
+  const what = [polarText, rest ? rest + (polar ? ' more' : ' route option' + (rest === 1 ? '' : 's')) : null].filter(Boolean).join(' and ');
+  const bar = document.createElement('div');
+  bar.id = 'legacyChoicesBanner';
+  bar.className = 'recompute-banner';
+  bar.setAttribute('role', 'status');
+  const text = document.createElement('span');
+  text.textContent = 'This browser has Setup choices from before they were kept per Signal K user (' + what + '). Keep them as ' + prefs.user + '’s?';
+  const actions = document.createElement('span');
+  actions.className = 'recompute-actions';
+  const keep = document.createElement('button');
+  keep.type = 'button';
+  keep.textContent = 'Keep';
+  keep.title = 'Save them for ' + prefs.user + ': every browser this user opens starts with them';
+  const drop = document.createElement('button');
+  drop.type = 'button';
+  drop.textContent = 'Discard';
+  drop.title = 'Drop them from this browser and start from the defaults (the page reloads)';
+  keep.addEventListener('click', () => { prefs.keepLegacy(); bar.remove(); });
+  drop.addEventListener('click', () => { prefs.discardLegacy(); window.location.reload(); });
+  actions.append(keep, drop);
+  bar.append(text, actions);
+  head.insertBefore(bar, tabs);
+})();
+
 // ─── Slider label wiring / display units ─────────────────────────────
 // Display units come from the Signal K user's unit preferences, never
 // from a choice on this page. Everything the plugin sends is SI. As the

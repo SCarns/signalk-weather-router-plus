@@ -368,7 +368,9 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   browser remembers. The browser notes whose choices it holds: a
   choice only it has is sent up for that user, while another user's are
   dropped when someone else logs in there. Choices a browser held before
-  this change go up only into a user's record that is still empty. The
+  this change have no owner: they stay in use there, and a banner asks
+  the logged-in user whether to keep them as theirs (sent up) or discard
+  them (the page reloads with the defaults). The
   map view, open tabs, layer toggles and the plan stay per browser.
   Without a login with write access, or with security off (Signal K then
   keeps no application data), the choices are kept in the browser only,
