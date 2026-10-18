@@ -612,7 +612,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       return;
     }
     // The request is kept with its job and sent back in every job list; unknown fields pass the validation.
-    if (JSON.stringify(body).length > MAX_ROUTE_REQUEST_BYTES) {
+    if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_ROUTE_REQUEST_BYTES) {
       json(res, 413, { error: `route request too large (over ${MAX_ROUTE_REQUEST_BYTES / 1024} KB)` });
       return;
     }
@@ -715,9 +715,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       res.setHeader('X-Accel-Buffering', 'no');
       res.flushHeaders?.();
       const lastIdHeader = req.headers['last-event-id'];
-      // A header that is not a whole number replays everything (NaN compared false with every id: nothing was replayed).
-      const parsed = Number(Array.isArray(lastIdHeader) ? lastIdHeader[0] : lastIdHeader);
-      const lastId = Number.isInteger(parsed) ? parsed : 0;
+      // A header that is not decimal digits, or past a safe integer, replays everything (NaN compared false with every
+      // id: nothing was replayed; Number() also took "", " 5", "1e3" and "0x10").
+      const raw = String((Array.isArray(lastIdHeader) ? lastIdHeader[0] : lastIdHeader) ?? '');
+      const parsed = /^\d+$/.test(raw) ? Number(raw) : NaN;
+      const lastId = Number.isSafeInteger(parsed) ? parsed : 0;
       const write = (ev: { id: number; event: string; data: unknown }): void => {
         res.write(`id: ${ev.id}\nevent: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
       };

@@ -499,7 +499,7 @@ export async function route(
   self?: SelfDesign
 ): Promise<void> {
   const { config: cfg, client: cl } = requireInit(st);
-  Atomics.store(st.cancelFlag, 0, 0);
+  // The flag is cleared by the main thread before it posts the route (index.ts dispatchRoute).
   const shouldCancel = (): boolean => Atomics.load(st.cancelFlag, 0) === 1;
   const progress = (stage: number, total: number, message: string): void => st.send({ type: 'progress', id, stage, total, message });
   try {

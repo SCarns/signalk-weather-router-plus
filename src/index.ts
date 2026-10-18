@@ -190,6 +190,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
     }
     if (!jobs || jobs.runningId !== job.id) return; // cancelled meanwhile
     routeAtWorker = job.id;
+    // Cleared here, not by the worker when the route starts: a cancel between this post and the start stays set.
+    Atomics.store(pool.cancelFlag, 0, 0);
     pool.post('route', { type: 'route', id: job.id, request: job.request, avoid, self: selfDesign() });
   }
 
@@ -1148,8 +1150,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
           jobs?.onError(id, 'cancelled', true);
           return;
         }
-        // Running but not sent yet (dispatchRoute is reading the notes): the worker clears its flag when a route
-        // starts, so the flag would be lost. Finished here; dispatchRoute sees it is no longer running and drops it.
+        // Running but not sent yet (dispatchRoute is reading the notes): dispatchRoute clears the flag before it
+        // posts the route, so the flag would be lost. Finished here; dispatchRoute sees it is no longer running and drops it.
         if (routeAtWorker !== id) {
           jobs?.onError(id, 'cancelled', true);
           return;

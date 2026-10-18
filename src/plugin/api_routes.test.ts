@@ -77,6 +77,9 @@ test('POST /api/routes: a body over 64 KB is 413 and a polar not in the library 
     const call = api(jobs, dir);
     const big = await call('POST /api/routes', { body: { ...ROUTE, name: 'n', pad: 'x'.repeat(70_000) } });
     assert.equal(big.status, 413);
+    // 40 000 characters, 80 000 bytes in UTF-8: the limit is in bytes.
+    const wide = await call('POST /api/routes', { body: { ...ROUTE, name: 'n', pad: 'é'.repeat(40_000) } });
+    assert.equal(wide.status, 413);
     const bad = await call('POST /api/routes', { body: { ...ROUTE, vessel: { polar: 'nosuch.csv' } } });
     assert.equal(bad.status, 400);
     assert.match(String(bad.body.error), /^vessel\.polar: polar not found: nosuch\.csv/);
@@ -109,4 +112,5 @@ test('GET /api/routes/:id/events: a Last-Event-ID that is not a number replays e
   assert.equal(await replayed(), 2);
   assert.equal(await replayed('1'), 1);
   assert.equal(await replayed('garbage'), 2);
+  for (const bad of ['', ' 1', '1e0', '0x1', '1.0', '99999999999999999999']) assert.equal(await replayed(bad), 2, bad);
 });
