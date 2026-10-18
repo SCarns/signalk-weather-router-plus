@@ -311,6 +311,9 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         }
       };
       window.addEventListener('message', function (ev) {
+        // Only the chartplotter hosting this page talks on the bus: its window, from this origin
+        // (where the page's own messages go); another window could otherwise move the charts.
+        if (ev.source !== window.parent || ev.origin !== origin) return;
         var d = ev.data;
         if (!d || d.bus !== BUS || !d.msg) return;
         var m = d.msg;

@@ -118,6 +118,7 @@ export interface ChartGroup {
 /** Layers drawn from currents or tides (alone or mixed in), whose frames do not all come from the forecast run. */
 const NOT_FORECAST_ONLY = new Set<string>(['current', 'arrows', 'tide', 'sea_state', 'seas']);
 
+/** The chart resource id a layer is published under (`wrp-…`). */
 const chartIdOf = (l: PngLayer | GlyphLayer): string =>
   (l in PNG_LAYER_SPECS ? PNG_LAYER_SPECS[l as PngLayer] : GLYPH_LAYER_SPECS[l as GlyphLayer]).chartId;
 
