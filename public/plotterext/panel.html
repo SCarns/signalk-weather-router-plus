@@ -89,11 +89,72 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
 .fair { color: #2e7d32; font-weight: 600; }
 .foul { color: #c62828; font-weight: 600; }
 .cross { color: #b8860b; }
+/* Tabs: Weather (layers, forecast time) and Route. */
+.tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+.tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 6px 12px; font-weight: 600; color: var(--muted); }
+.tabs button[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--primary); }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.presets button { padding: 6px 10px; }
+.presets button[aria-pressed="true"] { background: var(--primary); color: var(--primary-fg); border-color: var(--primary); }
+.legend { margin-top: 10px; }
+.legend-bar { height: 12px; border-radius: 3px; border: 1px solid var(--border); }
+.legend-labels { position: relative; height: 16px; font-size: 11px; color: var(--muted); }
+.legend-labels span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.legend-labels span:first-child { transform: none; }
+.legend-labels span:last-child { transform: translateX(-100%); }
+.when { margin-bottom: 6px; }
+/* The forecast time bar: the whole run, days marked, the past shaded, now and the shown hour. */
+.track { position: relative; padding: 8px 0 0; outline: none; touch-action: none; user-select: none; cursor: pointer; }
+.track:focus-visible .track-bar { outline: 2px solid var(--primary); outline-offset: 2px; }
+.track-bar { position: relative; height: 22px; border-radius: 4px; background: rgba(21,101,192,.14); }
+.track .past { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(127,127,127,.25); border-radius: 4px 0 0 4px; }
+.track .nowmark { position: absolute; top: -6px; bottom: -2px; width: 2px; margin-left: -1px; background: #c62828; }
+.track .thumb { position: absolute; top: -4px; bottom: -4px; width: 6px; margin-left: -3px; border-radius: 3px; background: var(--primary); box-shadow: 0 0 0 2px var(--bg); }
+.ticks { position: relative; height: 18px; font-size: 11px; color: var(--muted); }
+.ticks .tick { position: absolute; top: -22px; height: 22px; border-left: 1px solid rgba(127,127,127,.55); }
+.ticks .day { position: absolute; top: 2px; transform: translateX(-50%); white-space: nowrap; }
+.wx-buttons { margin-top: 6px; flex-wrap: wrap; }
+.wx-buttons select { width: auto; flex: 0 0 auto; }
+.wxdata { padding: 6px 8px; border-radius: 6px; background: rgba(127,127,127,.12); }
+.wxdata.warn { color: #8a5a00; background: rgba(249,168,37,.15); }
+.wxdata.danger { color: var(--danger); background: rgba(211,47,47,.12); }
 </style>
 </head>
 <body>
 <div id="status" class="status">Connecting to the chartplotter…</div>
 
+<div class="tabs" role="tablist">
+  <button id="tab-weather" type="button" role="tab" aria-controls="weatherTab" aria-selected="true">Weather</button>
+  <button id="tab-route" type="button" role="tab" aria-controls="routeTab" aria-selected="false">Route</button>
+</div>
+
+<div id="weatherTab" role="tabpanel" aria-labelledby="tab-weather">
+  <section>
+    <h2>Layers</h2>
+    <div id="wxPresets" class="presets"><span class="muted small">Loading…</span></div>
+    <div id="wxCustom" class="muted small" hidden>Other layers are shown from the chart list.</div>
+    <div id="wxLegend" class="legend" hidden></div>
+  </section>
+  <section id="wxTimeSection">
+    <h2>Forecast time</h2>
+    <div class="when"><b id="wxWhen">—</b> <span id="wxRel" class="muted"></span></div>
+    <div id="wxTrack" class="track" tabindex="0" role="slider" aria-label="Forecast time">
+      <div class="track-bar"><div id="wxPast" class="past"></div><div id="wxNowMark" class="nowmark"></div><div id="wxThumb" class="thumb"></div></div>
+      <div id="wxTicks" class="ticks"></div>
+    </div>
+    <div class="row wx-buttons">
+      <button id="wxPrev" type="button" aria-label="Earlier">◀</button>
+      <button id="wxPlay" type="button" aria-label="Play">▶ Play</button>
+      <button id="wxNext" type="button" aria-label="Later">▶</button>
+      <select id="wxStep" aria-label="Step"><option value="1">1 h</option><option value="3">3 h</option><option value="6">6 h</option><option value="12">12 h</option><option value="24">24 h</option></select>
+      <button id="wxNow" type="button">Now</button>
+    </div>
+  </section>
+  <div id="wxData" class="wxdata small"></div>
+  <div id="wxNote" class="muted small" hidden></div>
+</div>
+
+<div id="routeTab" role="tabpanel" aria-labelledby="tab-route" hidden>
 <section id="chartRoute">
   <h2>Route on the chart</h2>
   <p class="muted small">Draw a route with the chartplotter's <b>Draw Route</b> tool (pencil menu): tap the start, any waypoints, the destination, then Finish. Or show a saved route. Then weather-route it here.</p>
@@ -183,6 +244,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
 </section>
 
 <p class="muted small">Open water only: the route avoids land but knows nothing about depths, channels or bridges. Review it before use.</p>
+</div>
 <script>
 /*
  * Weather Router Plus: plotter-extension panel (Signal K Plotter Extensions
@@ -363,7 +425,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   var LENGTH = { m: [1, 'm'], foot: [3.28084, 'ft'] };
   var HOST_TABLE = { speed: SPEED, distance: DISTANCE, length: LENGTH, depth: LENGTH };
   var skUnits = {};   // Signal K category → {fn, unit, precision[, text]} from the user's preferences
-  var SK_CATEGORIES = ['angle', 'time', 'percentage'];
+  var SK_CATEGORIES = ['angle', 'time', 'percentage', 'temperature'];
   var SK_PRESET_CATEGORIES = ['dataSize'];
   function unitOf(cat) {
     var table = HOST_TABLE[cat];
@@ -418,6 +480,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   var waiting = false;      // the server is still getting its first forecast (the web app's banner, in one line)
   function pollStatus() {
     get(API + '/status').then(function (s) {
+      weatherStatus(s);
       waiting = !!s.starting || (!s.forecast && (!s.forecast_error || !!s.forecast_loading));
       if (s.starting) { setStatus(s.starting + ' · routes start by themselves when it is ready'); scheduleStatus(5000); return; }
       if (s.forecast_error && !s.forecast && !s.forecast_loading) { setStatus('Forecast: ' + s.forecast_error, 'error'); scheduleStatus(30000); return; }
@@ -439,6 +502,369 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     });
   }
   function scheduleStatus(ms) { clearTimeout(statusTimer); statusTimer = setTimeout(pollStatus, ms); }
+
+  // ---- weather: presets, forecast time, data age (the Weather tab) ----------
+  // The plugin's chart layers in the host's chart list, switched as the
+  // presets of /api/chart-groups (a tap shows one and hides the plugin's
+  // other layers), and one forecast time for all of them through
+  // `chart.setTime`. The host passes the instant through without clamping,
+  // so the hours ahead of now are reachable, which its own Time palette,
+  // made for radar and satellite pictures, does not offer.
+  // Freeboard-SK names a chart by its resource identifier, which the
+  // presets list; a host that names them otherwise gets no presets.
+  var HOUR_MS = 3600000;
+  var DAY_MS = 24 * HOUR_MS;
+  // A run older than this means the downloads have stopped: newer runs come out several times a day.
+  var WX_OUTDATED_MS = DAY_MS;
+  var WX_PLAY_MS = 1500;
+  var wx = {
+    groups: [],        // /api/chart-groups
+    legends: null,     // /api/legends
+    charts: {},        // the plugin's charts in the host's list: id → {visible, temporal}
+    fc: null,          // /api/status forecast: cycle, valid_from, valid_to, model
+    startMs: null,     // the bar: the run's first and last whole hour
+    endMs: null,
+    time: null,        // the shown hour (ms), or null: live, the current hour
+    stepH: 1,
+    playTimer: null,
+    applyTimer: null,
+    lastSet: 0,        // when the panel last set the time (its own chart.time events are not news)
+    groupsAt: 0,       // when the presets were last read
+    dragging: false,
+  };
+  function ourIds() { return Object.keys(wx.charts); }
+  function temporalIds() { return ourIds().filter(function (id) { return wx.charts[id].temporal; }); }
+  function visibleIds() { return ourIds().filter(function (id) { return wx.charts[id].visible; }); }
+  function groupCharts(g) { return g.charts.filter(function (id) { return id in wx.charts; }); }
+  function sameSet(a, b) { return a.length === b.length && a.every(function (x) { return b.indexOf(x) >= 0; }); }
+  function activeGroup() {
+    var shown = visibleIds();
+    if (!shown.length) return 'off';
+    var g = wx.groups.filter(function (x) { return sameSet(groupCharts(x), shown); })[0];
+    return g ? g.id : null;
+  }
+
+  function loadChartList() {
+    if (!host || !host.has('charts')) return Promise.resolve();
+    return host.call('chart.list').then(function (r) {
+      var ours = {};
+      wx.groups.forEach(function (g) { g.charts.forEach(function (id) { ours[id] = true; }); });
+      var seen = {}, adopt = null;
+      (r.charts || []).forEach(function (c) {
+        if (!ours[c.id]) return;
+        seen[c.id] = { visible: !!c.visible, temporal: !!c.time };
+        // Opened with the layers already at an hour (set before, or from the host's own palette): show that hour.
+        if (c.visible && c.time && c.time.value && adopt === null) adopt = Date.parse(c.time.value);
+      });
+      wx.charts = seen;
+      if (adopt !== null && isFinite(adopt) && wx.time === null) wx.time = adopt;
+      renderPresets();
+      renderTime();
+    }).catch(function (e) { wxNote('The chart list is not available: ' + e.message); });
+  }
+  function loadChartGroups() {
+    wx.groupsAt = Date.now();
+    return Promise.all([
+      get(API + '/chart-groups').then(function (r) { wx.groups = r.groups || []; }),
+      wx.legends ? Promise.resolve() : get(API + '/legends').then(function (l) { wx.legends = l; }).catch(function () {}),
+    ]).then(loadChartList).catch(function () { renderPresets(); });
+  }
+
+  function renderPresets() {
+    var el = $('wxPresets');
+    if (!host || !host.has('charts')) { el.innerHTML = ''; return; }
+    if (!wx.groups.length) { el.innerHTML = '<span class="muted small">No forecast layers yet.</span>'; $('wxLegend').hidden = true; return; }
+    var active = activeGroup();
+    el.innerHTML = '';
+    wx.groups.forEach(function (g) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = g.name.replace(/\s*\(Weather Router Plus\)$/, '');
+      b.title = g.description;
+      b.setAttribute('aria-pressed', String(active === g.id));
+      b.disabled = !groupCharts(g).length;
+      b.addEventListener('click', function () { applyGroup(g); });
+      el.appendChild(b);
+    });
+    var off = document.createElement('button');
+    off.type = 'button';
+    off.textContent = 'Off';
+    off.title = 'Hide the forecast layers';
+    off.setAttribute('aria-pressed', String(active === 'off'));
+    off.addEventListener('click', function () { applyGroup(null); });
+    el.appendChild(off);
+    $('wxCustom').hidden = active !== null;
+    var g = wx.groups.filter(function (x) { return x.id === active; })[0];
+    renderLegend(g ? g.legend : null);
+  }
+  function applyGroup(g) {
+    stopPlay();
+    var show = g ? groupCharts(g) : [];
+    var hide = visibleIds().filter(function (id) { return show.indexOf(id) < 0; });
+    var p = hide.length ? host.call('chart.setVisibility', { ids: hide, visible: false }) : Promise.resolve();
+    p.then(function () {
+      if (!show.length) return null;
+      // Then at the shown hour: Freeboard-SK keeps a time only for a chart on the map, so the
+      // layers start live and move to the hour at once.
+      return host.call('chart.setVisibility', { ids: show, visible: true }).then(function () {
+        return applyTime(show);
+      }).then(function () {
+        // The glyphs over the colour layer, the preset over the other charts.
+        return host.call('chart.setOrder', { order: show.slice().reverse() }).catch(function () {});
+      });
+    }).then(function () {
+      hide.forEach(function (id) { wx.charts[id].visible = false; });
+      show.forEach(function (id) { wx.charts[id].visible = true; });
+      renderPresets();
+    }).catch(function (e) { wxNote('Could not switch the layers: ' + e.message); });
+  }
+
+  // ---- legend --------------------------------------------------------------
+  function legendValue(L, v) {
+    if (L.quantity === 'precip_depth_rate') return String(+(v * 3600000).toPrecision(2)) + ' mm/h';
+    var cat = L.category === 'depth' ? 'depth' : L.category;
+    return (cat && fmtQ(cat, v, 2)) || String(+v.toPrecision(3)) + (L.si_unit ? ' ' + L.si_unit : '');
+  }
+  function renderLegend(key) {
+    var box = $('wxLegend');
+    var L = key && wx.legends && wx.legends[key];
+    if (!L || !L.stops || L.stops.length < 2) { box.hidden = true; return; }
+    var lo = L.stops[0][0], hi = L.stops[L.stops.length - 1][0];
+    var pos = function (v) { return hi > lo ? (100 * (v - lo)) / (hi - lo) : 0; };
+    var grad = L.stops.map(function (st) { return st[1] + ' ' + pos(st[0]).toFixed(1) + '%'; }).join(', ');
+    var marks = L.kind === 'bands' && L.bands
+      ? L.bands.map(function (b) { return [b[0], b[1]]; })
+      : [L.stops[0], L.stops[Math.floor((L.stops.length - 1) / 2)], L.stops[L.stops.length - 1]].map(function (st) { return [st[0], legendValue(L, st[0])]; });
+    box.innerHTML = '<div class="small"><b>' + esc(L.title) + '</b></div>' +
+      '<div class="legend-bar" style="background: linear-gradient(to right, ' + esc(grad) + ')"></div>' +
+      '<div class="legend-labels">' + marks.map(function (m) { return '<span style="left:' + pos(m[0]).toFixed(1) + '%">' + esc(m[1]) + '</span>'; }).join('') + '</div>';
+    box.hidden = false;
+  }
+
+  // ---- forecast time ---------------------------------------------------------
+  function nowHourMs() { return Math.floor(Date.now() / HOUR_MS) * HOUR_MS; }
+  function clampMs(ms) { return Math.min(wx.endMs, Math.max(wx.startMs, ms)); }
+  function shownMs() { return wx.time === null ? clampMs(nowHourMs()) : wx.time; }
+  // The ship's offset from UTC at an instant (the zone fmtClock writes in), for the day marks.
+  function zoneOffsetMs(ms) {
+    if (shipZone && shipZone.offsetMin != null) return shipZone.offsetMin * 60000;
+    if (shipZone && shipZone.tz) {
+      var parts = {};
+      new Intl.DateTimeFormat('en-US', { timeZone: shipZone.tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric' })
+        .formatToParts(new Date(ms)).forEach(function (p) { parts[p.type] = +p.value; });
+      return Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour % 24, parts.minute) - Math.floor(ms / 60000) * 60000;
+    }
+    return -new Date(ms).getTimezoneOffset() * 60000;
+  }
+  function localMidnight(ms) {
+    var off = zoneOffsetMs(ms);
+    return Math.floor((ms + off) / DAY_MS) * DAY_MS - off;
+  }
+  function dayHours(h) { return h >= 48 ? Math.floor(h / 24) + 'd ' + (h % 24) + 'h' : h + ' h'; }
+  // In whole hours from the current one, as the bar steps.
+  function relText(ms) {
+    if (wx.time === null) return 'now';
+    var h = Math.round((ms - nowHourMs()) / HOUR_MS);
+    if (h === 0) return 'this hour';
+    var t = dayHours(Math.abs(h));
+    return h > 0 ? 'in ' + t : t + ' ago';
+  }
+  function renderTime() {
+    var has = wx.startMs !== null && wx.endMs > wx.startMs;
+    var timeOk = !!(host && host.has('charts') && host.has('charts.time'));
+    $('wxTimeSection').hidden = !has;
+    if (!has) return;
+    ['wxPrev', 'wxNext', 'wxPlay', 'wxNow', 'wxStep'].forEach(function (id) { $(id).disabled = !timeOk; });
+    var span = wx.endMs - wx.startMs;
+    var frac = function (ms) { return Math.min(1, Math.max(0, (ms - wx.startMs) / span)); };
+    var ms = shownMs(), now = clampMs(Date.now());
+    $('wxPast').style.width = (100 * frac(now)).toFixed(2) + '%';
+    $('wxNowMark').style.left = (100 * frac(now)).toFixed(2) + '%';
+    $('wxThumb').style.left = (100 * frac(ms)).toFixed(2) + '%';
+    var track = $('wxTrack');
+    track.setAttribute('aria-valuemin', '0');
+    track.setAttribute('aria-valuemax', String(Math.round(span / HOUR_MS)));
+    track.setAttribute('aria-valuenow', String(Math.round((ms - wx.startMs) / HOUR_MS)));
+    var when = fmtClock(new Date(ms), { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    track.setAttribute('aria-valuetext', when);
+    $('wxWhen').textContent = when;
+    $('wxRel').textContent = '(' + relText(ms) + ')';
+    $('wxNow').disabled = !timeOk || wx.time === null;
+    // Day marks: midnight in the ship's zone, the day's name in the middle of its part of the bar.
+    var width = track.clientWidth || 300, html = '', days = [];
+    // 26 h on from a midnight is always the next day, whatever a clock change does to it.
+    for (var m = localMidnight(wx.startMs); m < wx.endMs; ) {
+      var next = localMidnight(m + DAY_MS + 2 * HOUR_MS);
+      days.push([m, next]);
+      m = next;
+    }
+    days.forEach(function (d) {
+      var a = Math.max(d[0], wx.startMs), b = Math.min(d[1], wx.endMs);
+      if (d[0] > wx.startMs) html += '<div class="tick" style="left:' + (100 * frac(d[0])).toFixed(2) + '%"></div>';
+      var px = (width * (b - a)) / span;
+      if (px < 16) return;
+      var noon = new Date(d[0] + 12 * HOUR_MS);
+      var label = px >= 46 ? fmtClock(noon, { weekday: 'short', day: 'numeric' }) : fmtClock(noon, { day: 'numeric' });
+      html += '<span class="day" style="left:' + (100 * frac((a + b) / 2)).toFixed(2) + '%">' + esc(label) + '</span>';
+    });
+    $('wxTicks').innerHTML = html;
+  }
+  function setTime(ms, now) {
+    // The current hour is live: the layers then move on by themselves.
+    wx.time = ms === null || clampMs(ms) === clampMs(nowHourMs()) ? null : clampMs(ms);
+    renderTime();
+    clearTimeout(wx.applyTimer);
+    if (now) applyTime();
+    else wx.applyTimer = setTimeout(function () { applyTime(); }, 300);
+  }
+  function applyTime(ids) {
+    if (!host || !host.has('charts.time')) return Promise.resolve();
+    ids = (ids || temporalIds()).filter(function (id) { return wx.charts[id] && wx.charts[id].temporal; });
+    if (!ids.length) return Promise.resolve();
+    wx.lastSet = Date.now();
+    return host.call('chart.setTime', { ids: ids, time: wx.time === null ? null : new Date(wx.time).toISOString() })
+      .catch(function (e) { wxNote('Could not set the forecast time: ' + e.message); });
+  }
+  function step(dir) {
+    var ms = shownMs() + dir * wx.stepH * HOUR_MS;
+    setTime(clampMs(ms), true);
+  }
+  function stopPlay() {
+    if (!wx.playTimer) return;
+    clearInterval(wx.playTimer);
+    wx.playTimer = null;
+    $('wxPlay').textContent = '▶ Play';
+    $('wxPlay').setAttribute('aria-label', 'Play');
+  }
+  function togglePlay() {
+    if (wx.playTimer) { stopPlay(); return; }
+    $('wxPlay').textContent = '❚❚ Pause';
+    $('wxPlay').setAttribute('aria-label', 'Pause');
+    wx.playTimer = setInterval(function () {
+      var next = shownMs() + wx.stepH * HOUR_MS;
+      // From the end back to now, as a loop over the hours ahead.
+      setTime(next > wx.endMs ? null : next, true);
+    }, WX_PLAY_MS);
+  }
+  function trackMs(ev) {
+    var r = $('wxTrack').getBoundingClientRect();
+    var f = Math.min(1, Math.max(0, (ev.clientX - r.left) / (r.width || 1)));
+    return wx.startMs + Math.round((f * (wx.endMs - wx.startMs)) / HOUR_MS) * HOUR_MS;
+  }
+  function initTrack() {
+    var track = $('wxTrack');
+    track.addEventListener('pointerdown', function (ev) {
+      if (!host || !host.has('charts.time') || wx.startMs === null) return;
+      stopPlay();
+      wx.dragging = true;
+      try { track.setPointerCapture(ev.pointerId); } catch (_) {}
+      setTime(trackMs(ev), false);
+    });
+    track.addEventListener('pointermove', function (ev) { if (wx.dragging) setTime(trackMs(ev), false); });
+    var end = function (ev) {
+      if (!wx.dragging) return;
+      wx.dragging = false;
+      setTime(trackMs(ev), true);
+    };
+    track.addEventListener('pointerup', end);
+    track.addEventListener('pointercancel', function () { wx.dragging = false; });
+    track.addEventListener('keydown', function (ev) {
+      if (!host || !host.has('charts.time') || wx.startMs === null) return;
+      var k = ev.key;
+      if (k === 'ArrowRight' || k === 'ArrowUp') step(1);
+      else if (k === 'ArrowLeft' || k === 'ArrowDown') step(-1);
+      else if (k === 'PageUp') setTime(shownMs() + DAY_MS, true);
+      else if (k === 'PageDown') setTime(shownMs() - DAY_MS, true);
+      else if (k === 'Home') setTime(null, true);
+      else if (k === 'End') setTime(wx.endMs, true);
+      else return;
+      ev.preventDefault();
+      stopPlay();
+    });
+    $('wxPrev').addEventListener('click', function () { stopPlay(); step(-1); });
+    $('wxNext').addEventListener('click', function () { stopPlay(); step(1); });
+    $('wxNow').addEventListener('click', function () { stopPlay(); setTime(null, true); });
+    $('wxPlay').addEventListener('click', togglePlay);
+    $('wxStep').addEventListener('change', function () { wx.stepH = +$('wxStep').value || 1; });
+    window.addEventListener('resize', renderTime);
+  }
+
+  // ---- data age --------------------------------------------------------------
+  function weatherStatus(s) {
+    var box = $('wxData');
+    var f = s && s.forecast;
+    if (!f || !f.cycle || !f.valid_to) {
+      wx.fc = null; wx.startMs = wx.endMs = null;
+      box.className = 'wxdata small';
+      box.textContent = s && s.starting ? s.starting : 'No forecast yet.';
+      renderTime();
+      return;
+    }
+    var newRun = !wx.fc || wx.fc.cycle !== f.cycle;
+    wx.fc = f;
+    wx.startMs = Math.ceil(Date.parse(f.valid_from || f.cycle) / HOUR_MS) * HOUR_MS;
+    wx.endMs = Math.floor(Date.parse(f.valid_to) / HOUR_MS) * HOUR_MS;
+    if (wx.time !== null && (wx.time < wx.startMs || wx.time > wx.endMs)) setTime(null, true);
+    var cycleMs = Date.parse(f.cycle), age = Date.now() - cycleMs;
+    var run = new Date(cycleMs).toLocaleString(undefined, { timeZone: 'UTC', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ' UTC';
+    var ageText = age < HOUR_MS ? 'under 1 h' : dayHours(Math.floor(age / HOUR_MS));
+    var until = fmtClock(new Date(wx.endMs), { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    var head = esc(f.model || 'Forecast') + ' · run ' + esc(run) + ', ' + esc(ageText) + ' old · until ' + esc(until);
+    var kind = '', note = '';
+    if (Date.now() > wx.endMs) {
+      kind = 'danger';
+      note = 'The forecast has run out: there is no weather data for now.';
+    } else if (age > WX_OUTDATED_MS) {
+      kind = 'warn';
+      note = 'Outdated: no newer run for ' + ageText + '. New runs come out several times a day, so the downloads have probably stopped (no internet?).';
+    }
+    box.className = 'wxdata small' + (kind ? ' ' + kind : '');
+    box.innerHTML = head + (note ? '<br><b>' + esc(note) + '</b>' : '');
+    if (newRun || Date.now() - wx.groupsAt > 10 * 60000) loadChartGroups();
+    else renderTime();
+  }
+  function wxNote(text) { var n = $('wxNote'); n.textContent = text; n.hidden = !text; }
+
+  // ---- tabs ------------------------------------------------------------------
+  function showTab(name) {
+    ['weather', 'route'].forEach(function (n) {
+      $(n + 'Tab').hidden = n !== name;
+      $('tab-' + n).setAttribute('aria-selected', String(n === name));
+    });
+    try { localStorage.setItem('wrp-plotterext-tab', name); } catch (_) {}
+    if (name === 'weather') renderTime();
+  }
+  function initWeather() {
+    initTrack();
+    $('tab-weather').addEventListener('click', function () { showTab('weather'); });
+    $('tab-route').addEventListener('click', function () { showTab('route'); });
+    var tab = null;
+    try { tab = localStorage.getItem('wrp-plotterext-tab'); } catch (_) {}
+    showTab(tab === 'route' ? 'route' : 'weather');
+    if (!host.has('charts')) {
+      wxNote('This chartplotter cannot switch charts for extensions (no "charts" capability): use its chart list.');
+      return;
+    }
+    if (!host.has('charts.time')) wxNote('This chartplotter cannot set a chart\'s time for extensions (no "charts.time" capability).');
+    // Changes made in the host's own chart list and Time palette.
+    host.subscribe(['chart.**'], function (name, ev) {
+      if (!ev || !(ev.id in wx.charts)) return;
+      if (name === 'chart.visibility') {
+        wx.charts[ev.id].visible = !!ev.visible;
+        renderPresets();
+        // A layer turned on from the chart list joins the shown hour.
+        if (ev.visible && wx.time !== null) applyTime([ev.id]);
+      } else if (name === 'chart.time') {
+        if (Date.now() - wx.lastSet < 2000) return;
+        var t = ev.time === null ? null : Date.parse(ev.time);
+        if (t === wx.time || (t !== null && !isFinite(t))) return;
+        // Someone else moved one layer: move the panel and the other layers with it.
+        wx.time = t;
+        renderTime();
+        applyTime(temporalIds().filter(function (id) { return id !== ev.id; }));
+      }
+    }).catch(function () {});
+  }
 
   // ---- polars, waypoints --------------------------------------------------
   function loadPolars() {
@@ -1234,8 +1660,10 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
 
   connectHost().then(function (h) {
     host = h;
+    initWeather();
     if (!host.has('routes')) {
       setStatus('This chartplotter cannot show routes from extensions (no "routes" capability).', 'error');
+      get(API + '/status').then(weatherStatus).catch(function () {});
       return;
     }
     unitsReady = Promise.all([
@@ -1244,6 +1672,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       loadSeaBands(),
     ]);
     unitsReady.then(loadSailThreshDefault);
+    unitsReady.then(renderPresets);
     // The host's visible routes: seed from route.list, then follow the events.
     host.subscribe(['route.**'], function (name, ev) {
       if (!ev || !ev.routeId) return;
@@ -1279,7 +1708,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       if (!vessel && v) setVessel(v.latitude, v.longitude);
     }).catch(function () {});
     if (!host.has('map')) $('useCentre').hidden = true;
-    loadShipTime().then(function () { if (result && result.points) showResult(result.props, result.n); });
+    loadShipTime().then(function () { renderTime(); if (result && result.points) showResult(result.props, result.n); });
     pollStatus();
     loadPolars();
     loadWaypoints();

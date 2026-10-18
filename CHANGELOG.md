@@ -221,6 +221,23 @@ uses [Semantic Versioning](https://semver.org/).
   are still backed up: they change rarely, and offshore they cannot be
   downloaded again.
 
+### Added
+
+- **Weather tab in the Freeboard panel** (issue #53). The plotter-extension panel
+  has a Weather and a Route tab; routing is unchanged. The Weather tab shows
+  the chart groups as presets (`chart.setVisibility`, `chart.setOrder`), the
+  preset's legend from `/api/legends`, a forecast time bar over the whole run
+  (days in the ship's zone, now, drag, step, play) that sets one hour on all
+  the plugin's layers (`chart.setTime`), and the run's age: outdated over
+  24 h, expired past `valid_to`. It follows changes made in the host's chart
+  list and Time palette (`chart.*` events). The manifest lists `charts` and
+  `charts.time` as optional.
+- `GET /api/chart-groups`: the chart groups with the charts that have their
+  data now, colour layer first, and the colour layer's legend key.
+- Chart `time` blocks carry `forecast: true` and, for the layers drawn from
+  the forecast alone, `issued` (the run's time), as proposed in
+  SignalK/freeboard-sk#1075. Hosts ignore fields they do not know.
+
 ## [0.2.0-beta.2] - 2026-10-13
 
 ### Changed

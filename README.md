@@ -568,7 +568,8 @@ and the panel runs in a sandboxed iframe served from
 ![The Weather Router Plus panel in Freeboard-SK, with a draft route on the chart](public/screenshots/07-freeboard.jpg)
 
 - Tap the grid icon at the top right of the chart to show the extension
-  toolbar, then **Weather route**. The panel slides in on the right.
+  toolbar, then **Weather route**. The panel slides in on the right, with
+  two tabs: **Weather** (the forecast layers, below) and **Route**.
 - **Route on the chart** (the usual way): draw the route with Freeboard's
   own **Draw Route** tool (pencil menu), tapping the start, any
   waypoints and the destination on the chart, then Finish; or tick a
@@ -638,9 +639,13 @@ height) are published as Signal K chart resources, served as PNG tiles
 (`/api/tile/<layer>/{z}/{x}/{y}.png`, see [Map layers](#map-layers)) with
 a `time` block covering the forecast hours. In Freeboard's **Chart list**
 they appear as "Wind speed (Weather Router Plus)" and so on: tick one to
-show it, set its opacity and order like any chart, and use the **clock**
-action on its row for Freeboard's Time palette (scrub, step, loop, play
-through the forecast; **NOW** returns to the current hour). A layer is
+show it and set its opacity and order like any chart. The **clock** action
+on its row opens Freeboard's own Time palette, which (Freeboard 3.4) ends
+at the current hour: it is made for radar and satellite pictures, so it
+offers no forecast hours ahead (SignalK/freeboard-sk#1075). Step through
+the forecast with the panel's Weather tab instead. Each layer's `time`
+block says `forecast: true` and, for the layers drawn from the forecast
+alone, `issued` (the run). A layer is
 listed only while its data is there: currents need a current source,
 tides the tide data, waves and the temperatures the forecast fields. The
 colours are the web app's; Freeboard has no legend, so the scale is in
@@ -660,6 +665,34 @@ arrows). Two colour layers over each other are unreadable, so no group
 has more than one. A group holds the layers whose data is there and is
 rewritten when the forecast is reloaded; it needs the server's `groups`
 collection, which Freeboard creates.
+
+**Weather tab.** The panel's Weather tab switches the layers and the
+forecast hour from one place, as a chartplotter's weather view does:
+
+![The Weather tab in Freeboard-SK: the Waves preset a day ahead, its legend, the forecast time bar and the run's age](public/screenshots/08-freeboard-weather.jpg)
+
+- **Presets**: the groups above as buttons (*Wind*, *Waves*, …, **Off**),
+  from `GET /api/chart-groups`. A tap shows that preset's layers, the
+  glyphs over the colour layer, and hides the plugin's other layers.
+  Layers turned on or off in Freeboard's Chart list are followed.
+- **Legend** of the preset's colour layer, in your units (Freeboard's
+  speed and depth units; temperature from your Signal K preferences).
+- **Forecast time**: a bar over the whole run, from its first hour to its
+  last, with the days marked in the ship's time zone, the past shaded and
+  now in red. Drag or tap it, step with ◀ ▶ (1, 3, 6, 12 or 24 h), **Play**,
+  and **Now** to go back to the current hour. All the plugin's layers show
+  the same hour, so switching from Waves to Wind keeps it. Keys: arrows
+  step, Page Up/Down a day, Home now, End the last hour.
+- **The data's age**: the model, the run (UTC), how old it is, and when
+  the forecast ends. Over 24 h old it is flagged as outdated: new runs
+  come out several times a day, so the downloads have stopped (no
+  internet at sea, for example). Past its end it is flagged in red.
+
+It needs a chartplotter with the `charts` and `charts.time` capabilities
+(Freeboard-SK 3.2 or later), which pass the chosen hour on to the tiles
+unchanged. Freeboard keeps a chart's hour only while the chart is on the
+map, so a preset just switched on loads the current hour first and then
+the shown one.
 
 Not yet available in the panel: waypoints in the "from the boat" flow
 (draw a route on the chart for those), a departure time other than now,
