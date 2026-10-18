@@ -222,3 +222,13 @@ export function bboxFromLonLat(lons: number[], lats: number[], padLon = 0, padLa
   }
   return { west: wrapLon(wmin), south, east: wrapLon(wmax), north };
 }
+
+/** Two boxes in plain degrees share at least a point (no antimeridian handling: the mesh indexes and tile extents). */
+export function boxesMeet(a: BBox, b: BBox): boolean {
+  return a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north;
+}
+
+/** A position as the logs and messages write it: "41.4900, -71.3300" (latitude first, four decimals, about 10 m). */
+export function latLonText(lat: number, lon: number): string {
+  return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+}

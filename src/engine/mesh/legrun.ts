@@ -70,6 +70,8 @@ export interface MeshLegInputs {
   simplifyM: number;
   smoother: boolean;
   smootherTolerance: number;
+  /** The smoother's simulation step, metres (absent: sim.simStepM, the search's). */
+  smootherSimStepM?: number;
   /** Opening bridges: ask (plan as open, report), open, avoid (the rules already block them). */
   drawbridges: DrawbridgeChoice;
   /** Seconds added at each opening bridge the route passes under. */
@@ -232,7 +234,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
               polar: inp.polar,
               wind,
               current,
-              sim: inp.sim,
+              sim: inp.smootherSimStepM === undefined ? inp.sim : { ...inp.sim, simStepM: inp.smootherSimStepM },
               tolerance: inp.smootherTolerance,
             })
           : 0;

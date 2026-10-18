@@ -46,6 +46,8 @@ export interface MeshLegArgs {
   simplifyM: number;
   smoother: boolean;
   smootherTolerance: number;
+  /** The smoother's simulation step, metres (absent: sim.simStepM). */
+  smootherSimStepM?: number;
   drawbridges: DrawbridgeChoice;
   bridgeWaitS: number;
   /** The leg's reach on the rough cut (coarse.ts), when the runner gave one: the extent of its water, for the forecast area. */

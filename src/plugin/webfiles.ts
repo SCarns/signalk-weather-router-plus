@@ -109,6 +109,15 @@ export function tagPublicFiles(publicDir: string, tag: string): number {
   return n;
 }
 
+/** Whether index.html's script and style tags carry `?v=<tag>` (tagPublicFiles has written this tag). */
+export function carriesTag(publicDir: string, tag: string): boolean {
+  try {
+    return fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8').includes(`?v=${tag}"`);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Files installed by npm carry npm's fixed date (26 Oct 1985), which the
  * server sends as Last-Modified, with no ETag. A browser that already has
@@ -139,7 +148,10 @@ export function refreshPublicFileDates(publicDir: string, dataDir: string, log: 
   } catch {
     previous = '';
   }
-  if (hash === previous) return;
+  // The stamp alone is not enough: a deploy of the same web files (a server-only update) puts back npm's untagged
+  // copies dated 1985 with the hash unchanged, and a browser holding the untagged URL from an earlier such time keeps
+  // its old module. So the files are also tagged and re-dated whenever index.html does not carry this hash's tag.
+  if (hash === previous && carriesTag(pub, hash)) return;
   const now = new Date();
   let n = 0;
   const walk = (d: string): void => {

@@ -5,7 +5,7 @@
  * the web app paints in the browser from the data tile (public/rp-layers.js,
  * _paintTile): 256 × 256 pixels, pixel centres on the Web Mercator grid, a
  * null-aware bilinear sample of the field lattice, the legend's colour ramp,
- * the 256 × 256 land mask, the same alpha. Rendered on demand from the data
+ * the 256 × 256 land mask, the same alpha, the coast softened (featherAlpha). Rendered on demand from the data
  * tiles the TileService already keeps on disk, and kept in a small
  * in-memory cache.
  *
@@ -231,6 +231,8 @@ export function renderFieldPng(layer: PngLayer, z: number, x: number, y: number,
   const rgba = new Uint8Array(TILE_PX * TILE_PX * 4);
   if (!values) return encodePng(TILE_PX, TILE_PX, rgba);
   const useMask = spec.maskLand && land !== null && land.length === TILE_PX * TILE_PX;
+  // Pixels the "no current data" hatch marks, drawn after the coast is softened so it stays sharp.
+  const hatched: number[] = [];
   for (let py = 0; py < TILE_PX; py++) {
     const my = yN - ((py + 0.5) / TILE_PX) * (yN - yS);
     const lat = latOfMercY(my);
@@ -246,12 +248,7 @@ export function renderFieldPng(layer: PngLayer, z: number, x: number, y: number,
       }
       const v = sampleGrid(grid, values, lon, lat);
       if (v === null) {
-        if (spec.hatch && useMask && (gx0 + px + gy0 + py) % 7 < 1) {
-          rgba[o] = HATCH_RGBA[0];
-          rgba[o + 1] = HATCH_RGBA[1];
-          rgba[o + 2] = HATCH_RGBA[2];
-          rgba[o + 3] = HATCH_RGBA[3];
-        }
+        if (spec.hatch && useMask && (gx0 + px + gy0 + py) % 7 < 1) hatched.push(o);
         continue;
       }
       let a = BASE_ALPHA;
@@ -268,7 +265,71 @@ export function renderFieldPng(layer: PngLayer, z: number, x: number, y: number,
       rgba[o + 3] = Math.round(a * 255);
     }
   }
+  if (spec.maskLand) featherAlpha(rgba);
+  for (const o of hatched) {
+    rgba[o] = HATCH_RGBA[0];
+    rgba[o + 1] = HATCH_RGBA[1];
+    rgba[o + 2] = HATCH_RGBA[2];
+    rgba[o + 3] = HATCH_RGBA[3];
+  }
   return encodePng(TILE_PX, TILE_PX, rgba);
+}
+
+/** A Gaussian kernel for σ = 1 px, radius 4 px (scipy.ndimage.gaussian_filter's, truncate 4), normalised. */
+const FEATHER_KERNEL = ((): number[] => {
+  const k = Array.from({ length: 9 }, (_v, i) => Math.exp(-((i - 4) ** 2) / 2));
+  const sum = k.reduce((a, b) => a + b, 0);
+  return k.map(v => v / sum);
+})();
+
+/** One separable pass over a TILE_PX × TILE_PX plane, edges repeated. */
+function blurPass(src: Float32Array, horizontal: boolean): Float32Array {
+  const out = new Float32Array(src.length);
+  const n = TILE_PX;
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      let acc = 0;
+      for (let k = -4; k <= 4; k++) {
+        const ii = horizontal ? Math.min(n - 1, Math.max(0, i + k)) : i;
+        const jj = horizontal ? j : Math.min(n - 1, Math.max(0, j + k));
+        acc += src[jj * n + ii] * FEATHER_KERNEL[k + 4];
+      }
+      out[j * n + i] = acc;
+    }
+  }
+  return out;
+}
+
+/** A TILE_PX × TILE_PX plane blurred (σ = 1 px, edges repeated). */
+export function featherBlur(src: Float32Array): Float32Array {
+  return blurPass(blurPass(src, true), false);
+}
+
+/**
+ * The coast softened: with land left transparent, the whole alpha blurred (σ = 1 px), which also softens the edges
+ * of transparent no-data. Only the alpha is blurred; a pixel that had no colour (land, no data) takes the
+ * alpha-weighted colour of the pixels the blur brings in, not black. The page does the same (rp-layers.js _paintTile).
+ */
+export function featherAlpha(rgba: Uint8Array): void {
+  const n = TILE_PX * TILE_PX;
+  const alpha = new Float32Array(n);
+  for (let p = 0; p < n; p++) alpha[p] = rgba[p * 4 + 3];
+  const a2 = featherBlur(alpha);
+  const fill: Float32Array[] = [];
+  let needFill = false;
+  for (let p = 0; p < n; p++) if (alpha[p] === 0 && a2[p] >= 0.5) needFill = true;
+  if (needFill)
+    for (let c = 0; c < 3; c++) {
+      const pre = new Float32Array(n);
+      for (let p = 0; p < n; p++) pre[p] = rgba[p * 4 + c] * alpha[p];
+      fill.push(featherBlur(pre));
+    }
+  for (let p = 0; p < n; p++) {
+    // Truncated to whole alpha steps.
+    const a = Math.floor(a2[p] + 1e-6);
+    if (alpha[p] === 0 && a > 0) for (let c = 0; c < 3; c++) rgba[p * 4 + c] = Math.round(fill[c][p] / Math.max(a2[p], 1e-6));
+    rgba[p * 4 + 3] = a;
+  }
 }
 
 /** Rendered tiles, most recently used kept, bounded by bytes. */

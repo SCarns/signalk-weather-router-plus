@@ -32,7 +32,7 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { BBox } from '../geo/geodesy';
+import { type BBox, boxesMeet, latLonText } from '../geo/geodesy';
 import {
   boundarySeeds,
   buildCoarseMap,
@@ -92,6 +92,92 @@ export function coarseRulesOf(
   };
 }
 
+/** A build lock older than this is from a build that died (the child tasks' own limit is 15 minutes). */
+const BUILD_LOCK_STALE_MS = 20 * 60_000;
+/** How often a build waiting on another's lock looks again. */
+const BUILD_LOCK_POLL_MS = 1000;
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Run `build` for `file` (a rough cut, or a joins file) holding `<file>.lock`, created exclusively, so the main
+ * thread's rebuild and a route's own build never build the same file at once (each in its own child process, the
+ * same work twice). A build finding the lock taken waits for it to go, then calls `build` itself unless the file is
+ * there by then (result null: the other build made it; `waited` tells the caller). A lock left by a process that is gone, or older than
+ * BUILD_LOCK_STALE_MS, is removed. Cancelled through `signal` while waiting.
+ */
+export async function withBuildLock<T>(
+  file: string,
+  build: () => Promise<T>,
+  opts: { signal?: AbortSignal; onWait?: () => void } = {}
+): Promise<{ waited: boolean; result: T | null }> {
+  const lock = `${file}.lock`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  let waited = false;
+  for (;;) {
+    if (opts.signal?.aborted) throw new Error('build cancelled');
+    let fd: number | null = null;
+    try {
+      fd = fs.openSync(lock, 'wx');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+    if (fd !== null) {
+      try {
+        fs.writeSync(fd, `${process.pid}\n`);
+      } finally {
+        fs.closeSync(fd);
+      }
+      try {
+        // Another build finished while this one waited: its file is the same one this would write.
+        if (waited && fs.existsSync(file)) return { waited, result: null };
+        return { waited, result: await build() };
+      } finally {
+        fs.rmSync(lock, { force: true });
+      }
+    }
+    // Taken: the holder's pid and the lock's age decide whether it is still building.
+    let stale: boolean;
+    try {
+      const pid = Number(fs.readFileSync(lock, 'utf8').trim());
+      const age = Date.now() - fs.statSync(lock).mtimeMs;
+      stale = age > BUILD_LOCK_STALE_MS || (Number.isInteger(pid) && pid > 0 && pid !== process.pid && !processAlive(pid));
+    } catch {
+      continue; // gone meanwhile (or not written yet): try again
+    }
+    if (stale) {
+      fs.rmSync(lock, { force: true });
+      continue;
+    }
+    if (!waited) opts.onWait?.();
+    waited = true;
+    await new Promise(r => setTimeout(r, BUILD_LOCK_POLL_MS));
+  }
+}
+
+/**
+ * A rough cut taken into use: its map and boundary file dated now, so pruneCoarse, which keeps the newest
+ * COARSE_KEEP_PER_MESH per build by date, never removes the one a route is reading. Best effort: a file that cannot be
+ * re-dated is still used.
+ */
+export function markCoarseUsed(mapFile: string): void {
+  const now = new Date();
+  for (const f of [mapFile, boundaryFile(mapFile)]) {
+    try {
+      fs.utimesSync(f, now, now);
+    } catch {
+      /* gone or read-only: the route reads it as it is */
+    }
+  }
+}
+
 /** The tile-boundary file (.bnd) beside a rough-cut file. */
 export function boundaryFile(mapFile: string): string {
   return mapFile.replace(/\.json$/, '.bnd');
@@ -119,9 +205,7 @@ export function readBoundary(file: string): BoundarySeeds {
 
 /** Whether two mesh folders' extents (their indexes) meet: only then can their waters join. */
 export function meshesMeet(dirA: string, dirB: string): boolean {
-  const a = MeshStore.open(dirA).index;
-  const b = MeshStore.open(dirB).index;
-  return a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north;
+  return boxesMeet(MeshStore.open(dirA).index, MeshStore.open(dirB).index);
 }
 
 /** The joins file of a rough cut (its map file) towards another mesh folder. */
@@ -199,7 +283,7 @@ function joinsTo(pa: PagedMesh, storeA: MeshStore, other: { dir: string; mapFile
 
 /**
  * Remove the rough cuts of builds no longer in use (`liveKeys`) or of
- * another version, and beyond COARSE_KEEP_PER_MESH per build the oldest
+ * another version, and beyond COARSE_KEEP_PER_MESH per build the least recently built or used (markCoarseUsed)
  * (a map, its boundary file and its joins files go together); and joins
  * files towards a build no longer in use. Returns how many maps went.
  */
@@ -570,7 +654,7 @@ export function runMeshSnapTask(t: MeshSnapTask): MeshSnapResult {
     if (!nu)
       return {
         ok: false,
-        reason: `${p.name}, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}, ${why}, and no usable water connected to the route was found`,
+        reason: `${p.name}, at ${latLonText(p.lat, p.lon)}, ${why}, and no usable water connected to the route was found`,
       };
     const [lon, lat] = pm.fromXY(nu.x, nu.y);
     // Usable water of its own that this mesh does not connect to the route's within the limit: the stop stays; its
@@ -589,8 +673,8 @@ export function runMeshSnapTask(t: MeshSnapTask): MeshSnapResult {
       return {
         ok: false,
         reason: isolatedEnd
-          ? `${last.name} is in water this boat cannot reach from ${p.name} on the chart mesh (the water near ${p.name} does not connect to it); the nearest water connected to ${last.name} is {length:${nu.distM.toFixed(0)}} from ${p.name}, at ${lat.toFixed(4)}, ${lon.toFixed(4)}; move ${last.name} into water the boat can enter, or ${p.name} there`
-          : `${p.name}, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}, ${why}; the nearest water this boat can use, connected to the route, is {length:${nu.distM.toFixed(0)}} away at ${lat.toFixed(4)}, ${lon.toFixed(4)}, more than {length:${t.maxMoveM}}; move it there or into deeper water`,
+          ? `${last.name} is in water this boat cannot reach from ${p.name} on the chart mesh (the water near ${p.name} does not connect to it); the nearest water connected to ${last.name} is {length:${nu.distM.toFixed(0)}} from ${p.name}, at ${latLonText(lat, lon)}; move ${last.name} into water the boat can enter, or ${p.name} there`
+          : `${p.name}, at ${latLonText(p.lat, p.lon)}, ${why}; the nearest water this boat can use, connected to the route, is {length:${nu.distM.toFixed(0)}} away at ${latLonText(lat, lon)}, more than {length:${t.maxMoveM}}; move it there or into deeper water`,
       };
     }
     out.push({ lon, lat, movedM: nu.distM, why, outsideGroup: usable });

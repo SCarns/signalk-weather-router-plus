@@ -63,6 +63,8 @@ export interface LegPipelineInputs {
   simplifyM: number;
   smoother: boolean;
   smootherTolerance: number;
+  /** The smoother's simulation step, metres (absent: sim.simStepM, the search's). */
+  smootherSimStepM?: number;
   /** Load the leg's forecast (and current) areas for the box; the forecast for the leg, or null for calm wind. */
   loadAreas: (bbox: BBox, what: string) => Promise<LegWind | null>;
   /** After a leg of a multi-leg route: the areas go with the leg. */
@@ -189,6 +191,7 @@ async function meshLeg(
       simplifyM: inp.simplifyM,
       smoother: inp.smoother,
       smootherTolerance: inp.smootherTolerance,
+      smootherSimStepM: inp.smootherSimStepM,
       drawbridges: inp.drawbridges ?? 'ask',
       bridgeWaitS: inp.bridgeWaitS ?? 0,
       reach,
@@ -537,7 +540,7 @@ async function openWaterLeg(
         sim: {
           modePolicy: legArgs.modePolicy,
           sailThreshMs: legArgs.sailThreshMs,
-          simStepM: legArgs.simStepM,
+          simStepM: inp.smootherSimStepM ?? legArgs.simStepM,
           maxWindMs: legArgs.maxWindMs,
           maxSwhM: legArgs.maxSwhM,
           comfortWeight: legArgs.comfortWeight,

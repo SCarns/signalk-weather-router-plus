@@ -65,6 +65,10 @@ export interface RouteRequest {
   drawbridges?: DrawbridgeChoice;
   /** Smoother time tolerance, ratio; default from routing.smootherTolerance. */
   smoother_tolerance?: number;
+  /** The smoother's simulation step, m; default from routing.simStep (the search's step is unchanged). */
+  smoother_sim_step_m?: number;
+  /** Seconds lost per tack or gybe; default from routing.tackPenalty. */
+  tack_penalty?: number;
   name?: string;
   stages?: number;
   no_forecast?: boolean;

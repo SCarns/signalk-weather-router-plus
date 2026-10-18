@@ -14,6 +14,8 @@ test('route request: ranges come from the settings they override, and the OpenAP
     ['max_swh_m', 'routing.maxSwh'],
     ['simplify_m', 'routing.simplify'],
     ['smoother_tolerance', 'routing.smootherTolerance'],
+    ['smoother_sim_step_m', 'routing.simStep'],
+    ['tack_penalty', 'routing.tackPenalty'],
   ] as const) {
     const f = ROUTE_REQUEST_FIELDS[field];
     assert.equal(f.type, 'number');
@@ -35,6 +37,11 @@ test('route request: valid bodies pass, each bad field names itself', () => {
   assert.equal(validateRouteRequest({ ...ok, stages: 3 }), 'stages must be 4..200');
   assert.equal(validateRouteRequest({ ...ok, max_wind_ms: 120 }), 'max_wind_ms must be 0..100');
   assert.equal(validateRouteRequest({ ...ok, sail_thresh_ms: -1 }), 'sail_thresh_ms must be >= 0');
+  assert.equal(validateRouteRequest({ ...ok, tack_penalty: 0, smoother_sim_step_m: 5000 }), null);
+  assert.equal(validateRouteRequest({ ...ok, tack_penalty: 3601 }), 'tack_penalty must be 0..3600');
+  assert.equal(validateRouteRequest({ ...ok, tack_penalty: -1 }), 'tack_penalty must be 0..3600');
+  assert.equal(validateRouteRequest({ ...ok, smoother_sim_step_m: 49 }), 'smoother_sim_step_m must be 50..5000');
+  assert.equal(validateRouteRequest({ ...ok, smoother_sim_step_m: 5001 }), 'smoother_sim_step_m must be 50..5000');
   assert.equal(
     validateRouteRequest({ ...ok, mode: 'drift' as unknown as RouteRequest['mode'] }),
     'mode must be sail_max, fastest or motor'

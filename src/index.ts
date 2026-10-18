@@ -39,7 +39,7 @@ import { runLastMs, type ArcoRun } from './data/arco';
 import { gshhgInstalled, gshhgInstalledAt, unreadableCoastlines } from './geo/gshhg';
 import { Coastline } from './plugin/coastline';
 import { localMeshes, MeshManager, meshesToOpen, readyMeshDirs } from './plugin/meshes';
-import { coarseFile, coarseKey, coarseRulesOf, meshesMeet, pruneCoarse } from './plugin/meshcoarse';
+import { coarseFile, coarseKey, coarseRulesOf, joinsFile, meshesMeet, pruneCoarse, withBuildLock } from './plugin/meshcoarse';
 import * as fs from 'node:fs';
 import { runChildTask } from './plugin/childtask';
 import { ChartsProvider } from './plugin/charts';
@@ -306,16 +306,20 @@ export = function plugin(app: SkApp): SignalKPlugin {
       for (const d of dirs) {
         if (signal.aborted) return;
         roughCut.running = `${d.name} (${path.basename(d.dir)})`;
-        const r = await runChildTask(
-          { task: 'mesh-coarse', dir: d.dir, out: coarseFile(dataDir, d.dir, rules), rules, joins: othersOf(d) },
-          15 * 60_000,
-          signal
+        const out = coarseFile(dataDir, d.dir, rules);
+        // One build of a file at a time, here or in a route (worker/route.ts ensureRoughCut): one under way is waited for.
+        const { result: r } = await withBuildLock(
+          out,
+          () => runChildTask({ task: 'mesh-coarse', dir: d.dir, out, rules, joins: othersOf(d) }, 15 * 60_000, signal),
+          { signal, onWait: () => (roughCut.running = `${d.name} (${path.basename(d.dir)}): waiting for a route's build of it`) }
         );
         roughCut.done++;
-        log(
-          `rough cut ${d.name} ${path.basename(d.dir)}: ${r.pieces} pieces, ${r.links} links, ${r.bytes} bytes in ${r.ms} ms` +
-            (r.joins.length ? `; joins ${r.joins.map(j => `to ${j.name} ${j.joins} (${j.ms} ms)`).join(', ')}` : '')
-        );
+        if (r)
+          log(
+            `rough cut ${d.name} ${path.basename(d.dir)}: ${r.pieces} pieces, ${r.links} links, ${r.bytes} bytes in ${r.ms} ms` +
+              (r.joins.length ? `; joins ${r.joins.map(j => `to ${j.name} ${j.joins} (${j.ms} ms)`).join(', ')}` : '')
+          );
+        else log(`rough cut ${d.name} ${path.basename(d.dir)}: built meanwhile by a route`);
       }
       // One mesh new or updated: the other meshes' joins towards its new build (their rough cuts already built).
       if (only)
@@ -326,18 +330,23 @@ export = function plugin(app: SkApp): SignalKPlugin {
             if (signal.aborted) return;
             if (!meshesMeet(o.dir, d.dir)) continue;
             roughCut.running = `joins of ${o.name} (${path.basename(o.dir)}) to ${d.name}`;
-            const j = await runChildTask(
-              {
-                task: 'mesh-joins',
-                dir: o.dir,
-                mapFile,
-                rules,
-                other: { dir: d.dir, mapFile: coarseFile(dataDir, d.dir, rules), name: d.name },
-              },
-              15 * 60_000,
-              signal
+            const { result: j } = await withBuildLock(
+              joinsFile(mapFile, d.dir),
+              () =>
+                runChildTask(
+                  {
+                    task: 'mesh-joins',
+                    dir: o.dir,
+                    mapFile,
+                    rules,
+                    other: { dir: d.dir, mapFile: coarseFile(dataDir, d.dir, rules), name: d.name },
+                  },
+                  15 * 60_000,
+                  signal
+                ),
+              { signal }
             );
-            log(`rough cut joins ${o.name} ${path.basename(o.dir)} to ${d.name}: ${j.joins} in ${j.ms} ms`);
+            if (j) log(`rough cut joins ${o.name} ${path.basename(o.dir)} to ${d.name}: ${j.joins} in ${j.ms} ms`);
           }
         }
       const removed = pruneCoarse(dataDir, new Set(open.flatMap(m => m.dirs.map(d => coarseKey(d)))));

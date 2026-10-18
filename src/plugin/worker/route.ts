@@ -11,14 +11,14 @@ import { validateRouteRequest } from '../request_schema';
 import { runLegPipeline, type LegPipelineInputs, type LegWind } from '../../engine/pipeline';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { boundaryFile, coarseFile, coarseRulesOf, joinsFile } from '../meshcoarse';
+import { boundaryFile, coarseFile, coarseRulesOf, joinsFile, markCoarseUsed, withBuildLock } from '../meshcoarse';
 import { ForecastStore } from '../../data/forecast';
 import { loadForecastForBBox, resolveCycle } from '../../data/loader';
 import type { WindowOptions } from '../../data/decoded';
 import { REGIONAL_DIR } from '../../data/regionaldecode';
 import { LayeredWind, type RegionalWind } from '../../engine/layeredwind';
 import { checkRouteForecastMemory } from '../memguard';
-import { type BBox, bboxFromLonLat, bboxHeight, bboxWidth, haversineDistanceM } from '../../geo/geodesy';
+import { type BBox, bboxFromLonLat, bboxHeight, bboxWidth, boxesMeet, haversineDistanceM, latLonText } from '../../geo/geodesy';
 import { LandMask } from '../../geo/landmask';
 import { releaseMemory } from '../../util/gc';
 import { NoCurrent } from '../../engine/environment';
@@ -83,9 +83,19 @@ function openMeshes(cfg: ResolvedConfig, progress: (m: string) => void): OpenMes
 
 /** Whether two opened meshes' extents meet (their indexes): only then can their waters join. */
 function extentsMeet(a: OpenMesh, b: OpenMesh): boolean {
-  const x = a.store.index;
-  const y = b.store.index;
-  return x.west <= y.east && y.west <= x.east && x.south <= y.north && y.south <= x.north;
+  return boxesMeet(a.store.index, b.store.index);
+}
+
+/**
+ * An AbortSignal that fires when the route is cancelled (the shared flag, polled twice a second), for the child
+ * tasks and the waits of one step; `stop()` ends the polling when the step is over.
+ */
+function cancelPoll(shouldCancel: () => boolean): { signal: AbortSignal; stop: () => void } {
+  const ac = new AbortController();
+  const poll = setInterval(() => {
+    if (shouldCancel()) ac.abort();
+  }, 500);
+  return { signal: ac.signal, stop: () => clearInterval(poll) };
 }
 
 /**
@@ -105,23 +115,36 @@ async function ensureRoughCut(
 ): Promise<string | MeshRefusal> {
   const r = coarseRulesOf(rules);
   const file = coarseFile(st.cacheRoot, m.dir, r);
-  if (fs.existsSync(file)) return file;
+  if (fs.existsSync(file)) {
+    // Used now: pruneCoarse keeps the most recently used rough cuts, so this route's is never the one it removes.
+    markCoarseUsed(file);
+    return file;
+  }
   const joins = all
     .filter(o => o !== m && extentsMeet(o, m))
     .map(o => ({ dir: o.dir, mapFile: coarseFile(st.cacheRoot, o.dir, r), name: o.name }));
-  progress(
-    0,
-    0,
-    `${tag}chart mesh: building the rough cut of ${m.name} for this boat (draught {depth:${r.draughtM}}, air draft {length:${r.airDraftM}}, buffer {length:${r.bufferM}}, opening bridges ${r.openingBridges === 'avoid' ? 'avoided' : 'open'}), once`
-  );
   try {
-    const b = await runChildTask({ task: 'mesh-coarse', dir: m.dir, out: file, rules: r, joins }, 15 * 60_000, signal);
-    progress(
-      0,
-      0,
-      `${tag}chart mesh: rough cut built: ${b.pieces} pieces of water, ${b.links} links, ${b.boundaryBlocked} blocked triangles on tile edges, {dataSize:${b.bytes}} in {time:${b.ms / 1000}}` +
-        b.joins.map(j => `; ${j.joins} joins to ${j.name} ({time:${j.ms / 1000}})`).join('')
+    // One build of a file at a time, here or on the main thread (index.ts rebuildRoughCuts): a build under way is waited for.
+    const { result: b } = await withBuildLock(
+      file,
+      () => {
+        progress(
+          0,
+          0,
+          `${tag}chart mesh: building the rough cut of ${m.name} for this boat (draught {depth:${r.draughtM}}, air draft {length:${r.airDraftM}}, buffer {length:${r.bufferM}}, opening bridges ${r.openingBridges === 'avoid' ? 'avoided' : 'open'}), once`
+        );
+        return runChildTask({ task: 'mesh-coarse', dir: m.dir, out: file, rules: r, joins }, 15 * 60_000, signal);
+      },
+      { signal, onWait: () => progress(0, 0, `${tag}chart mesh: the rough cut of ${m.name} is being built already; waiting for it`) }
     );
+    if (b)
+      progress(
+        0,
+        0,
+        `${tag}chart mesh: rough cut built: ${b.pieces} pieces of water, ${b.links} links, ${b.boundaryBlocked} blocked triangles on tile edges, {dataSize:${b.bytes}} in {time:${b.ms / 1000}}` +
+          b.joins.map(j => `; ${j.joins} joins to ${j.name} ({time:${j.ms / 1000}})`).join('')
+      );
+    else progress(0, 0, `${tag}chart mesh: the rough cut of ${m.name} is ready (built meanwhile)`);
   } catch (err) {
     if (signal.aborted) throw err;
     return { refused: `the rough cut of ${m.name} could not be built (${(err as Error).message})` };
@@ -154,22 +177,12 @@ function meshLegRunner(
     ensureRoughCut(st, m, rules, tag, progress, signal, stores);
   return {
     covers: points => meshFor(points) !== undefined,
-    meets: box =>
-      stores.some(s => {
-        const ix = s.store.index;
-        return ix.west <= box.east && box.west <= ix.east && ix.south <= box.north && box.south <= ix.north;
-      }),
+    meets: box => stores.some(s => boxesMeet(s.store.index, box)),
     // A leg's way across the limits of the charts (part 5): in a child process (plugin/meshwaters.ts) holding every
     // mesh meeting the leg's area; their rough cuts and joins first when missing. Meshes go to the pipeline by folder.
     plan: async c => {
-      const near = stores.filter(s => {
-        const ix = s.store.index;
-        return ix.west <= c.box.east && c.box.west <= ix.east && ix.south <= c.box.north && c.box.south <= ix.north;
-      });
-      const ac = new AbortController();
-      const poll = setInterval(() => {
-        if (c.shouldCancel()) ac.abort();
-      }, 500);
+      const near = stores.filter(s => boxesMeet(s.store.index, c.box));
+      const ac = cancelPoll(c.shouldCancel);
       try {
         const meshes: { dir: string; mapFile: string | null; name: string }[] = [];
         if (c.rules) {
@@ -186,18 +199,23 @@ function meshLegRunner(
               const mapFile = coarseFile(st.cacheRoot, a.dir, r);
               if (fs.existsSync(joinsFile(mapFile, b.dir))) continue;
               c.progress(0, 0, `${c.tag}chart mesh: finding where ${a.name}'s water joins ${b.name}'s for this boat, once`);
-              const j = await runChildTask(
-                {
-                  task: 'mesh-joins',
-                  dir: a.dir,
-                  mapFile,
-                  rules: r,
-                  other: { dir: b.dir, mapFile: coarseFile(st.cacheRoot, b.dir, r), name: b.name },
-                },
-                15 * 60_000,
-                ac.signal
+              const { result: j } = await withBuildLock(
+                joinsFile(mapFile, b.dir),
+                () =>
+                  runChildTask(
+                    {
+                      task: 'mesh-joins',
+                      dir: a.dir,
+                      mapFile,
+                      rules: r,
+                      other: { dir: b.dir, mapFile: coarseFile(st.cacheRoot, b.dir, r), name: b.name },
+                    },
+                    15 * 60_000,
+                    ac.signal
+                  ),
+                { signal: ac.signal }
               );
-              c.progress(0, 0, `${c.tag}chart mesh: ${j.joins} joins from ${a.name} to ${b.name} ({time:${j.ms / 1000}})`);
+              if (j) c.progress(0, 0, `${c.tag}chart mesh: ${j.joins} joins from ${a.name} to ${b.name} ({time:${j.ms / 1000}})`);
             }
         } else for (const m of near) meshes.push({ dir: m.dir, mapFile: null, name: m.name });
         const r = await runChildTask(
@@ -229,7 +247,7 @@ function meshLegRunner(
           );
           return { kind: 'open', mask: r.mask };
         }
-        const at = (p: [number, number]): string => `${p[1].toFixed(4)}, ${p[0].toFixed(4)}`;
+        const at = (p: [number, number]): string => latLonText(p[1], p[0]);
         const words = r.stretches.map(s =>
           s.kind === 'mesh' ? `${near[s.mesh].name} from ${at(s.from)} to ${at(s.to)}` : `open water from ${at(s.from)} to ${at(s.to)}`
         );
@@ -244,7 +262,7 @@ function meshLegRunner(
           mask: r.mask,
         };
       } finally {
-        clearInterval(poll);
+        ac.stop();
       }
     },
     leg: async (a: MeshLegArgs) => {
@@ -261,10 +279,7 @@ function meshLegRunner(
       if (!m) return { refused: 'no mesh covers the leg' };
       a.progress(0, 0, `${a.tag}chart mesh: ${m.name}`);
       // Cancel: the worker's flag, polled; aborting kills the child.
-      const ac = new AbortController();
-      const poll = setInterval(() => {
-        if (a.shouldCancel()) ac.abort();
-      }, 500);
+      const ac = cancelPoll(a.shouldCancel);
       try {
         // The rough cut's tile-boundary triangles seed the buffer across tile edges (paged.ts).
         const map = await roughCut(m, a.rules, a.tag, a.progress, ac.signal);
@@ -290,6 +305,7 @@ function meshLegRunner(
           simplifyM: a.simplifyM,
           smoother: a.smoother,
           smootherTolerance: a.smootherTolerance,
+          smootherSimStepM: a.smootherSimStepM,
           drawbridges: a.drawbridges,
           bridgeWaitS: a.bridgeWaitS,
           boundaryFile: boundaryFile(map),
@@ -329,7 +345,7 @@ function meshLegRunner(
         }
         return r.route;
       } finally {
-        clearInterval(poll);
+        ac.stop();
       }
     },
     // Where a leg leaving the charts crosses to the coastline (part 5): in a child process (plugin/meshexit.ts), on the
@@ -337,10 +353,7 @@ function meshLegRunner(
     exit: async c => {
       const m = meshFor([c.inside]);
       if (!m) return { refused: 'no mesh covers the leg' };
-      const ac = new AbortController();
-      const poll = setInterval(() => {
-        if (c.shouldCancel()) ac.abort();
-      }, 500);
+      const ac = cancelPoll(c.shouldCancel);
       try {
         const file = await roughCut(m, c.rules, c.tag, c.progress, ac.signal);
         if (typeof file !== 'string') return file;
@@ -367,11 +380,11 @@ function meshLegRunner(
         c.progress(
           0,
           0,
-          `${c.tag}chart mesh: the leg leaves the charts at ${r.exit[1].toFixed(4)}, ${r.exit[0].toFixed(4)} (${r.exits} places where the chart mesh's water meets the coastline's water that reaches ${c.names.outside}; {time:${r.ms / 1000}})`
+          `${c.tag}chart mesh: the leg leaves the charts at ${latLonText(r.exit[1], r.exit[0])} (${r.exits} places where the chart mesh's water meets the coastline's water that reaches ${c.names.outside}; {time:${r.ms / 1000}})`
         );
         return { exit: r.exit, mask: r.mask };
       } finally {
-        clearInterval(poll);
+        ac.stop();
       }
     },
     // Where a leg from one mesh to another changes meshes in their overlap (part 5 step 2): in a child process
@@ -380,10 +393,7 @@ function meshLegRunner(
       const a = meshFor([c.start]);
       const b = meshFor([c.end]);
       if (!a || !b) return { refused: 'no mesh covers the leg' };
-      const ac = new AbortController();
-      const poll = setInterval(() => {
-        if (c.shouldCancel()) ac.abort();
-      }, 500);
+      const ac = cancelPoll(c.shouldCancel);
       try {
         const fa = await roughCut(a, c.rules, c.tag, c.progress, ac.signal);
         if (typeof fa !== 'string') return fa;
@@ -413,18 +423,18 @@ function meshLegRunner(
           c.progress(
             0,
             0,
-            `${c.tag}chart mesh: the leg changes from ${a.name} to ${b.name} at ${r.point[1].toFixed(4)}, ${r.point[0].toFixed(4)}, water both call usable for this boat (${r.transfers} such triangles of ${r.tested} tested in ${r.candidateTiles} of ${r.sharedTiles} shared tiles, those the rough cuts connect to both ends; {time:${r.ms / 1000}})`
+            `${c.tag}chart mesh: the leg changes from ${a.name} to ${b.name} at ${latLonText(r.point[1], r.point[0])}, water both call usable for this boat (${r.transfers} such triangles of ${r.tested} tested in ${r.candidateTiles} of ${r.sharedTiles} shared tiles, those the rough cuts connect to both ends; {time:${r.ms / 1000}})`
           );
           return { point: r.point };
         }
         c.progress(
           0,
           0,
-          `${c.tag}chart mesh: the leg cannot change from ${a.name} to ${b.name} in their overlap (${r.overlap}); it leaves ${a.name} at ${r.exit[1].toFixed(4)}, ${r.exit[0].toFixed(4)} and enters ${b.name} at ${r.entry[1].toFixed(4)}, ${r.entry[0].toFixed(4)}, the coastline search between them with both meshes' water as land (${r.exits} exits, ${r.entries} entries; {time:${r.ms / 1000}})`
+          `${c.tag}chart mesh: the leg cannot change from ${a.name} to ${b.name} in their overlap (${r.overlap}); it leaves ${a.name} at ${latLonText(r.exit[1], r.exit[0])} and enters ${b.name} at ${latLonText(r.entry[1], r.entry[0])}, the coastline search between them with both meshes' water as land (${r.exits} exits, ${r.entries} entries; {time:${r.ms / 1000}})`
         );
         return { exit: r.exit, entry: r.entry, mask: r.mask };
       } finally {
-        clearInterval(poll);
+        ac.stop();
       }
     },
     // The leg's reach on the rough cut (part 4): whether water connects its ends for the boat, and where it runs;
@@ -435,10 +445,7 @@ function meshLegRunner(
         ? stores.find(s => s.dir === c.meshId)
         : meshFor([c.legStart, ...c.plan.vias.map(v => [v.lon, v.lat] as [number, number]), c.plan.end]);
       if (!m) return { refused: 'no mesh covers the leg' };
-      const ac = new AbortController();
-      const poll = setInterval(() => {
-        if (c.shouldCancel()) ac.abort();
-      }, 500);
+      const ac = cancelPoll(c.shouldCancel);
       try {
         const file = await roughCut(m, c.rules, c.tag, c.progress, ac.signal);
         if (typeof file !== 'string') return file;
@@ -463,7 +470,7 @@ function meshLegRunner(
         );
         return { box: r.box, lengthM: r.lengthM, aims: r.aims };
       } finally {
-        clearInterval(poll);
+        ac.stop();
       }
     },
   };
@@ -594,10 +601,7 @@ export async function route(
           openingBridges: (request.drawbridges ?? cfg.routing.drawbridges) === 'avoid' ? 'avoid' : 'open',
           ...(avoid.length ? { avoid: avoid.map(a => ({ lon: a.lon, lat: a.lat, radiusM: a.radiusM })) } : {}),
         };
-        const ac = new AbortController();
-        const poll = setInterval(() => {
-          if (shouldCancel()) ac.abort();
-        }, 500);
+        const ac = cancelPoll(shouldCancel);
         try {
           for (const [m, idx] of byMesh) {
             const file = await ensureRoughCut(st, m, rules, '', progress, ac.signal, meshes);
@@ -633,7 +637,7 @@ export async function route(
               progress(
                 0,
                 0,
-                `${p.outsideGroup ? 'WARNING: ' : ''}${label(i)} ${p.why} according to the chart mesh; moved {length:${p.movedM.toFixed(0)}} to water this boat can use, connected to the route, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}${i > 0 ? `; its leg ends on coming within {length:${p.movedM.toFixed(0)}} of it` : ''}`
+                `${p.outsideGroup ? 'WARNING: ' : ''}${label(i)} ${p.why} according to the chart mesh; moved {length:${p.movedM.toFixed(0)}} to water this boat can use, connected to the route, at ${latLonText(p.lat, p.lon)}${i > 0 ? `; its leg ends on coming within {length:${p.movedM.toFixed(0)}} of it` : ''}`
               );
             });
           }
@@ -641,7 +645,7 @@ export async function route(
           if (shouldCancel()) throw new RouteCancelled();
           throw err;
         } finally {
-          clearInterval(poll);
+          ac.stop();
         }
       }
       for (let i = 0; i < stops.length; i++) {
@@ -659,7 +663,7 @@ export async function route(
         const near = nearestExactWater(land, s.lon, s.lat, SNAP_MAX_M, SNAP_CLEAR_M);
         if (!near) {
           throw new Error(
-            `${label(i)}, at ${s.lat.toFixed(4)}, ${s.lon.toFixed(4)}, ${why} according to the coastline data, with no open water ({length:${SNAP_CLEAR_M}} clear of the shore) within {length:${SNAP_MAX_M}}; move it into open water`
+            `${label(i)}, at ${latLonText(s.lat, s.lon)}, ${why} according to the coastline data, with no open water ({length:${SNAP_CLEAR_M}} clear of the shore) within {length:${SNAP_MAX_M}}; move it into open water`
           );
         }
         const d = haversineDistanceM(s.lon, s.lat, near[0], near[1]);
@@ -668,7 +672,7 @@ export async function route(
         progress(
           0,
           0,
-          `${label(i)} ${why} according to the coastline data; moved {length:${d.toFixed(0)}} to open water at ${near[1].toFixed(4)}, ${near[0].toFixed(4)} (route points keep {length:${SNAP_CLEAR_M}} of water around them)`
+          `${label(i)} ${why} according to the coastline data; moved {length:${d.toFixed(0)}} to open water at ${latLonText(near[1], near[0])} (route points keep {length:${SNAP_CLEAR_M}} of water around them)`
         );
       }
       snaps.sort((a, b) => a.index - b.index);
@@ -895,12 +899,13 @@ export async function route(
         maxWindMs: request.max_wind_ms ?? cfg.routing.maxWindMs ?? undefined,
         maxSwhM: request.max_swh_m ?? cfg.routing.maxSwhM ?? undefined,
         comfortWeight: request.comfort_weight ?? cfg.routing.comfortWeight,
-        tackPenaltyS: cfg.routing.tackPenaltyS,
+        tackPenaltyS: request.tack_penalty ?? cfg.routing.tackPenaltyS,
       },
       simplifyM: request.simplify_m ?? cfg.routing.simplifyM,
       // Both routers (the owner's decision, 2026-10-08): the smoother times every shortcut with the real polar, so two laid-out tacks become one straight leg only where that course is sailable within the tolerance.
       smoother: request.smoother ?? cfg.routing.smoother,
       smootherTolerance: request.smoother_tolerance ?? cfg.routing.smootherTolerance,
+      smootherSimStepM: request.smoother_sim_step_m,
       loadAreas,
       releaseAreas,
       currents: () =>
@@ -1113,10 +1118,7 @@ async function finalDepthCheck(
       path.map(p => p[1]),
       0.01
     );
-    return meshes.filter(m => {
-      const ix = m.store.index;
-      return ix.west <= box.east && box.west <= ix.east && ix.south <= box.north && box.south <= ix.north;
-    });
+    return meshes.filter(m => boxesMeet(m.store.index, box));
   };
   if (route.waypoints.length < 2 || !meshes.length) return;
   const path0: [number, number][] = route.waypoints.map(w => [w.lon, w.lat]);
@@ -1144,10 +1146,7 @@ async function finalDepthCheck(
       legOf.push(leg);
     }
     legCount = Math.max(leg + 1, route.legSources?.length ?? 0);
-    const ac = new AbortController();
-    const poll = setInterval(() => {
-      if (shouldCancel()) ac.abort();
-    }, 500);
+    const ac = cancelPoll(shouldCancel);
     try {
       return await runChildTask(
         {
@@ -1173,7 +1172,7 @@ async function finalDepthCheck(
         `the final depth check against the chart mesh could not run (${(err as Error).message}); no route is returned unchecked`
       );
     } finally {
-      clearInterval(poll);
+      ac.stop();
     }
   };
   const t0 = Date.now();
@@ -1183,7 +1182,7 @@ async function finalDepthCheck(
   if (check.violations.length) {
     const first = check.violations
       .slice(0, 3)
-      .map(v => `${multi ? `leg ${v.leg + 1} ` : ''}at ${v.lat.toFixed(4)}, ${v.lon.toFixed(4)}: ${violationText(v)}`)
+      .map(v => `${multi ? `leg ${v.leg + 1} ` : ''}at ${latLonText(v.lat, v.lon)}: ${violationText(v)}`)
       .join('; ');
     const more = check.violations.length > 3 ? `; and ${check.violations.length - 3} more place(s)` : '';
     const tried = route.repairsApplied ? ` (after ${route.repairsApplied} detour(s))` : repair ? ' (no detour cleared it)' : '';
@@ -1199,7 +1198,7 @@ async function finalDepthCheck(
     0,
     `depth check: {distance:${sum(l => l.onMeshM).toFixed(0)}} on the chart mesh` +
       (shallow
-        ? `, shallowest charted depth {depth:${shallow.shallowestM}}${multi ? ` (leg ${shallow.leg + 1})` : ''} at ${shallow.shallowestAt![1].toFixed(4)}, ${shallow.shallowestAt![0].toFixed(4)}`
+        ? `, shallowest charted depth {depth:${shallow.shallowestM}}${multi ? ` (leg ${shallow.leg + 1})` : ''} at ${latLonText(shallow.shallowestAt![1], shallow.shallowestAt![0])}`
         : '') +
       `, {distance:${sum(l => l.unknownDepthM).toFixed(0)}} with no charted depth, {distance:${sum(l => l.outsideMeshM).toFixed(0)}} outside the chart mesh; nothing the boat cannot use` +
       (route.repairsApplied ? ` after ${route.repairsApplied} detour(s)` : '') +
@@ -1245,7 +1244,7 @@ export async function repairViolations(
       if (!a || !b) continue;
       used++;
       const v = check.violations.find(x => x.segment === k)!;
-      const at = `${v.lat.toFixed(4)}, ${v.lon.toFixed(4)}`;
+      const at = latLonText(v.lat, v.lon);
       let d: Route;
       try {
         d = await repair.detour(a, b);

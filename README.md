@@ -1635,6 +1635,8 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `simplify_m` | number | m | setting `routing.simplify` | 0..5000; route simplification tolerance, 0 = off |
 | `smoother` | boolean | | setting `routing.smoother` | run the shortcut smoother |
 | `smoother_tolerance` | number | ratio | setting `routing.smootherTolerance` | 0..0.5; how much slower a shortcut may be (0.05 = 5%). The Route tab's *Smoothing* (Default / On / Off) sends `smoother`; it runs for both routers |
+| `smoother_sim_step_m` | number | m | setting `routing.simStep` (200) | 50..5000; the step the smoother times its shortcuts with; the search keeps `routing.simStep` |
+| `tack_penalty` | number | s | setting `routing.tackPenalty` (30) | 0..3600; seconds lost per tack or gybe, charged by both routers, on chart-mesh stretches and in repair detours too |
 | `comfort_weight` | number | | setting `routing.comfortWeight` (1) | 0..3; how much the search avoids rough water as the boat meets it (the encounter index). 0 = off, the fastest route. See [Comfort](#comfort-rough-water) |
 | `name` | string | | `<prefix> <lat>,<lon> → <lat>,<lon>` | name of the Signal K route record (trimmed). The default uses the `publish.routeNamePrefix` setting (`WRP`) and the start and end to two decimals |
 | `publish` | boolean | | setting `publish.toResources` (on) | save the finished route to the Resources API |

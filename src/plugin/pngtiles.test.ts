@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decodePng } from './png';
 import type { FieldGridResponse } from './overlays';
-import { PngCache, rampLut, renderFieldPng, sampleGrid } from './pngtiles';
+import { featherAlpha, PngCache, rampLut, renderFieldPng, sampleGrid } from './pngtiles';
 import { WIND_STOPS } from './legends';
 import { tileBBox } from './tiles';
 
@@ -82,6 +82,21 @@ test('png tiles: no data is transparent; a land mask blanks land; hatch marks no
       } else assert.equal(p[3], 0);
     }
   assert.ok(hatched > 9000, `${hatched} hatched pixels`);
+});
+
+test('coast feather: the alpha blurred (σ 1 px); the colour carried onto the softened land', () => {
+  const rgba = new Uint8Array(PX * PX * 4);
+  // Water (coloured, alpha 140) on the left half, land (transparent) on the right.
+  for (let j = 0; j < PX; j++) for (let i = 0; i < PX / 2; i++) rgba.set([10, 200, 30, 140], (j * PX + i) * 4);
+  featherAlpha(rgba);
+  assert.deepEqual(px(rgba, 0, 100), [10, 200, 30, 140], 'far from the coast unchanged');
+  // scipy.ndimage.gaussian_filter(sigma=1, mode="nearest") of the same step: 131.8, 97.93, 42.07, 8.2, 0.64, truncated.
+  assert.deepEqual(
+    [126, 127, 128, 129, 130].map(i => px(rgba, i, 100)[3]),
+    [131, 97, 42, 8, 0]
+  );
+  assert.deepEqual(px(rgba, 128, 100).slice(0, 3), [10, 200, 30], 'the first land pixel takes the water colour, not black');
+  assert.equal(px(rgba, 140, 100)[3], 0, 'well inland stays clear');
 });
 
 test('png tiles: the sampler is bilinear and null-aware', () => {

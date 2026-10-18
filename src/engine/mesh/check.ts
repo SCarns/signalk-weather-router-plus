@@ -19,7 +19,7 @@
  * process (plugin/meshchecktask.ts).
  */
 
-import { bboxFromLonLat, haversineDistanceM, type BBox } from '../../geo/geodesy';
+import { bboxFromLonLat, boxesMeet, haversineDistanceM, type BBox } from '../../geo/geodesy';
 import { DEFAULT_OVERHEAD_M, DEFAULT_UKC_M } from '../../vessel/vessel';
 import type { LegDepth } from '../route';
 import { MeshLand } from './land';
@@ -118,10 +118,6 @@ function cutPieces(path: [number, number][], legOf: number[]): Piece[] {
 
 const boxOf = (p: Piece): BBox => bboxFromLonLat([p.a[0], p.b[0]], [p.a[1], p.b[1]], 0.01);
 
-function meets(a: BBox, b: BBox): boolean {
-  return a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north;
-}
-
 /**
  * Add [f0, f1) to the piece. Usable water fills only what no mesh covers yet; water a mesh blocks takes its stretch
  * whatever another mesh said there (part 5: where two districts' meshes overlap and their charts disagree, a stretch
@@ -210,7 +206,7 @@ export function checkRouteOnMeshes(
     const land = new MeshLand(new PagedMesh(store, { ...rules, motorSpeedMs: 1 }, cl));
     for (const p of pieces) {
       const pb = boxOf(p);
-      if (!meets(pb, extent)) continue;
+      if (!boxesMeet(pb, extent)) continue;
       // The tiles the walk has passed go: only those meeting this piece stay.
       land.pm.retain(T => T.bbox[0] <= pb.east && pb.west <= T.bbox[2] && T.bbox[1] <= pb.north && pb.south <= T.bbox[3]);
       walkPiece(land, p, rules);

@@ -24,6 +24,7 @@ import {
   coarseKey,
   coarseRulesOf,
   joinsFile,
+  markCoarseUsed,
   type MeshReachTask,
   pruneCoarse,
   readBoundary,
@@ -33,6 +34,7 @@ import {
   runMeshJoinsTask,
   runMeshReachTask,
   runMeshSnapTask,
+  withBuildLock,
 } from './meshcoarse';
 
 const RULES = { draughtM: 2, airDraftM: 18, underKeelClearanceM: 0.5, overheadClearanceM: 1, bufferM: 0, openingBridges: 'open' as const };
@@ -294,8 +296,51 @@ test('pruneCoarse: rough cuts of builds no longer in use or of another version g
     assert.equal(removed, 4);
     const left = fs.readdirSync(dir).sort();
     assert.deepEqual(left, names.slice(4).sort());
+    // A route takes the oldest left into use: the next prune past the limit removes another, not that one.
+    const used = path.join(dir, names[4]);
+    markCoarseUsed(used);
+    const extra = `${key}-v${COARSE_VERSION}-d9.00-a18.00-u0.50-o1.00-b0.00-o.json`;
+    fs.writeFileSync(path.join(dir, extra), '{}');
+    assert.equal(pruneCoarse(data, new Set([key])), 1);
+    assert.ok(fs.existsSync(used) && fs.existsSync(boundaryFile(used)), 'the rough cut in use stays, with its boundary file');
+    assert.ok(!fs.existsSync(path.join(dir, names[6])), 'the least recently used goes instead');
   } finally {
     fs.rmSync(mesh, { recursive: true, force: true });
+    fs.rmSync(data, { recursive: true, force: true });
+  }
+});
+
+test('withBuildLock: two builds of one file at once run it once; a lock left by a process that is gone is cleared', async () => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-data-'));
+  try {
+    const file = path.join(data, COARSE_DIR, 'x.json');
+    let builds = 0;
+    const build = async (): Promise<string> => {
+      builds++;
+      await new Promise(r => setTimeout(r, 1500));
+      fs.writeFileSync(file, '{}');
+      return 'built';
+    };
+    let waits = 0;
+    const [a, b] = await Promise.all([withBuildLock(file, build), withBuildLock(file, build, { onWait: () => waits++ })]);
+    assert.equal(builds, 1, 'built once');
+    assert.deepEqual(a, { waited: false, result: 'built' });
+    assert.deepEqual(b, { waited: true, result: null }, 'the second waited and found the file');
+    assert.equal(waits, 1);
+    assert.ok(!fs.existsSync(`${file}.lock`), 'the lock is gone');
+    // A lock from a process that no longer runs: taken over at once.
+    fs.rmSync(file);
+    fs.writeFileSync(`${file}.lock`, '2147483646\n');
+    const c = await withBuildLock(file, build);
+    assert.deepEqual(c, { waited: false, result: 'built' });
+    assert.equal(builds, 2);
+    // Cancelled while waiting on a live holder (this process).
+    fs.writeFileSync(`${file}.lock`, `${process.pid}\n`);
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 200);
+    await assert.rejects(() => withBuildLock(file, build, { signal: ac.signal }), /cancelled/);
+    assert.equal(builds, 2);
+  } finally {
     fs.rmSync(data, { recursive: true, force: true });
   }
 });

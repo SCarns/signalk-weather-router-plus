@@ -58,6 +58,8 @@ export interface MeshLegTask {
   simplifyM: number;
   smoother: boolean;
   smootherTolerance: number;
+  /** The smoother's simulation step, metres (absent: sim.simStepM). */
+  smootherSimStepM?: number;
   drawbridges: DrawbridgeChoice;
   bridgeWaitS: number;
   /** The rough cut's tile-boundary file for this mesh and boat (meshcoarse.ts): seeds of the buffer across tile edges. */
@@ -130,6 +132,7 @@ export async function runMeshLegTask(t: MeshLegTask, emit: (e: MeshLegEvent) => 
     simplifyM: t.simplifyM,
     smoother: t.smoother,
     smootherTolerance: t.smootherTolerance,
+    smootherSimStepM: t.smootherSimStepM,
     drawbridges: t.drawbridges,
     bridgeWaitS: t.bridgeWaitS,
     progress,

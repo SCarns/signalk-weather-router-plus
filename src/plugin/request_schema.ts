@@ -98,6 +98,16 @@ export const ROUTE_REQUEST_FIELDS: Record<string, RouteFieldSpec> = {
     ...settingRange('routing.smootherTolerance'),
     description: 'Shortcut time tolerance as a ratio; overrides routing.smootherTolerance',
   },
+  smoother_sim_step_m: {
+    type: 'number',
+    ...settingRange('routing.simStep'),
+    description: "The smoother's simulation step, m; overrides routing.simStep for the smoother only (the search keeps routing.simStep)",
+  },
+  tack_penalty: {
+    type: 'number',
+    ...settingRange('routing.tackPenalty'),
+    description: 'Seconds lost per tack or gybe; overrides the routing.tackPenalty setting',
+  },
   name: { type: 'string', description: 'Name for the Signal K route resource' },
   stages: { type: 'number', ...settingRange('routing.stages'), description: 'Overrides the routing.stages setting' },
   no_forecast: { type: 'boolean', description: 'Route with calm wind' },

@@ -25,6 +25,10 @@ uses [Semantic Versioning](https://semver.org/).
   `repairs_applied` reports the detours (it was always 0).
 - **GeoJSON download** beside GPX in the Itinerary tab: the route line and
   every waypoint with its times, wind, waves, current and depth.
+- **Route request fields `tack_penalty`** (s, 0..3600; overrides
+  `routing.tackPenalty`) **and `smoother_sim_step_m`** (m, 50..5000; the
+  smoother's own step, overriding `routing.simStep` for the smoother only).
+  API only; absent, routes are as before.
 
 ### Changed
 
@@ -34,6 +38,14 @@ uses [Semantic Versioning](https://semver.org/).
   in the itinerary, its text and the plotter panel, as the API gives them;
   they were turned round and shown as "from".
 - **Headings and directions in whole degrees**, with no space before ° or %.
+- **Softer coast on the land-masked colour layers** (waves, current, sea
+  state, precipitation, sea temperature, tide), in the web app and the
+  chartplotter PNG tiles alike: the tile's alpha is blurred (σ 1 px), so the
+  colour fades over about 2 px at the shore instead of stopping at a hard
+  edge; edges of no-data areas soften the same way. The no-data hatch stays
+  sharp.
+- **Shorter legend titles:** Wave height, Precipitation, Air temperature,
+  Sea-surface temperature.
 - **`POST /api/routes`** refuses a `vessel.polar` that is not in the library
   (400) and a body over 64 KB (413) before the job is queued; the polar was
   found missing only when the job ran.
@@ -42,6 +54,15 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The same rough cut could be built twice at once**: the rebuild after a
+  mesh download (or the Rebuild button) and a route needing that rough cut
+  each started their own child process. A lock file beside the rough cut
+  (and beside each joins file) now lets one build at a time; the other waits
+  and uses its result. A lock left by a process that is gone is cleared.
+- **A server-only update could leave a browser on old web scripts**: npm's
+  copies of unchanged web files are untagged and dated 1985, and the
+  re-tagging ran only when their content changed. It now also runs when
+  index.html does not carry the current tag.
 - **Rough-cut tile edges used the fixed margins** (`coarse.ts`
   `boundarySeeds`): with any other clearance the tile-boundary record
   disagreed with the rough cut and its name. On the test box (2026-10-18) the
