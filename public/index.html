@@ -307,7 +307,7 @@
   #meteogram .mg-head b { font-size: var(--f-sm, 13px); }
   #meteogram #meteoTitle { flex: 1; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #meteogram select { width: auto; padding: 1px 4px; font-size: var(--f-xs); }
-  #meteogram #meteoClose { cursor: pointer; padding: 0 6px; font-size: 16px; line-height: 1; }
+  #meteogram #meteoClose { cursor: pointer; padding: 0 6px; font-size: 16px; line-height: 1; width: auto; margin: 0; background: none; border: 0; color: inherit; }
   #meteogram .mg-readout { min-height: 15px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); margin-bottom: 2px; }
   #meteogram .mg-panel { margin-top: 2px; }
   #meteogram .mg-label { font-weight: 600; color: var(--text-2); }
@@ -1115,7 +1115,7 @@
     <b>Meteogram</b>
     <span id="meteoTitle"></span>
     <label style="margin:0;">every <select id="meteoStep" aria-label="Meteogram step"><option value="1800">30 min</option><option value="3600" selected>1 h</option><option value="10800">3 h</option></select></label>
-    <span id="meteoClose" role="button" tabindex="0" aria-label="Close the meteogram" title="Close">×</span>
+    <button type="button" id="meteoClose" aria-label="Close the meteogram" title="Close">×</button>
   </div>
   <div id="meteoReadout" class="mg-readout"></div>
   <div id="meteoBody"></div>

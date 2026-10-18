@@ -515,6 +515,9 @@ function _clearDisplayedRoute() {
   if (modalItin) modalItin.innerHTML = '';
   const nameInput = document.getElementById('routeNameInput');
   if (nameInput) nameInput.value = '';
+  // The deleted job's itinerary and meteogram go with it (PR #50 review).
+  _displayedJobId = null;
+  closeMeteogram();
 }
 
 function _deleteRouteJob(id, labelForConfirm) {
@@ -1717,6 +1720,8 @@ function showModal() {
   frontSource.clear();
   _currentRouteJobId = null;
   _currentRouteName = '';
+  // The meteogram described the route that is gone (PR #50 review); the new one opens it again from the itinerary.
+  closeMeteogram();
   const nameInput = document.getElementById('routeNameInput');
   if (nameInput) nameInput.value = '';
   renderResultStrip(null);
