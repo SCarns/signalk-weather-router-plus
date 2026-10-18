@@ -96,6 +96,8 @@ export function coarseRulesOf(
 const BUILD_LOCK_STALE_MS = 20 * 60_000;
 /** How often a build waiting on another's lock looks again. */
 const BUILD_LOCK_POLL_MS = 1000;
+/** A lock's guard older than this was left by a step that died (a step holds it for one read, stat and remove). */
+const GUARD_STALE_MS = 30_000;
 
 function processAlive(pid: number): boolean {
   try {
@@ -115,8 +117,8 @@ function lockPid(text: string): number {
 /**
  * Remove `lock` when `same` holds for its contents and date, holding `<lock>.guard` (created exclusively), so a stale
  * lock's removal and its owner's release never interleave and neither removes a lock taken anew meanwhile. False
- * when another holds the guard (try again). A guard left by a process that died inside this synchronous step is
- * removed.
+ * when another holds the guard (try again). A guard left by a process that died inside this synchronous step (its
+ * pid gone, or the guard older than GUARD_STALE_MS: written without its pid, or its pid reused since) is removed.
  */
 function removeLockIf(lock: string, same: (text: string, mtimeMs: number) => boolean): boolean {
   const guard = `${lock}.guard`;
@@ -127,7 +129,8 @@ function removeLockIf(lock: string, same: (text: string, mtimeMs: number) => boo
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     try {
       const pid = lockPid(fs.readFileSync(guard, 'utf8'));
-      if (pid && pid !== process.pid && !processAlive(pid)) fs.rmSync(guard, { force: true });
+      const old = Date.now() - fs.statSync(guard).mtimeMs > GUARD_STALE_MS;
+      if (old || (pid && pid !== process.pid && !processAlive(pid))) fs.rmSync(guard, { force: true });
     } catch {
       /* gone meanwhile */
     }

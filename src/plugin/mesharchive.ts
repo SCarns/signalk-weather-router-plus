@@ -359,13 +359,16 @@ export async function downloadMeshArchive(t: MeshDownloadTask): Promise<MeshDown
       cb(null, chunk);
     },
   });
+  let unzstd: Transform | null = null;
   try {
-    await pipeline(fs.createReadStream(archive), counter, zstdDecompress(), tar);
+    unzstd = zstdDecompress();
+    await pipeline(fs.createReadStream(archive), counter, unzstd, tar);
   } catch (err) {
-    // A damaged archive is not resumed: the next try downloads it afresh.
-    const msg = (err as Error).message;
-    if (!/cannot unpack/.test(msg)) fs.rmSync(archive, { force: true });
-    throw new Error(`unpacking the mesh archive failed: ${msg}`, { cause: err });
+    // A damaged archive is not resumed: the next try downloads it afresh. One this machine failed to unpack (a
+    // system call's error: no room, no permission; or no zstd in this Node) is kept.
+    const e = err as NodeJS.ErrnoException;
+    if (unzstd && typeof e.syscall !== 'string') fs.rmSync(archive, { force: true });
+    throw new Error(`unpacking the mesh archive failed: ${e.message}`, { cause: err });
   }
   progress({ phase: 'unpack', bytes: size, total: size, files: tar.files }, true);
   const c = checkUnpacked(dest);
