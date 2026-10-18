@@ -9,9 +9,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ForecastStore } from '../../data/forecast';
+import type { DecodedRun, WindowOptions } from '../../data/decoded';
 import { LAYER_PARAMS } from '../layers';
 import { bboxFromLonLat, type BBox } from '../../geo/geodesy';
-import { type WindowOptions } from '../../data/decoded';
 import { REGIONAL_DIR } from '../../data/regionaldecode';
 import { LayeredWind, type RegionalWind } from '../../engine/layeredwind';
 import {
@@ -27,7 +27,7 @@ import {
   seaPoints,
 } from '../overlays';
 import { POINT_FORECAST_PARAMS, pointForecasts } from '../weather';
-import { type DataStatus, type QueryArgs, type TrackConditions, type TrackConditionsRow } from '../protocol';
+import { type DataStamp, type DataStatus, type QueryArgs, type TrackConditions, type TrackConditionsRow } from '../protocol';
 import { encodeTile, tileGroup, tileQuery, type TileId } from '../tiles';
 import { readWindow, releaseWindow } from './forecast';
 import { regionalRunsFor, type RegionalRun } from './regionalwind';
@@ -73,52 +73,67 @@ export function pointBox(lon: number, lat: number): BBox {
  * The part of the decoded run a query needs, or null when it needs none:
  * map layers read the view (plus margin) at the two steps around the map
  * time; point queries read a few cells around the point for every step.
+ * The forecast part of the answer's stamp names the run actually read
+ * (WindowRead): readWindow falls back to the run that became current when
+ * the one it chose was pruned meanwhile.
  */
-export async function queryWindow(st: WorkerState, kind: string, args: QueryArgs[keyof QueryArgs]): Promise<ForecastStore | null> {
+export async function queryWindow(
+  st: WorkerState,
+  kind: string,
+  args: QueryArgs[keyof QueryArgs]
+): Promise<{ win: ForecastStore; forecast: DataStamp['forecast'] } | null> {
+  const read = (
+    what: string,
+    opts: WindowOptions | ((run: DecodedRun) => WindowOptions)
+  ): Promise<{ win: ForecastStore; forecast: DataStamp['forecast'] }> => {
+    return (async () => {
+      const { store, run } = await readWindow(st, what, opts);
+      return { win: store, forecast: { cycleMs: run.index.cycleTimeMs, params: run.index.request.params } };
+    })();
+  };
   if (!st.run) return null;
   switch (kind) {
     case 'field': {
       const a = args as QueryArgs['field'];
       const params = [...(LAYER_PARAMS[a.layer] ?? [])];
       if (!params.length) return null;
-      return readWindow(st, `${a.layer} map`, { bbox: a.bbox, params, steps: st.run.bracket(a.timeMs), marginCells: 2 });
+      return read(`${a.layer} map`, run => ({ bbox: a.bbox, params, steps: run.bracket(a.timeMs), marginCells: 2 }));
     }
     case 'wind_points': {
       const a = args as QueryArgs['wind_points'];
-      return readWindow(st, 'wind arrows', { bbox: a.bbox, params: ['10u', '10v'], steps: st.run.bracket(a.timeMs), marginCells: 2 });
+      return read('wind arrows', run => ({ bbox: a.bbox, params: ['10u', '10v'], steps: run.bracket(a.timeMs), marginCells: 2 }));
     }
     case 'sea_points': {
       const a = args as QueryArgs['sea_points'];
-      return readWindow(st, 'sea-state arrows', {
+      return read('sea-state arrows', run => ({
         bbox: a.bbox,
         params: ['10u', '10v', 'swh', 'mwp', 'mwd'],
-        steps: st.run.bracket(a.timeMs),
+        steps: run.bracket(a.timeMs),
         marginCells: 2,
-      });
+      }));
     }
     case 'pressure': {
       const a = args as QueryArgs['pressure'];
       // pressureFeatures pads by one cell and draws at least 8 × 8 cells (2°).
-      return readWindow(st, 'isobars', { bbox: a.bbox, params: ['msl'], steps: st.run.bracket(a.timeMs), marginCells: 10 });
+      return read('isobars', run => ({ bbox: a.bbox, params: ['msl'], steps: run.bracket(a.timeMs), marginCells: 10 }));
     }
     case 'conditions': {
       const a = args as QueryArgs['conditions'];
-      return readWindow(st, 'conditions', { bbox: pointBox(a.lon, a.lat), params: CONDITIONS_PARAMS, marginCells: 2 });
+      return read('conditions', { bbox: pointBox(a.lon, a.lat), params: CONDITIONS_PARAMS, marginCells: 2 });
     }
     case 'weather_point': {
       const a = args as QueryArgs['weather_point'];
       // An observation needs only the two steps around its time.
-      const steps = a.observation && a.startMs !== null ? st.run.bracket(a.startMs) : undefined;
-      return readWindow(st, 'Weather API point', {
+      return read('Weather API point', run => ({
         bbox: pointBox(a.lon, a.lat),
         params: [...POINT_FORECAST_PARAMS],
         marginCells: 2,
-        steps,
-      });
+        steps: a.observation && a.startMs !== null ? run.bracket(a.startMs) : undefined,
+      }));
     }
     case 'forecast_info': {
       const a = args as QueryArgs['forecast_info'];
-      return readWindow(st, 'forecast samples', { bbox: pointBox(a.lon, a.lat), params: INFO_PARAMS, marginCells: 2 });
+      return read('forecast samples', { bbox: pointBox(a.lon, a.lat), params: INFO_PARAMS, marginCells: 2 });
     }
     default:
       return null;
@@ -134,9 +149,9 @@ export async function query(st: WorkerState, id: number, kind: string, args: Que
     return;
   }
   try {
-    const { result, complete } = await answer(st, kind, args);
+    const { result, complete, stamp } = await answer(st, kind, args);
     st.cancelledQueries.delete(id); // a cancel that arrived after the query started
-    st.send({ type: 'query-result', id, result, complete });
+    st.send({ type: 'query-result', id, result, complete, stamp });
     reportStatus(st, kind);
   } catch (err) {
     st.cancelledQueries.delete(id);
@@ -154,16 +169,16 @@ export async function query(st: WorkerState, id: number, kind: string, args: Que
 export async function buildTile(st: WorkerState, id: number, tile: TileId, tmp: string): Promise<void> {
   try {
     const { kind, args } = tileQuery(tile);
-    const { result, complete } = await answer(st, kind, args);
+    const { result, complete, stamp } = await answer(st, kind, args);
     // A current source this builder could not read: the tile lacks it (adoptCurrentsRef), so it is not kept.
     if (!complete || (tileGroup(tile.layer) === 'cur' && st.currentsUnread.length)) {
-      st.send({ type: 'tile-built', id, bytes: 0, complete: false });
+      st.send({ type: 'tile-built', id, bytes: 0, complete: false, stamp });
       return;
     }
     const gz = await encodeTile(tile, result);
     await fs.promises.mkdir(path.dirname(tmp), { recursive: true });
     await fs.promises.writeFile(tmp, gz);
-    st.send({ type: 'tile-built', id, bytes: gz.length, complete: true });
+    st.send({ type: 'tile-built', id, bytes: gz.length, complete: true, stamp });
   } catch (err) {
     st.send({ type: 'query-error', id, message: (err as Error).message });
   }
@@ -193,7 +208,7 @@ const TRACK_CHUNK = 12;
 export async function trackConditions(
   st: WorkerState,
   a: QueryArgs['track_conditions']
-): Promise<{ result: TrackConditions; complete: boolean }> {
+): Promise<{ result: TrackConditions; complete: boolean; stamp: DataStamp }> {
   try {
     return await trackConditionsOnce(st, a);
   } catch (err) {
@@ -205,7 +220,7 @@ export async function trackConditions(
 async function trackConditionsOnce(
   st: WorkerState,
   a: QueryArgs['track_conditions']
-): Promise<{ result: TrackConditions; complete: boolean }> {
+): Promise<{ result: TrackConditions; complete: boolean; stamp: DataStamp }> {
   const run = st.run;
   if (!run) throw new Error('no forecast loaded yet');
   const pts = a.points;
@@ -239,7 +254,7 @@ async function trackConditionsOnce(
     const held: ForecastStore[] = [];
     try {
       const steps = [...new Set(chunk.flatMap(p => run.bracket(p.tMs)))].sort((x, y) => x - y);
-      const win = await readWindow(st, 'route meteogram', { bbox, params: CONDITIONS_PARAMS, steps, marginCells: 2 }, run);
+      const { store: win } = await readWindow(st, 'route meteogram', { bbox, params: CONDITIONS_PARAMS, steps, marginCells: 2 }, run);
       held.push(win);
       const layers: RegionalWind[] = [];
       for (const r of regional) {
@@ -251,7 +266,7 @@ async function trackConditionsOnce(
           marginCells: 1,
         };
         if (r.run.windowBytes(opts) <= 0) continue; // no cells of its grid near this chunk
-        const store = await readWindow(st, 'route meteogram regional wind', opts, r.run);
+        const { store } = await readWindow(st, 'route meteogram regional wind', opts, r.run);
         held.push(store);
         layers.push({ name: r.name, wind: store, grid: r.grid, firstMs: r.firstMs, lastMs: r.lastMs });
       }
@@ -288,11 +303,22 @@ async function trackConditionsOnce(
       rows: out,
     },
     complete,
+    stamp: {
+      forecast: { cycleMs: run.index.cycleTimeMs, params: run.index.request.params },
+      smoc: st.smoc ? { key: st.smoc.run.key, settled: st.smoc.run.settled } : null,
+      rtofs: (st.rtofs ?? []).map(s => ({ product: s.product, runMs: s.runMs })),
+      tide: st.tides ? { key: st.tides.run.key, settled: st.tides.run.settled } : null,
+    },
   };
 }
 
-/** A query's answer, and whether it is complete (false: an on-demand current or tide load was late or failed, or was evicted meanwhile). */
-async function answer(st: WorkerState, kind: string, args: QueryArgs[keyof QueryArgs]): Promise<{ result: unknown; complete: boolean }> {
+/** A query's answer, whether it is complete (false: an on-demand current or tide load was late or failed, or was evicted
+ * meanwhile), and the identity of the data it was computed from (the main thread serves only what it still holds). */
+async function answer(
+  st: WorkerState,
+  kind: string,
+  args: QueryArgs[keyof QueryArgs]
+): Promise<{ result: unknown; complete: boolean; stamp: DataStamp }> {
   if (kind === 'track_conditions') return trackConditions(st, args as QueryArgs['track_conditions']);
   let win: ForecastStore | null = null;
   try {
@@ -306,9 +332,17 @@ async function answer(st: WorkerState, kind: string, args: QueryArgs[keyof Query
     const tides0 = st.tides;
     const tidesComplete = await prepareTidesForQuery(st, kind, args);
     const tide = kind === 'conditions' ? await conditionsTide(st, args as QueryArgs['conditions']) : null;
-    win = await queryWindow(st, kind, args);
-    // Last await before sampling (synchronous from here), and before this query's own trim below.
+    const qw = await queryWindow(st, kind, args);
+    win = qw?.win ?? null;
+    // Last await before sampling (synchronous from here), and before this query's own trim below. The stamp is what
+    // the answer is computed from: the run the window was read from, and the sources sampled.
     const notEvicted = evictions() === evicted0 && st.smoc === smoc0 && st.tides === tides0;
+    const stamp: DataStamp = {
+      forecast: qw?.forecast ?? null,
+      smoc: st.smoc ? { key: st.smoc.run.key, settled: st.smoc.run.settled } : null,
+      rtofs: (st.rtofs ?? []).map(s => ({ product: s.product, runMs: s.runMs })),
+      tide: st.tides ? { key: st.tides.run.key, settled: st.tides.run.settled } : null,
+    };
     const src = overlaySources(st, win);
     let result: unknown;
     switch (kind) {
@@ -392,7 +426,7 @@ async function answer(st: WorkerState, kind: string, args: QueryArgs[keyof Query
     st.tides?.trimOnDemand(QUERY_AREA_RETAIN_BYTES);
     // A conditions tide series that is still downloading (or failed) is not an answer to keep; outside the grid is.
     const tideComplete = !tide || !!tide.series || /outside the sea-level grid/.test(tide.error ?? '');
-    return { result, complete: smocComplete && tidesComplete && tideComplete && notEvicted };
+    return { result, complete: smocComplete && tidesComplete && tideComplete && notEvicted, stamp };
   } catch (err) {
     releaseWindow(st, win);
     throw err;
