@@ -29,6 +29,11 @@
  *   POST /api/routes/:id/cancel
  *   POST /api/routes/:id/publish    save to the Resources API
  *   DELETE /api/routes/:id
+ *   POST /api/windows               departure window: the route for a series of departures → 202 {id, status, links}
+ *   GET  /api/windows               list departure windows
+ *   GET  /api/windows/:id           a window: each departure's status and metrics
+ *   POST /api/windows/:id/cancel
+ *   DELETE /api/windows/:id         a finished window and its route jobs
  *   GET  /api/openapi.json
  *
  * Reads are opened to readonly users and writes to readwrite users when
@@ -45,6 +50,7 @@ import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import type { IRouter, Request, Response } from 'express';
 import { type JobManager, type Job } from './jobs';
+import { validateWindowRequest, WINDOW_LIMITS, type WindowManager, type WindowRequest } from './windows';
 import type { QueryArgs, QueryKind, RouteRequest } from './protocol';
 import { openApiDocument } from './openapi';
 import { buildLegends } from './legends';
@@ -66,6 +72,8 @@ export interface ApiDeps {
   pluginId: string;
   basePath: string;
   jobs: JobManager;
+  /** Departure windows (throws, like `jobs`, when the plugin is not started). */
+  windows: WindowManager;
   status: () => Record<string, unknown>;
   forecastInfo: (lat?: number, lon?: number) => Promise<Record<string, unknown>>;
   refreshForecast: (force: boolean) => void;
@@ -153,6 +161,15 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   const jobsOr503 = (res: Response): JobManager | null => {
     try {
       return deps.jobs;
+    } catch (err) {
+      json(res, 503, { error: (err as Error).message });
+      return null;
+    }
+  };
+  /** The departure windows, or null after answering 503 when the plugin is not started. */
+  const windowsOr503 = (res: Response): WindowManager | null => {
+    try {
+      return deps.windows;
     } catch (err) {
       json(res, 503, { error: (err as Error).message });
       return null;
@@ -787,6 +804,67 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
         return;
       }
       jobs.delete(job.id);
+      res.status(204).end();
+    });
+  });
+
+  // ── Departure windows (windows.ts) ──
+  rw.post('/api/windows', (req: Request, res: Response) => {
+    const windows = windowsOr503(res);
+    if (!windows) return;
+    const err = validateWindowRequest(req.body);
+    if (err) {
+      json(res, 400, { error: err });
+      return;
+    }
+    if (windows.running >= WINDOW_LIMITS.maxRunning) {
+      json(res, 429, { error: `${windows.running} departure windows are being computed; wait for one to finish, or cancel it` });
+      return;
+    }
+    const w = windows.create(req.body as WindowRequest);
+    res.setHeader('Location', windows.links(w.id).self);
+    json(res, 202, { id: w.id, status: w.status, departures: w.departures.length, links: windows.links(w.id) });
+  });
+
+  ro.get('/api/windows', (req: Request, res: Response) => {
+    const windows = windowsOr503(res);
+    if (!windows) return;
+    const limit = Math.min(WINDOW_LIMITS.keep + WINDOW_LIMITS.maxRunning, Math.max(1, Number(req.query.limit ?? 20) || 20));
+    json(
+      res,
+      200,
+      windows.list(limit).map(w => windows.toPublic(w))
+    );
+  });
+
+  const withWindow = (req: Request, res: Response, fn: (windows: WindowManager, id: string) => void): void => {
+    const windows = windowsOr503(res);
+    if (!windows) return;
+    const id = String(req.params.id);
+    if (!windows.get(id)) {
+      json(res, 404, { error: 'window not found' });
+      return;
+    }
+    fn(windows, id);
+  };
+
+  ro.get('/api/windows/:id', (req: Request, res: Response) => {
+    withWindow(req, res, (windows, id) => json(res, 200, windows.toPublic(windows.get(id)!)));
+  });
+
+  rw.post('/api/windows/:id/cancel', (req: Request, res: Response) => {
+    withWindow(req, res, (windows, id) => {
+      windows.cancel(id);
+      json(res, 202, { id, status: windows.get(id)!.status });
+    });
+  });
+
+  rw.delete('/api/windows/:id', (req: Request, res: Response) => {
+    withWindow(req, res, (windows, id) => {
+      if (!windows.delete(id)) {
+        json(res, 409, { error: 'cancel the window before deleting it' });
+        return;
+      }
       res.status(204).end();
     });
   });

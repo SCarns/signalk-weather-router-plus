@@ -33,6 +33,8 @@ export interface Job {
   fronts?: unknown[] | null;
   /** Resources API id when published. */
   resourceId?: string;
+  /** The departure window this job is one departure of (windows.ts); such jobs are listed and trimmed with their window. */
+  windowId?: string;
   publishError?: string;
   events: JobEvent[];
   nextEventId: number;
@@ -50,6 +52,7 @@ export interface JobPublic {
   error?: string;
   resource_id?: string;
   publish_error?: string;
+  window_id?: string;
   links: Record<string, string>;
 }
 
@@ -110,7 +113,7 @@ export class JobManager extends EventEmitter {
 
   private trim(): void {
     const finished = [...this.jobs.values()]
-      .filter(j => j.status !== 'queued' && j.status !== 'running')
+      .filter(j => j.status !== 'queued' && j.status !== 'running' && !j.windowId)
       .sort((a, b) => (b.finishedAt ?? b.createdAt).localeCompare(a.finishedAt ?? a.createdAt));
     for (const j of finished.slice(this.keepJobs)) this.delete(j.id);
   }
@@ -156,6 +159,7 @@ export class JobManager extends EventEmitter {
       error: job.error,
       resource_id: job.resourceId,
       publish_error: job.publishError,
+      window_id: job.windowId,
       links: this.links(job.id),
     };
   }
@@ -164,8 +168,12 @@ export class JobManager extends EventEmitter {
     return this.jobs.get(id);
   }
 
-  list(limit = 50): Job[] {
-    return [...this.jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
+  /** The newest jobs; a departure window's jobs only with `withWindows`. */
+  list(limit = 50, withWindows = false): Job[] {
+    return [...this.jobs.values()]
+      .filter(j => withWindows || !j.windowId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit);
   }
 
   get queueLength(): number {
@@ -176,7 +184,7 @@ export class JobManager extends EventEmitter {
     return this.running;
   }
 
-  submit(request: RouteRequest): Job {
+  submit(request: RouteRequest, windowId?: string): Job {
     const job: Job = {
       id: randomUUID(),
       status: 'queued',
@@ -186,6 +194,7 @@ export class JobManager extends EventEmitter {
       events: [],
       nextEventId: 1,
     };
+    if (windowId) job.windowId = windowId;
     this.jobs.set(job.id, job);
     this.queue.push(job.id);
     this.emitEvent(job, 'status', { status: 'queued', position: this.queue.length });

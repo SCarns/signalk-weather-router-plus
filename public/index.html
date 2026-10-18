@@ -280,6 +280,19 @@
   .rp-label .rp-phase { color: var(--text); font-weight: 600; }
   .rp-label.failed .rp-phase { color: var(--danger); }
   .rp-label.done .rp-phase { color: var(--tack-starboard); }
+  /* Best departure: the departures compared (rp-plan.js). */
+  #windowResults .win-scroll { overflow-x: auto; }
+  #windowResults table { border-collapse: collapse; width: 100%; font-size: var(--f-xs); margin-top: var(--s-1); }
+  #windowResults th { text-align: right; vertical-align: bottom; font-weight: 600; color: var(--text-2); padding: 2px 3px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  #windowResults td { text-align: right; padding: 2px 3px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  #windowResults th:first-child, #windowResults td:first-child { text-align: left; }
+  #windowResults tr.win-row { cursor: pointer; }
+  #windowResults tr.win-row:hover { background: var(--surface-2); }
+  #windowResults tr.win-best { background: rgba(46, 125, 50, 0.12); font-weight: 600; }
+  #windowResults tr.win-open td:first-child { box-shadow: inset 3px 0 0 var(--go); }
+  #windowResults tr.win-off td { color: var(--text-2); }
+  #windowResults .win-sort { display: flex; align-items: center; gap: var(--s-1); margin-top: var(--s-1); }
+  #windowResults .win-sort select { width: auto; padding: 1px 4px; font-size: var(--f-xs); }
   /* Mobile bottom sheet. */
   @media (max-width: 768px) {
     #panel {
@@ -763,6 +776,31 @@
 
   <!-- Result strip: what the route is. Hidden while empty. -->
   <div id="routeInfo"></div>
+
+  <!-- Best departure: the same route for a series of departures (POST /api/windows; rp-plan.js). -->
+  <details class="subsection" id="windowSection">
+  <summary>Best departure</summary>
+  <div class="subsection-body">
+    <div class="ctl-hint">The route above, computed for each departure from the Departure time to the latest one here, one after the other on the server; the table compares them as they finish. Each takes as long as one route.</div>
+    <div style="display:flex;gap:var(--s-2);">
+      <div style="flex:1;"><label for="windowTo">Latest departure</label><input type="datetime-local" id="windowTo"></div>
+      <div style="flex:1;"><label for="windowStep">Every</label>
+        <select id="windowStep" aria-label="Time between departures">
+          <option value="10800">3 h</option>
+          <option value="21600" selected>6 h</option>
+          <option value="43200">12 h</option>
+          <option value="86400">24 h</option>
+        </select></div>
+    </div>
+    <div id="windowCount" class="ctl-hint"></div>
+    <div style="display:flex;gap:var(--s-2);">
+      <button id="windowStart" type="button" disabled style="flex:1;">Compare departures</button>
+      <button id="windowCancel" type="button" class="sm-btn" hidden>Cancel</button>
+    </div>
+    <div id="windowStatus" class="ctl-hint" aria-live="polite"></div>
+    <div id="windowResults"></div>
+  </div>
+  </details>
   </div><!-- /plan -->
 
   <div class="route-group" data-group="options">

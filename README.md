@@ -407,6 +407,16 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   sets them), else in the browser's time zone, and the departure field is
   read in the same zone. A time a day or more away carries its date
   ("Tue 13 Oct 21:58"), as a weekday alone is ambiguous on a long passage.
+- **Best departure** (Route tab): the route on the map computed for each
+  departure from the Departure time to a latest departure, every 3, 6, 12
+  or 24 h ([Departure windows](#departure-windows)). The departures run
+  one after another on the server, each as long as one route; the table
+  fills in as they finish: leave, arrive, passage time, the strongest
+  wind and highest waves met, time motoring and time close-hauled. The
+  best by the measure chosen (shortest passage, least motoring, lightest
+  wind, smallest waves, least upwind) is starred; a passage that arrives
+  after the forecast ends is marked and not ranked. A row opens that
+  departure's route. The newest window shows again when the page opens.
 - **Points of sail** in the itinerary come from the route's polar at each
   leg's wind speed: in irons tighter than the polar's no-go angle (the
   tightest angle it gives any speed, with the tightest sailable angle
@@ -1705,6 +1715,11 @@ the SSE endpoint replays.
 | POST | `/api/routes/{id}/cancel` | readwrite | cancel a queued or running job |
 | POST | `/api/routes/{id}/publish` | readwrite | save the route to the Resources API |
 | DELETE | `/api/routes/{id}` | readwrite | delete a job |
+| POST | `/api/windows` | readwrite | departure window: the route for a series of departures |
+| GET | `/api/windows` | readonly | list departure windows |
+| GET | `/api/windows/{id}` | readonly | a window's departures, their status and metrics |
+| POST | `/api/windows/{id}/cancel` | readwrite | cancel the departures not computed yet |
+| DELETE | `/api/windows/{id}` | readwrite | delete a finished window and its route jobs |
 
 #### Job lifecycle
 
@@ -2039,6 +2054,72 @@ readwrite.
 | 204 | none |
 | 404 | `{error: "job not found"}` |
 | 409 | `{error: "cancel the running job before deleting it"}` |
+
+### Departure windows
+
+A departure window is the same route computed for a series of departure
+times, so the best time to leave can be picked: the web app's **Best
+departure** (Route tab). Each departure is an ordinary route job,
+submitted when the one before has finished, so a route asked for
+meanwhile waits behind one job, not the whole window. A window's jobs
+are not in `GET /api/routes` (each carries `window_id`; open one with
+`GET /api/routes/{id}`), do not count towards `routing.keepJobs`, are
+never published to the Resources API and send no notification of their
+own; the window sends one when it is done. The last 10 finished windows
+are kept, with their jobs.
+
+A departure after the forecast's last step is not computed (`skipped`),
+and once a passage arrives after the forecast ends, the later departures
+are skipped too: their passages would end later still. After a restart
+a window that was computing ends `failed`.
+
+#### POST /api/windows
+
+Access: readwrite. Body:
+
+| Field | Type | Unit | Default | Notes |
+|---|---|---|---|---|
+| `route` | object | | required | the route request, as [`POST /api/routes`](#routes-jobs) takes it; `departure` and `publish` are set per departure |
+| `from` | string | ISO 8601 | required | the earliest departure |
+| `to` | string | ISO 8601 | required | the latest departure, at most 16 days after `from` |
+| `step_s` | number | s | 21600 | 3600..86400 between departures; at most 48 departures |
+
+`202 {id, status: "running", departures, links}`; `400 {error}` for a bad
+body (a route error is prefixed `route: `); `429` when two windows are
+being computed already.
+
+#### GET /api/windows/{id}
+
+Access: readonly. `200`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `status` | string | `running`, `done`, `cancelled` or `failed` |
+| `created_at`, `finished_at`, `error` | string | |
+| `request` | object | as posted, with `step_s` |
+| `progress` | string or null | the last progress line of the departure computing |
+| `departures` | array | one per departure (below) |
+
+| Departure field | Unit | Notes |
+|---|---|---|
+| `departure` | ISO 8601 | |
+| `job_id` | string or null | the route job, once submitted |
+| `status` | | `pending`, `queued`, `running`, `done`, `failed`, `cancelled` or `skipped` |
+| `error` | | why it failed or was skipped |
+| `metrics.arrival` | ISO 8601 | |
+| `metrics.total_time_s`, `sailing_time_s`, `motoring_time_s` | s | |
+| `metrics.total_distance_m` | m | |
+| `metrics.max_wind_ms` | m/s | the strongest wind on any leg |
+| `metrics.max_swh_m` | m | the highest significant waves on any leg |
+| `metrics.max_sea_index` | index | the roughest sea met (a leg's encounter index, else its sea-state index) |
+| `metrics.upwind_time_s` | s | time sailed with the true wind under 60° off the bow |
+| `metrics.beyond_forecast` | boolean | the passage arrives after the forecast ends |
+| `metrics.warnings` | count | the route's warnings |
+
+`GET /api/windows?limit=` lists the windows newest first in the same
+form. `POST /api/windows/{id}/cancel` → `202 {id, status}`: the
+departures not started are cancelled and the one computing is stopped.
+`DELETE /api/windows/{id}` → `204`, or `409` while it is running.
 
 ### Forecast and conditions
 
