@@ -844,7 +844,15 @@ from a catalogue and downloads the ticked ones (`mesh.catalogUrl`,
 once with the panel's "Check for updates" button
 (`POST /api/meshes/refresh`). The panel's per-mesh buttons (Download,
 Update, Download again, Remove, Cancel; `POST /api/meshes/{name}/{action}`)
-change the download list at once, without a restart. A leg is covered when one downloaded mesh (or the
+change the download list at once, without a restart. A mesh is
+downloaded as the catalogue's archive (`<name>_mesh.tar.zst`, about a
+third of the unpacked size), two meshes at a time: the archive is fetched
+into `<data dir>/mesh/.dl-<name>/` (a stopped download resumes where it
+stopped), unpacked into `<name>.new/`, checked (every tile the index lists
+present, their total the catalogue's `bytes`) and swapped in; the archive
+is deleted then. Before it starts, the free disk must hold the rest of the
+archive and the unpacked mesh with a tenth to spare (07CGD: about 5.7 GB
+from scratch). A leg is covered when one downloaded mesh (or the
 `meshDir` folder) holds its points, and that mesh is used; a leg whose ends
 lie in two meshes uses both (above).
 The job log says what the mesh did ("chart mesh: …") and the summary's
@@ -1155,7 +1163,9 @@ resolution levels 1–4 (`GSHHS_f_L1.shp` through `GSHHS_f_L4.shp`):
   React 19 Admin UI that came with 2.24.0); tested on 2.33.0. Read-only users can use
   the web app on servers that support per-route access (see
   [API](#api)); on older servers every route is admin-only.
-- Node.js 20.10 or later (the server's own Node).
+- Node.js 22.15 or later (the server's own Node; Signal K 2.33 itself
+  needs 22): the chart mesh archives are zstd, which Node's own zlib
+  unpacks from 22.15 on.
 - Internet access for the forecast, current, tide and coastline
   downloads.
 - Disk in the Signal K data directory: the decoded forecast (about
@@ -1242,7 +1252,7 @@ React and needs no build step for it.
 |---|---|
 | `landShapefiles` | comma-separated absolute paths; blank = download GSHHG 2.3.7 full-resolution levels 1–4 once (see [Install](#install)) |
 | `mesh.catalogUrl` | the `index.json` listing the published meshes (the s57Work build's `charts/mesh/index.json`); blank = the US-ENC catalogue on R2 |
-| `mesh.downloads` | names from the catalogue (`01CGD`, `07CGD`, …) ticked in the plugin panel; each is mirrored into `<data dir>/mesh/<name>/` and kept current (the catalogue is read at start, daily, and on the panel's "Read the catalogue now" button; a newer `build_date` is downloaded again and swapped in); an unticked mesh is deleted. `/api/meshes` and `/api/status` `meshes` list every mesh with its state |
+| `mesh.downloads` | names from the catalogue (`01CGD`, `07CGD`, …) ticked in the plugin panel; each is downloaded as its archive and unpacked into `<data dir>/mesh/<name>/` and kept current (the catalogue is read at start, daily, and on the panel's "Read the catalogue now" button; a newer `build_date` is downloaded again and swapped in); an unticked mesh is deleted. `/api/meshes` and `/api/status` `meshes` list every mesh with its state |
 | `mesh.disabled` | downloaded meshes switched off for routing (kept on disk); the panel's *Use* tick |
 | `mesh.preferLocal`, `mesh.preferDownload` | names that exist both as a download and in `meshDir`, where the router uses your folder's copy, or the download, whatever the build dates; the panel's *downloaded / my folder* choice. In neither list: the newer build |
 | `meshDir` | a mesh folder you manage yourself — one mesh (`index.json` and its tiles, or `meshes.json` with cluster sub-folders) or a folder of such mesh folders — used beside the downloaded ones and listed in the panel as *local* with its own *Use* tick; blank = none. See [Chart mesh](#chart-mesh-charted-depths-and-obstructions) |

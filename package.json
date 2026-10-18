@@ -42,7 +42,7 @@
   },
   "homepage": "https://github.com/motamman/signalk-weather-router-plus#readme",
   "engines": {
-    "node": ">=20.10"
+    "node": ">=22.15"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

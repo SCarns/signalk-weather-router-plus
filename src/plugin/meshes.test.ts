@@ -15,7 +15,8 @@ import {
   describeMesh,
   localMeshes,
   localWins,
-  meshBaseUrl,
+  meshArchiveTop,
+  meshArchiveUrl,
   meshClusterDirs,
   meshesToOpen,
   MeshManager,
@@ -23,6 +24,8 @@ import {
   readyMeshDirs,
   type CatalogMesh,
 } from './meshes';
+import { downloadWorkDir } from './mesharchive';
+import { tarOf, zstd } from './tarfixture';
 
 const ENTRY: CatalogMesh = {
   name: '01CGD',
@@ -37,9 +40,14 @@ const ENTRY: CatalogMesh = {
   clusters: [{ dir: '.', box: [-74.749875, 40.000125, -65.749875, 45.750125] }],
 };
 
-test('describeMesh and meshBaseUrl', () => {
+test('describeMesh, meshArchiveUrl and meshArchiveTop', () => {
   assert.equal(describeMesh(ENTRY), '40.0°N–45.8°N, 74.7°W–65.7°W · chart 2026-09-07 · mesh 2026-10-08 · 2.8 GB · 35.5 M triangles');
-  assert.equal(meshBaseUrl('https://pub-x.r2.dev/US-ENC/charts/mesh/index.json', ENTRY), 'https://pub-x.r2.dev/US-ENC/charts/mesh/01CGD/');
+  // The archive is published in charts/, beside the catalogue's charts/mesh/ (as R2 has it, 2026-10-18).
+  assert.equal(
+    meshArchiveUrl('https://pub-x.r2.dev/US-ENC/charts/mesh/index.json', ENTRY),
+    'https://pub-x.r2.dev/US-ENC/charts/01CGD_mesh.tar.zst'
+  );
+  assert.equal(meshArchiveTop(ENTRY), '01CGD_mesh');
   const two = {
     ...ENTRY,
     clusters: [ENTRY.clusters[0], { dir: 'w158n20', box: [-158, 20, -154, 22] as [number, number, number, number] }],
@@ -74,11 +82,11 @@ test('readyMeshDirs: a complete marker makes a mesh ready; clusters are listed f
   fs.rmSync(store, { recursive: true, force: true });
 });
 
-/** A tiny published layout served over HTTP: charts/mesh/index.json and charts/mesh/<D>/ with an index and two tiles. */
 /**
- * `hold`: a promise a `.bin` answer waits for before its body is sent (a
- * stalled download). `holdCatalog`: the same for the catalogue (a slow
- * read); `hits` counts the catalogue requests.
+ * A tiny published layout served over HTTP: the catalogue charts/mesh/index.json and each mesh's archive
+ * charts/<D>_mesh.tar.zst, with Range requests answered as R2 answers them (206, content-range). `hold`: a promise an
+ * archive's answer waits for before its body is sent (a stalled download). `holdCatalog`: the same for the catalogue
+ * (a slow read); `hits` counts the catalogue requests.
  */
 function serve(
   root: string,
@@ -97,12 +105,15 @@ function serve(
         res.writeHead(404).end();
         return;
       }
-      res.writeHead(200, { 'content-length': st.size });
+      const m = /^bytes=(\d+)-$/.exec(String(req.headers.range ?? ''));
+      const from = m && req.method !== 'HEAD' ? Number(m[1]) : 0;
+      if (from > 0) res.writeHead(206, { 'content-length': st.size - from, 'content-range': `bytes ${from}-${st.size - 1}/${st.size}` });
+      else res.writeHead(200, { 'content-length': st.size, 'accept-ranges': 'bytes' });
+      const body = (): void => void fs.createReadStream(p, { start: from }).pipe(res);
       if (req.method === 'HEAD') res.end();
-      else if (hold && p.endsWith('.bin')) void hold().then(() => fs.createReadStream(p).pipe(res));
-      else if (holdCatalog && p.endsWith(path.join('charts', 'mesh', 'index.json')))
-        void holdCatalog().then(() => fs.createReadStream(p).pipe(res));
-      else fs.createReadStream(p).pipe(res);
+      else if (hold && p.endsWith('.tar.zst')) void hold().then(body);
+      else if (holdCatalog && p.endsWith(path.join('charts', 'mesh', 'index.json'))) void holdCatalog().then(body);
+      else body();
     });
     srv.listen(0, '127.0.0.1', () => {
       const a = srv.address() as { port: number };
@@ -111,20 +122,39 @@ function serve(
   });
 }
 
-function publish(root: string, buildDate: string, tileBytes: number, fill = 7): void {
-  const dir = path.join(root, 'charts', 'mesh', '01CGD');
-  fs.mkdirSync(dir, { recursive: true });
+/** Publish mesh `name` (default 01CGD) as its archive and list it in the catalogue (beside meshes already listed). */
+function publish(root: string, buildDate: string, tileBytes: number, fill = 7, opts: { name?: string; omit?: string } = {}): void {
+  const name = opts.name ?? '01CGD';
   const tiles = [
     { i: 1, j: 2, file: 'mesh_001_002.bin', first: 0, n: 1, bbox: [0, 0, 1, 1] },
     { i: 2, j: 2, file: 'mesh_002_002.bin', first: 1, n: 1, bbox: [1, 0, 2, 1] },
   ];
-  fs.writeFileSync(
-    path.join(dir, 'index.json'),
-    JSON.stringify({ version: 1, west: 0, south: 0, east: 2, north: 1, tileDeg: 1, xScale: 1, triangles: 2, tiles })
-  );
-  for (const t of tiles) fs.writeFileSync(path.join(dir, t.file), Buffer.alloc(tileBytes, fill));
-  const entry = { ...ENTRY, build_date: buildDate, bytes: 2 * tileBytes, triangles: 2 };
-  fs.writeFileSync(path.join(root, 'charts', 'mesh', 'index.json'), JSON.stringify({ version: 1, updated: buildDate, meshes: [entry] }));
+  const top = `${name}_mesh`;
+  const index = JSON.stringify({ version: 1, west: 0, south: 0, east: 2, north: 1, tileDeg: 1, xScale: 1, triangles: 2, tiles });
+  const tar = tarOf([
+    { name: top },
+    ...tiles.filter(t => t.file !== opts.omit).map(t => ({ name: `${top}/${t.file}`, data: Buffer.alloc(tileBytes, fill) })),
+    { name: `${top}/index.json`, data: Buffer.from(index) },
+  ]);
+  fs.mkdirSync(path.join(root, 'charts', 'mesh'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'charts', `${top}.tar.zst`), zstd(tar));
+  const entry = {
+    ...ENTRY,
+    name,
+    dir: `mesh/${name}/`,
+    archive: `${top}.tar.zst`,
+    build_date: buildDate,
+    bytes: 2 * tileBytes,
+    triangles: 2,
+  };
+  const catFile = path.join(root, 'charts', 'mesh', 'index.json');
+  let meshes: CatalogMesh[] = [];
+  try {
+    meshes = (JSON.parse(fs.readFileSync(catFile, 'utf8')) as { meshes: CatalogMesh[] }).meshes.filter(m => m.name !== name);
+  } catch {
+    // first mesh
+  }
+  fs.writeFileSync(catFile, JSON.stringify({ version: 1, updated: buildDate, meshes: [...meshes, entry] }));
 }
 
 test('MeshManager: downloads a ticked mesh, marks it ready, re-downloads a newer build, removes an unticked one', async () => {
@@ -154,23 +184,24 @@ test('MeshManager: downloads a ticked mesh, marks it ready, re-downloads a newer
     assert.equal(readMarker(path.join(store, '01CGD'))!.build_date, '2026-10-09T00:00:00Z');
     assert.equal(fs.statSync(path.join(store, '01CGD', 'mesh_001_002.bin')).size, 1200);
     assert.ok(!fs.existsSync(path.join(store, '01CGD.new')) && !fs.existsSync(path.join(store, '01CGD.old')));
-    // A copy started for another build is not resumed: same tile size, other content.
-    fs.mkdirSync(path.join(store, '01CGD.new'), { recursive: true });
-    fs.writeFileSync(
-      path.join(store, '01CGD.new', '.progress.json'),
-      JSON.stringify({ base: url + 'charts/mesh/01CGD/', build: '2026-10-09T00:00:00Z', files: 1, total: 2, bytes: 1200 })
-    );
-    fs.writeFileSync(path.join(store, '01CGD.new', 'mesh_001_002.bin'), Buffer.alloc(1300, 7));
+    assert.ok(!fs.existsSync(downloadWorkDir(store, '01CGD')), 'the archive goes once the mesh is in place');
+    // A part started for another build is not resumed: its state names the old build, so the download starts over.
+    const work = downloadWorkDir(store, '01CGD');
+    fs.mkdirSync(work, { recursive: true });
+    fs.writeFileSync(path.join(work, 'state.json'), JSON.stringify({ url: 'x', build: '2026-10-09T00:00:00Z', size: 99, etag: null }));
+    fs.writeFileSync(path.join(work, 'archive.part'), Buffer.alloc(40, 1));
     publish(root, '2026-10-10T00:00:00Z', 1300, 9);
     await mgr.reconcile();
     assert.equal(readMarker(path.join(store, '01CGD'))!.build_date, '2026-10-10T00:00:00Z');
-    assert.equal(fs.readFileSync(path.join(store, '01CGD', 'mesh_001_002.bin'))[0], 9, 'the stale tile was replaced, not resumed');
-    // Unticked: removed, a leftover .old folder too.
+    assert.equal(fs.readFileSync(path.join(store, '01CGD', 'mesh_001_002.bin'))[0], 9, 'the stale part was dropped, not resumed');
+    // Unticked: removed, a leftover .old folder and a download's working folder too.
     fs.mkdirSync(path.join(store, '01CGD.old'));
+    fs.mkdirSync(work);
     mgr.configure(url + 'charts/mesh/index.json', [], store);
     await mgr.reconcile();
     assert.ok(!fs.existsSync(path.join(store, '01CGD')));
     assert.ok(!fs.existsSync(path.join(store, '01CGD.old')));
+    assert.ok(!fs.existsSync(work));
     assert.equal(mgr.status().meshes.find(r => r.name === '01CGD')!.state, 'absent');
     // A ticked name the catalogue lacks is reported, not fetched.
     mgr.configure(url + 'charts/mesh/index.json', ['99CGD'], store);
@@ -468,12 +499,13 @@ test('MeshManager: redownload fetches the current build afresh; cancel stops a r
     await mgr.reconcile();
     assert.equal(fs.readFileSync(path.join(store, '01CGD', 'mesh_001_002.bin'))[0], 7, 'fetched despite the newer folder copy');
     mgr.configure(url + 'charts/mesh/index.json', ['01CGD'], store);
-    // ...and a fresh request that fails (a tile missing on the server) stands until a pass succeeds.
-    publish(root, '2026-10-10T00:00:00Z', 900, 8);
-    fs.rmSync(path.join(root, 'charts', 'mesh', '01CGD', 'mesh_002_002.bin'));
+    // ...and a fresh request that fails (a tile the index lists missing from the archive) stands until a pass succeeds.
+    publish(root, '2026-10-10T00:00:00Z', 900, 8, { omit: 'mesh_002_002.bin' });
     mgr.redownload('01CGD');
     await mgr.reconcile();
-    assert.equal(mgr.status().meshes.find(r => r.name === '01CGD')!.state, 'error', 'the fresh fetch failed');
+    const failed = mgr.status().meshes.find(r => r.name === '01CGD')!;
+    assert.equal(failed.state, 'error', 'the fresh fetch failed');
+    assert.match(failed.error!, /mesh_002_002\.bin: listed in the index, missing from the archive/);
     assert.equal(fs.readFileSync(path.join(store, '01CGD', 'mesh_001_002.bin'))[0], 7, 'the served copy is untouched');
     publish(root, '2026-10-10T00:00:00Z', 900, 8);
     await mgr.reconcile();
@@ -555,6 +587,44 @@ test('MeshManager: Download or Update pressed fetches past a newer copy in the f
     mgr.stop();
     close();
     for (const d of [root, store, mine]) fs.rmSync(d, { recursive: true, force: true });
+  }
+});
+
+test('MeshManager: two meshes download at the same time, a third waits for one of them', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshsrv-'));
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshstore-'));
+  for (const name of ['01CGD', '05CGD', '07CGD']) publish(root, '2026-10-10T00:00:00Z', 300, 7, { name });
+  let release: () => void = () => {};
+  const gate = new Promise<void>(r => (release = r));
+  const { url, close } = await serve(root, () => gate);
+  const mgr = new MeshManager(() => {});
+  const downloading = (): string[] =>
+    mgr
+      .status()
+      .meshes.filter(r => r.state === 'downloading')
+      .map(r => r.name);
+  try {
+    mgr.configure(url + 'charts/mesh/index.json', ['01CGD', '05CGD', '07CGD'], store);
+    const pass = mgr.reconcile();
+    for (let i = 0; i < 200 && downloading().length < 2; i++) await new Promise(r => setTimeout(r, 25));
+    await new Promise(r => setTimeout(r, 100));
+    assert.deepEqual(downloading(), ['01CGD', '05CGD'], 'two at once, the third waiting');
+    release();
+    await pass;
+    assert.deepEqual(
+      mgr.status().meshes.map(r => [r.name, r.state]),
+      [
+        ['01CGD', 'ready'],
+        ['05CGD', 'ready'],
+        ['07CGD', 'ready'],
+      ]
+    );
+  } finally {
+    release();
+    mgr.stop();
+    close();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
   }
 });
 

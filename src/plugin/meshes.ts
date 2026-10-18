@@ -4,14 +4,16 @@
  * plugin config ticks for download, and their copies on disk.
  *
  * On disk, under `<data dir>/mesh/`: one folder per mesh named as in the
- * catalogue (`01CGD`), a mirror of the published `charts/mesh/<D>/`
- * folder (the mesh's own `index.json` — or `meshes.json` plus one
- * sub-folder per cluster — and the `.bin` tiles), plus a marker
- * `.wrp-mesh.json` written when the copy is complete, holding the
- * catalogue entry it was taken from. A download goes into `<D>.new/` and
- * is swapped into place when complete, so a route never sees a partial
- * mesh; the previous copy, if any, serves until then. A mesh unticked in
- * the config is deleted.
+ * catalogue (`01CGD`), the published mesh folder unpacked from its archive
+ * (the mesh's own `index.json` — or `meshes.json` plus one sub-folder per
+ * cluster — and the `.bin` tiles), plus a marker `.wrp-mesh.json` written
+ * when the copy is complete, holding the catalogue entry it was taken
+ * from. A download fetches the catalogue's `archive` (`<D>_mesh.tar.zst`)
+ * into the hidden working folder `.dl-<D>/` (resumed where it stopped),
+ * unpacks it into `<D>.new/` and swaps that into place when complete and
+ * checked, so a route never sees a partial mesh; the previous copy, if
+ * any, serves until then (plugin/mesharchive.ts). A mesh unticked in the
+ * config is deleted, with its working folder.
  *
  * A local mesh (the `meshDir` folder you manage yourself) with the same
  * name as a published one: whichever was built later is used (localWins:
@@ -21,8 +23,9 @@
  *
  * The catalogue is read at start and once a day; a mesh whose catalogue
  * `build_date` is newer than its marker's is downloaded again. Downloads
- * run one at a time in a child process (childtask.ts `mesh-download`),
- * which reports progress through `<D>.new/.progress.json`.
+ * run MESH_DOWNLOADS_AT_ONCE at a time, each in a child process
+ * (childtask.ts `mesh-download`), which reports progress through
+ * `.dl-<D>/progress.json`.
  *
  * The route worker does not use this class: it lists the markers under
  * the store directory itself when a route starts (worker/route.ts).
@@ -31,6 +34,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { runChildTask } from './childtask';
+import { DOWNLOAD_PROGRESS_FILE, downloadWorkDir, type MeshDownloadProgress } from './mesharchive';
 
 /** One mesh as the catalogue lists it (s57Work build-mesh.yml, "Write charts/mesh/index.json"). */
 export interface CatalogMesh {
@@ -95,8 +99,8 @@ export interface MeshRow {
   local_dir: string | null;
   local_build_date: string | null;
   state: MeshState;
-  /** Files copied so far and in total, while downloading. */
-  progress: { files: number; total: number; bytes: number } | null;
+  /** While downloading: the archive's bytes fetched (phase download) or read and unpacked (phase unpack) of its size, and the files written. */
+  progress: MeshDownloadProgress | null;
   catalog_build_date: string | null;
   disk_build_date: string | null;
   bytes: number | null;
@@ -129,14 +133,21 @@ export const DEFAULT_MESH_CATALOG_URL = 'https://pub-281728c6a69f4f549cf0ec4e83f
 export const CATALOG_REFRESH_MS = 24 * 3600 * 1000;
 const CATALOG_TIMEOUT_MS = 30_000;
 export const MARKER_FILE = '.wrp-mesh.json';
-export const PROGRESS_FILE = '.progress.json';
+/** Meshes downloaded at the same time (the owner's choice, 2026-10-18). */
+export const MESH_DOWNLOADS_AT_ONCE = 2;
 
-/** The folder a catalogue entry's files are read from: the catalogue URL's folder plus the entry's `dir`. */
-export function meshBaseUrl(catalogUrl: string, mesh: CatalogMesh): string {
-  const folder = catalogUrl.replace(/\/[^/]*$/, '/');
-  // The catalogue sits in charts/mesh/; its `dir` is written relative to charts/ (`mesh/<D>/`).
-  const dir = mesh.dir.replace(/^mesh\//, '').replace(/\/$/, '');
-  return new URL(dir + '/', folder).toString();
+/**
+ * A catalogue entry's archive: the catalogue sits in `charts/mesh/`, and its
+ * `archive` (`<D>_mesh.tar.zst`) is published in `charts/`, as its `dir`
+ * (`mesh/<D>/`) is written relative to `charts/`.
+ */
+export function meshArchiveUrl(catalogUrl: string, mesh: CatalogMesh): string {
+  return new URL(mesh.archive, new URL('../', catalogUrl)).toString();
+}
+
+/** The folder the archive holds the mesh under (`<D>_mesh`, its name without `.tar.zst`). */
+export function meshArchiveTop(mesh: CatalogMesh): string {
+  return path.basename(mesh.archive).replace(/\.tar\.zst$/, '');
 }
 
 /** A human line for a catalogue entry: area, chart and build dates, size, triangles. */
@@ -361,7 +372,7 @@ export class MeshManager {
   private freshSeq = 0;
   /** Names the owner asked for (Download, Update): the next pass fetches them even when the folder's copy is newer. */
   private requested = new Set<string>();
-  private downloading: string | null = null;
+  private downloading = new Set<string>();
   private removing = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private ctrl: AbortController | null = null;
@@ -420,13 +431,14 @@ export class MeshManager {
   }
 
   /**
-   * Stop the download running for this mesh (the child is killed, its
-   * partial folder stays for the next pass to resume or remove) and start
-   * the loop again, so the pass runs with the list as it now is. True when
-   * a download of that mesh was running.
+   * Stop the download running for this mesh and start the loop again, so
+   * the pass runs with the list as it now is (the children are killed: a
+   * download of another mesh running beside it resumes from its archive's
+   * part; this one's working folder goes with the mesh when it has been
+   * taken off the list). True when a download of that mesh was running.
    */
   cancel(name: string): boolean {
-    if (this.downloading !== name) return false;
+    if (!this.downloading.has(name)) return false;
     const running = !!this.ctrl;
     this.stop();
     if (running) this.run();
@@ -528,18 +540,19 @@ export class MeshManager {
         fs.rmSync(path.join(this.storeDir, n), { recursive: true, force: true });
         fs.rmSync(path.join(this.storeDir, `${n}.new`), { recursive: true, force: true });
         fs.rmSync(path.join(this.storeDir, `${n}.old`), { recursive: true, force: true });
+        fs.rmSync(downloadWorkDir(this.storeDir, n), { recursive: true, force: true });
         this.log(`mesh ${n}: removed (not in the download list)`);
       } catch (err) {
         this.errors.set(n, `removal failed: ${(err as Error).message}`);
       }
       this.removing.delete(n);
     }
-    // Ticked meshes: missing or older than the catalogue → download, one at a time. A local mesh of the
-    // same name stops the download only when it was built at the same time or later (localWins); a ticked
-    // name that is only a local mesh (ticked in an earlier panel) is not a catalogue mesh.
+    // Ticked meshes: missing or older than the catalogue → download, MESH_DOWNLOADS_AT_ONCE at a time. A local
+    // mesh of the same name stops the download only when it was built at the same time or later (localWins); a
+    // ticked name that is only a local mesh (ticked in an earlier panel) is not a catalogue mesh.
     const localByName = new Map(localMeshes(this.meshDir).map(m => [m.name, m]));
+    const jobs: { entry: CatalogMesh; freshSeq: number | undefined }[] = [];
     for (const n of this.ticked) {
-      if (signal.aborted) return;
       const local = localByName.get(n);
       const entry = this.catalog?.meshes.find(m => m.name === n);
       if (!entry) {
@@ -554,14 +567,23 @@ export class MeshManager {
       if (!asked && local && localWins(local.build_date, entry.build_date)) continue;
       const marker = readMarker(path.join(this.storeDir, n));
       if (!again && marker && marker.build_date === entry.build_date) continue;
-      await this.download(entry, signal, again);
-      // A request stands until a download succeeds, so a failure is retried at the next pass; a fresh request made
-      // while this download ran is newer than the one seen and stands too.
-      if (!signal.aborted && !this.errors.has(n)) {
-        this.requested.delete(n);
-        if (this.fresh.get(n) === freshSeq) this.fresh.delete(n);
-      }
+      jobs.push({ entry, freshSeq });
     }
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < jobs.length && !signal.aborted) {
+        const { entry, freshSeq } = jobs[next++];
+        const n = entry.name;
+        await this.download(entry, signal, freshSeq !== undefined);
+        // A request stands until a download succeeds, so a failure is retried at the next pass; a fresh request
+        // made while this download ran is newer than the one seen and stands too.
+        if (!signal.aborted && !this.errors.has(n)) {
+          this.requested.delete(n);
+          if (this.fresh.get(n) === freshSeq) this.fresh.delete(n);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(MESH_DOWNLOADS_AT_ONCE, jobs.length) }, worker));
   }
 
   /**
@@ -598,13 +620,24 @@ export class MeshManager {
   private async download(entry: CatalogMesh, signal: AbortSignal, fresh = false): Promise<void> {
     const dest = path.join(this.storeDir, entry.name);
     const tmp = `${dest}.new`;
-    this.downloading = entry.name;
+    const work = downloadWorkDir(this.storeDir, entry.name);
+    this.downloading.add(entry.name);
     this.errors.delete(entry.name);
     const t0 = Date.now();
     try {
-      this.log(`mesh ${entry.name}: downloading ${(entry.bytes / 1e9).toFixed(1)} GB from ${meshBaseUrl(this.catalogUrl, entry)}`);
+      const url = meshArchiveUrl(this.catalogUrl, entry);
+      this.log(`mesh ${entry.name}: downloading ${url} (${(entry.bytes / 1e9).toFixed(1)} GB unpacked)`);
       const r = await runChildTask(
-        { task: 'mesh-download', base: meshBaseUrl(this.catalogUrl, entry), dest: tmp, build: entry.build_date, fresh },
+        {
+          task: 'mesh-download',
+          url,
+          work,
+          dest: tmp,
+          top: meshArchiveTop(entry),
+          build: entry.build_date,
+          bytes: entry.bytes,
+          fresh,
+        },
         6 * 3600_000,
         signal
       );
@@ -618,13 +651,13 @@ export class MeshManager {
         completed: new Date().toISOString(),
       };
       fs.writeFileSync(path.join(tmp, MARKER_FILE), JSON.stringify(marker, null, 1));
-      fs.rmSync(path.join(tmp, PROGRESS_FILE), { force: true });
-      // Swap: the old copy (if any) served until now.
+      // Swap: the old copy (if any) served until now. The archive goes once the mesh is in place.
       const old = `${dest}.old`;
       fs.rmSync(old, { recursive: true, force: true });
       if (fs.existsSync(dest)) fs.renameSync(dest, old);
       fs.renameSync(tmp, dest);
       fs.rmSync(old, { recursive: true, force: true });
+      fs.rmSync(work, { recursive: true, force: true });
       this.log(
         `mesh ${entry.name}: ready, ${r.files} files, ${(r.bytes / 1e9).toFixed(2)} GB in ${((Date.now() - t0) / 1000).toFixed(0)} s`
       );
@@ -635,17 +668,17 @@ export class MeshManager {
       this.errors.set(entry.name, (err as Error).message);
       this.log(`mesh ${entry.name}: download failed: ${(err as Error).message}`);
     } finally {
-      this.downloading = null;
+      this.downloading.delete(entry.name);
     }
   }
 
+  /** The mesh names on disk: their folders, copies in progress and left over, and download working folders. */
   private onDisk(): string[] {
     try {
       return fs
         .readdirSync(this.storeDir)
-        .filter(n => !n.startsWith('.'))
-        .map(n => n.replace(/\.(new|old)$/, ''))
-        .filter((n, i, a) => a.indexOf(n) === i);
+        .map(n => (n.startsWith('.dl-') ? n.slice(4) : n.startsWith('.') ? '' : n.replace(/\.(new|old)$/, '')))
+        .filter((n, i, a) => n !== '' && a.indexOf(n) === i);
     } catch {
       return [];
     }
@@ -653,12 +686,10 @@ export class MeshManager {
 
   private progressOf(name: string): MeshRow['progress'] {
     try {
-      const p = JSON.parse(fs.readFileSync(path.join(this.storeDir, `${name}.new`, PROGRESS_FILE), 'utf8')) as {
-        files: number;
-        total: number;
-        bytes: number;
-      };
-      return { files: p.files, total: p.total, bytes: p.bytes };
+      const p = JSON.parse(
+        fs.readFileSync(path.join(downloadWorkDir(this.storeDir, name), DOWNLOAD_PROGRESS_FILE), 'utf8')
+      ) as MeshDownloadProgress;
+      return { phase: p.phase, bytes: p.bytes, total: p.total, files: p.files };
     } catch {
       return null;
     }
@@ -688,7 +719,7 @@ export class MeshManager {
       const ticked = this.ticked.includes(name);
       let state: MeshState = 'absent';
       if (this.removing.has(name)) state = 'removing';
-      else if (this.downloading === name) state = 'downloading';
+      else if (this.downloading.has(name)) state = 'downloading';
       else if (this.errors.has(name)) state = 'error';
       else if (marker && entry && marker.build_date !== entry.build_date) state = 'update';
       else if (marker) state = 'ready';

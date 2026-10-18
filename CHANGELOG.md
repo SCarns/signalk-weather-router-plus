@@ -32,6 +32,19 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Chart meshes download as their archives, two at a time.** Each mesh
+  is fetched as the catalogue's `<name>_mesh.tar.zst` (about a third of the
+  unpacked size: 7.2 GB for all eight published meshes against 21.3 GB),
+  resumed with a Range request where a download stopped, unpacked by the
+  plugin itself (zstd from Node's zlib, its own tar reader: plain files and
+  folders only, nothing outside the mesh folder), and checked before it is
+  swapped in: every tile the index lists present, their total equal to the
+  catalogue's `bytes`. A free-disk check comes first. The file-by-file
+  download is gone; the panel shows the archive's progress (downloading,
+  then unpacking).
+- **Node.js 22.15 or later** is required (was 20.10): the mesh archives
+  are zstd, which Node's own zlib unpacks from 22.15 on. Signal K 2.33
+  itself needs Node 22.
 - **Min sail speed 0 and a stretch the boat cannot sail or tack out of** fails
   the route saying "set Min sail speed above 0" (refined router).
 - **Currents are shown as the direction they flow to** ("0.2 kn to W (265°)")

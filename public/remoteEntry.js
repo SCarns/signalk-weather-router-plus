@@ -373,12 +373,16 @@ var signalk_weather_router_plus = (function () {
     function onServer(r) {
       if (r.source === 'local') return h('span', null, 'your folder', h('br'), h('small', { className: 'text-muted' }, 'build of ' + when(r.local_build_date)));
       if (r.state === 'downloading') {
+        // The archive: downloaded (bytes of its size), then unpacked (bytes of it read, files written).
         var p = r.progress;
-        var pct = p && p.total ? Math.round(100 * p.files / p.total) : 0;
+        var pct = p && p.total ? Math.round(100 * p.bytes / p.total) : 0;
+        var words = !p ? 'starting…'
+          : p.phase === 'unpack' ? 'unpacking, ' + p.files + ' files'
+          : 'downloading, ' + gb(p.bytes) + ' of ' + gb(p.total);
         return h('span', null,
           h('span', { style: { display: 'inline-block', width: 90, height: 6, background: '#d6dde1', borderRadius: 3, verticalAlign: 'middle', marginRight: 6, position: 'relative' } },
             h('span', { style: { position: 'absolute', left: 0, top: 0, bottom: 0, width: pct + '%', background: '#1f5fa8', borderRadius: 3 } })),
-          h('small', null, p ? 'downloading, ' + p.files + ' of ' + p.total + ' files' : 'downloading…'));
+          h('small', null, words));
       }
       if (r.state === 'removing') return statusDot('warn', 'removing…');
       if (r.state === 'error') return statusDot('bad', r.error || 'failed');
