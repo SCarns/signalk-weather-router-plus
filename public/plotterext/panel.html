@@ -732,19 +732,25 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   // The host answers each chart.setTime with a chart.time event per changed chart: the
   // panel's own echoes are told apart from changes made elsewhere by value, in order, and
   // forgotten after a while (a chart already at that time is not echoed).
+  var ECHO_MS = 15000;
+  function pendingEchoes(id, now) {
+    return (wx.sent[id] || []).filter(function (e) { return now - e.at < ECHO_MS; });
+  }
   function noteSent(ids, t) {
     var now = Date.now();
     ids.forEach(function (id) {
-      var list = (wx.sent[id] || []).filter(function (e) { return now - e.at < 15000; });
+      var list = pendingEchoes(id, now);
       list.push({ t: t, at: now });
       wx.sent[id] = list;
     });
   }
   function isEcho(id, t) {
-    var list = wx.sent[id] || [];
+    // Expired first: a send the host never echoed must not swallow a later change to that time.
+    var list = pendingEchoes(id, Date.now());
     for (var i = 0; i < list.length; i++) {
       if (list[i].t === t) { wx.sent[id] = list.slice(i + 1); return true; }
     }
+    wx.sent[id] = list;
     return false;
   }
   function step(dir) {
