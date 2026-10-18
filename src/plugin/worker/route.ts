@@ -919,7 +919,7 @@ export async function route(
 
     // Repair detours (finalDepthCheck): the blocked segment routed again with the same leg pipeline, sail
     // threshold 0, so the detour sails and motors only where sailing cannot move the boat (the owner's decision,
-    // 2026-10-15, as zeddisplay-router).
+    // 2026-10-15).
     const detourPipeline: LegPipelineInputs = { ...pipeline, sim: { ...pipeline.sim, sailThreshMs: 0 } };
     let detourCounter = 0;
     const detour = (a: Waypoint, b: Waypoint): Promise<Route> =>
@@ -1208,7 +1208,7 @@ async function finalDepthCheck(
   route.depthCheck = { legs: check.legs };
 }
 
-/** Repair limits, as routePlanning's validate.py: passes over the route, and detours in all. */
+/** Repair limits: passes over the route, and detours in all. */
 const REPAIR_MAX_PASSES = 2;
 const REPAIR_MAX_DETOURS = 5;
 
@@ -1216,7 +1216,7 @@ const REPAIR_MAX_DETOURS = 5;
  * Route again each segment the check found blocked, back to front so the
  * earlier segments keep their indices, and splice the detour in place of
  * the segment; the waypoints after it move by the time the detour added
- * (routePlanning validate.py _splice_detours: a shift, not a re-timing).
+ * (a shift, not a re-timing).
  * Then check again; at most REPAIR_MAX_PASSES passes and
  * REPAIR_MAX_DETOURS detours. A detour that motors on a sailing route is a
  * `detour_motored` warning: its sail threshold is 0, so it motors only

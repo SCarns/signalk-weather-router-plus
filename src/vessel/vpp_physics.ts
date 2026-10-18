@@ -322,8 +322,7 @@ export function boatSpeed(m: PhysicsModel, twaDeg: number, twsMs: number): numbe
     }
     if (foundAtReef && reef < 1.0) break;
   }
-  // No setting keeps the heel within the limit: no speed (routePlanning's PhysicsVPP, vpp_physics.py:315; the owner's
-  // decision 2026-10-16, for both polar generators).
+  // No setting keeps the heel within the limit: no speed (the owner's decision 2026-10-16, for both polar generators).
   return Math.max(best, 0);
 }
 

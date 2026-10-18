@@ -27,6 +27,8 @@ function settingRange(key: string): { min: number; max: number } {
 }
 
 export const MAX_WAYPOINTS = 20;
+/** A route request's JSON, bytes: the request is kept with its job and answered in every job list (a real one is under 4 KB). */
+export const MAX_ROUTE_REQUEST_BYTES = 64 * 1024;
 export const MODES = ['sail_max', 'fastest', 'motor'] as const;
 
 /** The scalar fields of a route request, in the order the OpenAPI document lists them. */

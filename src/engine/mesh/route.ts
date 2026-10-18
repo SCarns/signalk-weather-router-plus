@@ -8,8 +8,7 @@
  * RULES=full, ported; the parity test against its saved results is in
  * the experiment folder (not this repo).
  *
- * Blocked triangles (the parent planner's rules, plus the three the grid
- * planner does not check before routing):
+ * Blocked triangles:
  *  - a charted vertical clearance under the air draft + 1 m (the overhead
  *    clearance setting; an opening
  *    bridge's open clearance; the bridge is blocked outright when the

@@ -36,7 +36,7 @@
  */
 
 import * as fs from 'node:fs';
-import { validateRouteRequest } from './request_schema';
+import { MAX_ROUTE_REQUEST_BYTES, validateRouteRequest } from './request_schema';
 import { NotStartedError } from './errors';
 import { FIELD_LAYERS, isFieldLayer } from './layers';
 import { HOUR_MS } from '../geo/units';
@@ -611,10 +611,28 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       json(res, 400, { error: 'JSON body required: {start:{lat,lon}, end:{lat,lon}, ...}' });
       return;
     }
+    // The request is kept with its job and sent back in every job list; unknown fields pass the validation.
+    if (JSON.stringify(body).length > MAX_ROUTE_REQUEST_BYTES) {
+      json(res, 413, { error: `route request too large (over ${MAX_ROUTE_REQUEST_BYTES / 1024} KB)` });
+      return;
+    }
     const err = validateRouteRequest(body);
     if (err) {
       json(res, 400, { error: err });
       return;
+    }
+    // The polar is checked here, so a token not in the library is refused before the job is queued, not when it runs.
+    if (body.vessel?.polar) {
+      try {
+        resolvePolarPath(polarLib(), body.vessel.polar);
+      } catch (e) {
+        if (e instanceof NotStartedError) {
+          json(res, 503, { error: e.message });
+          return;
+        }
+        json(res, 400, { error: `vessel.polar: ${(e as Error).message}: ${body.vessel.polar} (a token from /api/polars)` });
+        return;
+      }
     }
     if (jobs.queueLength >= 16) {
       json(res, 429, { error: 'job queue is full' });
@@ -697,7 +715,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       res.setHeader('X-Accel-Buffering', 'no');
       res.flushHeaders?.();
       const lastIdHeader = req.headers['last-event-id'];
-      const lastId = lastIdHeader ? Number(Array.isArray(lastIdHeader) ? lastIdHeader[0] : lastIdHeader) : 0;
+      // A header that is not a whole number replays everything (NaN compared false with every id: nothing was replayed).
+      const parsed = Number(Array.isArray(lastIdHeader) ? lastIdHeader[0] : lastIdHeader);
+      const lastId = Number.isInteger(parsed) ? parsed : 0;
       const write = (ev: { id: number; event: string; data: unknown }): void => {
         res.write(`id: ${ev.id}\nevent: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
       };

@@ -6,8 +6,67 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Under-keel and overhead clearance** (vessel settings, defaults 0.5 m and
+  1 m; request overrides `vessel.under_keel_clearance_m`,
+  `vessel.overhead_clearance_m`): the margins over the draught and the air
+  draft on chart-mesh legs, which were fixed. Rough cuts carry them in their
+  rules and file names (`COARSE_VERSION` 6; existing rough cuts are rebuilt
+  once, on demand).
+- **The final depth check repairs before it fails** (`worker/route.ts`
+  `repairViolations`): each segment that crosses water a chart mesh blocks for
+  the boat is routed again with the leg search at a sail threshold of 0 and
+  the detour spliced in, the later waypoints shifted by the time it added; at
+  most 2 passes and 5 detours. A detour that motors on a sailing route is a
+  `detour_motored` warning. A route still crossing such water fails as before.
+  `repairs_applied` reports the detours (it was always 0).
+- **GeoJSON download** beside GPX in the Itinerary tab: the route line and
+  every waypoint with its times, wind, waves, current and depth.
+
+### Changed
+
+- **Min sail speed 0 and a stretch the boat cannot sail or tack out of** fails
+  the route saying "set Min sail speed above 0" (refined router).
+- **Currents are shown as the direction they flow to** ("0.2 kn to W (265°)")
+  in the itinerary, its text and the plotter panel, as the API gives them;
+  they were turned round and shown as "from".
+- **Headings and directions in whole degrees**, with no space before ° or %.
+- **`POST /api/routes`** refuses a `vessel.polar` that is not in the library
+  (400) and a body over 64 KB (413) before the job is queued; the polar was
+  found missing only when the job ran.
+- **Polar calculator:** where no reef or flattening keeps the heel within the
+  limit, the boat speed is 0 (it was the fully depowered speed past the limit).
+
 ### Fixed
 
+- **Rough-cut tile edges used the fixed margins** (`coarse.ts`
+  `boundarySeeds`): with any other clearance the tile-boundary record
+  disagreed with the rough cut and its name. On the test box (2026-10-18) the
+  0.5 m and 1 m records now differ for two of three meshes.
+- **A cancel during the notes read was lost** (`index.ts`): the route worker
+  clears its cancel flag when a route starts, so a job cancelled before it was
+  sent to the worker ran anyway. It is now finished at once.
+- **Server-Sent Events replayed nothing** when `Last-Event-ID` was not a
+  number; it now replays everything.
+- **Repair warnings** named the detour's own threshold ("set Min sail speed
+  above 0") as if it were the user's setting, and `detour_motored` gave the
+  leg number where every other warning gives the segment; warnings after a
+  detour now move with its waypoints.
+- **A mesh leg ran without CMEMS SMOC** when the worker's answer came from an
+  area of another layout than the one the leg box alone would pick ("chunk …
+  is not cached and the network is disabled"); the mesh process now loads the
+  layout that answered.
+- **A rough cut built for a boat or buffer differing past the centimetre was
+  refused and never rebuilt** (a buffer saved in feet, 9.999999999999988 m):
+  the rules are rounded to the centimetre the file name carries.
+- **Tidal-harmonic currents on long routes** predicted whole grids again and
+  again (more bins than the grid cache holds); points at their own times now
+  predict only the cells they read. Same values.
+- **The snap refusal** names the destination when its water cannot be
+  reached from a stop, instead of telling the user to move the stop.
+- **The OpenAPI document** lists `POST /api/meshes/rough-cut` and
+  `POST /api/coastline/download`.
 - **Routes no longer cross land outside the route's box**
   (`geo/landmask.ts`): a point or leg outside the land raster's box was
   counted as water, and with no coastline loaded there, routes went over

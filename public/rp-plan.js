@@ -663,6 +663,26 @@ applyVesselType(getVesselType());
   const pubBtn = document.getElementById('routePublish');
   const delBtn = document.getElementById('routeDelete');
   const gpxBtn = document.getElementById('routeGpx');
+  // The route as the server gives it (GET /api/routes/{id}/result: the line and every waypoint with its times,
+  // wind, waves, current and depth), saved as a file.
+  const geojsonBtn = document.getElementById('routeGeojson');
+  if (geojsonBtn) geojsonBtn.addEventListener('click', () => {
+    if (!_currentRouteJobId) { status.textContent = '(no route loaded)'; return; }
+    const name = (input && input.value.trim()) || _currentRouteName || 'Weather route';
+    authFetch(API + '/routes/' + encodeURIComponent(_currentRouteJobId) + '/result', { cache: 'no-store' }, null)
+      .then(r => (r.ok ? r.blob() : _apiErrorText(r).then(t => Promise.reject(new Error(t)))))
+      .then(blob => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([blob], { type: 'application/geo+json' }));
+        a.download = name.replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) + '.geojson';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+        appendLog('GeoJSON file downloaded: ' + a.download, 'done');
+      })
+      .catch(err => { status.textContent = '✗'; status.title = err.message; appendLog('GeoJSON download failed: ' + err.message, 'error'); });
+  });
   if (gpxBtn) gpxBtn.addEventListener('click', () => {
     if (!_itineraryFeatures.length) { status.textContent = '(no route loaded)'; return; }
     const name = (input && input.value.trim()) || _currentRouteName || 'Weather route';
@@ -1802,7 +1822,7 @@ function _legDescription(p, isArrival) {
   const curMs = isArrival ? p.current_ms : p.next_current_ms, curDir = isArrival ? p.current_dir_deg : p.next_current_dir_deg;
   if (curMs != null && curMs > 0.05 && fmtSpeed(curMs)) {
     const ff = !isArrival ? _plainFairFoul(cogDeg, curDir) : null;
-    add('Current', fmtSpeed(curMs) + (curDir != null ? ' from ' + degToCardinal((curDir + 180) % 360) + ' (' + fmtAngleDeg((curDir + 180) % 360) + ')' : '') + (ff ? ' · ' + ff : ''));
+    add('Current', fmtSpeed(curMs) + (curDir != null ? ' to ' + degToCardinal(curDir) + ' (' + fmtAngleDeg(curDir) + ')' : '') + (ff ? ' · ' + ff : ''));
   }
   const swh = isArrival ? p.swh_m : (p.next_swh_m != null ? p.next_swh_m : p.swh_m);
   if (swh != null && fmtSwh(swh)) {
@@ -1978,14 +1998,13 @@ function _legCardHtml(f, i, cw) {
              : null;
   const twaStr = twa != null ? fmtAngleDeg(twa) : null;
 
-  // Current: `current_dir_deg` is the set (flows TO); shown as "from"
-  // with fair/foul computed vs COG.
+  // Current: `current_dir_deg` is the set (flows TO), shown as "to"
+  // (wind is "from", current "to"); fair/foul computed vs COG.
   let curStr = null;
   if (curMs != null && curMs > 0.05) {
-    const fromDeg = curDir != null ? (curDir + 180) % 360 : null;
     const ff = fairFoul(cogDeg, curDir);
     curStr = fmtSpeed(curMs)
-           + (fromDeg != null ? ` from ${degToCardinal(fromDeg)} (${fmtAngleDeg(fromDeg)})` : '')
+           + (curDir != null ? ` to ${degToCardinal(curDir)} (${fmtAngleDeg(curDir)})` : '')
            + (ff ? ' · ' + ff : '');
   }
 
@@ -3288,7 +3307,9 @@ function _bindConditionsPopup(el, tab, series, instant, hourIso) {
 // "Conditions here" on the click menu). 72 hourly rows from the overlay
 // hour; the plugin clips the series to the forecast's valid range.
 function openConditionsAt(coordinate, pixel) {
-  const [lon, lat] = ol.proj.toLonLat(coordinate);
+  const [lonRaw, lat] = ol.proj.toLonLat(coordinate);
+  // A map panned round the globe gives longitudes past ±180; the API takes -180..360.
+  const lon = ((((lonRaw + 180) % 360) + 360) % 360) - 180;
   const hourIso = _overlayTimeIso().slice(0, 13) + ':00:00Z';
   _cond = { lon, lat, hourIso, instant: null, series: null, note: 'Loading forecast…' };
   condMarkerFeature.setGeometry(new ol.geom.Point(coordinate));

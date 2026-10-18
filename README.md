@@ -1628,7 +1628,7 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `precision` | `"precise"` or `"approximate"` | | `"precise"` | `precise`: each leg ends exactly on its waypoint; `approximate`: the route only has to pass through the waypoint's circle; consecutive approximate waypoints are normally routed as one search through their circles in order, and leg by leg when no branch passes through all of them |
 | `arrival_radius_m` | number | m | 200 | 0..5000; must be > 0 with `"approximate"`. Ignored in precise mode and for the destination |
 | `departure` | string | ISO 8601 | now | an empty string also means now |
-| `mode` | `"sail_max"`, `"fastest"` or `"motor"` | | `"sail_max"` | mode policy. `motor`: always motor, and no forecast is used; `fastest`: sail when the polar speed beats the motor speed; `sail_max`: sail when the polar speed is at or above `sail_thresh_ms`, otherwise motor (`src/engine/legsim.ts`). The parent routePlanning server also sails above 0.25 m/s VMG or 1.0 m/s whatever the threshold; this plugin does not |
+| `mode` | `"sail_max"`, `"fastest"` or `"motor"` | | `"sail_max"` | mode policy. `motor`: always motor, and no forecast is used; `fastest`: sail when the polar speed beats the motor speed; `sail_max`: sail when the polar speed is at or above `sail_thresh_ms`, otherwise motor (`src/engine/legsim.ts`) |
 | `stages` | number | count | setting `routing.stages` (20) | 4..200; isochrone stages per leg |
 | `sail_thresh_ms` | number | m/s | setting `routing.sailThreshold` | ≥ 0 |
 | `max_wind_ms` | number | m/s | setting `routing.maxWind` (none) | 0..100; a leg is not allowed where the forecast wind speed is above this |
@@ -1678,18 +1678,19 @@ Validation happens in two places:
   `arrival_radius_m`, `radius_m`, `mode`, `departure`, `stages`,
   `sail_thresh_ms`, `simplify_m`, `smoother`, `smoother_tolerance`,
   `name`, `vessel`, `vessel.polar_performance`
-  and `vessel.polar` outside the limits above. The message names the
+  and `vessel.polar` outside the limits above, or a `vessel.polar` token
+  that is not in the library. The message names the
   field, e.g. `"stages must be 4..200"`.
 - **When the job runs** (the job ends `failed` with the message):
   coordinates outside latitude −90..90 or longitude −180..360;
   the other `vessel.*` ranges above (the message uses the internal
-  name, e.g. `vessel.motorSpeedMs must be a number in [0.01, 50] (got 60)`);
-  a `vessel.polar` token that is not in the library.
+  name, e.g. `vessel.motorSpeedMs must be a number in [0.01, 50] (got 60)`).
 
 | Status | Body |
 |---|---|
 | 202 | `{id, status: "queued", links}`; header `Location: <links.self>` |
 | 400 | `{error}`: invalid request (above) |
+| 413 | `{error}`: the request body is over 64 KB (it is kept with the job and returned in every job list) |
 | 429 | `{error: "job queue is full"}`: 16 jobs are already waiting |
 
 `links` has `self`, `events`, `result`, `skeleton`, `cancel` and

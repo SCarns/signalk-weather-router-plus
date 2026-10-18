@@ -15,10 +15,10 @@ export interface VesselParams {
   airDraftM: number | null;
   /**
    * Water kept under the keel, m. Charted depth must be at least draught + this
-   * (routePlanning vessel/model.py under_keel_clearance; the plugin's fixed 0.5 m is the default).
+   * (the plugin's earlier fixed 0.5 m is the default).
    */
   underKeelClearanceM: number;
-  /** Headroom kept above the mast, m (routePlanning overhead_clearance; the plugin's fixed 1 m). */
+  /** Headroom kept above the mast, m. Charted clearance must be at least the air draft + this (default the earlier fixed 1 m). */
   overheadClearanceM: number;
 }
 
@@ -35,9 +35,9 @@ export const DEFAULT_VESSEL: VesselParams = {
 /** The bounds makeVessel enforces on the drafts; Signal K self-data outside them reads as unknown (plugin/config.ts selfDesignValue). */
 export const DRAUGHT_M_RANGE: readonly [number, number] = [0.1, 30];
 export const AIR_DRAFT_M_RANGE: readonly [number, number] = [0.5, 100];
-/** routePlanning's under-keel clearance slider, 0-3 m (route-planner.html:704-706). */
+/** The under-keel clearance a vessel may set, m. */
 export const UKC_M_RANGE: readonly [number, number] = [0, 3];
-/** [PLACEHOLDER] routePlanning gives the overhead clearance no range; 0-10 m until decided. */
+/** [PLACEHOLDER] The overhead clearance a vessel may set, m: 0-10 m until decided. */
 export const OVERHEAD_M_RANGE: readonly [number, number] = [0, 10];
 
 export function makeVessel(partial: Partial<VesselParams>): VesselParams {
