@@ -528,7 +528,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     stepH: 1,
     playTimer: null,
     applyTimer: null,
-    lastSet: 0,        // when the panel last set the time (its own chart.time events are not news)
+    sent: {},          // chart id → [{t, at}]: times the panel set that the host has not echoed yet
     groupsAt: 0,       // when the presets were last read
     dragging: false,
   };
@@ -710,8 +710,9 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     $('wxTicks').innerHTML = html;
   }
   function setTime(ms, now) {
-    // The current hour is live: the layers then move on by themselves.
-    wx.time = ms === null || clampMs(ms) === clampMs(nowHourMs()) ? null : clampMs(ms);
+    // The current hour is live: the layers then move on by themselves. (After the forecast's
+    // end the last hour is not the current one, so it stays selectable.)
+    wx.time = ms === null || clampMs(ms) === nowHourMs() ? null : clampMs(ms);
     renderTime();
     clearTimeout(wx.applyTimer);
     if (now) applyTime();
@@ -721,9 +722,27 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     if (!host || !host.has('charts.time')) return Promise.resolve();
     ids = (ids || temporalIds()).filter(function (id) { return wx.charts[id] && wx.charts[id].temporal; });
     if (!ids.length) return Promise.resolve();
-    wx.lastSet = Date.now();
+    noteSent(ids, wx.time);
     return host.call('chart.setTime', { ids: ids, time: wx.time === null ? null : new Date(wx.time).toISOString() })
       .catch(function (e) { wxNote('Could not set the forecast time: ' + e.message); });
+  }
+  // The host answers each chart.setTime with a chart.time event per changed chart: the
+  // panel's own echoes are told apart from changes made elsewhere by value, in order, and
+  // forgotten after a while (a chart already at that time is not echoed).
+  function noteSent(ids, t) {
+    var now = Date.now();
+    ids.forEach(function (id) {
+      var list = (wx.sent[id] || []).filter(function (e) { return now - e.at < 15000; });
+      list.push({ t: t, at: now });
+      wx.sent[id] = list;
+    });
+  }
+  function isEcho(id, t) {
+    var list = wx.sent[id] || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].t === t) { wx.sent[id] = list.slice(i + 1); return true; }
+    }
+    return false;
   }
   function step(dir) {
     var ms = shownMs() + dir * wx.stepH * HOUR_MS;
@@ -855,9 +874,9 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         // A layer turned on from the chart list joins the shown hour.
         if (ev.visible && wx.time !== null) applyTime([ev.id]);
       } else if (name === 'chart.time') {
-        if (Date.now() - wx.lastSet < 2000) return;
         var t = ev.time === null ? null : Date.parse(ev.time);
-        if (t === wx.time || (t !== null && !isFinite(t))) return;
+        if (t !== null && !isFinite(t)) return;
+        if (isEcho(ev.id, t) || t === wx.time) return;
         // Someone else moved one layer: move the panel and the other layers with it.
         wx.time = t;
         renderTime();
