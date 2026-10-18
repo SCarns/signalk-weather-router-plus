@@ -10,7 +10,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ForecastStore } from '../../data/forecast';
 import { LAYER_PARAMS } from '../layers';
-import { type BBox } from '../../geo/geodesy';
+import { bboxFromLonLat, type BBox } from '../../geo/geodesy';
 import {
   conditionsSeries,
   currentPoints,
@@ -19,11 +19,13 @@ import {
   landMaskImage,
   type OverlaySources,
   pressureFeatures,
+  sampleConditions,
+  type ConditionsRow,
   windPoints,
   seaPoints,
 } from '../overlays';
 import { POINT_FORECAST_PARAMS, pointForecasts } from '../weather';
-import { type DataStatus, type QueryArgs } from '../protocol';
+import { type DataStatus, type QueryArgs, type TrackConditions } from '../protocol';
 import { encodeTile, tileQuery, type TileId } from '../tiles';
 import { readWindow, releaseWindow } from './forecast';
 import { currentsStatus, prepareSmocForQuery } from './currents';
@@ -163,8 +165,41 @@ export async function buildTile(st: WorkerState, id: number, tile: TileId, tmp: 
   }
 }
 
+/** Track samples read together: their box and the steps around their times are small (a few hours of sailing). */
+const TRACK_CHUNK = 12;
+
+/**
+ * Conditions along a route's track (its meteogram): each sample at its own
+ * place and time. The samples are read a chunk at a time, the box around a
+ * chunk's positions at the steps bracketing its times, so a long passage
+ * never holds more than a few cells of a few steps, not the box of the whole
+ * route. Currents are those already loaded (no on-demand SMOC area for a track).
+ */
+export async function trackConditions(st: WorkerState, a: QueryArgs['track_conditions']): Promise<TrackConditions> {
+  const run = st.run;
+  if (!run) throw new Error('no forecast loaded yet');
+  const out: ConditionsRow[] = [];
+  for (let i = 0; i < a.points.length; i += TRACK_CHUNK) {
+    const chunk = a.points.slice(i, i + TRACK_CHUNK);
+    const steps = [...new Set(chunk.flatMap(p => run.bracket(p.tMs)))].sort((x, y) => x - y);
+    const bbox = bboxFromLonLat(
+      chunk.map(p => p.lon),
+      chunk.map(p => p.lat)
+    );
+    const win = await readWindow(st, 'route meteogram', { bbox, params: CONDITIONS_PARAMS, steps, marginCells: 2 });
+    try {
+      const src = overlaySources(st, win);
+      for (const p of chunk) out.push(sampleConditions(src, p.lon, p.lat, new Date(p.tMs)));
+    } finally {
+      releaseWindow(st, win);
+    }
+  }
+  return { cycle: run.cycleTime.toISOString(), validTo: run.validRange[1].toISOString(), rows: out };
+}
+
 /** A query's answer, and whether it is complete (false: an on-demand current or tide load was late or failed, or was evicted meanwhile). */
 async function answer(st: WorkerState, kind: string, args: QueryArgs[keyof QueryArgs]): Promise<{ result: unknown; complete: boolean }> {
+  if (kind === 'track_conditions') return { result: await trackConditions(st, args as QueryArgs['track_conditions']), complete: true };
   let win: ForecastStore | null = null;
   try {
     // The refresh runs beside the queries (worker.ts): a new SMOC or tide source can replace the one this query

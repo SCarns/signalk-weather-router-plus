@@ -1082,9 +1082,9 @@ function _area() {
   try { return _statusArea ? _statusArea() : null; } catch (_) { return null; }
 }
 
-// "2026-10-03T00:00Z" or "2026100300" → "03 Oct 00Z" (UTC), for the header.
+// "2026-10-03T00:00Z" or "2026100300" → "03 Oct 00Z" (UTC), for the header and the meteogram.
 const _MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-function _shortUtc(v) {
+export function _shortUtc(v) {
   const m = /^(\d{4})-?(\d{2})-?(\d{2})T?(\d{2})/.exec(String(v));
   return m ? m[3] + ' ' + _MON[+m[2] - 1] + ' ' + m[4] + 'Z' : escapeHtml(v);
 }

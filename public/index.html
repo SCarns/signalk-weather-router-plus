@@ -293,8 +293,29 @@
   #windowResults tr.win-off td { color: var(--text-2); }
   #windowResults .win-sort { display: flex; align-items: center; gap: var(--s-1); margin-top: var(--s-1); }
   #windowResults .win-sort select { width: auto; padding: 1px 4px; font-size: var(--f-xs); }
+  /* Meteogram: the route's conditions along the passage, across the map beside the panel (rp-plan.js). */
+  #meteogram {
+    position: absolute; left: 10px; right: calc(var(--panel-w-desktop) + 20px);
+    bottom: calc(var(--attrib-h, 48px) + 4px); z-index: 90;
+    max-height: 62vh; overflow-y: auto; box-sizing: border-box;
+    background: var(--surface); color: var(--text);
+    border-radius: var(--r-md); box-shadow: var(--shadow-panel);
+    padding: var(--s-2) var(--s-3); font-size: var(--f-xs);
+  }
+  #meteogram[hidden] { display: none; }
+  #meteogram .mg-head { display: flex; align-items: center; gap: var(--s-2); margin-bottom: 2px; }
+  #meteogram .mg-head b { font-size: var(--f-sm, 13px); }
+  #meteogram #meteoTitle { flex: 1; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #meteogram select { width: auto; padding: 1px 4px; font-size: var(--f-xs); }
+  #meteogram #meteoClose { cursor: pointer; padding: 0 6px; font-size: 16px; line-height: 1; }
+  #meteogram .mg-readout { min-height: 15px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); margin-bottom: 2px; }
+  #meteogram .mg-panel { margin-top: 2px; }
+  #meteogram .mg-label { font-weight: 600; color: var(--text-2); }
+  #meteogram .mg-legend { font-weight: 400; margin-left: var(--s-2); }
+  #meteogram .mg-note { color: var(--text-2); margin-top: 4px; }
   /* Mobile bottom sheet. */
   @media (max-width: 768px) {
+    #meteogram { top: 10px; bottom: auto; left: 10px; right: 10px; max-height: 32vh; }
     #panel {
       top: auto; right: 0; left: 0; bottom: 0;
       width: 100%; padding: var(--s-3) var(--s-4);
@@ -1003,6 +1024,7 @@
       <label for="routeNameInput" style="color:var(--ink-text-muted);margin:0;">Route:</label>
       <input type="text" id="routeNameInput" placeholder="(untitled)" readonly style="flex:1;padding:4px 6px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);margin:0;">
       <button id="routePublish" type="button" title="Save this route to the Signal K Resources API" style="padding:4px 10px;font-size:var(--f-xs);background:var(--go);color:#fff;border:0;border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Publish</button>
+      <button id="routeMeteogram" type="button" title="Weather along the route: wind, boat speed and wind angle, waves, pressure and rain where the boat is at each hour of the passage" style="padding:4px 10px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Meteogram</button>
       <button id="routeGpx" type="button" title="Download this route as a GPX file (route points with their times and legs), for plotters that import GPX" style="padding:4px 10px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);cursor:pointer;font-weight:600;">GPX</button>
       <button id="routeGeojson" type="button" title="Download this route as GeoJSON (the route line and every waypoint with its times, wind, waves, current and depth)" style="padding:4px 10px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);cursor:pointer;font-weight:600;">GeoJSON</button>
       <button id="routeDelete" type="button" title="Delete this route job" style="padding:4px 10px;font-size:var(--f-xs);background:var(--danger);color:#fff;border:0;border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Delete</button>
@@ -1085,6 +1107,19 @@
       <div id="vf_result" style="margin-top:14px;font-size:12px;"></div>
     </div>
   </div>
+</div>
+
+<!-- Meteogram: the conditions along the route on the map (rp-plan.js). -->
+<div id="meteogram" hidden role="region" aria-label="Meteogram">
+  <div class="mg-head">
+    <b>Meteogram</b>
+    <span id="meteoTitle"></span>
+    <label style="margin:0;">every <select id="meteoStep" aria-label="Meteogram step"><option value="1800">30 min</option><option value="3600" selected>1 h</option><option value="10800">3 h</option></select></label>
+    <span id="meteoClose" role="button" tabindex="0" aria-label="Close the meteogram" title="Close">×</span>
+  </div>
+  <div id="meteoReadout" class="mg-readout"></div>
+  <div id="meteoBody"></div>
+  <div id="meteoNote" class="mg-note"></div>
 </div>
 
 <!-- ES modules: rp-plan.js imports rp-layers.js and rp-core.js; rp-settings.js imports rp-core.js. -->

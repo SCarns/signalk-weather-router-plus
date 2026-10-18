@@ -42,6 +42,18 @@ uses [Semantic Versioning](https://semver.org/).
   departure's route is kept only in its job file (`JobManager.release`)
   and read from there when it is opened; in memory the window holds its
   metrics.
+- **Meteogram** (Itinerary → Meteogram): the weather along the route,
+  as TimeZero's. Wind and gust, the boat (speed over ground, true wind
+  angle, motoring shaded), waves, pressure and precipitation where the
+  boat is at each step of the passage, stacked on one time axis and drawn
+  by the conditions popup's chart renderer (now sized per chart). Hover
+  reads out the values and marks the boat's place on the route; a click
+  sets the map's overlays to that hour. Served by
+  `GET /api/routes/{id}/meteogram?step_s=` (`meteogram.ts`): the boat's
+  position along each leg's great circle at the leg's pace, and the
+  conditions there from the data worker's new `track_conditions` query,
+  which reads a dozen samples at a time (their box, the steps around their
+  times) rather than the box of the whole route.
 
 ### Changed
 

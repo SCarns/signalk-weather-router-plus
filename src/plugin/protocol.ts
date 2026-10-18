@@ -14,6 +14,7 @@
  * Everything crossing the boundary is structured-cloneable.
  */
 
+import type { ConditionsRow } from './overlays';
 import type { DrawbridgeChoice } from '../engine/mesh/route';
 import type { AvoidArea } from '../geo/avoid';
 import type { ResolvedConfig, SelfDesign } from './config';
@@ -170,7 +171,8 @@ export type QueryKind =
   | 'land_mask'
   | 'tide_series'
   | 'weather_point'
-  | 'forecast_info';
+  | 'forecast_info'
+  | 'track_conditions';
 
 export interface QueryArgs {
   field: { layer: string; bbox: BBox; timeMs: number; res: number };
@@ -189,6 +191,16 @@ export interface QueryArgs {
   weather_point: { lat: number; lon: number; startMs: number | null; maxCount: number | null; observation?: boolean };
   /** GET /api/forecast samples at a point (result the `samples` array). */
   forecast_info: { lat: number; lon: number };
+  /** Conditions at each (position, time) of a route's track, for its meteogram (result TrackConditions). */
+  track_conditions: { points: { lon: number; lat: number; tMs: number }[] };
+}
+
+/** The `track_conditions` answer: the run sampled and one row per point, in order. */
+export interface TrackConditions {
+  /** Cycle and last valid time of the run the rows were sampled from (ISO 8601). */
+  cycle: string;
+  validTo: string;
+  rows: ConditionsRow[];
 }
 
 /** The decoded run in use: where it is on disk and its index (relayed data worker → main → route worker). */
