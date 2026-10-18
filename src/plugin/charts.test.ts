@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { ChartsProvider } from './charts';
 import type { DataStatus, ForecastRunInfo } from './protocol';
 
-const CYCLE_MS = Date.UTC(2026, 10, 2, 0);
 const HOUR = 3_600_000;
+// The run starts this hour, so its frames run ahead of now whenever the test runs
+// (resource() never lets a chart's timeline end before the current hour).
+const CYCLE_MS = Math.floor(Date.now() / HOUR) * HOUR;
 const PARAMS = ['10u', '10v', 'msl', '2t', 'tprate', 'skt', 'ptype', 'swh', 'mwp', 'mwd'];
 
-/** A provider over a 10-day forecast run (with or without waves), no currents, no tides. */
-function provider(params = PARAMS): ChartsProvider {
+/** A provider over a 10-day forecast run (with or without waves), no tides, and currents when asked. */
+function provider(params = PARAMS, currents = false): ChartsProvider {
   const run = {
     index: {
       cycle: '2026110200',
@@ -17,7 +19,10 @@ function provider(params = PARAMS): ChartsProvider {
       steps: [0, 120, 240].map(h => ({ stepHours: h, validMs: CYCLE_MS + h * HOUR, params })),
     },
   } as unknown as ForecastRunInfo;
-  const status = { forecast: { hasWaves: params.includes('swh') }, currents: [] } as unknown as DataStatus;
+  const status = {
+    forecast: { hasWaves: params.includes('swh') },
+    currents: currents ? [{ name: 'CMEMS-SMOC' }] : [],
+  } as unknown as DataStatus;
   return new ChartsProvider({
     app: {},
     pluginId: 'signalk-weather-router-plus',
@@ -48,6 +53,18 @@ test('charts: the groups hold only the charts with data, colour layer first, and
   assert.deepEqual(byName['Sea temperature'].charts, ['wrp-sea-temperature']);
   // No tides either.
   assert.equal(byName.Tide, undefined);
+});
+
+test('charts: a group whose colour layer has no data is left out, not offered with its glyphs alone', () => {
+  // Currents but no tides: the current arrows are there, the tide height is not.
+  const byName = Object.fromEntries(
+    provider(PARAMS, true)
+      .groups()
+      .map(g => [g.name.replace(' (Weather Router Plus)', ''), g])
+  );
+  assert.deepEqual(byName.Currents.charts, ['wrp-current-speed', 'wrp-current-arrows']);
+  assert.equal(byName.Tide, undefined);
+  assert.deepEqual(byName['Sea temperature'].charts, ['wrp-sea-temperature', 'wrp-current-arrows']);
 });
 
 test('charts: a forecast without waves leaves the wave groups out', () => {
