@@ -115,9 +115,8 @@ test('smoother keeps user waypoints and detours around land', () => {
     [2]
   );
   shortcutSmoother(r, args(OPEN));
-  // Parent rule (smoother.py): a skip over a user waypoint fails and the
-  // failed candidate (0.1), not the user waypoint, becomes the next
-  // anchor, so 0.1 stays. In the plugin user waypoints are leg ends, so
+  // A skip over a user waypoint fails and the failed candidate (0.1), not
+  // the user waypoint, becomes the next anchor, so 0.1 stays. In the plugin user waypoints are leg ends, so
   // this does not occur inside a leg.
   assert.deepEqual(
     r.waypoints.map(w => w.lon),

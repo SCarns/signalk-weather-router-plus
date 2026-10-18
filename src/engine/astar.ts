@@ -1,6 +1,5 @@
 /**
- * Motor-only A* over a NavigabilityGrid. Port of the routing engine's
- * `router.compute_route` / `_astar_inner` / `_compute_shore_cost`:
+ * Motor-only A* over a NavigabilityGrid:
  *
  *  - 16-neighbour moves (8 cardinal/diagonal + 8 knight moves); a move
  *    is allowed only when the landing cell and every cell it passes

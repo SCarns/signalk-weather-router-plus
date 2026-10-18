@@ -1,7 +1,6 @@
 /**
  * The navigation mesh on disk: one folder of flat binary tiles (0.25°)
- * plus index.json, written by the experiment's converter
- * (~/mesh-experiment/scripts/mesh_to_bin.py; not part of this repo).
+ * plus index.json, written by the mesh build (not part of this repo).
  * Nothing is held between routes: a leg reads its tiles one at a time as
  * the search reaches them (paged.ts) and drops them as it goes; the tests
  * also read a box of tiles into one set of typed arrays (load).
@@ -48,7 +47,7 @@ export const HAZARD_DEPTH_UNKNOWN = -1e9;
 
 const MAGIC = 'WRPMESH1';
 const HEADER_BYTES = 32;
-/** Metres per degree the experiment's router projects with (mesh_route5.py); kept for parity. */
+/** Metres per degree of the mesh's metres frame. */
 export const M_PER_DEG_MESH = 111320;
 
 export interface MeshTileInfo {
@@ -181,7 +180,7 @@ export class MeshStore {
       n += info.n;
       return t;
     });
-    // math.cos(math.radians(mid)) as the experiment's router computes it.
+    // cos of the box's mid-latitude.
     const cl = Math.cos(((box.south + box.north) / 2) * (Math.PI / 180));
     const m: LoadedMesh = {
       n,
@@ -250,7 +249,7 @@ export class MeshStore {
 
   private readTile(info: MeshTileInfo, m: LoadedMesh, offset: number, toLocal: (g: number) => number): void {
     const { n, corners, nb, mult, depth, clear, hazv, rev, flags } = this.readTileArrays(info);
-    // The same expression, in the same order, as the experiment's router (parity to the bit).
+    // The same expression, in the same order, as toMeshXY.
     const K = this.index.xScale;
     for (let k = 0; k < n * 3; k++) {
       m.x[offset * 3 + k] = (corners[2 * k] / K) * m.cl * M_PER_DEG_MESH;
@@ -267,7 +266,7 @@ export class MeshStore {
   }
 }
 
-/** Project a point into a loaded mesh's metres frame (mesh_route5.py's expression order). */
+/** Project a point into a loaded mesh's metres frame (the same expression order as readTile). */
 export function toMeshXY(m: LoadedMesh, lon: number, lat: number): [number, number] {
   return [lon * m.cl * M_PER_DEG_MESH, lat * M_PER_DEG_MESH];
 }

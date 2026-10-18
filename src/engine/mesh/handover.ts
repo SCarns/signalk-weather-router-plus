@@ -7,8 +7,8 @@
  * with the across-track water width and the distance to the nearest land
  * at each point): walking from the covered end through the points inside
  * the mesh, at most HANDOVER_SCAN_M along the corridor, the LAST narrow
- * point (width under OPEN_WATER_WIDTH_M, the parent planner's rule: both
- * shores within a kilometre) is found; the handover is the first point
+ * point (width under OPEN_WATER_WIDTH_M: both shores within a
+ * kilometre) is found; the handover is the first point
  * after it that is clear (open, and no land within SHORE_CLEAR_M) and
  * stays clear over the next point, or the last scanned covered point when
  * none is (reason 'scan-limit'). A covered end that is itself clear, with
@@ -35,7 +35,7 @@
  * that box holds no route, route.ts), about 1 GB
  * for the 6.5 M triangles of a 50 km leg (brain, 2026-10-08, Cape Cod
  * Canal); a mesh part twice as long would not fit a Raspberry Pi beside
- * Signal K. The cap is this plugin's, not the parent planner's.
+ * Signal K.
  */
 
 import { haversineDistanceM } from '../../geo/geodesy';
@@ -44,7 +44,7 @@ import { recomputePerWaypointMetadata, type Route, type RouteDrawbridge, type Ro
 import { recomputeTotals } from '../smoother';
 import type { MeshLegRunner } from './leg';
 
-/** Across-track water this wide (2 × the parent's 1000 m per side) is open water. */
+/** Across-track water this wide (2 × 1000 m per side) is open water. */
 export const OPEN_WATER_WIDTH_M = 2000;
 /** How far along the corridor from the covered end narrow water is looked for (see the header). */
 export const HANDOVER_SCAN_M = 50_000;

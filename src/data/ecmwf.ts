@@ -88,7 +88,7 @@ export interface EcmwfClientOptions {
   sleepImpl?: (ms: number) => Promise<void>;
 }
 
-/** Publication lag assumed for the wall-clock "expected cycle" rule (same as the planner). */
+/** Publication lag assumed for the wall-clock "expected cycle" rule. */
 export const PUBLICATION_LAG_MINUTES = 400;
 
 /**
@@ -184,7 +184,7 @@ export class EcmwfClient {
   }
 
   /**
-   * HTTP request with the planner's retry policy: up to `retries`
+   * HTTP request with the shared retry policy (http.ts): up to `retries`
    * attempts per mirror, exponential backoff 2, 4, 8, 16, 32 s (capped
    * at 60 s), `Retry-After` honoured, retried only on 408/429/5xx and
    * network errors. When a mirror is exhausted the next mirror takes

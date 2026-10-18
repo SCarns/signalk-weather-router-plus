@@ -16,12 +16,12 @@
  * and hopped round the corner into blocked water, so a mesh route's own segments failed the land test at 0 m.
  *
  * Passage width: at each point of the polyline, the distance to the first blocked (or missing) triangle to the left
- * and to the right of the track, up to MAX_SCAN_M (the parent planner's measure_passage_width, 4 km cap).
+ * and to the right of the track, up to MAX_SCAN_M (4 km).
  */
 
 import type { PagedMesh, PagedTile } from './paged';
 
-/** The scan stops here: water this wide on a side counts as open (the parent's max_scan_m). */
+/** The scan stops here: water this wide on a side counts as open. */
 export const MAX_SCAN_M = 4000;
 
 const EPS = 1e-9;

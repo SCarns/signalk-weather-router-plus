@@ -24,7 +24,7 @@ interface RefPoint {
 }
 
 test(
-  'harmonic sources and stack reproduce the reference implementation',
+  'harmonic sources and stack reproduce the recorded reference points',
   { skip: !tidesDir || !fs.existsSync(refPath) ? 'WRP_TIDES_DIR not set' : false },
   () => {
     const fes = new HarmonicCurrentSource(path.join(tidesDir!, 'currents_local.npz'));
@@ -60,7 +60,7 @@ test(
       if (p.stack[0] !== 0 || p.stack[1] !== 0) nonzero++;
     }
     console.log(`  harmonic end-to-end: ${ref.points.length} points, ${nonzero} with current, max |Δ| = ${maxD.toExponential(2)} m/s`);
-    // The reference evaluates its bilinear index in float32; 5e-5 m/s covers that rounding.
+    // The reference points were computed with a float32 bilinear index; 5e-5 m/s covers that rounding.
     assert.ok(maxD < 5e-5, `max deviation ${maxD}`);
     // atMany agrees with at.
     const lons = new Float64Array(ref.points.slice(0, 50).map(p => p.lon));

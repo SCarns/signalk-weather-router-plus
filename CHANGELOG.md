@@ -9,9 +9,11 @@ uses [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **Under-keel and overhead clearance** (vessel settings, defaults 0.5 m and
-  1 m; request overrides `vessel.under_keel_clearance_m`,
+  2 m; request overrides `vessel.under_keel_clearance_m`,
   `vessel.overhead_clearance_m`): the margins over the draught and the air
-  draft on chart-mesh legs, which were fixed. Rough cuts carry them in their
+  draft on chart-mesh legs, which were fixed at 0.5 m and 1 m. The higher
+  overhead default blocks bridges and cables 1–2 m above the air draft that
+  passed before. Rough cuts carry them in their
   rules and file names (`COARSE_VERSION` 6; existing rough cuts are rebuilt
   once, on demand).
 - **The final depth check repairs before it fails** (`worker/route.ts`
@@ -666,7 +668,7 @@ uses [Semantic Versioning](https://semver.org/).
   failure names the box and the cap.
 - The open-water search between two narrow passages of a mesh route drew
   its own coarse skeleton on the coastline instead of using the mesh
-  route, as the hybrid rule says (job 219300ca, 2026-10-08: the coarse
+  route (job 219300ca, 2026-10-08: the coarse
   skeleton cut across the tip of Monomoy, every first-stage candidate
   towards it was on land, the one survivor went up the wrong side of the
   island and the search was boxed in after 20 stages). The mesh route and
@@ -679,8 +681,7 @@ uses [Semantic Versioning](https://semver.org/).
   fan around it (a zero-length leg in the mesh route; the motored walk hid
   it, the tack layout refused it). A point equal to the last one emitted is
   skipped, as Recast's `appendVertex` does; the route's geometry is
-  unchanged, with one point fewer where the Python experiment's funnel
-  repeats one.
+  unchanged, with one point fewer where a corner was emitted twice.
 - Apply the GSHHG L1/L2/L3/L4 land/water hierarchy to global water grids,
   route rasters, refined masks and exact polygon checks. The full global
   grid is rebuilt from all four levels; old overlay caches are invalidated.
@@ -1297,7 +1298,7 @@ it holding duplicate data.
     0.514444: the stop values move in the sixth significant digit.
   - Polar tables computed from boat specs (empirical and physics VPP)
     use the exact knot for the table's wind speeds; the parity tests
-    against the Python reference evaluate at the Python's wind speeds
+    evaluate at the wind speeds their recorded tables were made at
     (which used the rounded knot) so the comparison is of the VPP alone.
   - The metre-per-degree heuristics for land-sampling step, smoother
     tolerance and tile radius used 111 195, 111 000 and 111 320 m; all
@@ -1393,9 +1394,8 @@ it holding duplicate data.
   fatal flag; cancellation is one class, never a message match) and the
   API maps HTTP status by error class; one progress-callback shape;
   tests moved next to what they test; the web app's scripts are linted
-  (four assignments-in-conditions fixed); comments that described the
-  code by reference to the former server say what the code does; the
-  GeoJSON / Signal K route formats, the conditions derivations and the
+  (four assignments-in-conditions fixed); comments say what the code
+  does; the GeoJSON / Signal K route formats, the conditions derivations and the
   isobar tracer moved from the engine to the plugin layer.
 
 ### Added
@@ -1646,11 +1646,9 @@ it holding duplicate data.
 
 ### Fixed
 
-- README: the introduction wrongly described this plugin as a
-  server-free sibling of `signalk-weather-router`. It now says what the
-  "plus" is (the map overlays, drawn from the same data the routing
-  uses) and that inshore routing (depths, channels, bridges) is not done
-  here but by the separate router.zeddisplay.com.
+- README: the introduction now says what the "plus" is (the map
+  overlays, drawn from the same data the routing uses) and that the
+  plugin does not route on depths, channels or bridges.
 
 ## [0.1.0-beta.3] - 2026-09-30
 
@@ -1707,8 +1705,8 @@ builds before this release, with their measurements, is in
 
 #### Routing
 
-- Isochrone router (a TypeScript port of the routePlanning subsector
-  router) in a worker thread, against the vessel's polar. Modes
+- Isochrone router (a subsector isochrone search) in a worker thread,
+  against the vessel's polar. Modes
   `sail_max` (sail when the polar speed reaches the sail threshold,
   motor otherwise), `fastest` and `motor`, with a motor speed. (This
   entry also listed a tack penalty, under-keel and overhead margins and a

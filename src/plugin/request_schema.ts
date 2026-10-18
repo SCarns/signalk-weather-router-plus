@@ -11,6 +11,7 @@ import { ROUTER_KINDS } from '../engine/router';
 import { SEARCH_PRESETS } from '../engine/search/presets';
 import type { RouteRequest } from './protocol';
 import { SETTINGS_SPEC } from './settings';
+import { AIR_DRAFT_M_RANGE, DRAUGHT_M_RANGE, OVERHEAD_M_RANGE, UKC_M_RANGE } from '../vessel/vessel';
 
 export type RouteFieldSpec =
   | { type: 'number'; min?: number; max?: number; default?: number; description?: string }
@@ -129,28 +130,28 @@ export const VESSEL_FIELDS: Record<string, RouteFieldSpec> = {
   polar: { type: 'string', maxLength: 200, description: 'Polar token from /api/polars; absent = the configured default' },
   draught_m: {
     type: 'number',
-    min: 0.1,
-    max: 30,
+    min: DRAUGHT_M_RANGE[0],
+    max: DRAUGHT_M_RANGE[1],
     description:
       "Draught, m (default: the vessel's Signal K design.draft.maximum); with air_draft_m, lets motoring legs use the chart mesh",
   },
   air_draft_m: {
     type: 'number',
-    min: 0.5,
-    max: 100,
+    min: AIR_DRAFT_M_RANGE[0],
+    max: AIR_DRAFT_M_RANGE[1],
     description: "Air draft (height above the waterline), m (default: the vessel's Signal K design.airHeight)",
   },
   under_keel_clearance_m: {
     type: 'number',
-    min: 0,
-    max: 3,
+    min: UKC_M_RANGE[0],
+    max: UKC_M_RANGE[1],
     description:
       'Water kept under the keel on chart-mesh legs, m: charted depth must be at least the draught plus this (default: the Under-keel clearance setting)',
   },
   overhead_clearance_m: {
     type: 'number',
-    min: 0,
-    max: 10,
+    min: OVERHEAD_M_RANGE[0],
+    max: OVERHEAD_M_RANGE[1],
     description:
       'Headroom kept above the mast on chart-mesh legs, m: charted clearance must be at least the air draft plus this (default: the Overhead clearance setting)',
   },

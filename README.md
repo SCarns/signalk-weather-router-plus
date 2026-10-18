@@ -1,6 +1,7 @@
 # signalk-weather-router-plus
 
-Standalone open-water weather routing as a Signal K plugin. No outside
+Weather routing as a Signal K plugin: in open water by the coastline, and
+on the charts where a chart mesh is configured. No outside
 service: everything runs in Signal K's process and in short-lived
 processes the plugin starts itself. The plugin downloads ECMWF open-data
 forecasts by HTTP byte range, decodes the CCSDS-packed GRIB2 fields in
@@ -14,10 +15,12 @@ runtime npm dependencies.
 The "plus" is the overlays: wind, temperature, tide, current and more,
 drawn from the same data the routing uses.
 
-What it does not do: it routes in open water and avoids land, but knows
-nothing about depths, channels or bridges. (US inshore routing was too
-much for a plugin; it lives in the separate
-[router.zeddisplay.com](https://router.zeddisplay.com).)
+Depths, channels and bridges are known only where a chart mesh is
+configured: a leg inside one is routed on the charts (charted depth,
+vertical clearance, rocks, wrecks, marks, structures; see
+[Chart mesh](#chart-mesh-charted-depths-and-obstructions)). Elsewhere the
+plugin avoids land by the coastline and knows nothing about depths,
+channels or bridges.
 
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
@@ -618,9 +621,8 @@ Freeboard's map menu needs a change to Freeboard; see
 
 ## Routing engine
 
-A port of the routePlanning `OceanPropagator` (subsector isochrone,
-Hagiwara 1989 / Chen & Mao 2024), guided by a corridor from a global
-water grid:
+The `OceanPropagator`, a subsector isochrone router (Hagiwara 1989 /
+Chen & Mao 2024), guided by a corridor from a global water grid:
 
 1. **Corridor.** A* on the [global water grid](#global-water-grid) finds
    a land-avoiding corridor from the start to the end of each leg (see
@@ -691,7 +693,7 @@ or it lies in an area marked to avoid on a Signal K note. The draught and
 air draft are the vessel's Signal K base data (`design.draft.maximum`,
 `design.airHeight`; a request can override them with `vessel.draught_m`
 and `vessel.air_draft_m`); the mesh is not used until both are set. The
-under-keel clearance (0.5 m) and overhead clearance (1 m) are vessel
+under-keel clearance (0.5 m) and overhead clearance (2 m) are vessel
 settings; a request can override them with
 `vessel.under_keel_clearance_m` and `vessel.overhead_clearance_m`.
 
@@ -933,9 +935,8 @@ cost is 0. Each waypoint carries the sea on the leg into it
 ### Waypoints (legs)
 
 A waypoint is an end point and a start point by another name: it ends
-one leg and starts the next (port of the routePlanning
-`compute_multi_leg_route`). Each leg is routed as its own route, with its
-own corridor, land raster, isochrone search (K stages per leg) and
+one leg and starts the next. Each leg is routed as its own route, with
+its own corridor, land raster, isochrone search (K stages per leg) and
 retries, departing at the previous leg's arrival time so wind, current
 and waves move on with the boat. The legs are then stitched: the
 duplicate junction point is dropped, distances and sailing/motoring
@@ -953,9 +954,8 @@ never `role: "via"`). Progress messages are prefixed `leg 2/4: …`.
   like the final leg to the destination).
 - **`approximate`**: the route only has to pass through the waypoint's
   circle (`arrival_radius_m`, default 200 m, or the waypoint's own
-  `radius_m`). As in the reference (`hybrid.py`, collapsed ocean runs),
-  consecutive legs joined by approximate waypoints are routed as **one
-  search** from the run's start to its end, with each waypoint circle as
+  `radius_m`). Consecutive legs joined by approximate waypoints are
+  routed as **one search** from the run's start to its end, with each waypoint circle as
   a via the winning branch must pass through in order. The track carries
   on through the waypoint instead of ending there and restarting, and the
   point where it passes the circle carries `role: "via"`. Progress
@@ -963,10 +963,9 @@ never `role: "via"`). Progress messages are prefixed `leg 2/4: …`.
   circle(s) … in one search`.
 
 The final destination is always exact. Routes without waypoints are one
-leg, unchanged. Where this differs from the reference:
+leg, unchanged. Further:
 - after a precise waypoint the next leg starts where the previous one
-  ended (the reference restarts from the canonical waypoint and trims the
-  stitch), so the track is continuous;
+  ended, so the track is continuous;
 - a branch whose next waypoint circle is closer than one stage step also
   gets a candidate that steps straight into the circle. Without it a
   branch reaches a small circle only if a full stage step (tens of km)
@@ -984,9 +983,9 @@ the same time (Baja, 4 legs: 11.9 / 12.0 s against 11.5 / 11.8 s per leg)
 and held more forecast (3.0 MB against at most 2.0 MB per leg) and SMOC
 (2.5 MB against at most 0.9 MB).
 
-One deliberate difference from the reference: the stage budget is sized
-to the corridor length, not the straight-line distance, so detours around
-land fit within the configured number of stages.
+The stage budget is sized to the corridor length, not the straight-line
+distance, so detours around land fit within the configured number of
+stages.
 
 If a route arrives after the last forecast step, conditions are held at
 the last step. The GeoJSON carries `forecast_valid_to`,
@@ -1058,9 +1057,9 @@ tacking. The polar files themselves are not changed.
 When a parent's primary heading sweep yields nothing (its headings in
 the polar's no-go angle, on land or over a limit), that parent alone gets
 the wider sweeps (±120°, then half step, then the full circle at a quarter
-step) while its siblings keep their primary candidates; the reference
-implementation widened only when the whole stage's sweep was empty, which
-left a front beating to windward tacking in place.
+step) while its siblings keep their primary candidates. Widening only
+when the whole stage's sweep is empty would leave a front beating to
+windward tacking in place.
 
 The candidate nearest each goal always survives a stage's subsector
 pruning (the bin cost prices the remaining distance at motor speed, which
@@ -1306,7 +1305,7 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 
 | Group | Settings (default) | A change… |
 |---|---|---|
-| `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2), under-keel clearance (0.5 m, 0–3 m), overhead clearance (1 m, 0–10 m) | applies to the next route |
+| `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2), under-keel clearance (0.5 m, 0–3 m), overhead clearance (2 m, 0–10 m) | applies to the next route |
 | `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (15 min = 900 s; an existing settings.json keeps its value), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
@@ -1651,7 +1650,7 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `vessel.draught_m` | number | m | Signal K `design.draft.maximum` | 0.1..30; with `air_draft_m`, lets the [chart mesh](#chart-mesh-charted-depths-and-obstructions) route the leg |
 | `vessel.air_draft_m` | number | m | Signal K `design.airHeight` | 0.5..100 |
 | `vessel.under_keel_clearance_m` | number | m | setting (0.5) | 0..3; charted depth on chart-mesh legs must be at least the draught plus this |
-| `vessel.overhead_clearance_m` | number | m | setting (1) | 0..10; charted clearance on chart-mesh legs must be at least the air draft plus this |
+| `vessel.overhead_clearance_m` | number | m | setting (2) | 0..10; charted clearance on chart-mesh legs must be at least the air draft plus this |
 | `router` | `"standard"` or `"refined"` | | setting `routing.router` (`standard`) | the [open-water router](#open-water-router-standard-or-refined) |
 | `search` | `"normal"`, `"moderate"` or `"maximum"` | | `normal` | search method (the Route tab's *Method*): `normal` = the routing settings as they are; `moderate` = stages 40, 100 cross-track bins, headings ±60° at 1° (a better route; about 2 min on a 600 nm passage on a Raspberry Pi 5); `maximum` = stages 40, 150 bins, ±60° at 0.5° (the best; about 6 min). An explicit `stages` still wins |
 
@@ -1861,7 +1860,7 @@ Point `properties` (one feature per route point, in order):
 | `seas_side` | string or null | | `"port"` or `"starboard"`: the side the waves come from; null dead ahead or astern |
 | `seas_sector` | string | | `head` (0–30°), `bow` (30–60°), `beam` (60–120°), `quarter` (120–150°), `following` (150–180°) |
 | `encounter_index` | number | index | `sea_index` weighted for the angle: × 1.3 in head seas, × 1.05 abeam, × 0.8 in following seas, a cosine between (`src/engine/seas.ts`); the sea as the boat meets it |
-| `leg` | string | | engine that produced the waypoint; always `"ocean"` in this plugin (kept for compatibility with the routePlanning server, which also uses other values) |
+| `leg` | string | | engine that produced the waypoint; always `"ocean"` in this plugin |
 | `role` | string | | `"via"` on the junction point of each request waypoint |
 | `tack` | boolean | | `true` on a tack or gybe point the experimental router placed |
 | `leg_distance_m` | number | m | distance to the next point; absent on the last point |
@@ -1872,8 +1871,7 @@ Point `properties` (one feature per route point, in order):
 | `snap_distance_m`, `original` | number, `[lon, lat]` | m, degrees | present on a start, via or end point that was on land and was moved: how far, and the drawn point |
 
 The optional point properties are present only when the value was
-sampled and is finite. Property names match the routePlanning server's
-GeoJSON, so consumers of either can read both.
+sampled and is finite.
 
 #### GET /api/routes/{id}/skeleton
 
@@ -2428,7 +2426,7 @@ Generate a polar with the physics polar calculator
 (`src/vessel/vpp_physics.ts`: ORC 2026 sail forces, Delft hull
 resistance, a heeling limit (where no reef or flattening keeps the heel
 within it, the speed is 0); see `docs/plans/vpp-physics.md`), write it
-to `<polarsDir>/user/<slug>.csv` in the routing server's CSV layout, and
+to `<polarsDir>/user/<slug>.csv` in the library's CSV layout, and
 return it. Access: readwrite.
 
 Body `{name, specs, overwrite?}`:

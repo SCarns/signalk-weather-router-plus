@@ -23,6 +23,7 @@ import { KTS_TO_MS } from '../geo/geodesy';
 import { RTOFS_REGIONS } from '../currents/rtofs';
 import type { LegacyPluginConfig } from './config';
 import { DEFAULT_ROUTER, ROUTER_KINDS, type RouterKind } from '../engine/router';
+import { DEFAULT_OVERHEAD_M, DEFAULT_UKC_M, OVERHEAD_M_RANGE, UKC_M_RANGE } from '../vessel/vessel';
 
 export interface AppSettings {
   vessel: {
@@ -218,10 +219,10 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'number',
     unit: 'm',
     quantity: 'depth',
-    min: 0,
-    max: 3,
+    min: UKC_M_RANGE[0],
+    max: UKC_M_RANGE[1],
     step: 0.1,
-    default: 0.5,
+    default: DEFAULT_UKC_M,
     help: 'Water kept under the keel on chart-mesh legs: charted depth must be at least the draught plus this. A route request can set its own.',
     reload: 'next_job',
   },
@@ -232,10 +233,10 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'number',
     unit: 'm',
     quantity: 'short_distance',
-    min: 0,
-    max: 10,
+    min: OVERHEAD_M_RANGE[0],
+    max: OVERHEAD_M_RANGE[1],
     step: 0.1,
-    default: 1,
+    default: DEFAULT_OVERHEAD_M,
     help: 'Headroom kept above the mast under bridges and overhead cables on chart-mesh legs: charted clearance must be at least the air draft plus this. A route request can set its own.',
     reload: 'next_job',
   },

@@ -1,6 +1,5 @@
 /**
- * Isobars and pressure centres from a regular MSL grid, ported from the
- * routing server's `routers/pressure.py`:
+ * Isobars and pressure centres from a regular MSL grid:
  *  - contour lines at `interval` hPa via marching squares with linear
  *    interpolation along cell edges (contourpy's `lines()` equivalent),
  *    bold every 20 hPa and at 1000 hPa;

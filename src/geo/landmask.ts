@@ -2,7 +2,7 @@
  * Land mask built from coastline polygons (GSHHG L1–L4 or OSM land
  * polygons), rasterised over a route bounding box.
  *
- * Two query paths, mirroring the routing engine this is ported from:
+ * Two query paths:
  *  - `isLandBulk` / `legsCrossLandBulk`: raster lookup; a leg is walked
  *    cell by cell (every cell its path crosses, finest patch first), used
  *    in the propagator's hot per-stage candidate filter.
@@ -12,7 +12,7 @@
  *
  * The raster is conservative: a cell is land if its centre is inside a
  * polygon OR a polygon edge passes through it. That second rule stands
- * in for the buffered-polygon test in the original (peninsulas narrower
+ * in for a buffered-polygon test (peninsulas narrower
  * than a cell must still block a leg). `rasterStreamed` can also build a
  * centre-sampled raster (land iff the cell centre is inside a polygon),
  * used by the global water grid build.

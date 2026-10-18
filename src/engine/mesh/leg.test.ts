@@ -161,7 +161,7 @@ const PLAN = planLegs(
 
 test('meshRulesFor: both drafts set', () => {
   assert.deepEqual(meshRulesFor(BOAT), {
-    rules: { draughtM: 2, airDraftM: 18, motorSpeedMs: 3, underKeelClearanceM: 0.5, overheadClearanceM: 1 },
+    rules: { draughtM: 2, airDraftM: 18, motorSpeedMs: 3, underKeelClearanceM: 0.5, overheadClearanceM: 2 },
   });
   assert.match(
     (meshRulesFor(makeVessel({ motorSpeedMs: 3, draughtM: 2 })) as { why: string }).why,
@@ -176,7 +176,7 @@ test('meshRulesFor: both drafts set', () => {
 test('classifySegments: narrow where both shores are near, hysteresis by distance, open run-out kept in the narrow segment', () => {
   // 20 points 600 m apart along a meridian; points 6–13 have both shores within 400 m, the rest open.
   // The flip into narrow needs 1 km of narrow track (points 6–8) and lands on its first point; the flip
-  // back needs 1 km of open track (14–16) and lands where that run completes, as the parent pads.
+  // back needs 1 km of open track (14–16) and lands where that run completes (the run-out stays narrow).
   const path: [number, number][] = [];
   const widths: [number, number][] = [];
   for (let i = 0; i < 20; i++) {
@@ -253,7 +253,7 @@ test('pipeline: a covered motoring leg is routed on the mesh, the coastline sear
     airDraftM: 18,
     motorSpeedMs: 3,
     underKeelClearanceM: 0.5,
-    overheadClearanceM: 1,
+    overheadClearanceM: 2,
     avoid: [{ lon: 0.5, lat: 0.4, radiusM: 500 }],
     openingBridges: 'open',
   });
@@ -771,7 +771,7 @@ test("pipeline: a leg the charts' plan splits is planned stretch by stretch, on 
           airDraftM: 18,
           motorSpeedMs: 3,
           underKeelClearanceM: 0.5,
-          overheadClearanceM: 1,
+          overheadClearanceM: 2,
           avoid: undefined,
           openingBridges: 'open',
         },

@@ -81,10 +81,10 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
     }
     resetTry(ctx, parents);
     let cands = propose(ctx, guide, parents, ctx.m, ctx.deltaC, 1);
-    // Fallback ladder, per parent (deviation from the reference, which
-    // widened only when the whole stage's sweep was empty): a parent whose
-    // primary sweep produced nothing (its headings in the polar's no-go
-    // angle, on land, or over a limit) gets the wider sweeps on its own,
+    // Fallback ladder, per parent (not only when the whole stage's sweep
+    // was empty): a parent whose primary sweep produced nothing (its
+    // headings in the polar's no-go angle, on land, or over a limit) gets
+    // the wider sweeps on its own,
     // while its siblings keep their primary candidates. A parent facing
     // dead upwind can then tack at every stage instead of only on the
     // stages where every other parent was stuck too (the eastern
@@ -98,9 +98,9 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
       const ladder: [number, number, number, string][] = [
         [ctx.m * 2, ctx.deltaC * 2, 1, `widening to ±${ctx.m * 2 * ctx.deltaC * 2}°`],
         [ctx.m * 3, ctx.deltaC * 2, 0.5, `trying ±${ctx.m * 3 * ctx.deltaC * 2}° with half step`],
-        // Beyond the reference: a full 360° sweep at a quarter step, for
-        // parents boxed in by a coast whose exits are shorter than half a
-        // stage step.
+        // Last rung: a full 360° sweep at a quarter step, for parents
+        // boxed in by a coast whose exits are shorter than half a stage
+        // step.
         [90, 2, 0.25, 'trying full 360° sweep with quarter step'],
       ];
       for (const [m, dc, sf, label] of ladder) {
@@ -153,10 +153,9 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
       const cur = best.get(key);
       if (cur === undefined || cost[i] < cost[cur]) best.set(key, i);
     }
-    // The leader survives (deviation from the reference): for each goal
-    // the candidate nearest to it is kept whatever its bin. The bin cost
-    // prices the remaining distance at cruise speed, which is optimistic
-    // to windward, so a branch further back but earlier could take every
+    // The leader survives: for each goal the candidate nearest to it is
+    // kept whatever its bin. The bin cost prices the remaining distance at
+    // cruise speed, which is optimistic to windward, so a branch further back but earlier could take every
     // bin of the leading branch and the front fell back (job c14934c9:
     // best remaining 545 km → 762 km at stage 21). With the leader kept
     // the best remaining distance never increases.

@@ -2,8 +2,7 @@
  * Spherical geodesy helpers. All distances in metres, angles in degrees
  * unless a name says otherwise. Longitudes are kept in [-180, 180).
  *
- * Earth radius matches the routing engine this is ported from
- * (6 371 008.8 m, the IUGG mean radius).
+ * Earth radius: 6 371 008.8 m, the IUGG mean radius.
  */
 
 import { DEG, R_EARTH_M, RAD } from './units';

@@ -54,7 +54,7 @@ export interface ResolvedCycle {
 }
 
 /**
- * Choose the cycle to load, planner-style:
+ * Choose the cycle to load:
  *  1. the wall-clock expected cycle when it is fully cached → no network;
  *  2. otherwise ask the server for the newest complete cycle;
  *  3. if that fails, the newest fully cached cycle, if any.

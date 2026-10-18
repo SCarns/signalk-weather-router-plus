@@ -524,7 +524,7 @@ async function openWaterLeg(
     );
     r = prop.computeRoute({ ...legArgs, vias: plan.vias.length ? plan.vias : undefined });
   }
-  // Simplification (parent order: RDP, then the shortcut smoother).
+  // Simplification: RDP, then the shortcut smoother.
   const nRdp = rdpSimplify(r, land, inp.simplifyM);
   if (nRdp) recomputeTotals(r);
   const nSm = inp.smoother

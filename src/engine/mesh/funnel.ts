@@ -1,8 +1,8 @@
 /**
  * The funnel (string-pulling) algorithm: the shortest polyline from start
  * to goal through a sequence of portals (the triangle edges the search
- * crossed, each as [left point, right point] seen along the way). Port of
- * the experiment's mesh_route5.py funnel (Mononen's simple stupid funnel).
+ * crossed, each as [left point, right point] seen along the way):
+ * Mononen's simple stupid funnel.
  */
 
 export type XY = [number, number];
@@ -21,8 +21,8 @@ export function funnel(portals: [XY, XY][], start: XY, goal: XY): XY[] {
   // A point equal to the last one emitted is not a corner: when the edges
   // fan around the apex, a portal's endpoint is the apex itself and the
   // restart branch below would emit it a second time (2026-10-08, a mesh
-  // route with a zero-length leg; the Python experiment's funnel does the
-  // same). Recast's appendVertex skips such a point; so does this.
+  // route with a zero-length leg). Recast's appendVertex skips such a
+  // point; so does this.
   const emit = (p: XY): void => {
     if (!same(pts[pts.length - 1], p)) pts.push(p);
   };

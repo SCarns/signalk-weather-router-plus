@@ -20,6 +20,7 @@
  */
 
 import { bboxFromLonLat, haversineDistanceM, type BBox } from '../../geo/geodesy';
+import { DEFAULT_OVERHEAD_M, DEFAULT_UKC_M } from '../../vessel/vessel';
 import type { LegDepth } from '../route';
 import { MeshLand } from './land';
 import { PagedMesh } from './paged';
@@ -88,8 +89,8 @@ interface TriInfo {
 
 /** Why a blocked triangle is blocked, in the order blockedTriangles tests (route.ts). */
 function blockedKind(flags: number, depth: number, clear: number, hazv: number, rules: CheckRules): ViolationKind {
-  const minClear = rules.airDraftM + (rules.overheadClearanceM ?? 1);
-  const minDepth = rules.draughtM + (rules.underKeelClearanceM ?? 0.5);
+  const minClear = rules.airDraftM + (rules.overheadClearanceM ?? DEFAULT_OVERHEAD_M);
+  const minDepth = rules.draughtM + (rules.underKeelClearanceM ?? DEFAULT_UKC_M);
   if (rules.openingBridges === 'avoid' && flags & FLAG_OPENING_BRIDGE) return 'opening bridge';
   if (clear !== NO_VALUE && clear < minClear) return 'clearance';
   if (!(flags & FLAG_NAVIGABLE) && depth !== NO_VALUE && depth < minDepth) return 'depth';

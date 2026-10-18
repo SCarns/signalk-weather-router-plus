@@ -48,6 +48,7 @@ import { JoinFinder, JOINS_VERSION } from '../engine/mesh/joins';
 import { type BoundarySeeds, PagedMesh, type PagedTile } from '../engine/mesh/paged';
 import type { MeshRules } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
+import { DEFAULT_OVERHEAD_M, DEFAULT_UKC_M } from '../vessel/vessel';
 
 export const COARSE_DIR = 'mesh-coarse';
 /** Rough cuts kept per mesh build (other boats' maps beyond these are removed, oldest first). */
@@ -84,8 +85,8 @@ export function coarseRulesOf(
   return {
     draughtM: cm(rules.draughtM),
     airDraftM: cm(rules.airDraftM),
-    underKeelClearanceM: cm(rules.underKeelClearanceM ?? 0.5),
-    overheadClearanceM: cm(rules.overheadClearanceM ?? 1),
+    underKeelClearanceM: cm(rules.underKeelClearanceM ?? DEFAULT_UKC_M),
+    overheadClearanceM: cm(rules.overheadClearanceM ?? DEFAULT_OVERHEAD_M),
     bufferM: cm(rules.bufferM ?? 0),
     openingBridges: rules.openingBridges === 'avoid' ? 'avoid' : 'open',
   };

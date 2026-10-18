@@ -94,7 +94,7 @@ test('nanFillLimited fills near valid cells and leaves distant NaN', () => {
   const g = nanFillLimited(f, 2);
   assert.equal(g.values[12], 10);
   assert.ok(Math.abs(g.values[13] - 5) < 1e-6); // distance 1 of max 2 → half weight
-  assert.equal(g.values[0], 0); // corner: Euclidean 2.83 > 2 → fade 0 → 0, as in the reference
+  assert.equal(g.values[0], 0); // corner: Euclidean 2.83 > 2 → fade 0 → 0
   assert.ok(Math.abs(g.values[6] - 10 * (1 - Math.SQRT2 / 2)) < 1e-6); // diagonal neighbour (row 1, col 1)
 });
 

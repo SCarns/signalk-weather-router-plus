@@ -2,14 +2,11 @@
  * One leg on the navigation mesh: the tiles read as the search reaches them
  * (paged.ts), the triangles the boat cannot use marked in each, search
  * (astar.ts) and pull the string through the crossed edges (funnel.ts).
- * Motor only: the cost
- * is distance with the mesh's shore and depth penalties over the motor
- * speed; no wind or current. The experiment's mesh_route5.py with
- * RULES=full, ported; the parity test against its saved results is in
- * the experiment folder (not this repo).
+ * Motor only: the cost is distance with the mesh's shore and depth
+ * penalties over the motor speed; no wind or current.
  *
  * Blocked triangles:
- *  - a charted vertical clearance under the air draft + 1 m (the overhead
+ *  - a charted vertical clearance under the air draft + 2 m (the overhead
  *    clearance setting; an opening
  *    bridge's open clearance; the bridge is blocked outright when the
  *    route's rule for opening bridges is 'avoid');
@@ -25,6 +22,7 @@
  */
 
 import { haversineDistanceM, type BBox } from '../../geo/geodesy';
+import { DEFAULT_OVERHEAD_M, DEFAULT_UKC_M } from '../../vessel/vessel';
 import type { LegPlan } from '../multileg';
 import { MinHeap } from '../heap';
 import { meshAstar } from './astar';
@@ -53,9 +51,9 @@ export type DrawbridgeChoice = (typeof DRAWBRIDGE_CHOICES)[number];
 export interface MeshRules {
   draughtM: number;
   airDraftM: number;
-  /** Water kept under the keel, m (absent: 0.5). */
+  /** Water kept under the keel, m (absent: DEFAULT_UKC_M). */
   underKeelClearanceM?: number;
-  /** Headroom kept above the mast, m (absent: 1). */
+  /** Headroom kept above the mast, m (absent: DEFAULT_OVERHEAD_M). */
   overheadClearanceM?: number;
   motorSpeedMs: number;
   /** Opening bridges: 'open' (default) passes them under their open clearance; 'avoid' blocks every one. */
@@ -134,8 +132,8 @@ export function meshCovers(store: MeshStore, points: [number, number][]): boolea
 
 export function blockedTriangles(m: LoadedMesh, rules: MeshRules): Uint8Array {
   const b = new Uint8Array(m.n);
-  const minClear = rules.airDraftM + (rules.overheadClearanceM ?? 1);
-  const minDepth = rules.draughtM + (rules.underKeelClearanceM ?? 0.5);
+  const minClear = rules.airDraftM + (rules.overheadClearanceM ?? DEFAULT_OVERHEAD_M);
+  const minDepth = rules.draughtM + (rules.underKeelClearanceM ?? DEFAULT_UKC_M);
   const { flags, depth, clear, hazv } = m;
   const avoidOpening = rules.openingBridges === 'avoid';
   for (let t = 0; t < m.n; t++) {

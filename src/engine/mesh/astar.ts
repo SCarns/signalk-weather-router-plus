@@ -4,8 +4,7 @@
  * id; moving to a neighbour costs the distance between the two edge
  * midpoints times the triangle's penalty multiplier, divided by the boat
  * speed (seconds). The heuristic is the straight-line time to the end
- * point. Port of the numba search in the experiment's mesh_route5.py (same
- * expansion order: heap.ts orders ties as that heap did).
+ * point. Ties expand in heap.ts's order.
  *
  * Several start and end triangles (a point on a corner or edge touches each of them, paged.ts locateAll): the
  * search starts from all of them at cost 0 and arrives at any of them, so a stop on a corner shared with other water

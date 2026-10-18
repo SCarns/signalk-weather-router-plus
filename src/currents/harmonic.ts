@@ -1,6 +1,6 @@
 /**
- * Tidal currents predicted from harmonic constituents stored in the
- * routing project's `.npz` layout (FES2014 or NECOFS extracts):
+ * Tidal currents predicted from harmonic constituents stored in this
+ * `.npz` layout (FES2014 or NECOFS extracts):
  *
  *   lats, lons                      1-D, ascending
  *   constituents                    string array
@@ -9,7 +9,7 @@
  *   bbox                            [south, west, north, east]
  *   source_name, priority, resolution_m
  *
- * Prediction, per the reference implementation:
+ * Prediction:
  *   u(cm/s) = Σ_c f_c · A_c · cos( G_c·π/180 + u_c − g_c·π/180 )
  * with (u_c, f_c, G_c) from pyTMD's `arguments(..., corrections="FES")`
  * (ported in tidal_arguments.ts). The whole grid is predicted once per
@@ -152,8 +152,8 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
         );
     }
 
-    // Drop constituents the argument port does not support, as the
-    // reference drops those pyTMD rejects (e.g. la2).
+    // Drop constituents the tidal-argument code does not support (those
+    // pyTMD rejects, e.g. la2).
     const keep: number[] = [];
     const dropped: string[] = [];
     allCons.forEach((c, i) => (isSupportedConstituent(c) ? keep.push(i) : dropped.push(c)));
@@ -305,10 +305,9 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
 
   /**
    * Bilinear sample of a grid (cm/s); NaN if any corner is NaN. Indices
-   * clamp to the edges. The reference computes the fractional index in
-   * float32 (its lat/lon axes are float32 and numpy promotes the Python
-   * scalar to float32); this port uses double, which differs from the
-   * reference by up to ~1e-5 m/s on strong currents.
+   * clamp to the edges. The fractional index is computed in double;
+   * computed in float32 it would differ by up to ~1e-5 m/s on strong
+   * currents.
    */
   private interp(grid: Float32Array, lon: number, lat: number): number {
     const nLat = this.lats.length;

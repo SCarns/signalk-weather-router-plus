@@ -1,4 +1,4 @@
-# Plan: waypoints as legs (port the parent's multi-leg routing)
+# Plan: waypoints as legs (multi-leg routing)
 
 Status: **done** 2026-09-28 (written 2026-09-28 17:15 EDT). Waypoints are
 leg ends: `src/engine/multileg.ts` (planLegs / stitchLegs / routeMultiLeg),
@@ -9,12 +9,12 @@ fields `precision` / `arrival_radius_m`, page Precision select + radius
 50–2000 m default 200. On brain, cycle 2026-09-28 12Z: the job 5e0abb0d
 request succeeds precise and approximate (500 m, 200 m), motor and
 sail_max; Lisbon → Palma via Cabo de São Vicente and a hairpin succeed;
-no-waypoint routes byte-identical to the installed build. Deviation from
-the reference: the next approximate leg starts at the circle entry, not
-the canonical waypoint.
+no-waypoint routes byte-identical to the installed build. By design, the
+next approximate leg starts at the circle entry, not the canonical
+waypoint.
 
 Update 2026-09-29: the collapse of consecutive approximate legs into one
-via-disc search **is now ported** (`collapseRuns` in multileg.ts), with
+via-disc search **is now done** (`collapseRuns` in multileg.ts), with
 two additions: an into-the-circle hop candidate in the propagator
 (INTO_CIRCLE_NOTE in propagator.ts), and a leg-by-leg fallback when no
 branch crosses every circle.
@@ -34,7 +34,7 @@ branch crosses every circle.
   2026-09-27 16:19; source: /tmp/baja-yday.log on brain) and with the
   pre-water-grid build (commit `1376ad6`, 2026-09-28 13:12; source:
   /tmp/baja-old.log). It is **not** a regression from today's changes: the
-  plugin never ported the parent's multi-leg layer.
+  plugin never had a multi-leg layer.
 - The skeleton passes exactly through every waypoint (0 m; source:
   /tmp/skel.log on brain), so the skeleton is not the cause.
 
@@ -49,35 +49,30 @@ full step ahead of their nearest skeleton point (`targetForParent`,
 course turns, legs cut the corner and miss a 500 m disc; once past, no
 branch returns. The end point, by contrast, gets a final straight hop.
 
-## The parent's design (what to port)
+## Design
 
-Source: the routePlanning repository.
-
-- `routing/engine/hybrid.py` `compute_multi_leg_route` (line 850):
-  `stops = [start, via1, …, end]`; **each consecutive pair is routed as its
+- `stops = [start, via1, …, end]`; **each consecutive pair is routed as its
   own route**, departing at the previous leg's arrival time so
   wind/current/tide advance; legs are stitched (duplicate junction
   waypoints dropped, distances and sail/motor times summed). Each leg has
   its own search and retries.
-- `routing/routers/routes.py` lines 95–122: request fields
+- Request fields
   `precision: "precise" | "approximate"` (default `"precise"`) and
   `arrival_radius_m` (default 200, range 0–5000; must be > 0 for
   approximate).
   - **Precise**: each leg ends exactly at the waypoint via a short motor
     segment.
-  - **Approximate (the circle)**: `routing/engine/ocean_propagator.py`
-    lines 1037–1075: the leg's propagation is done "as soon as any
-    candidate enters this disc, regardless of stage-step size"; the next
-    leg starts from that point (lines 1148–1160, `snap_to_exact=False`).
+  - **Approximate (the circle)**: the leg's propagation is done as soon
+    as any candidate enters this disc, regardless of stage-step size; the
+    next leg starts from that point (no snap to the exact waypoint).
     Final destination is always exact.
-- Parent UI (`ui/route-planner.html` lines 666–687): a "Waypoint
-  behaviour" section with a **Precision** select (Precise / Approximate)
+- UI: a "Waypoint behaviour" section with a **Precision** select (Precise / Approximate)
   and **Waypoint radius** slider 50–2000 m, default 200 ("Ignored in
   Precise mode").
 
 The circle matters to the user ("the circle is important"): keep it, but
-reached the way the parent does it (leg ends on entering the circle), not
-by chance crossing.
+reached on purpose (the leg ends on entering the circle), not by chance
+crossing.
 
 ## Current plugin state
 
@@ -93,7 +88,7 @@ by chance crossing.
 1. **Request/protocol** (`src/plugin/protocol.ts`, `src/plugin/api.ts`
    validation, `openapi.ts`, README): add `precision` ("precise" default,
    "approximate") and `arrival_radius_m` (default 200, 0–5000; > 0 when
-   approximate), matching the parent. Keep per-waypoint `radius_m` if
+   approximate). Keep per-waypoint `radius_m` if
    present (it overrides `arrival_radius_m` for that waypoint).
 2. **Leg loop** (route job in `src/plugin/worker.ts`; a new
    `src/engine/multileg.ts` so it is testable and used by the CLI too):
@@ -104,7 +99,7 @@ by chance crossing.
    arrival.
 3. **Propagator leg end** (`src/engine/propagator.ts`):
    - add an `arrivalRadiusM` option: terminate as soon as any candidate
-     is within it of the leg's end (parent's rule (a)), keeping the
+     is within it of the leg's end (rule (a)), keeping the
      one-stage fallback (rule (b));
    - add `snapToExact` (true for precise legs and always for the last
      leg): validate and append the final hop to the exact point
@@ -116,9 +111,9 @@ by chance crossing.
    `role: "via"` in the GeoJSON; auto vias stay listed separately;
    progress messages per leg ("leg 2/4: …").
 5. **Page** (`public/index.html`, `public/rp-plan.js` buildRoutePayload,
-   `rp-core.js` persisted inputs): add the parent's "Waypoint behaviour"
-   section: Precision select + radius slider 50–2000 m default 200 (hint
-   text as the parent). Send `precision` and `arrival_radius_m`.
+   `rp-core.js` persisted inputs): add a "Waypoint behaviour" section:
+   Precision select + radius slider 50–2000 m default 200 (hint "Ignored
+   in Precise mode"). Send `precision` and `arrival_radius_m`.
 6. **CLI** (`src/cli.ts`): `--precision precise|approximate`,
    `--radius <m>`; `--via` keeps `@radius` per waypoint.
 

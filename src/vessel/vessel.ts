@@ -18,27 +18,32 @@ export interface VesselParams {
    * (the plugin's earlier fixed 0.5 m is the default).
    */
   underKeelClearanceM: number;
-  /** Headroom kept above the mast, m. Charted clearance must be at least the air draft + this (default the earlier fixed 1 m). */
+  /** Headroom kept above the mast, m. Charted clearance must be at least the air draft + this (default 2 m). */
   overheadClearanceM: number;
 }
+
+/**
+ * The clearances' defaults and the ranges a vessel may set, m: the one place for them (the settings, the route
+ * request's validation and the mesh rules all read these).
+ */
+export const DEFAULT_UKC_M = 0.5;
+export const UKC_M_RANGE: readonly [number, number] = [0, 3];
+export const DEFAULT_OVERHEAD_M = 2;
+export const OVERHEAD_M_RANGE: readonly [number, number] = [0, 10];
 
 export const DEFAULT_VESSEL: VesselParams = {
   motorSpeedMs: 3.09,
   polarPerformance: 1,
   draughtM: null,
   airDraftM: null,
-  underKeelClearanceM: 0.5,
-  overheadClearanceM: 1,
+  underKeelClearanceM: DEFAULT_UKC_M,
+  overheadClearanceM: DEFAULT_OVERHEAD_M,
 };
 
 /** Merge a partial override onto defaults, validating ranges. */
 /** The bounds makeVessel enforces on the drafts; Signal K self-data outside them reads as unknown (plugin/config.ts selfDesignValue). */
 export const DRAUGHT_M_RANGE: readonly [number, number] = [0.1, 30];
 export const AIR_DRAFT_M_RANGE: readonly [number, number] = [0.5, 100];
-/** The under-keel clearance a vessel may set, m. */
-export const UKC_M_RANGE: readonly [number, number] = [0, 3];
-/** [PLACEHOLDER] The overhead clearance a vessel may set, m: 0-10 m until decided. */
-export const OVERHEAD_M_RANGE: readonly [number, number] = [0, 10];
 
 export function makeVessel(partial: Partial<VesselParams>): VesselParams {
   const v: VesselParams = { ...DEFAULT_VESSEL, ...stripUndefined(partial) };

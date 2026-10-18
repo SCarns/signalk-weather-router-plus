@@ -1,9 +1,9 @@
 /**
  * A leg on the chart mesh, as the leg pipeline uses it: whether the mesh
  * takes the leg, the split of the mesh route into narrow and open-water
- * segments (the parent planner's hybrid rule; with a sail threshold of 0
- * the narrow passages are sailed too), the Route for a stretch walked
- * along the mesh polyline, and the stitching of the segments.
+ * segments (with a sail threshold of 0 the narrow passages are sailed
+ * too), the Route for a stretch walked along the mesh polyline, and the
+ * stitching of the segments.
  *
  * The search itself runs wherever the host puts it (the plugin: a child
  * process, so the tile arrays go back to the operating system after the
@@ -175,11 +175,10 @@ export type MeshPlan =
     };
 
 /**
- * The mesh route as the open-water search's corridor (the parent planner's
- * hybrid rule: the mesh route is the skeleton). Without it the search drew
- * its own coarse skeleton on the coastline, which cut across the tip of
- * Monomoy where the mesh route rounds it (2026-10-08, job 219300ca). The
- * width is the water on both sides of the track from the mesh ray walk;
+ * The mesh route as the open-water search's corridor (the mesh route is
+ * the skeleton). Without it the search drew its own coarse skeleton on
+ * the coastline, which cut across the tip of Monomoy where the mesh route
+ * rounds it (2026-10-08, job 219300ca). The width is the water on both sides of the track from the mesh ray walk;
  * where both sides reached its cap the water counts as open, so the search
  * keeps its open-water freedom to leave the line.
  */
@@ -217,30 +216,28 @@ export interface MeshSegment {
   end: number;
 }
 
-/** Both shores within this of the track: a constrained passage (the parent's constrained_width_m). */
+/** Both shores within this of the track: a constrained passage. */
 export const CONSTRAINED_WIDTH_M = 1000;
 /**
- * Track of the other kind before the classification flips. The parent
- * counts RUN_LENGTH = 3 samples taken every 10th cell of its dense
- * skeleton; the mesh route's points are the corners the string-pulled
- * path turns at, sparse and uneven, so the hysteresis is by distance.
+ * Track of the other kind before the classification flips. The mesh
+ * route's points are the corners the string-pulled path turns at, sparse
+ * and uneven, so the hysteresis is by distance, not by a count of points.
  */
 const HYSTERESIS_M = 1000;
-/** How far a constrained segment reaches back / on through constrained points at its ends (the parent's pad_m). */
+/** How far a constrained segment reaches back / on through constrained points at its ends. */
 const PAD_M = 2000;
-/** An open segment shorter than this is motored along the mesh route rather than sailed (the parent's rule). */
+/** An open segment shorter than this is motored along the mesh route rather than sailed. */
 export const MIN_OPEN_SEGMENT_M = 100;
 
 /**
  * Split a mesh route into constrained and open segments by the water on
- * each side of the track: the parent planner's classify_segments.
- * Constrained only where BOTH sides are within CONSTRAINED_WIDTH_M
- * (one-sided proximity is coastal sailing); a flip needs HYSTERESIS_M of
- * track of the other kind, and the segment boundary sits where that run
- * completes, so a constrained segment takes in the open run-out after it
- * (the parent's padding into open water, so the sailing search never
- * starts at a channel mouth) and reaches back over constrained lead-in
- * points up to PAD_M.
+ * each side of the track. Constrained only where BOTH sides are within
+ * CONSTRAINED_WIDTH_M (one-sided proximity is coastal sailing); a flip
+ * needs HYSTERESIS_M of track of the other kind, and the segment boundary
+ * sits where that run completes, so a constrained segment takes in the
+ * open run-out after it (padding into open water, so the sailing search
+ * never starts at a channel mouth) and reaches back over constrained
+ * lead-in points up to PAD_M.
  */
 export function classifySegments(path: [number, number][], widths: [number, number][], thresholdM = CONSTRAINED_WIDTH_M): MeshSegment[] {
   const n = path.length;

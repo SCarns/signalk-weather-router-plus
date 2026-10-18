@@ -1,6 +1,6 @@
 /**
- * One leg on the chart mesh, planned where the mesh is loaded: the parent
- * planner's hybrid rule. The mesh route is the skeleton; under motor it is
+ * One leg on the chart mesh, planned where the mesh is loaded, by the
+ * hybrid rule. The mesh route is the skeleton; under motor it is
  * the route; otherwise its narrow passages (both shores within
  * CONSTRAINED_WIDTH_M) are motored along the mesh (sailed when the sail
  * threshold is 0) and each open stretch between them is sailed by the
@@ -117,7 +117,7 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
   const motor = inp.sim.modePolicy === 'motor';
   // Sail only: sail_max with a threshold of 0 never motors (legsim.ts), so
   // the narrow passages are sailed along the mesh route too (2026-10-08,
-  // the owner's decision); above 0 they are motored as the parent does.
+  // the owner's decision); above 0 they are motored.
   const sailOnly = inp.sim.modePolicy === 'sail_max' && inp.sim.sailThreshMs <= 0 && inp.polar !== null;
   const segs: MeshSegment[] = motor
     ? [{ type: 'constrained', start: 0, end: res.path.length - 1 }]
@@ -220,8 +220,8 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
           0,
           `${label}: open water, {distance:${lenM.toFixed(0)}} along the mesh route; the isochrone search made it ${part.waypoints.length} waypoints, {time:${part.totalTimeS}} (sailing {time:${part.sailingTimeS}})`
         );
-        // Simplification as on a coastline leg (parent order: RDP, then the
-        // shortcut smoother), with the mesh as land so a shortcut is taken
+        // Simplification as on a coastline leg (RDP, then the shortcut
+        // smoother), with the mesh as land so a shortcut is taken
         // only where the mesh allows it; both routers, the request's choice.
         const nRdp = rdpSimplify(part, land, inp.simplifyM);
         if (nRdp) recomputeTotals(part);

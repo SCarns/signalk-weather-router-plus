@@ -1,6 +1,5 @@
 /**
- * Derived meteorological/sea-state quantities, ported from the routing
- * server's `routers/conditions.py` and `routers/roughness.py`.
+ * Derived meteorological/sea-state quantities.
  *
  * Units follow Signal K: SI throughout, dimensionless quantities as plain
  * ratios (relative humidity 0..1) or indices (Beaufort, Douglas, sea
@@ -91,19 +90,19 @@ const SWH_FADE_M = 0.5;
 /**
  * Weight of the wave term, `SWELL_COEFF × swh² × periodScale × steepen`.
  * The wind term is 50 in any breeze without a current, so this sets how
- * rough the index calls a sea. It was 30 (from the routing server's
- * roughness.py), which put a 2.24 m sea in the "extreme" band by itself:
- * moderate wind seas (Douglas 4, 2–2.4 m at 6–7 s) read extreme. 10 is
- * calibrated on twelve cases (conditions.test.ts): 2 m wind sea choppy,
- * 3.5 m rough, 5 m and more extreme, long swell milder than a wind sea of
- * the same height, a tide race or the Gulf Stream against 2 m seas rough.
+ * rough the index calls a sea. It was 30, which put a 2.24 m sea in the
+ * "extreme" band by itself: moderate wind seas (Douglas 4, 2–2.4 m at
+ * 6–7 s) read extreme. 10 is calibrated on twelve cases
+ * (conditions.test.ts): 2 m wind sea choppy, 3.5 m rough, 5 m and more
+ * extreme, long swell milder than a wind sea of the same height, a tide
+ * race or the Gulf Stream against 2 m seas rough.
  */
 export const SWELL_COEFF = 10;
 
 /**
  * Combined wind-vs-current + swell-vs-current roughness index and the
- * "signal" (0..1) that drives heatmap alpha. Scalar port of
- * `_roughness_index`; all angles degrees, speeds m/s.
+ * "signal" (0..1) that drives heatmap alpha. All angles degrees, speeds
+ * m/s.
  */
 export function roughnessIndex(
   W: number,
