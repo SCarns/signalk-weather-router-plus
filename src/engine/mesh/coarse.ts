@@ -31,7 +31,8 @@ import { FLAG_OPENING_BRIDGE, type MeshStore } from './store';
 
 // 4: the rules carry the under-keel and overhead clearances.
 // 5: the rules are to the centimetre (meshcoarse.ts coarseRulesOf), as the file name; a v4 file may hold more digits.
-export const COARSE_VERSION = 5;
+// 6: the boundary record uses the rules' clearances (boundarySeeds); v5 used the fixed 0.5 m / 1 m there.
+export const COARSE_VERSION = 6;
 
 /** The rules a rough cut is built for: the boat, the buffer from unusable water, and opening bridges open or avoided. */
 export interface CoarseRules {
@@ -124,9 +125,18 @@ export function boundarySeeds(store: MeshStore, rules: CoarseRules): BoundarySee
   const bridges: number[] = [];
   for (const info of [...store.index.tiles].sort((a, b) => a.first - b.first)) {
     const t = store.readTileArrays(info);
+    // The rough cut's rules, clearances included (before version 6 the fixed 0.5 m / 1 m were used here, so the
+    // record disagreed with the map and its name for any other clearance); opening bridges as open.
     const b = blockedTriangles(
       { n: t.n, flags: t.flags, depth: t.depth, clear: t.clear, hazv: t.hazv } as Parameters<typeof blockedTriangles>[0],
-      { draughtM: rules.draughtM, airDraftM: rules.airDraftM, motorSpeedMs: 1, openingBridges: 'open' }
+      {
+        draughtM: rules.draughtM,
+        airDraftM: rules.airDraftM,
+        underKeelClearanceM: rules.underKeelClearanceM,
+        overheadClearanceM: rules.overheadClearanceM,
+        motorSpeedMs: 1,
+        openingBridges: 'open',
+      }
     );
     for (let a = 0; a < t.n; a++) {
       let outer = false;

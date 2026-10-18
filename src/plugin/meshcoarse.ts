@@ -579,11 +579,19 @@ export function runMeshSnapTask(t: MeshSnapTask): MeshSnapResult {
       out.push({ lon: p.lon, lat: p.lat, movedM: 0, why: null, outsideGroup: true });
       continue;
     }
-    if (nu.distM > t.maxMoveM)
+    if (nu.distM > t.maxMoveM) {
+      // The route's water is the last stop's: when this stop's nearest usable water is close but the nearest water
+      // connected to the last stop is far, the last stop sits in water the boat cannot reach from here (an enclosed
+      // pond, a bridged basin), and that is what to say.
+      const near = pm.nearestUsable(px, py);
+      const isolatedEnd = p !== last && near !== null && near.distM <= t.maxMoveM;
       return {
         ok: false,
-        reason: `${p.name}, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}, ${why}; the nearest water this boat can use, connected to the route, is {length:${nu.distM.toFixed(0)}} away at ${lat.toFixed(4)}, ${lon.toFixed(4)}, more than {length:${t.maxMoveM}}; move it there or into deeper water`,
+        reason: isolatedEnd
+          ? `${last.name} is in water this boat cannot reach from ${p.name} on the chart mesh (the water near ${p.name} does not connect to it); the nearest water connected to ${last.name} is {length:${nu.distM.toFixed(0)}} from ${p.name}, at ${lat.toFixed(4)}, ${lon.toFixed(4)}; move ${last.name} into water the boat can enter, or ${p.name} there`
+          : `${p.name}, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}, ${why}; the nearest water this boat can use, connected to the route, is {length:${nu.distM.toFixed(0)}} away at ${lat.toFixed(4)}, ${lon.toFixed(4)}, more than {length:${t.maxMoveM}}; move it there or into deeper water`,
       };
+    }
     out.push({ lon, lat, movedM: nu.distM, why, outsideGroup: usable });
   }
   return { ok: true, points: out };

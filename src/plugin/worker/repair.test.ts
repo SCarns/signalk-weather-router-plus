@@ -82,14 +82,82 @@ test('repair: back to front, a motoring detour warns, what stays blocked is retu
   );
   assert.deepEqual(order, [7, 6, 5, 4, 3], 'five detours, the last segment first');
   assert.equal(r.repairsApplied, 5);
+  // leg_index is the segment (as stitchLegs indexes warnings); these detours add no waypoints, so nothing moves.
   assert.deepEqual(
-    (r.warnings ?? []).map(w => [w.violation, w.detail]),
-    [['detour_motored', '600']]
+    (r.warnings ?? []).map(w => [w.violation, w.leg_index, w.detail]),
+    [['detour_motored', 7, '600']]
   );
   assert.deepEqual(
     out.violations.map(v => v.segment),
     [1]
   );
+});
+
+test('repair: warnings after a detour move with its waypoints; those before it stay', async () => {
+  const r = route([wp(0, 0), wp(1, 60), wp(2, 120), wp(3, 180), wp(4, 240)]);
+  r.warnings = [
+    { leg_index: 0, violation: 'wind_over_limit', from: [0, 41], to: [1, 41], repaired: false },
+    { leg_index: 2, violation: 'wind_over_limit', from: [2, 41], to: [3, 41], repaired: false },
+  ];
+  await repairViolations(
+    r,
+    check([violation(1, 1.5), violation(3, 3.5)]),
+    {
+      sailing: true,
+      detour: async (a, b) => {
+        // Segment 3: straight, motored; segment 1: two waypoints round the shoal.
+        const d = a.lon === 3 ? route([wp(3, 180), wp(4, 240)]) : route([wp(a.lon, 60), wp(1.4, 80), wp(1.6, 100), wp(b.lon, 120)]);
+        d.motoringTimeS = a.lon === 3 ? 300 : 0;
+        return d;
+      },
+    },
+    async () => check([]),
+    quiet,
+    () => false
+  );
+  assert.deepEqual(
+    r.waypoints.map(w => w.lon),
+    [0, 1, 1.4, 1.6, 2, 3, 4]
+  );
+  assert.deepEqual(
+    (r.warnings ?? []).map(w => [w.violation, w.leg_index]),
+    [
+      ['wind_over_limit', 0],
+      ['wind_over_limit', 4],
+      ['detour_motored', 5],
+    ]
+  );
+  // Each warning still starts at the waypoint it started at.
+  assert.deepEqual(
+    (r.warnings ?? []).map(w => r.waypoints[w.leg_index].lon),
+    [0, 2, 3]
+  );
+});
+
+test('repair: a sailing detour stuck at Min sail speed 0 says the detour could not tack clear, not to change the setting', async () => {
+  const r = route([wp(0, 0), wp(1, 60)]);
+  const said: string[] = [];
+  await repairViolations(
+    r,
+    check([violation(0, 0.5)]),
+    {
+      sailing: true,
+      detour: async () => {
+        throw new Error(
+          'chart mesh segment 1/1: ROUTE FAILED: the beat from 41.0000, 0.0000 towards 41.0000, 1.0000 cannot be tacked at 41.0000, 0.0000: every tack tried crossed land or could not be sailed, and the course itself cannot be sailed straight. Min sail speed is 0 (never motor), so the boat may not motor where it cannot tack: set Min sail speed above 0'
+        );
+      },
+    },
+    async () => check([]),
+    (_s, _t, m) => said.push(m),
+    () => false
+  );
+  assert.equal(said.length, 1);
+  assert.match(
+    said[0],
+    /^WARNING: repair: no detour around 41\.0000, 0\.5000 \(charted depth \{depth:1\}\): a sailing detour could not tack clear/
+  );
+  assert.doesNotMatch(said[0], /set Min sail speed/);
 });
 
 test('repair: a motor route does not warn about motoring; a failed detour leaves the segment for the caller', async () => {

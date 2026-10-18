@@ -201,6 +201,21 @@ test('mesh-snap: a stop on water the boat cannot use, or in a pond, moves to the
         far.reason,
         /^the start point, at 3\.6000, 0\.5000, is on charted depth \{depth:1\}, too shallow for this boat; the nearest water this boat can use, connected to the route, is \{length:\d+\} away at 3\.0000, 0\.5000, more than \{length:1000\}/
       );
+    // The destination in the pond, the start on the shallow tile: usable water lies within the limit of the start
+    // (down its arm) but none of it connects to the pond, so the destination is what cannot be reached.
+    const isolated = snap(
+      [
+        { lon: 0.5, lat: 3.6, name: 'the start point' },
+        { lon: 5.5, lat: 5.5, name: 'the destination' },
+      ],
+      100_000
+    );
+    assert.ok(!isolated.ok);
+    if (!isolated.ok)
+      assert.match(
+        isolated.reason,
+        /^the destination is in water this boat cannot reach from the start point on the chart mesh \(the water near the start point does not connect to it\); the nearest water connected to the destination is \{length:\d+\} from the start point, at 5\.0000, 5\.0000; move the destination into water the boat can enter, or the start point there$/
+      );
   } finally {
     fs.rmSync(mesh, { recursive: true, force: true });
     fs.rmSync(data, { recursive: true, force: true });

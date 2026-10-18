@@ -106,7 +106,11 @@ export function _fmt(siValue, key) {
   if (!c) return UNIT_MISSING;
   if (c.text) return c.text(siValue);
   const t = c.fn(siValue).toFixed(c.precision);
-  return (t === '-0' ? '0' : t) + (c.unit ? ' ' + c.unit : '');
+  return (t === '-0' ? '0' : t) + unitSuffix(c.unit);
+}
+// The unit after the number: a space before "kn", "m", "hPa"; none before "°" and "%".
+export function unitSuffix(unit) {
+  return unit ? (unit === '°' || unit === '%' ? unit : ' ' + unit) : '';
 }
 export function fmtSpeed(ms)        { return _fmt(ms, 'speed'); }
 export function fmtDist(m)          { return _fmt(m, 'distance'); }
@@ -132,7 +136,7 @@ export function unitQuantityText(cat, si) {
   const c = UI_UNITS[TOKEN_QUANTITY[cat]];
   if (!c || !Number.isFinite(si)) return UNIT_MISSING;
   if (c.text) return c.text(si);
-  return Number(c.fn(si).toPrecision(3)) + (c.unit ? ' ' + c.unit : '');
+  return Number(c.fn(si).toPrecision(3)) + unitSuffix(c.unit);
 }
 export function unitTextHtml(text) {
   return escapeHtml(text).replace(UNIT_TOKEN, (_, q, v) =>
@@ -147,7 +151,16 @@ export function fillUnitTokens(root = document) {
 }
 
 /** An angle the plugin gives in degrees, in the user's angle unit. */
-export function fmtAngleDeg(deg)    { return deg == null ? null : _fmt(deg * Math.PI / 180, 'angle'); }
+// Headings and directions: whole degrees (a tenth of a degree says nothing a helm can use); another angle unit as the preferences format it.
+export function fmtAngleDeg(deg) {
+  if (deg == null) return null;
+  const c = UI_UNITS.angle;
+  if (c && !c.text && c.unit === '°') {
+    const v = Math.round(c.fn(deg * Math.PI / 180));
+    return (Object.is(v, -0) ? 0 : v) + '°';
+  }
+  return _fmt(deg * Math.PI / 180, 'angle');
+}
 // Display-unit descriptor for chart axes and legends: {fn, u, p};
 // fn converts SI → display (may be non-linear, e.g. Beaufort). When the
 // unit is unresolved, `missing` is set and fn gives NaN.
@@ -1189,12 +1202,12 @@ export function loadPluginStatus() {
       if (fi) {
         const f = s.forecast;
         fi.innerHTML = f
-          ? 'Cycle <b>' + f.cycle + '</b><br>valid ' + f.valid_from + ' → ' + f.valid_to + '<br>coverage ' + (f.coverage || 'global')
+          ? 'Cycle <b>' + escapeHtml(f.cycle) + '</b><br>valid ' + escapeHtml(f.valid_from) + ' → ' + escapeHtml(f.valid_to) + '<br>coverage ' + escapeHtml(f.coverage || 'global')
             + (typeof f.decoded_bytes === 'number' ? ', ' + _fmt(f.decoded_bytes, 'data_size') + ' decoded on disk' : '')
             + (f.memory ? ', ' + _fmt(f.memory.data_worker_held_bytes + f.memory.route_worker_held_bytes, 'data_size') + ' in memory now' : '')
-            + '<br>params: ' + (f.params || []).join(', ') + (s.extra_fields ? '' : '<br><span style="color:var(--warn)">extra fields (temperature, precipitation, SST, humidity) are off in Settings</span>')
-            + (s.rtofs_run ? '<br>RTOFS run ' + s.rtofs_run : '')
-            + (s.vessel ? '<br>vessel ' + (s.vessel.name || '—') + ', motor ' + (fmtSpeed(s.vessel.motorSpeedMs) || '—') : '')
+            + '<br>params: ' + escapeHtml((f.params || []).join(', ')) + (s.extra_fields ? '' : '<br><span style="color:var(--warn)">extra fields (temperature, precipitation, SST, humidity) are off in Settings</span>')
+            + (s.rtofs_run ? '<br>RTOFS run ' + escapeHtml(s.rtofs_run) : '')
+            + (s.vessel ? '<br>vessel ' + escapeHtml(s.vessel.name || '—') + ', motor ' + (fmtSpeed(s.vessel.motorSpeedMs) || '—') : '')
           : '<span style="color:var(--warn)">No forecast loaded' + (s.forecast_error ? ': ' + unitTextHtml(s.forecast_error) : '') + '</span>';
       }
       window.dispatchEvent(new Event('rp:status'));

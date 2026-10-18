@@ -208,6 +208,20 @@ test('paged mesh: the buffer crosses a tile edge from the rough cut’s blocked 
   );
 });
 
+test('boundary record: the tile-edge triangles are blocked under the rules’ under-keel clearance, not a fixed 0.5 m', () => {
+  // (1, 0) 2.3 m deep for a 2 m draught: blocked at 0.5 m of clearance, clear at 0.2 m.
+  withMesh(
+    [
+      { i: 0, j: 0 },
+      { i: 1, j: 0, depth: 2.3 },
+    ],
+    store => {
+      assert.deepEqual(Array.from(boundarySeeds(store, RULES).blocked), [3]);
+      assert.deepEqual(Array.from(boundarySeeds(store, { ...RULES, underKeelClearanceM: 0.2 }).blocked), []);
+    }
+  );
+});
+
 test('the rough cut connects two points exactly when the search finds a route: buffer, area to avoid, opening bridge', () => {
   /** Rough cut and search on the same mesh and rules: they must agree. */
   const agree = (store: MeshStore, rules: CoarseRules, avoid?: MeshRules['avoid']): boolean => {

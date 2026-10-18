@@ -485,8 +485,8 @@ const ROUTE_PARAMS = ['10u', '10v', 'swh', 'mwp', 'mwd'];
 
 /**
  * Degrees added around the corridor box for the route's forecast area.
- * The engine can sample outside the land raster's box (outside it is
- * water to the land test); inside this margin every sample is exactly
+ * The engine can sample outside the land raster's box (the land test
+ * treats outside it as land, geo/landmask.ts); inside this margin every sample is exactly
  * the global forecast's value, beyond it the value of the area's edge.
  */
 const ROUTE_FORECAST_MARGIN_DEG = 5;
@@ -1251,7 +1251,12 @@ export async function repairViolations(
         d = await repair.detour(a, b);
       } catch (err) {
         if (shouldCancel() || err instanceof RouteCancelled) throw new RouteCancelled();
-        progress(0, 0, `WARNING: repair: no detour around ${at} (${violationText(v)}): ${(err as Error).message}`);
+        // The detour sails with the threshold at 0 (never motor): the layout's advice to raise Min sail speed is
+        // about the detour, not the user's setting.
+        const reason = (err as Error).message.includes('Min sail speed is 0')
+          ? 'a sailing detour could not tack clear of the blocked water (the repair does not motor)'
+          : (err as Error).message.replace(/^.*?ROUTE FAILED: /, '');
+        progress(0, 0, `WARNING: repair: no detour around ${at} (${violationText(v)}): ${reason}`);
         continue;
       }
       const dw = d.waypoints;
@@ -1269,6 +1274,8 @@ export async function repairViolations(
       else delete last.role;
       const after = wps.slice(k + 2).map(w => ({ ...w, time: new Date(w.time.getTime() + shiftMs) }));
       route.waypoints = [...wps.slice(0, k + 1), ...mid, last, ...after];
+      // Warnings index the route's segments (multileg.ts stitchLegs): those after the detour move with its waypoints.
+      for (const w of route.warnings ?? []) if (w.leg_index > k) w.leg_index += mid.length;
       route.repairsApplied = (route.repairsApplied ?? 0) + 1;
       spliced++;
       progress(
@@ -1279,7 +1286,7 @@ export async function repairViolations(
       if (repair.sailing && d.motoringTimeS > 0) {
         route.warnings = route.warnings ?? [];
         route.warnings.push({
-          leg_index: v.leg,
+          leg_index: k,
           violation: 'detour_motored',
           from: [a.lon, a.lat],
           to: [b.lon, b.lat],

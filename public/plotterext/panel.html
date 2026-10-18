@@ -805,9 +805,8 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     if (!l.last && fin(l.twa)) rows.push(['TWA', fmtAngle(l.twa)]);
     if (l.tack) rows.push(['Tack', l.tack === 'port' ? 'Port' : 'Starboard']);
     if (fin(l.curMs) && l.curMs > 0.05 && (v = fmtSpeed(l.curMs))) {
-      var from = fin(l.curDir) ? (l.curDir + 180) % 360 : null;
       var ff = l.last ? null : fairFoul(l.cogDeg, l.curDir);
-      rows.push(['Current', v + (from !== null ? ' from ' + cardinal(from) + ' (' + fmtAngle(from) + ')' : '') + (ff ? ' · ' + ff : ''), ff]);
+      rows.push(['Current', v + (fin(l.curDir) ? ' to ' + cardinal(l.curDir) + ' (' + fmtAngle(l.curDir) + ')' : '') + (ff ? ' · ' + ff : ''), ff]);
     }
     if (fin(l.swh)) {
       var wv = [l.last ? fmtWaves(l.swh) : (fmtRange(fmtWaves(l.legSwhMin), fmtWaves(l.legSwhMax)) || fmtWaves(l.swh))];
@@ -862,7 +861,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       : null;
     var ff = l.last ? null : fairFoul(l.cogDeg, l.curDir);
     var cur = fin(l.curMs) && l.curMs > 0.05 && (v = fmtSpeed(l.curMs))
-      ? v + (fin(l.curDir) ? ' from ' + cardinal((l.curDir + 180) % 360) : '') + (ff ? ' · ' + ff : '')
+      ? v + (fin(l.curDir) ? ' to ' + cardinal(l.curDir) : '') + (ff ? ' · ' + ff : '')
       : null;
     var waves = fin(l.swh)
       ? [fmtWaves(l.swh)].concat(fin(l.mwp) ? [fmtWavePeriod(l.mwp)] : [], fin(l.mwd) ? ['from ' + cardinal(l.mwd)] : []).join(' · ')

@@ -149,6 +149,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let startGen = 0;
   /** A route started before the first forecast was ready: sent to the route worker when it is (see startServices). */
   let waitingForForecast: Job | null = null;
+  /** The job last sent to the route worker: only it can be cancelled through the worker's flag (see cancelRunning). */
+  let routeAtWorker: string | null = null;
 
   /** Why the services are not up yet, for API answers and the status (`starting`). */
   function notStartedReason(): string {
@@ -187,6 +189,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       }
     }
     if (!jobs || jobs.runningId !== job.id) return; // cancelled meanwhile
+    routeAtWorker = job.id;
     pool.post('route', { type: 'route', id: job.id, request: job.request, avoid, self: selfDesign() });
   }
 
@@ -993,6 +996,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     pool.rejectPending('plugin stopped');
     jobs?.failRunning('plugin stopped');
     waitingForForecast = null;
+    routeAtWorker = null;
     jobs = null;
     prebuilder?.stop();
     prebuilder = null;
@@ -1141,6 +1145,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
         // Still waiting for the first forecast: nothing was sent to the worker.
         if (waitingForForecast && waitingForForecast.id === id) {
           waitingForForecast = null;
+          jobs?.onError(id, 'cancelled', true);
+          return;
+        }
+        // Running but not sent yet (dispatchRoute is reading the notes): the worker clears its flag when a route
+        // starts, so the flag would be lost. Finished here; dispatchRoute sees it is no longer running and drops it.
+        if (routeAtWorker !== id) {
           jobs?.onError(id, 'cancelled', true);
           return;
         }
