@@ -1,0 +1,71 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { ChartsProvider } from './charts';
+import type { DataStatus, ForecastRunInfo } from './protocol';
+
+const CYCLE_MS = Date.UTC(2026, 10, 2, 0);
+const HOUR = 3_600_000;
+const PARAMS = ['10u', '10v', 'msl', '2t', 'tprate', 'skt', 'ptype', 'swh', 'mwp', 'mwd'];
+
+/** A provider over a 10-day forecast run (with or without waves), no currents, no tides. */
+function provider(params = PARAMS): ChartsProvider {
+  const run = {
+    index: {
+      cycle: '2026110200',
+      cycleTimeMs: CYCLE_MS,
+      request: { horizonHours: 240, params },
+      steps: [0, 120, 240].map(h => ({ stepHours: h, validMs: CYCLE_MS + h * HOUR, params })),
+    },
+  } as unknown as ForecastRunInfo;
+  const status = { forecast: { hasWaves: params.includes('swh') }, currents: [] } as unknown as DataStatus;
+  return new ChartsProvider({
+    app: {},
+    pluginId: 'signalk-weather-router-plus',
+    basePath: '/plugins/signalk-weather-router-plus',
+    dataDir: () => '/nonexistent',
+    isStopped: () => false,
+    forecastRun: () => run,
+    tidesRun: () => null,
+    tidesEnabled: () => false,
+    dataStatus: () => status,
+    log: () => {},
+    error: () => {},
+  });
+}
+
+test('charts: the groups hold only the charts with data, colour layer first, and name its legend', () => {
+  const groups = provider().groups();
+  const byName = Object.fromEntries(groups.map(g => [g.name.replace(' (Weather Router Plus)', ''), g]));
+  assert.deepEqual(byName.Wind.charts, ['wrp-wind-speed', 'wrp-wind-barbs']);
+  assert.equal(byName.Wind.legend, 'wind');
+  assert.deepEqual(byName.Waves.charts, ['wrp-wave-height', 'wrp-wave-arrows']);
+  assert.equal(byName.Waves.legend, 'waves');
+  // Isobars have no colour layer, so no legend.
+  assert.deepEqual(byName.Pressure.charts, ['wrp-isobars', 'wrp-wind-barbs']);
+  assert.equal(byName.Pressure.legend, null);
+  // No currents: the currents group is left out, sea temperature keeps its colour layer without the arrows.
+  assert.equal(byName.Currents, undefined);
+  assert.deepEqual(byName['Sea temperature'].charts, ['wrp-sea-temperature']);
+  // No tides either.
+  assert.equal(byName.Tide, undefined);
+});
+
+test('charts: a forecast without waves leaves the wave groups out', () => {
+  const names = provider(PARAMS.filter(p => !['swh', 'mwp', 'mwd'].includes(p)))
+    .groups()
+    .map(g => g.name);
+  assert.ok(!names.some(n => n.startsWith('Waves') || n.startsWith('Sea state')), names.join(', '));
+  assert.ok(names.some(n => n.startsWith('Wind')));
+});
+
+test('charts: time blocks mark the frames as a forecast and name the run for forecast-only layers', () => {
+  const charts = provider().resources();
+  const wind = charts['wrp-wind-speed'].time as Record<string, unknown>;
+  assert.equal(wind.forecast, true);
+  assert.equal(wind.issued, new Date(CYCLE_MS).toISOString());
+  assert.equal(wind.to, new Date(CYCLE_MS + 240 * HOUR).toISOString());
+  // Sea state mixes in the currents: a forecast, but not of one run.
+  const seaState = charts['wrp-sea-state'].time as Record<string, unknown>;
+  assert.equal(seaState.forecast, true);
+  assert.equal('issued' in seaState, false);
+});

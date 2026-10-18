@@ -104,6 +104,23 @@ const CHART_GROUPS: { id: string; name: string; description: string; layers: (Pn
   },
 ];
 
+/** A preset of chart layers as the chartplotter panel offers it: the group's charts that have their data now. */
+export interface ChartGroup {
+  id: string;
+  name: string;
+  description: string;
+  /** Chart resource ids, colour layer first. */
+  charts: string[];
+  /** The /api/legends key of the group's colour layer; null when it has none (isobars). */
+  legend: PngLayer | null;
+}
+
+/** Layers drawn from currents or tides (alone or mixed in), whose frames do not all come from the forecast run. */
+const NOT_FORECAST_ONLY = new Set<string>(['current', 'arrows', 'tide', 'sea_state', 'seas']);
+
+const chartIdOf = (l: PngLayer | GlyphLayer): string =>
+  (l in PNG_LAYER_SPECS ? PNG_LAYER_SPECS[l as PngLayer] : GLYPH_LAYER_SPECS[l as GlyphLayer]).chartId;
+
 export class ChartsProvider {
   private overrides: Record<string, Record<string, unknown>> = {};
   private groupsWritten = '';
@@ -167,6 +184,10 @@ export class ChartsProvider {
         from: new Date(fromMs).toISOString(),
         to: new Date(Math.max(fromMs, lastMs)).toISOString(),
         step: HOUR_MS,
+        // Frames ahead of now are forecast frames, there already (SignalK/freeboard-sk#1075),
+        // and, for the layers drawn from the forecast alone, the run they come from.
+        forecast: true,
+        ...(NOT_FORECAST_ONLY.has(layer) ? {} : { issued: new Date(forecastRun.index.cycleTimeMs).toISOString() }),
       },
       refreshInterval: 600_000,
       bounds: [-180, -MERC_MAX_LAT, 180, MERC_MAX_LAT],
@@ -185,15 +206,23 @@ export class ChartsProvider {
     }
     return out;
   }
+  /** The chart groups with the charts that have their data now; a group with none is left out. */
+  groups(): ChartGroup[] {
+    const charts = this.resources();
+    return CHART_GROUPS.map(g => {
+      const colour = g.layers.find((l): l is PngLayer => (PNG_LAYERS as readonly string[]).includes(l));
+      return {
+        id: g.id,
+        name: g.name,
+        description: g.description,
+        charts: g.layers.map(chartIdOf).filter(id => id in charts),
+        legend: colour ?? null,
+      };
+    }).filter(g => g.charts.length > 0);
+  }
   async publishGroups(): Promise<void> {
     if (!this.deps.app.resourcesApi?.setResource || this.deps.isStopped()) return;
-    const charts = this.resources();
-    const groups = CHART_GROUPS.map(g => ({
-      ...g,
-      charts: g.layers
-        .map(l => (l in PNG_LAYER_SPECS ? PNG_LAYER_SPECS[l as PngLayer] : GLYPH_LAYER_SPECS[l as GlyphLayer]).chartId)
-        .filter(id => id in charts),
-    })).filter(g => g.charts.length > 0);
+    const groups = this.groups();
     const key = JSON.stringify(groups.map(g => [g.id, g.charts]));
     if (key === this.groupsWritten) return;
     try {
