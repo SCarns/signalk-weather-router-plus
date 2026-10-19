@@ -42,9 +42,10 @@ export const LOGIN_STATUS_URL = '/skServer/loginStatus';
 /** localStorage key: the Signal K user whose choices this browser holds. */
 export const OWNER_KEY = 'rp:prefsUser';
 
-// The sail-speed slider's key until 2026-10 (knots); rp-core.js moves it
-// to routeVar:sailThreshMs in this browser, so it is never sent up.
+// The sail-speed slider's key until 2026-10 (knots); load() moves it to
+// routeVar:sailThreshMs in this browser, so it is never sent up.
 const LEGACY_KEYS = new Set(['routeVar:sailThresh']);
+const KT_MS = 1852 / 3600;   // as rp-core.js, which imports this module
 
 /** True for the keys that are the user's choices (kept on the server too). */
 export function isUserPref(key) {
@@ -90,6 +91,19 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       return out;
     },
   };
+
+  // The sail-speed slider held knots until 2026-10; it holds m/s now under
+  // a new key. Converted in this browser before load() decides whose
+  // choices the browser holds, so the converted value follows the same
+  // rules as every other choice (sent up only when it is this user's).
+  function migrateLocal() {
+    const old = local.get('routeVar:sailThresh');
+    if (old === null) return;
+    const kn = parseFloat(old);
+    if (Number.isFinite(kn) && local.get('routeVar:sailThreshMs') === null)
+      local.set('routeVar:sailThreshMs', String(Math.round(kn * KT_MS * 10) / 10));
+    local.remove('routeVar:sailThresh');
+  }
 
   function schedule(ms) {
     if (timer !== null) clearTimeout(timer);
@@ -219,6 +233,7 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
      * this browser's own choices is not waited for.
      */
     async load() {
+      migrateLocal();
       let data = null;
       let login = null;
       const ctrl = typeof AbortController === 'function' ? new AbortController() : null;

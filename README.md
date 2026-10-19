@@ -362,10 +362,10 @@ user now and for whatever is kept per user later:
 
 Where things live: the choices (below) in the user's Signal K application
 data, the standard store, since they are small; routes in the plugin's
-own job store, since they are large. The server never sees a user's
-choices: a route request carries everything it is computed with, so a
-route sent by another client (the Freeboard panel, the API) is computed
-with what that request says, not with the user's saved Setup.
+own job store, since they are large. The route computation never reads
+the saved choices: a route request carries everything it is computed
+with, so a route sent by another client (the Freeboard panel, the API) is
+computed with what that request says, not with the user's saved Setup.
 
 ## Using the webapp
 

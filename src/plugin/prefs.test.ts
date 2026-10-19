@@ -120,7 +120,6 @@ test('start-up: the server choice wins and is copied into this browser; page sta
   storage.setItem(OWNER_KEY, 'dirk');
   storage.setItem('polarPath', 'catalina36.csv'); // stale in this browser
   storage.setItem('rp:view', '{"zoom":5}'); // page state: never sent
-  storage.setItem('routeVar:sailThresh', '5'); // legacy key: never sent
   const srv = fakeServer({ polarPath: 'Lagoon_560.pol', vesselType: 'sail', junk: 42 });
   const prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
 
@@ -131,7 +130,6 @@ test('start-up: the server choice wins and is copied into this browser; page sta
   assert.equal(storage.getItem('vesselType'), 'sail');
   assert.equal(storage.getItem('junk'), null, 'keys that are not Setup choices are not copied');
   assert.equal(storage.getItem('rp:view'), '{"zoom":5}');
-  assert.equal(storage.getItem('routeVar:sailThresh'), '5', 'left for rp-core.js to migrate');
   await prefs.flush();
   assert.equal(srv.postCalls().length, 0, 'nothing only this browser has, nothing sent');
 });
@@ -218,6 +216,69 @@ test('another user’s choices in this browser are neither sent nor used', async
   assert.equal(prefs.get('powerBoat'), null);
   assert.equal(prefs.get('polarPath'), null, 'crew starts from the default polar');
   assert.equal(storage.getItem(OWNER_KEY), 'crew');
+});
+
+test('the knots sail speed from before 2026-10 is converted here first and then follows the owner rules', async () => {
+  // 5 kn = 2.572 m/s, kept to 0.1: '2.6'.
+  const browser = (owner: string | null, extra: Record<string, string> = {}) => {
+    const storage = new MemStorage();
+    if (owner !== null) storage.setItem(OWNER_KEY, owner);
+    storage.setItem('routeVar:sailThresh', '5');
+    for (const [k, v] of Object.entries(extra)) storage.setItem(k, v);
+    return storage;
+  };
+
+  // No owner: in use here, not sent, offered with the other older choices.
+  let storage = browser(null);
+  let srv = fakeServer({});
+  let prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+  await prefs.load();
+  await prefs.flush();
+  assert.equal(storage.getItem('routeVar:sailThresh'), null, 'the knots key is gone');
+  assert.equal(prefs.get('routeVar:sailThreshMs'), '2.6');
+  assert.equal(srv.postCalls().length, 0, 'not sent before the user claims it');
+  assert.deepEqual(prefs.legacyChoices(), [['routeVar:sailThreshMs', '2.6']]);
+
+  // Another user's browser: dropped, not copied into this user's record.
+  storage = browser('skipper');
+  srv = fakeServer({}, { user: 'crew' });
+  prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+  await prefs.load();
+  await prefs.flush();
+  assert.equal(srv.postCalls().length, 0);
+  assert.equal(prefs.get('routeVar:sailThreshMs'), null);
+  assert.equal(storage.getItem('routeVar:sailThresh'), null);
+
+  // This user's browser: sent up like any choice the record lacks.
+  storage = browser('dirk');
+  srv = fakeServer({});
+  prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+  await prefs.load();
+  await prefs.flush();
+  assert.deepEqual(srv.postCalls()[0].body, [{ op: 'add', path: '/routeVar:sailThreshMs', value: '2.6' }]);
+
+  // A value in m/s already here is kept; the record's value still wins.
+  storage = browser('dirk', { 'routeVar:sailThreshMs': '3.1' });
+  srv = fakeServer({ 'routeVar:sailThreshMs': '1.8' });
+  prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+  await prefs.load();
+  assert.equal(prefs.get('routeVar:sailThreshMs'), '1.8');
+  assert.equal(storage.getItem('routeVar:sailThresh'), null);
+
+  // No server: converted all the same, and the old key is gone.
+  storage = browser(null, { 'routeVar:mode': 'sail_max' });
+  prefs = createPrefs({ storage, fetchFn: fakeServer({}, { getStatus: 404 }).fetchFn, log: quiet });
+  assert.equal(await prefs.load(), false);
+  assert.equal(prefs.get('routeVar:sailThreshMs'), '2.6');
+  assert.equal(storage.getItem('routeVar:sailThresh'), null);
+
+  // Not a number: dropped without a converted value.
+  storage = browser('dirk');
+  storage.setItem('routeVar:sailThresh', '');
+  prefs = createPrefs({ storage, fetchFn: fakeServer({}).fetchFn, log: quiet });
+  await prefs.load();
+  assert.equal(prefs.get('routeVar:sailThreshMs'), null);
+  assert.equal(storage.getItem('routeVar:sailThresh'), null);
 });
 
 test('the user unknown (no login status): the browser’s choices are left as they are', async () => {

@@ -712,15 +712,8 @@ document.getElementById('polarSelect').addEventListener('change', function() {
     'publishSel', 'smootherSel', 'proximityRadiusM', 'xteThresholdM', 'xteSustainSec',
   ];
   const CHECK_IDS = ['noCurrents', 'noForecast', 'regionalWind', 'avoidAreas'];
-  // The sail-speed slider held knots until 2026-10; it holds m/s now under a new key.
-  try {
-    const old = localStorage.getItem('routeVar:sailThresh');
-    if (old !== null) {
-      if (old !== '' && prefs.get('routeVar:sailThreshMs') === null)
-        prefs.set('routeVar:sailThreshMs', String(Math.round(parseFloat(old) * KT_MS * 10) / 10));
-      localStorage.removeItem('routeVar:sailThresh');
-    }
-  } catch (_) {}
+  // The sail-speed slider holds m/s under routeVar:sailThreshMs; prefs.load()
+  // converted the knots it held before 2026-10.
   const KEY = (id) => 'routeVar:' + (id === 'sailThresh' ? 'sailThreshMs' : id);
   for (const id of PERSIST_IDS) {
     const el = document.getElementById(id);
