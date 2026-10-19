@@ -175,11 +175,14 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       return null;
     }
   };
-  /** The job named in the URL, after the 503 / 404 answers; the handler runs only when it exists. */
+  /**
+   * The job named in the URL, with its route results (a departure window's are read from disk: JobManager.full),
+   * after the 503 / 404 answers; the handler runs only when it exists.
+   */
   const withJob = (req: Request, res: Response, fn: (jobs: JobManager, job: Job) => void | Promise<void>): void => {
     const jobs = jobsOr503(res);
     if (!jobs) return;
-    const job = jobs.get(String(req.params.id));
+    const job = jobs.full(String(req.params.id));
     if (!job) {
       json(res, 404, { error: 'job not found' });
       return;

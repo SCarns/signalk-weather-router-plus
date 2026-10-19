@@ -6,7 +6,9 @@
  * so a route asked for meanwhile waits behind one job, not the whole
  * window. Those jobs carry the window's id: they are left out of the job
  * list and its trimming, never published to the Resources API, and go when
- * their window is deleted.
+ * their window is deleted. Once a departure is done, its route is kept only
+ * in the job's file (JobManager.release) and read from there when the
+ * departure is opened.
  *
  * Per departure the window keeps what a choice needs (departureMetrics):
  * arrival, passage time, sailing and motoring time, the strongest wind and
@@ -395,7 +397,7 @@ export class WindowManager {
         this.byJob.set(d.job_id, { w, k });
         if (d.status !== 'queued' && d.status !== 'running') return;
         // Finished after the window was last saved, or lost with the restart (a job in progress is not saved).
-        const job = this.jobs.get(d.job_id);
+        const job = this.jobs.full(d.job_id);
         if (job && (job.status === 'done' || job.status === 'cancelled')) {
           d.status = job.status;
           if (job.status === 'done') d.metrics = departureMetrics(job);

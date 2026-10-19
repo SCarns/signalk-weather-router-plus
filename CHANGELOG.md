@@ -36,7 +36,10 @@ uses [Semantic Versioning](https://semver.org/).
   time so other routes wait behind one job; the jobs carry `window_id`,
   are left out of the job list and `routing.keepJobs`, never published,
   and notify once for the window. Departures after the forecast, and those
-  after a passage that already arrives past it, are skipped.
+  after a passage that already arrives past it, are skipped. A done
+  departure's route is kept only in its job file (`JobManager.release`)
+  and read from there when it is opened; in memory the window holds its
+  metrics.
 
 ## [0.2.0-beta.3] - 2026-10-19
 

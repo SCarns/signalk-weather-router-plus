@@ -313,3 +313,54 @@ test('a restart: a finished window is back as it was; one in progress ends faile
   assert.ok(back.departures[0].metrics, 'metrics kept');
   fs.rmSync(h.dir, { recursive: true, force: true });
 });
+
+test('a done departure keeps only its metrics in memory: its route is read from the job file, also after a restart', () => {
+  const h = harness();
+  const w = h.windows.create({ route: ROUTE, from: new Date(T0).toISOString(), to: new Date(T0 + 6 * H).toISOString(), step_s: 6 * 3600 });
+  h.finish({ wind: 14 });
+  h.finish({ wind: 15 });
+  const mine = h.jobs.submit({ ...ROUTE, departure: new Date(T0).toISOString(), name: 'mine' });
+  h.finish();
+  const ids = h.windows.get(w.id)!.departures.map(d => d.job_id!);
+  assert.deepEqual(
+    h.windows.get(w.id)!.departures.map(d => d.metrics?.max_wind_ms),
+    [14, 15],
+    'metrics taken before the route left memory'
+  );
+  const held = (jobs: JobManager, id: string) => {
+    const j = jobs.get(id)!;
+    return { geojson: j.geojson !== undefined, skRoute: j.skRoute !== undefined, events: j.events.length, progress: j.progress.length };
+  };
+  for (const id of ids) {
+    assert.deepEqual(held(h.jobs, id), { geojson: false, skRoute: false, events: 0, progress: 0 });
+    const full = h.jobs.full(id)!;
+    assert.equal(full.status, 'done');
+    assert.ok(full.geojson && full.skRoute, 'read back from the file');
+    assert.ok(full.events.some(e => e.event === 'route'));
+  }
+  assert.equal(held(h.jobs, mine.id).geojson, true, 'an ordinary route keeps its result in memory');
+  assert.equal(h.jobs.full(mine.id), h.jobs.get(mine.id));
+
+  // Saving a released job again (publish) writes its route back with it.
+  h.jobs.setPublished(ids[0], null, 'no Resources API');
+  assert.ok(h.jobs.full(ids[0])!.geojson, 'still in the file');
+  assert.equal(h.jobs.get(ids[0])!.publishError, 'no Resources API');
+
+  // A departure that finished after its window was last saved: its metrics come from the file at start.
+  const wf = path.join(h.dir, 'windows', `${w.id}.json`);
+  const saved = JSON.parse(fs.readFileSync(wf, 'utf8')) as DepartureWindow;
+  saved.status = 'running';
+  saved.departures[1].status = 'running';
+  delete saved.departures[1].metrics;
+  fs.writeFileSync(wf, JSON.stringify(saved));
+  h.windows.close();
+
+  const h2 = harness({ dir: h.dir });
+  for (const id of ids) {
+    assert.equal(held(h2.jobs, id).geojson, false, 'not loaded into memory at start');
+    assert.ok(h2.jobs.full(id)!.geojson);
+  }
+  assert.equal(held(h2.jobs, mine.id).geojson, true);
+  assert.equal(h2.windows.get(w.id)!.departures[1].metrics?.max_wind_ms, 15);
+  fs.rmSync(h.dir, { recursive: true, force: true });
+});

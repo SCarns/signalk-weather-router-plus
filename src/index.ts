@@ -716,7 +716,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
 
   async function publish(id: string): Promise<string> {
     if (!jobs) throw new NotStartedError();
-    const job = jobs.get(id);
+    const job = jobs.full(id);
     if (!job || !job.skRoute) throw new Error('job has no route');
     if (!app.resourcesApi?.setResource) throw new Error('this Signal K server has no Resources API');
     try {

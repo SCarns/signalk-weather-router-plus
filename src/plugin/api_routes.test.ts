@@ -1,6 +1,6 @@
 /**
- * The route API's checks before a job is queued (a request too large, a polar not in the library) and the event
- * stream's replay when Last-Event-ID is not a number.
+ * The route API's checks before a job is queued (a request too large, a polar not in the library), the event
+ * stream's replay when Last-Event-ID is not a number, and a departure window's route read back from disk.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { registerApi, type ApiDeps } from './api';
+import { JobManager } from './jobs';
 
 type Handler = (req: unknown, res: unknown) => unknown;
 interface Answer {
@@ -101,7 +102,7 @@ test('GET /api/routes/:id/events: a Last-Event-ID that is not a number replays e
       { id: 2, event: 'done', data: { status: 'done' } },
     ],
   };
-  const call = api({ get: (id: string) => (id === 'j1' ? job : undefined) }, os.tmpdir());
+  const call = api({ full: (id: string) => (id === 'j1' ? job : undefined) }, os.tmpdir());
   const replayed = async (lastId?: string): Promise<number> => {
     const a = await call('GET /api/routes/:id/events', {
       params: { id: 'j1' },
@@ -113,4 +114,41 @@ test('GET /api/routes/:id/events: a Last-Event-ID that is not a number replays e
   assert.equal(await replayed('1'), 1);
   assert.equal(await replayed('garbage'), 2);
   for (const bad of ['', ' 1', '1e0', '0x1', '1.0', '99999999999999999999']) assert.equal(await replayed(bad), 2, bad);
+});
+
+test("GET /api/routes/:id/result, /signalk, /events: a departure window's route comes from its file", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-jobs-'));
+  try {
+    const jobs = new JobManager(dir, 50, '/x');
+    const job = jobs.submit({ ...ROUTE, departure: '2026-11-02T00:00:00.000Z' }, 'w1');
+    const geo = {
+      type: 'FeatureCollection',
+      features: [{ type: 'Feature', geometry: { type: 'LineString', coordinates: [] }, properties: {} }],
+    };
+    const summary = {
+      total_distance_m: 1,
+      total_time_s: 1,
+      sailing_time_s: 1,
+      motoring_time_s: 0,
+      waypoint_count: 2,
+      warnings: 0,
+      departure: '',
+      arrival: '',
+    };
+    jobs.onDone(job.id, geo, { name: 'sk' }, summary);
+    assert.equal(jobs.get(job.id)!.geojson, undefined, 'not held in memory');
+    const call = api(jobs as unknown as Record<string, unknown>, dir);
+    const result = await call('GET /api/routes/:id/result', { params: { id: job.id } });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, geo);
+    const sk = await call('GET /api/routes/:id/signalk', { params: { id: job.id } });
+    assert.deepEqual(sk.body, { name: 'sk' });
+    const events = await call('GET /api/routes/:id/events', { params: { id: job.id } });
+    assert.deepEqual(
+      [...events.written.matchAll(/^event: (\w+)$/gm)].map(m => m[1]),
+      ['status', 'status', 'route', 'done']
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

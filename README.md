@@ -2066,7 +2066,10 @@ are not in `GET /api/routes` (each carries `window_id`; open one with
 `GET /api/routes/{id}`), do not count towards `routing.keepJobs`, are
 never published to the Resources API and send no notification of their
 own; the window sends one when it is done. The last 10 finished windows
-are kept, with their jobs.
+are kept, with their jobs. Once a departure is done, the plugin holds only
+its metrics in memory: its route stays in the job's file and is read from
+there when it is opened (`/result`, `/signalk`, `/skeleton`, `/fronts`,
+`/events`).
 
 A departure after the forecast's last step is not computed (`skipped`),
 and once a passage arrives after the forecast ends, the later departures
