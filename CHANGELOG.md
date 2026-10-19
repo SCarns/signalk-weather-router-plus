@@ -28,6 +28,34 @@ uses [Semantic Versioning](https://semver.org/).
   the forecast alone, `issued` (the run's time), as proposed in
   SignalK/freeboard-sk#1075. Hosts ignore fields they do not know.
 
+### Changed
+
+- **Setup choices are kept per Signal K user** (`public/rp-prefs.js`).
+  The polar, sail or power, the power boat, the Route → Options settings
+  and the search and router choices were kept in the browser's
+  localStorage only, so another browser or device, the kiosk, or a private
+  window started again from the default polar. They are now also stored
+  in the user's Signal K application data and read when the page opens:
+  the server's value wins. localStorage is not split by user, so the
+  browser records whose choices it holds (`rp:prefsUser`, from
+  `/skServer/loginStatus`): a choice only it has is sent up for that user
+  and dropped when another user logs in there. Choices from before this
+  change have no owner: they stay in use in that browser and go up only
+  when the user keeps them (a banner asks: Keep, or Discard and reload
+  with the defaults). Changes are sent as
+  JSON Patch, one request at a time and batched (a slider drag is one
+  request); a change the server did not take is sent again later. The
+  upload at start-up is not waited for. The map view, tabs, layer
+  toggles and the plan stay per browser. Module start-up waits for the one
+  read (3 s at most); the legend box and the position poll, which waited
+  for the page's `load` event, start at once when it has already fired.
+  Without a login with write access the choices stay in the browser.
+  The Freeboard panel keeps its polar, mode and min sail speed in the same
+  store (its own `wrp-plotterext-*` keys from before are read only while
+  the store has none). README, Users: the user is the Signal K login name
+  (`req.skPrincipal.identifier`, as `loginStatus` reports it), nothing is
+  per user without a login, and a read-only user owns nothing.
+
 ## [0.2.0-beta.3] - 2026-10-19
 
 ### Added
@@ -244,29 +272,6 @@ uses [Semantic Versioning](https://semver.org/).
   jobs, polars, the coastline and the downloaded meshes
   are still backed up: they change rarely, and offshore they cannot be
   downloaded again.
-
-### Changed
-
-- **Setup choices are kept per Signal K user** (`public/rp-prefs.js`).
-  The polar, sail or power, the power boat, the Route → Options settings
-  and the search and router choices were kept in the browser's
-  localStorage only, so another browser or device, the kiosk, or a private
-  window started again from the default polar. They are now also stored
-  in the user's Signal K application data and read when the page opens:
-  the server's value wins. localStorage is not split by user, so the
-  browser records whose choices it holds (`rp:prefsUser`, from
-  `/skServer/loginStatus`): a choice only it has is sent up for that user
-  and dropped when another user logs in there. Choices from before this
-  change have no owner: they stay in use in that browser and go up only
-  when the user keeps them (a banner asks: Keep, or Discard and reload
-  with the defaults). Changes are sent as
-  JSON Patch, one request at a time and batched (a slider drag is one
-  request); a change the server did not take is sent again later. The
-  upload at start-up is not waited for. The map view, tabs, layer
-  toggles and the plan stay per browser. Module start-up waits for the one
-  read (3 s at most); the legend box and the position poll, which waited
-  for the page's `load` event, start at once when it has already fired.
-  Without a login with write access the choices stay in the browser.
 
 ## [0.2.0-beta.2] - 2026-10-13
 

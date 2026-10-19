@@ -25,6 +25,17 @@
 // Without a login, with security off (the server keeps no application
 // data) or for a read-only user, the choices stay in this browser, as
 // before. Values are the strings localStorage holds.
+//
+// The user is the Signal K login name, the plugin's one rule for "user"
+// (README, Users): `username` from loginStatus here. Signal K answers it
+// with req.skPrincipal.identifier, the identifier it also attaches to an
+// authenticated request reaching a plugin route (http_authorize on
+// /plugins, same token or cookie) and files application data under
+// (applicationData/users/<identifier>); signalk-server 2.34,
+// src/tokensecurity.ts and src/interfaces/applicationData.js. So the
+// server side of a per-user feature sees the same name as this module.
+// The Freeboard panel (plotterext/panel.html) uses this store too, for
+// the polar, the mode and the min sail speed.
 
 export const PREFS_URL = '/signalk/v1/applicationData/user/signalk-weather-router-plus/1.0.0';
 export const LOGIN_STATUS_URL = '/skServer/loginStatus';

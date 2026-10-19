@@ -48,7 +48,7 @@ export function filesHash(dir: string, exclude: string[] = []): string {
 }
 
 /** Modules in public/ the panel imports (with its own ?v=, so they count in its hash). */
-const PANEL_SHARED = ['rp-units.js'];
+const PANEL_SHARED = ['rp-units.js', 'rp-prefs.js'];
 
 /** The panel's files (public/plotterext and the shared modules it imports), for its cache-busting URL. */
 export function panelFilesHash(publicDir: string): string {

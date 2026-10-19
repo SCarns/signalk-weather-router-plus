@@ -339,6 +339,34 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   https://doi.org/10.48670/moi-00016* (shown in the map attribution while
   the tide layer is on, and under the Tide chart).
 
+## Users
+
+What "the user" means throughout the plugin, for the choices kept per
+user now and for whatever is kept per user later:
+
+- **The user is the Signal K login name.** In the browser it is
+  `username` from `/skServer/loginStatus`; on the server it is the
+  identifier Signal K attaches to an authenticated request
+  (`req.skPrincipal.identifier`). They are the same value: Signal K's
+  `loginStatus` answers with `skPrincipal.identifier` as `username`, sets
+  `skPrincipal` the same way for requests to a plugin's routes
+  (`/plugins/…`, from the same token or cookie), and files a user's
+  application data under it (signalk-server 2.34: `src/tokensecurity.ts`
+  `getLoginStatus`, `http_authorize`; `src/interfaces/applicationData.js`).
+  A device with its own access token is its own principal, under its
+  client id.
+- **No login, or security off: nothing is per user.** The choices stay in
+  the browser, and routes are shared.
+- **A read-only user owns nothing.** Signal K takes no application data
+  from them, so their choices stay in the browser.
+
+Where things live: the choices (below) in the user's Signal K application
+data, the standard store, since they are small; routes in the plugin's
+own job store, since they are large. The server never sees a user's
+choices: a route request carries everything it is computed with, so a
+route sent by another client (the Freeboard panel, the API) is computed
+with what that request says, not with the user's saved Setup.
+
 ## Using the webapp
 
 - **Planning.** Click the map for the menu: set or move the start, set or
@@ -374,7 +402,8 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   map view, open tabs, layer toggles and the plan stay per browser.
   Without a login with write access, or with security off (Signal K then
   keeps no application data), the choices are kept in the browser only,
-  as before.
+  as before ([Users](#users)). The Freeboard panel keeps its polar, mode
+  and min sail speed in the same store ([In Freeboard-SK](#in-freeboard-sk)).
 - **Header.** The data sources, with how fresh each one is. Collapsed (the
   default): one line, `wind ●● | waves ● | currents ●● | tides ●`, a dot
   per source in its colour, with **Show** on the right. Expanded (**Hide**
@@ -611,7 +640,11 @@ and the panel runs in a sandboxed iframe served from
   maximum wind speed and wave height that no leg may exceed (empty = no
   limit; the routing settings' values by default). With a min sail speed
   of 0 (never motor) a stretch the boat cannot sail or tack out of fails
-  the route, saying "set Min sail speed above 0". Progress is shown;
+  the route, saying "set Min sail speed above 0". The polar, mode and min
+  sail speed are the web app's Setup choices: the panel reads and writes
+  them in the same store, so the same Signal K user has the same polar in
+  both ([Users](#users)). The limits are not kept by the web app and stay
+  in the browser. Progress is shown;
   Cancel stops the job. The map
   is fitted to the result; the panel shows distance and time in
   Freeboard's unit preferences, the sailing/motoring split, the arrival

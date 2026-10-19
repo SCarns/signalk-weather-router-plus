@@ -992,12 +992,45 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     }).catch(function () {});
   }
 
+  // ---- the user's choices ------------------------------------------------------
+  // The polar, the sailing strategy and the minimum sail speed are the web
+  // app's Setup choices too, so the panel keeps them in the same store
+  // (../rp-prefs.js): this browser's localStorage, which the panel shares
+  // with the web app (same origin), and the Signal K user's application data,
+  // so the same user has the same polar in both, on any device. The panel's
+  // own keys from before (wrp-plotterext-*) are read only while the store has
+  // no value. The route limits (max wind, max waves) are not kept by the web
+  // app, so they stay in this browser.
+  var prefs = null;
+  var prefsReady = import('../rp-prefs.js' + location.search).then(function (m) {
+    prefs = m.prefs;
+    return prefs.load();
+  }).catch(function (e) { console.warn('[prefs] unavailable: the choices stay in this browser', e); });
+  function choice(key, oldKey) {
+    var v = prefs ? prefs.get(key) : null;
+    if (v === null || v === '') { try { v = localStorage.getItem(oldKey); } catch (_) { v = null; } }
+    return v;
+  }
+  function setChoice(key, oldKey, value) {
+    if (!prefs) { try { localStorage.setItem(oldKey, value); } catch (_) {} return; }
+    prefs.set(key, value);
+    try { localStorage.removeItem(oldKey); } catch (_) {}
+  }
+  prefsReady.then(function () {
+    var m = prefs && prefs.get('routeVar:mode');
+    if (m && [].some.call($('mode').options, function (o) { return o.value === m; })) {
+      $('mode').value = m;
+      showSailThresh();
+    }
+  });
+  $('mode').addEventListener('change', function () { if (prefs) prefs.set('routeVar:mode', this.value); });
+
   // ---- polars, waypoints --------------------------------------------------
   function loadPolars() {
     var sel = $('polar');
-    var remembered = null;
-    try { remembered = localStorage.getItem('wrp-plotterext-polar'); } catch (_) {}
-    return get(API + '/polars').then(function (items) {
+    return Promise.all([get(API + '/polars'), prefsReady]).then(function (r) {
+      var items = r[0];
+      var remembered = choice('polarPath', 'wrp-plotterext-polar');
       sel.innerHTML = '';
       items.forEach(function (it) {
         var o = document.createElement('option');
@@ -1007,7 +1040,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       if (remembered && items.some(function (it) { return it.path === remembered; })) sel.value = remembered;
     }).catch(function (e) { sel.innerHTML = '<option value="">polars unavailable: ' + esc(e.message) + '</option>'; });
   }
-  $('polar').addEventListener('change', function () { try { localStorage.setItem('wrp-plotterext-polar', this.value); } catch (_) {} });
+  $('polar').addEventListener('change', function () { setChoice('polarPath', 'wrp-plotterext-polar', this.value); });
 
   function loadWaypoints() {
     if (!host.has('resources')) return;
@@ -1183,7 +1216,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   });
 
   // ---- min sail speed (sail_thresh_ms): the plugin's routing setting as the
-  // default, edited in the host's speed unit, remembered in this browser.
+  // default, edited in the host's speed unit, kept with the user's choices (m/s).
   var sailThreshDefaultMs = null;
   function speedUnit() { return units && SPEED[units.speed] ? SPEED[units.speed] : null; }
   function sailThreshMs() {
@@ -1198,9 +1231,8 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     if (!u) return;
     $('sailThreshUnit').textContent = u[1];
     if ($('sailThresh').value === '') {
-      var ms = null;
-      try { var s = localStorage.getItem('wrp-plotterext-sail-thresh-ms'); if (s !== null && isFinite(+s)) ms = +s; } catch (_) {}
-      if (ms === null) ms = sailThreshDefaultMs;
+      var s = choice('routeVar:sailThreshMs', 'wrp-plotterext-sail-thresh-ms');
+      var ms = s !== null && s !== '' && isFinite(+s) ? +s : sailThreshDefaultMs;
       if (ms !== null) $('sailThresh').value = (ms * u[0]).toFixed(1);
     }
   }
@@ -1217,7 +1249,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   $('mode').addEventListener('change', showSailThresh);
   $('sailThresh').addEventListener('change', function () {
     var ms = sailThreshMs();
-    try { if (ms !== null) localStorage.setItem('wrp-plotterext-sail-thresh-ms', String(ms)); } catch (_) {}
+    if (ms !== null) setChoice('routeVar:sailThreshMs', 'wrp-plotterext-sail-thresh-ms', String(Math.round(ms * 100) / 100));
   });
 
   // ---- legs, as the web app's itinerary cards show them --------------------
@@ -1804,7 +1836,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       })();
       return;
     }
-    unitsReady.then(loadSailThreshDefault);
+    unitsReady.then(function () { return prefsReady; }).then(loadSailThreshDefault);
     // The host's visible routes: seed from route.list, then follow the events.
     host.subscribe(['route.**'], function (name, ev) {
       if (!ev || !ev.routeId) return;
