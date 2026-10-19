@@ -23,7 +23,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Readable, Transform, Writable } from 'node:stream';
+import { Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import * as zlib from 'node:zlib';
 
@@ -327,19 +327,20 @@ export async function downloadMeshArchive(t: MeshDownloadTask): Promise<MeshDown
         have = 0;
       } else if (!(res.status === 206 || (have === 0 && res.status === 200))) throw new Error(`${t.url}: HTTP ${res.status}`);
       if (!res.body) throw new Error(`${t.url}: no body`);
+      // Each chunk is written before the next is read: a dropped connection keeps every byte received, so the
+      // resume starts after it. (A stream pipeline discarded the chunks still queued towards the file when the
+      // connection failed: the part could be empty after half the archive had arrived; CI, 2026-10-19.)
       let got = have;
-      const count = new Transform({
-        transform(chunk: Buffer, _enc, cb) {
+      const fh = await fs.promises.open(part, have > 0 ? 'a' : 'w');
+      try {
+        for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
+          await fh.write(chunk);
           got += chunk.length;
           progress({ phase: 'download', bytes: got, total: size, files: 0 });
-          cb(null, chunk);
-        },
-      });
-      await pipeline(
-        Readable.fromWeb(res.body as import('node:stream/web').ReadableStream),
-        count,
-        fs.createWriteStream(part, { flags: have > 0 ? 'a' : 'w' })
-      );
+        }
+      } finally {
+        await fh.close();
+      }
     }
     const n = sizeOf(part);
     if (n !== size) throw new Error(`download incomplete: ${n} of ${size} bytes`);
