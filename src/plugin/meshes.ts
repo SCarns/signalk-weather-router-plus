@@ -666,6 +666,8 @@ export class MeshManager {
         if (typeof name === 'string' && MESH_NAME.test(name)) problems.set(name, problem);
         else unnamed.push(`row ${i + 1}: ${problem}`);
       });
+      // A name with a usable row is served by it, whether an unusable row of the same name comes before or after.
+      for (const m of meshes) problems.delete(m.name);
       for (const [n, p] of problems) this.log(`mesh catalogue ${this.catalogUrl}: ${n}: unusable entry (${p}); not downloaded`);
       for (const u of unnamed) this.log(`mesh catalogue ${this.catalogUrl}: ${u}; skipped`);
       this.catalog = { ...c, meshes };

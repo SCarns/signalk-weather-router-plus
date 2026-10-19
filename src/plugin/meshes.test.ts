@@ -267,6 +267,35 @@ test('MeshManager: an unusable catalogue row is set aside with its reason; the s
   }
 });
 
+for (const order of ['unusable row first', 'unusable row after'] as const) {
+  test(`MeshManager: a usable row serves its name beside an unusable row of the same name (${order})`, async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshsrv-'));
+    const store = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshstore-'));
+    publish(root, '2026-10-10T00:00:00Z', 300);
+    const catFile = path.join(root, 'charts', 'mesh', 'index.json');
+    const cat = JSON.parse(fs.readFileSync(catFile, 'utf8')) as { meshes: unknown[] };
+    const { archive: _a, ...noArchive } = ENTRY;
+    if (order === 'unusable row first') cat.meshes.unshift(noArchive);
+    else cat.meshes.push(noArchive);
+    fs.writeFileSync(catFile, JSON.stringify(cat));
+    const { url, close } = await serve(root);
+    const mgr = new MeshManager(() => {});
+    try {
+      mgr.configure(url + 'charts/mesh/index.json', ['01CGD'], store);
+      await mgr.reconcile();
+      const row = mgr.status().meshes.find(r => r.name === '01CGD')!;
+      assert.equal(row.state, 'ready', JSON.stringify(row));
+      assert.equal(row.error, null);
+      assert.equal(readMarker(path.join(store, '01CGD'))!.build_date, '2026-10-10T00:00:00Z');
+    } finally {
+      mgr.stop();
+      close();
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(store, { recursive: true, force: true });
+    }
+  });
+}
+
 test('localMeshes: a mesh folder, or a folder of mesh folders, each described from its index', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-local-'));
   const ix = (w: number, e: number, tri: number): string =>

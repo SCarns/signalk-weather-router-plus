@@ -334,7 +334,12 @@ export async function downloadMeshArchive(t: MeshDownloadTask): Promise<MeshDown
       const fh = await fs.promises.open(part, have > 0 ? 'a' : 'w');
       try {
         for await (const chunk of res.body as AsyncIterable<Uint8Array>) {
-          await fh.write(chunk);
+          // A write may take only part of the chunk: the rest follows from where it stopped.
+          for (let off = 0; off < chunk.length;) {
+            const { bytesWritten } = await fh.write(chunk, off, chunk.length - off);
+            if (bytesWritten <= 0) throw new Error(`writing ${part}: no bytes written`);
+            off += bytesWritten;
+          }
           got += chunk.length;
           progress({ phase: 'download', bytes: got, total: size, files: 0 });
         }
