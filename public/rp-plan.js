@@ -3622,7 +3622,7 @@ const _METEO_PANELS = [
   _COND_TABS.find(t => t.id === 'pressure'),
   _COND_TABS.find(t => t.id === 'precip'),
 ].filter(Boolean);
-let _meteo = null;   // { jobId, data, hoverIdx, panels } while the meteogram is open
+let _meteo = null;   // { jobId, data, hoverIdx, keyIdx, panels } while the meteogram is open
 
 function _meteoEl(id) { return document.getElementById(id); }
 function _meteoDims() {
@@ -3638,7 +3638,7 @@ function openMeteogram() {
   box.hidden = false;
   const step = _meteoEl('meteoStep').value || '3600';
   const fit = !(_meteo && _meteo.jobId === jobId);   // a new route, not another step for this one
-  _meteo = { jobId, data: null, hoverIdx: null, panels: [] };
+  _meteo = { jobId, data: null, hoverIdx: null, keyIdx: null, panels: [] };
   const mine = _meteo;
   _meteoEl('meteoTitle').textContent = _currentRouteName || '';
   _meteoEl('meteoBody').innerHTML = '<div class="mg-note">Loading the conditions along the route…</div>';
@@ -3677,7 +3677,8 @@ function _renderMeteogram() {
   _meteoEl('meteoBody').innerHTML = m.panels.map((p, i) =>
     '<div class="mg-panel"><div class="mg-label">' + escapeHtml(p.label)
     + ' <span class="mg-legend">' + _condLegend(p, rows) + (p.id === 'boat' ? _meteoMotorLegend(rows) : '') + '</span></div>'
-    + '<canvas data-panel="' + i + '" style="display:block;cursor:crosshair;touch-action:pan-y;"></canvas></div>').join('');
+    + '<canvas data-panel="' + i + '" tabindex="0" role="slider" aria-label="' + escapeHtml(p.label + ' along the route')
+    + '" aria-valuemin="0" aria-valuemax="' + Math.max(0, rows.length - 1) + '" aria-valuenow="0" style="display:block;cursor:crosshair;touch-action:pan-y;"></canvas></div>').join('');
   const notes = [];
   const cyc = c => _shortUtc(c);
   const stepOpt = [..._meteoEl('meteoStep').options].find(o => Number(o.value) === d.step_s);
@@ -3756,9 +3757,26 @@ function _meteoDraw() {
   });
 }
 
+// The pointer, and the keyboard (PR #50 review): each chart is a slider over the passage's steps, so a
+// keyboard or screen reader user gets the readout and the marker too. Arrows step, Home and End go to
+// the first and last step, Enter or Space sets the map to that hour as a click does. The step is kept
+// from chart to chart (Tab), and a key continues from where the pointer is.
 function _meteoBindCanvases() {
   const m = _meteo;
   const rows = m.data.rows || [];
+  const clamp = i => Math.max(0, Math.min(rows.length - 1, i));
+  const show = (cv, i) => {
+    m.hoverIdx = i;
+    m.keyIdx = i;
+    _meteoDraw();
+    _meteoReadout(i);
+    cv.setAttribute('aria-valuenow', String(i));
+    cv.setAttribute('aria-valuetext', _meteoEl('meteoReadout').textContent);
+  };
+  const setHour = i => {
+    setTimeOverride(new Date(rows[i].time).toISOString());
+    _reloadTimedOverlays();
+  };
   _meteoEl('meteoBody').querySelectorAll('canvas[data-panel]').forEach(cv => {
     const p = m.panels[Number(cv.dataset.panel)];
     const idxAt = ev => _condIdxAtX(rows, ev.offsetX, p, _meteoDims());
@@ -3767,11 +3785,31 @@ function _meteoBindCanvases() {
     cv.onclick = ev => {
       const i = idxAt(ev);
       if (i == null) return;
-      setTimeOverride(new Date(rows[i].time).toISOString());
-      _reloadTimedOverlays();
-      m.hoverIdx = i;
+      setHour(i);
+      show(cv, i);
+    };
+    // A click focuses the chart too: the step under the pointer is kept, not replaced by the keyboard's.
+    cv.onfocus = () => { if (rows.length) show(cv, clamp(m.hoverIdx != null ? m.hoverIdx : m.keyIdx != null ? m.keyIdx : 0)); };
+    // To another chart (Tab, a click): its focus shows the step, nothing to clear.
+    cv.onblur = ev => {
+      if (ev.relatedTarget && ev.relatedTarget.closest && ev.relatedTarget.closest('#meteoBody canvas[data-panel]')) return;
+      m.hoverIdx = null;
       _meteoDraw();
-      _meteoReadout(i);
+      _meteoReadout(null);
+    };
+    cv.onkeydown = ev => {
+      if (!rows.length) return;
+      const cur = clamp(m.hoverIdx != null ? m.hoverIdx : m.keyIdx != null ? m.keyIdx : 0);
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        setHour(cur);
+        show(cv, cur);
+        return;
+      }
+      const next = { ArrowRight: cur + 1, ArrowUp: cur + 1, ArrowLeft: cur - 1, ArrowDown: cur - 1, Home: 0, End: rows.length - 1 }[ev.key];
+      if (next === undefined) return;
+      ev.preventDefault();
+      show(cv, clamp(next));
     };
   });
 }
@@ -3781,7 +3819,7 @@ function _meteoReadout(i) {
   const m = _meteo;
   const el = _meteoEl('meteoReadout');
   const r = m && m.data && i != null ? m.data.rows[i] : null;
-  if (!r) { el.textContent = 'Hover over a chart'; meteoMarkerFeature.setGeometry(null); return; }
+  if (!r) { el.textContent = 'Hover over a chart, or Tab to one and use the arrow keys'; meteoMarkerFeature.setGeometry(null); return; }
   const parts = [fmtWhen(r.time)];
   if (r.wind_ms != null) parts.push('wind ' + fmtSpeed(r.wind_ms) + (r.gust_ms != null ? ' (gust ' + fmtSpeed(r.gust_ms) + ')' : '')
     + (r.wind_dir_deg != null ? ' from ' + degToCardinal(r.wind_dir_deg) : '')

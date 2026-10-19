@@ -483,7 +483,9 @@ computed with what that request says, not with the user's saved Setup.
   pressure and precipitation, each where the boat is at that hour
   (`GET /api/routes/{id}/meteogram`, every 30 min, 1 h or 3 h). Hovering
   a chart reads out the values there and puts a marker on the route where
-  the boat is then; a click sets the map's overlays to that hour. The
+  the boat is then; a click sets the map's overlays to that hour. From the
+  keyboard each chart is a slider: Tab to it, the arrow keys (Home, End)
+  step through the passage, Enter sets the hour. The
   route is fitted into the map above the meteogram when it opens. The
   conditions come from the forecast loaded now; the wind is the route's:
   where it was computed with a regional model (AROME, ICON-EU, …) that
