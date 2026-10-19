@@ -3415,16 +3415,18 @@ function _winStart() {
   delete route.publish;
   const body = { route, from: p.from.toISOString(), to: p.to.toISOString(), step_s: Number(document.getElementById('windowStep').value) };
   document.getElementById('windowStatus').textContent = 'Starting…';
+  // Off until the window's first poll shows Cancel: a second click would start a second window (PR #51 review).
+  document.getElementById('windowStart').disabled = true;
   authFetch(API + '/windows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, null)
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
     .then(d => { appendLog('Departure window started: ' + d.departures + ' departures', 'done'); _winPoll(d.id); })
-    .catch(err => { document.getElementById('windowStatus').textContent = 'Could not start: ' + err.message; });
+    .catch(err => { document.getElementById('windowStatus').textContent = 'Could not start: ' + err.message; _winRefresh(); });
 }
 
 function _winPoll(id) {
   clearTimeout(_winTimer);
   authFetch(API + '/windows/' + encodeURIComponent(id), { cache: 'no-store' }, 'window')
-    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(Object.assign(new Error(t), { status: r.status }))))
     .then(w => {
       _win = w;
       _winRender();
@@ -3432,7 +3434,12 @@ function _winPoll(id) {
       if (w.status === 'running' || w.departures.some(d => d.status === 'running' || d.status === 'queued'))
         _winTimer = setTimeout(() => _winPoll(id), 3000);
     })
-    .catch(err => { if (err.name !== 'AbortError') document.getElementById('windowStatus').textContent = 'Window unavailable: ' + err.message; });
+    .catch(err => {
+      if (err.name === 'AbortError') return;
+      document.getElementById('windowStatus').textContent = 'Window unavailable: ' + err.message;
+      // A poll that failed (the server busy, the link down) is tried again; a window that is gone is not.
+      if (err.status !== 404) _winTimer = setTimeout(() => _winPoll(id), 10000);
+    });
 }
 
 // A duration for the table: to the minute for the passage (departures a few

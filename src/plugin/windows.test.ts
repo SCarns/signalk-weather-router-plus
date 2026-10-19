@@ -132,7 +132,11 @@ test('validateWindowRequest: the route, the times, the step and the size of the 
   assert.match(validateWindowRequest({ route: ROUTE, from: to, to: from })!, /not be before/);
   assert.match(validateWindowRequest({ route: ROUTE, from, to: new Date(T0 + 20 * 86400_000).toISOString() })!, /within/);
   assert.match(validateWindowRequest({ route: ROUTE, from, to, step_s: 60 })!, /step_s must be/);
-  assert.match(validateWindowRequest({ route: ROUTE, from, to: new Date(T0 + 15 * 86400_000).toISOString(), step_s: 3600 })!, /at most 48/);
+  assert.match(
+    validateWindowRequest({ route: ROUTE, from, to: new Date(T0 + 15 * 86400_000).toISOString(), step_s: 3600 })!,
+    /the window has 361 departures; at most 48/,
+    'the count of the whole span, not the capped list'
+  );
   assert.match(validateWindowRequest({ route: { ...ROUTE, start: { lat: 99, lon: 0 } }, from, to })!, /^route: /);
 });
 
@@ -363,4 +367,27 @@ test('a done departure keeps only its metrics in memory: its route is read from 
   assert.equal(held(h2.jobs, mine.id).geojson, true);
   assert.equal(h2.windows.get(w.id)!.departures[1].metrics?.max_wind_ms, 15);
   fs.rmSync(h.dir, { recursive: true, force: true });
+});
+
+test('a departure that fails as it is submitted is recorded, and the window goes on to the end', () => {
+  const dir = tmp();
+  const jobs = new JobManager(dir, 50, '');
+  // As dispatchRoute without a Resources API: the job fails before submit() returns.
+  jobs.on('start', (j: Job) => jobs.onError(j.id, 'this Signal K server has no Resources API to read notes from'));
+  const finished: DepartureWindow[] = [];
+  const windows = new WindowManager(jobs, dir, {
+    cancelRunning: () => {},
+    forecastValidToMs: () => T0 + 240 * H,
+    onFinished: w => finished.push(w),
+  });
+  const w = windows.create({ route: ROUTE, from: new Date(T0).toISOString(), to: new Date(T0 + 12 * H).toISOString(), step_s: 6 * 3600 });
+  assert.equal(w.status, 'done', 'not left running');
+  assert.deepEqual(
+    w.departures.map(d => d.status),
+    ['failed', 'failed', 'failed']
+  );
+  assert.match(w.departures[0].error!, /no Resources API/);
+  assert.equal(finished.length, 1);
+  assert.equal(jobs.runningId, null);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

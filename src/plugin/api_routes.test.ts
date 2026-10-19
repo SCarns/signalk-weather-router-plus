@@ -17,7 +17,11 @@ interface Answer {
   written: string;
 }
 
-function api(jobs: Record<string, unknown>, polarsDir: string): (key: string, req: Record<string, unknown>) => Promise<Answer> {
+function api(
+  jobs: Record<string, unknown>,
+  polarsDir: string,
+  windows?: Record<string, unknown>
+): (key: string, req: Record<string, unknown>) => Promise<Answer> {
   const routes = new Map<string, Handler>();
   const reg = (m: string) => (p: string | string[], h: Handler) => {
     for (const x of Array.isArray(p) ? p : [p]) routes.set(`${m} ${x}`, h);
@@ -30,6 +34,7 @@ function api(jobs: Record<string, unknown>, polarsDir: string): (key: string, re
       basePath: '/x',
       publicDir: '/nonexistent',
       jobs,
+      windows,
       polarLibrary: () => ({ polarFile: path.join(polarsDir, 'a.csv'), polarsDir }),
     } as unknown as ApiDeps
   );
@@ -148,6 +153,33 @@ test("GET /api/routes/:id/result, /signalk, /events: a departure window's route 
       [...events.written.matchAll(/^event: (\w+)$/gm)].map(m => m[1]),
       ['status', 'status', 'route', 'done']
     );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('POST /api/windows: too large is 413 and a polar not in the library 400, before any window is created', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-polars-'));
+  fs.writeFileSync(path.join(dir, 'a.csv'), 'twa/tws;6\n0;0\n');
+  try {
+    const created: unknown[] = [];
+    const windows = {
+      running: 0,
+      create: (b: unknown) => (created.push(b), { id: 'w1', status: 'running', departures: [{}] }),
+      links: () => ({ self: '/x/api/windows/w1' }),
+    };
+    const call = api({}, dir, windows);
+    const from = '2026-11-02T00:00:00.000Z';
+    const to = '2026-11-02T12:00:00.000Z';
+    const big = await call('POST /api/windows', { body: { route: { ...ROUTE, name: 'n', pad: 'x'.repeat(70_000) }, from, to } });
+    assert.equal(big.status, 413);
+    const bad = await call('POST /api/windows', { body: { route: { ...ROUTE, vessel: { polar: 'nosuch.csv' } }, from, to } });
+    assert.equal(bad.status, 400);
+    assert.match(String(bad.body.error), /^route: vessel\.polar: polar not found: nosuch\.csv/);
+    assert.equal(created.length, 0, 'no window');
+    const ok = await call('POST /api/windows', { body: { route: { ...ROUTE, vessel: { polar: 'a.csv' } }, from, to } });
+    assert.equal(ok.status, 202);
+    assert.equal(created.length, 1);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

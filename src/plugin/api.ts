@@ -633,6 +633,26 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     }
   });
 
+  // The request is kept with its job (a window's with each of its departures) and sent back in every job list;
+  // unknown fields pass the validation. Answered 413 when it is too large.
+  const tooLarge = (res: Response, body: unknown): boolean => {
+    if (Buffer.byteLength(JSON.stringify(body), 'utf8') <= MAX_ROUTE_REQUEST_BYTES) return false;
+    json(res, 413, { error: `route request too large (over ${MAX_ROUTE_REQUEST_BYTES / 1024} KB)` });
+    return true;
+  };
+  // The polar is checked here, so a token not in the library is refused before a job is queued, not when it runs.
+  const badPolar = (res: Response, polar: string | undefined, field: string): boolean => {
+    if (!polar) return false;
+    try {
+      resolvePolarPath(polarLib(), polar);
+      return false;
+    } catch (e) {
+      if (e instanceof NotStartedError) json(res, 503, { error: e.message });
+      else json(res, 400, { error: `${field}: ${(e as Error).message}: ${polar} (a token from /api/polars)` });
+      return true;
+    }
+  };
+
   rw.post('/api/routes', (req: Request, res: Response) => {
     const jobs = jobsOr503(res);
     if (!jobs) return;
@@ -641,29 +661,13 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       json(res, 400, { error: 'JSON body required: {start:{lat,lon}, end:{lat,lon}, ...}' });
       return;
     }
-    // The request is kept with its job and sent back in every job list; unknown fields pass the validation.
-    if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_ROUTE_REQUEST_BYTES) {
-      json(res, 413, { error: `route request too large (over ${MAX_ROUTE_REQUEST_BYTES / 1024} KB)` });
-      return;
-    }
+    if (tooLarge(res, body)) return;
     const err = validateRouteRequest(body);
     if (err) {
       json(res, 400, { error: err });
       return;
     }
-    // The polar is checked here, so a token not in the library is refused before the job is queued, not when it runs.
-    if (body.vessel?.polar) {
-      try {
-        resolvePolarPath(polarLib(), body.vessel.polar);
-      } catch (e) {
-        if (e instanceof NotStartedError) {
-          json(res, 503, { error: e.message });
-          return;
-        }
-        json(res, 400, { error: `vessel.polar: ${(e as Error).message}: ${body.vessel.polar} (a token from /api/polars)` });
-        return;
-      }
-    }
+    if (badPolar(res, body.vessel?.polar, 'vessel.polar')) return;
     if (jobs.queueLength >= 16) {
       json(res, 429, { error: 'job queue is full' });
       return;
@@ -815,11 +819,13 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   rw.post('/api/windows', (req: Request, res: Response) => {
     const windows = windowsOr503(res);
     if (!windows) return;
+    if (tooLarge(res, req.body)) return;
     const err = validateWindowRequest(req.body);
     if (err) {
       json(res, 400, { error: err });
       return;
     }
+    if (badPolar(res, (req.body as WindowRequest).route.vessel?.polar, 'route: vessel.polar')) return;
     if (windows.running >= WINDOW_LIMITS.maxRunning) {
       json(res, 429, { error: `${windows.running} departure windows are being computed; wait for one to finish, or cancel it` });
       return;

@@ -120,7 +120,8 @@ export function validateWindowRequest(b: unknown): string | null {
   const step = r.step_s ?? WINDOW_LIMITS.stepS.default;
   if (!finiteNum(step) || step < WINDOW_LIMITS.stepS.min || step > WINDOW_LIMITS.stepS.max)
     return `step_s must be a number in [${WINDOW_LIMITS.stepS.min}, ${WINDOW_LIMITS.stepS.max}]`;
-  const n = windowDepartures(fromMs, toMs, step).length;
+  // Counted from the span: windowDepartures stops one past the limit.
+  const n = Math.floor((toMs - fromMs + 1) / (step * 1000)) + 1;
   if (n > WINDOW_LIMITS.maxDepartures)
     return `the window has ${n} departures; at most ${WINDOW_LIMITS.maxDepartures} (a later from, an earlier to, or a longer step_s)`;
   const routeErr = validateRouteRequest({ ...r.route, departure: new Date(fromMs).toISOString() });
@@ -341,8 +342,15 @@ export class WindowManager {
       const name = `${w.request.route.name?.trim() || 'Departure window'} · ${d.departure.slice(0, 16).replace('T', ' ')}Z`;
       const job = this.jobs.submit({ ...w.request.route, departure: d.departure, publish: false, name }, w.id);
       d.job_id = job.id;
-      d.status = job.status === 'running' ? 'running' : 'queued';
       this.byJob.set(job.id, { w, k });
+      // Started at once and failed at once (dispatchRoute without a Resources API to read the notes from): its
+      // error event came before byJob knew the job, so it is taken here, and the next departure goes on.
+      if (job.status === 'failed' || job.status === 'cancelled') {
+        d.status = job.status;
+        d.error = job.error ?? 'failed';
+        continue;
+      }
+      d.status = job.status === 'running' ? 'running' : 'queued';
       this.persist(w);
       return;
     }
