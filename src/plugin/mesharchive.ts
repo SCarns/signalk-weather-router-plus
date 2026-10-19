@@ -265,9 +265,11 @@ export function checkUnpacked(dest: string): { tiles: number; bytes: number } {
   for (const c of clusters) {
     const dir = inside(c, 'the cluster folder');
     const ix = readJson<{ tiles: { file: string }[] }>(path.join(dir, 'index.json'));
-    if (!ix || !Array.isArray(ix.tiles)) throw new Error(`${path.join(c, 'index.json')}: missing or unreadable in the archive`);
+    if (!ix || !Array.isArray(ix.tiles)) throw new Error(`${path.posix.join(c, 'index.json')}: missing or unreadable in the archive`);
     for (const t of ix.tiles) {
-      const rel = path.join(c, String(t.file));
+      // As the index writes it ('/'), on every platform: the messages name the path the archive lists; the
+      // containment test resolves it with the platform's own rules.
+      const rel = path.posix.join(c, String(t.file));
       const file = inside(rel, 'the tile');
       let st: fs.Stats | null = null;
       try {
