@@ -4,10 +4,51 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0-beta.3] - 2026-10-19
 
 ### Added
 
+- **How fresh each source is, in the page header** (`plugin/freshness.ts`,
+  `/api/status` `freshness`): a green, orange or red pill per source (ECMWF
+  wind and waves, regional wind, CMEMS SMOC, RTOFS, sea level, tidal
+  harmonics) with the run's age, from the source's own publication cadence:
+  green until 30 min before the next run is due, orange until 60 min after,
+  red later than that or with nothing loaded (the owner's thresholds). When
+  each run is due: ECMWF from the measured publication times below, RTOFS
+  from its NOMADS file times (one day measured: f024/f048 at 09:36Z, f072
+  09:42Z, f144 15:38Z), SMOC and sea level a day after their store last
+  updated, AROME by run hour (measured 2026-10-16..19: 00z 2.9 h, 03z 2.8 h,
+  06z 5.6 h, 09z 4.3 h, 12z 4.2 h, 15z 3.9 h, 18z 5.3 h, 21z 4.2 h after the
+  run), the other regional models by signalk-grib-downloader's own schedule
+  (not measured here); harmonics are green when loaded, red for a file that
+  failed. A red line under the header names what is late. The header
+  collapses to one line of coloured dots per row (Show / Hide, remembered
+  in the browser); expanded, every source has its own line, and a source
+  that does not cover the route or the map view says so.
+- **The connection, separately from freshness** (`/api/status`
+  `connectivity`, a line under the title): blue "online" when the data
+  worker's last request reached a server, grey "No internet connection since
+  …" when it found none. Data can be fresh while the connection is down.
+- **Every check says what it found** (`/api/status` `checks`, per source):
+  `newest`, `could-not-check` (the server could not be asked; the run in use
+  stays, not known to be the newest), `new-run`, or `failed` (the server
+  answered but the new run could not be loaded). An ECMWF check that falls
+  back to the cached cycle offline is reported as could not check; it was
+  reported as unchanged. Online, a check that failed shows its line under
+  the header ("ECMWF check failed at …: HTTP 503"). The forecast error line
+  clears only on a check that reached ECMWF.
+- **"Processing new forecast data: 00Z, step 12 of 37"** under the header
+  while a new run decodes behind the one in use.
+- **Mesh catalogue rows are checked when the catalogue is read**
+  (`meshes.ts` `catalogEntryProblem`): every field the plugin reads (a safe
+  name, `archive` as a bare `.tar.zst` file name, `build_date`, `bytes`,
+  `triangles`, `clusters` with valid boxes). A bad row is set aside with its
+  reason on its own panel row and never downloaded; rows without a usable
+  name are listed in `/api/meshes` `catalog_problems`. A row missing
+  `clusters`, `bytes`, `triangles` or `build_date` made `/api/meshes` and
+  `/api/status` fail as a whole; one without `archive` failed its download
+  with a bare TypeError. An `archive` that is a URL or a path (a catalogue
+  sending downloads to another address) is refused.
 - **Under-keel and overhead clearance** (vessel settings, defaults 0.5 m and
   2 m; request overrides `vessel.under_keel_clearance_m`,
   `vessel.overhead_clearance_m`): the margins over the draught and the air
@@ -20,9 +61,12 @@ uses [Semantic Versioning](https://semver.org/).
   `repairViolations`): each segment that crosses water a chart mesh blocks for
   the boat is routed again with the leg search at a sail threshold of 0 and
   the detour spliced in, the later waypoints shifted by the time it added; at
-  most 2 passes and 5 detours. A detour that motors on a sailing route is a
-  `detour_motored` warning. A route still crossing such water fails as before.
-  `repairs_applied` reports the detours (it was always 0).
+  most 2 passes and 5 detours. A detour that motors on a `sail_max` route is
+  a `detour_motored` warning (under `fastest` motoring is chosen whenever it
+  is quicker, so it says nothing about the wind). Warnings and opening
+  bridges after a detour move with its waypoints, and the detour's own
+  opening bridges are reported. A route still crossing such water fails as
+  before. `repairs_applied` reports the detours (it was always 0).
 - **GeoJSON download** beside GPX in the Itinerary tab: the route line and
   every waypoint with its times, wind, waves, current and depth.
 - **Route request fields `tack_penalty`** (s, 0..3600; overrides
@@ -32,6 +76,31 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The ECMWF decode runs in a child process, and the data worker's network
+  work beside its queries** (`plugin/forecastdecodetask.ts`, child task
+  `forecast-decode`; `worker.ts`). A refresh round, a decode and a settings
+  reload no longer hold the data worker's queue, so map tiles, the
+  conditions popup and the Weather API are answered from the run in use
+  meanwhile. Measured on the test box (2026-10-19), the same forced 00z
+  re-decode (172 s from the GRIB cache): before, an uncached map tile timed
+  out at 120 s and the next took 49.8 s; after, 14 of 14 answered in
+  17–64 ms. The decode's buffers leave with the child (memory not measured
+  yet). A refresh asked for while one waits to start joins it; one asked
+  for while one runs is done once after it (they queued up before). A query
+  whose SMOC or tide source is replaced while it waits is answered as
+  incomplete and not cached.
+- **ECMWF publication times are measured, per cycle** (`ecmwf.ts`
+  `publishedAt`): 00z/12z 454 min after the run, 06z/18z 387 min (the
+  `Last-Modified` of every cycle from 2026-10-16 00z to 2026-10-19 00z, to
+  the minute). The fixed 400 min looked for 00z/12z 54 min early and found
+  06z/18z 13 min late.
+- **No connection fails at once** (`http.ts`): a request whose name does not
+  resolve, or with no route to any network (`ENOTFOUND`, `EAI_AGAIN`,
+  `ENETUNREACH`, `ENETDOWN`), is not retried and does not try the other
+  ECMWF mirrors, and the rest of that refresh round asks no server (each
+  source uses what it has and says why). A refused connection, an
+  unreachable host and a timeout are still retried and fail over: one
+  server's failure, or a slow link.
 - **Chart meshes download as their archives, two at a time.** Each mesh
   is fetched as the catalogue's `<name>_mesh.tar.zst` (about a third of the
   unpacked size: 7.2 GB for all eight published meshes against 21.3 GB),
@@ -67,6 +136,30 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A forecast update stalled the map** (see the decode above): every map
+  tile not already saved waited for the whole decode.
+- **Offline, the forecast stayed on an old cycle without a word**: the check
+  fell back to the cached cycle and reported "unchanged" (test box,
+  2026-10-18/19: the Wi-Fi dropped at 23:06 local and the 12z run served
+  until a reboot nine hours later, the header unchanged). It now says it
+  could not check, the connection line shows the outage, and the freshness
+  pills turn orange and red.
+- **The forecast error line never cleared** after a later check succeeded
+  without a new run.
+- **A dropped connection threw away mesh archive bytes already received**
+  (`mesharchive.ts`): the stream pipeline discarded the chunks still queued
+  towards the file, so the part could be empty after half the archive had
+  arrived (the resume test failed on CI that way). Each chunk is now written
+  before the next is read, a partial write continued.
+- **A mesh archive's index could name tiles outside the mesh**
+  (`mesharchive.ts` `checkUnpacked`): a listed `../01CGD/x.bin` was found in
+  the copy already on disk and passed for a tile the archive lacked. Every
+  cluster folder and tile must lie inside the unpacked folder and every tile
+  be a file.
+- **Opening bridges after a repair detour pointed at the wrong waypoint**,
+  and a bridge the detour passed under was not reported.
+- **A route name with no ASCII letters downloaded as `.geojson`** (or
+  `.gpx`), a hidden file; it is now `weather_route`.
 - **The same rough cut could be built twice at once**: the rebuild after a
   mesh download (or the Rebuild button) and a route needing that rough cut
   each started their own child process. A lock file beside the rough cut
@@ -109,7 +202,9 @@ uses [Semantic Versioning](https://semver.org/).
   islands (Caribbean, 2026-10-15: Aruba, Curaçao, Bonaire, Venezuela,
   Barbados); each such check also scanned every coastline ring near the
   leg (up to 1.8 s a check; the polish took 9 minutes on that route).
-  Outside the box is now land.
+  Outside the box is now land. The map overlays' land rasters reach one cell
+  past the view (`landcache.ts` `forBBox`), so the view's own north and east
+  edges are not counted as land.
 
 ## [0.2.0-beta.2] - 2026-10-13
 

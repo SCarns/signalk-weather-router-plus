@@ -86,7 +86,13 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           description:
             'Top level: plugin, started, workers {data, route}, forecast, forecast_error, forecast_loading, currents, currents_route_worker, rtofs_run, overlay_land, overlay_tiles, overlay_prebuild, ' +
             'weather_provider_registered, jobs, vessel, polar, land, harmonic_dir, extra_fields, tides, tides_enabled, tides_error, process_rss_bytes, ' +
-            'meshes (the managed chart meshes, as GET /api/meshes), router (the open-water router the next route runs: "standard" | "refined"). ' +
+            'meshes (the managed chart meshes, as GET /api/meshes), router (the open-water router the next route runs: "standard" | "refined"), checks, freshness, connectivity. ' +
+            '`forecast_error` clears only on a check that reached ECMWF (the newest run in use, or a new one loaded). ' +
+            '`checks`: what the last check of each source found, {ecmwf, smoc, rtofs, tides}, each {outcome: "newest" | "could-not-check" (the server could not be asked: ' +
+            'no connection, or it failed; the run in use stays) | "new-run" | "failed" (the server answered but the new run could not be loaded), at, reason}. ' +
+            '`freshness`: per source in use [{source, rows: ["wind" | "waves" | "currents" | "tides"], run, published_at, next_due_at, state: "green" (more than 30 min ' +
+            'before the next run is due) | "orange" (from then until 60 min after) | "red" (later, or nothing loaded), reason}]. ' +
+            "`connectivity`: {online (null before the first request), since, lastOkAt, reason}: whether the data worker's last request reached a server. " +
             '`forecast` (null until a run is ready): {cycle, model, valid_from, valid_to, steps, params, coverage, storage: "decoded-on-disk", loaded_at, has_waves, ' +
             'source: "disk" (a complete decoded run was already on disk, no decode) | "grib" (decoded from the GRIB cache / download), ready_ms, fields_downloaded, ' +
             'decoded_dir, decoded_bytes (this run on disk), decoded_at, decode_ms, decoded_disk_bytes (all decoded runs kept), grib_cache_bytes, ' +
@@ -94,12 +100,12 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             'route_worker_held_bytes, route_worker_largest_recent_window, decoding_block_bytes}} — the decoded forecast is never resident; `memory` is what ' +
             "requests hold now (a route's corridor store while it runs, a query's window while it is answered). `process_rss_bytes`: the Signal K process RSS. " +
             "`currents` lists the data worker's current sources in priority order ({name, priority, resolutionM, bbox, validFrom, validTo}); " +
-            'the CMEMS-SMOC entry adds `smoc`: {run, run_last_time, stac_updated, settled, step_hours, horizon_hours, half_width_deg, ' +
+            'the CMEMS-SMOC entry adds `smoc`: {run, run_last_time, stac_updated, metadata_modified (when the run appeared in the store), settled, step_hours, horizon_hours, half_width_deg, ' +
             'resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, memory_bytes, ' +
             'shared_resident, last_download: {at, reason, bytes, chunks, downloaded, from_disk, seconds, decode_ms} | null, downloaded_bytes_total, disk_cache_bytes, layouts}. ' +
             '`currents_route_worker` is the same for the route worker (its own on-demand SMOC areas). ' +
             '`tides` (null when off or not loaded; `tides_enabled`, `tides_error`): the Copernicus Marine sea-level source {name, doi, datum, run, run_last_time, ' +
-            'stac_updated, settled, half_width_deg, horizon_hours, resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, ' +
+            'stac_updated, metadata_modified, settled, half_width_deg, horizon_hours, resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, ' +
             'point_cache: {entries, bytes, queries, hits}, memory_bytes, last_download, last_point_query: {at, lat, lon, bytes, chunks, downloaded, from_disk, seconds, cached} | null, ' +
             'downloaded_bytes_total, disk_cache_bytes, layouts, mean_window_days}. ' +
             '`starting`: why the plugin is not answering yet (e.g. "starting: downloading the coastline (40 %)"), null once started; 503 answers carry the same text. ' +
@@ -638,9 +644,12 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         get: {
           summary: 'The managed chart meshes: the catalogue rows and their state on this server',
           description:
-            '{catalog_url, catalog_updated, catalog_error, store_dir, meshes: [{name, title, description, source: "catalog" | "local", ticked, enabled, state: ' +
+            '{catalog_url, catalog_updated, catalog_error, catalog_problems (catalogue rows set aside that have no usable name: "row 4: no name"), store_dir, ' +
+            'meshes: [{name, title, description, source: "catalog" | "local", ticked, enabled, state: ' +
             '"absent" | "downloading" | "ready" | "update" | "error" | "removing", progress: {files, total} | null, catalog_build_date, disk_build_date, bytes, error, ' +
-            'using, local_dir, local_build_date}]}. The catalogue is read at start and once a day; POST /api/meshes/refresh reads it now.',
+            'using, local_dir, local_build_date}]}. The catalogue is read at start and once a day; POST /api/meshes/refresh reads it now. ' +
+            'Each row is checked when read: one missing a field the plugin uses, or whose `archive` is not a bare .tar.zst file name, is set aside ' +
+            '(its row: state "error", error "the catalogue entry is unusable: …") and never downloaded.',
           responses: { 200: { description: 'OK' }, 503: { description: 'Plugin not started' } },
         },
       },
