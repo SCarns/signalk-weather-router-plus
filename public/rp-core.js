@@ -1135,10 +1135,12 @@ function _processingLine(s) {
   return '<br><span class="processing">Processing new forecast data' + (cyc ? ': ' + cyc : '') + (l.total ? ', step ' + l.done + ' of ' + l.total : '') + '</span>';
 }
 
-// Regional wind models whose grid meets the route or the map view, one item each for the wind row.
+// Every usable regional wind model, one item each for the wind row; one whose grid does not meet the route or the
+// map view says so (it is listed all the same, so the list and the collapsed dots show the same sources).
+const _NOT_HERE = ' <span class="not-here">(not in this view)</span>';
 function _regionalWind(r, area) {
   if (!r) return [];
-  const ok = (r.sources || []).filter(x => x.run && !x.problem && (!x.domain || _meets(x.domain, area)));
+  const ok = (r.sources || []).filter(x => x.run && !x.problem);
   if (!ok.length) {
     // The downloader is there but has nothing usable: say why.
     return r.root && !(r.sources || []).some(x => x.run && !x.problem)
@@ -1153,7 +1155,8 @@ function _regionalWind(r, area) {
       : d && d.error ? ' <span class="warn">' + unitTextHtml(d.error) + '</span>'
       : d && d.cycle && x.run.slice(0, 13).replace(/[-T]/g, '') === d.cycle ? ' (decoded)'
       : ' (decoding)';
-    return escapeHtml(x.name) + ' ' + _shortUtc(x.run) + (x.validTo ? ', to ' + _shortLocal(x.validTo) : '') + state + _freshPill(x.name) + off;
+    const here = !x.domain || _meets(x.domain, area);
+    return escapeHtml(x.name) + ' ' + _shortUtc(x.run) + (x.validTo ? ', to ' + _shortLocal(x.validTo) : '') + state + _freshPill(x.name) + off + (here ? '' : _NOT_HERE);
   });
 }
 
@@ -1169,8 +1172,9 @@ function _statusLine(s) {
   // Only the current sources that apply to the route or the map view. SMOC
   // is worldwide (any area loads on demand), its box is only the standing
   // area around the boat; the others cover their own box.
+  // Every current source is listed (as the collapsed dots show them); one that does not cover the route or the view says so.
   const applies = c => /SMOC/i.test(c.name) || _meets(c.bbox, area);
-  const curList = Array.isArray(s.currents) ? s.currents.filter(applies) : [];
+  const curList = Array.isArray(s.currents) ? s.currents : [];
   const t = s.tides;
   const tides = s.tides_enabled === false ? 'off (Settings)'
     : s.tides_error ? '<span class="warn">' + unitTextHtml(s.tides_error) + '</span>'
@@ -1182,7 +1186,9 @@ function _statusLine(s) {
   // Each row's name on its own line, then one bulleted line per source.
   const row = (k, items) =>
     '<div class="statusKey">' + k + '</div><ul class="src-list">' + items.map(v => '<li>' + v + '</li>').join('') + '</ul>';
-  const currents = curList.map(c => escapeHtml(c.name) + _freshPill(c.name)).concat(missing.map(x => escapeHtml(x.source) + _freshPill(x.source)));
+  const currents = curList
+    .map(c => escapeHtml(c.name) + _freshPill(c.name) + (applies(c) ? '' : _NOT_HERE))
+    .concat(missing.map(x => escapeHtml(x.source) + _freshPill(x.source)));
   const toggle = '<button type="button" class="ds-toggle" aria-expanded="' + !_statusCollapsed + '" title="'
     + (_statusCollapsed ? 'Show the data sources in full' : 'Collapse the data sources to one line') + '">'
     + (_statusCollapsed ? 'Show ▾' : 'Hide ▴') + '</button>';
