@@ -158,7 +158,7 @@ test("GET /api/routes/:id/result, /signalk, /events: a departure window's route 
   }
 });
 
-test('POST /api/windows: too large is 413 and a polar not in the library 400, before any window is created', async () => {
+test('POST /api/windows: no body is 400, too large 413 and a polar not in the library 400, before any window is created', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-polars-'));
   fs.writeFileSync(path.join(dir, 'a.csv'), 'twa/tws;6\n0;0\n');
   try {
@@ -171,6 +171,9 @@ test('POST /api/windows: too large is 413 and a polar not in the library 400, be
     const call = api({}, dir, windows);
     const from = '2026-11-02T00:00:00.000Z';
     const to = '2026-11-02T12:00:00.000Z';
+    const none = await call('POST /api/windows', {});
+    assert.equal(none.status, 400);
+    assert.match(String(none.body.error), /^JSON body required/);
     const big = await call('POST /api/windows', { body: { route: { ...ROUTE, name: 'n', pad: 'x'.repeat(70_000) }, from, to } });
     assert.equal(big.status, 413);
     const bad = await call('POST /api/windows', { body: { route: { ...ROUTE, vessel: { polar: 'nosuch.csv' } }, from, to } });

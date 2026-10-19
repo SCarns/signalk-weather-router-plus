@@ -636,7 +636,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   // The request is kept with its job (a window's with each of its departures) and sent back in every job list;
   // unknown fields pass the validation. Answered 413 when it is too large.
   const tooLarge = (res: Response, body: unknown): boolean => {
-    if (Buffer.byteLength(JSON.stringify(body), 'utf8') <= MAX_ROUTE_REQUEST_BYTES) return false;
+    // No body: JSON.stringify gives undefined; not too large, the request's own check refuses it.
+    const text = JSON.stringify(body) as string | undefined;
+    if (text === undefined || Buffer.byteLength(text, 'utf8') <= MAX_ROUTE_REQUEST_BYTES) return false;
     json(res, 413, { error: `route request too large (over ${MAX_ROUTE_REQUEST_BYTES / 1024} KB)` });
     return true;
   };

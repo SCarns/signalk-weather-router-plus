@@ -3404,8 +3404,9 @@ function _winRefresh() {
   const p = _winPlan();
   const findBtn = document.getElementById('findRoute');
   const running = !document.getElementById('windowCancel').hidden;
+  const starting = 'starting' in btn.dataset; // _winStart: until the new window's first poll
   count.textContent = p.error || (p.n + ' departure' + (p.n === 1 ? '' : 's') + ', from ' + fmtWhen(p.from.toISOString()) + ' to ' + fmtWhen(p.to.toISOString()));
-  btn.disabled = !!p.error || running || !findBtn || (findBtn.disabled && !_routeComputing);
+  btn.disabled = !!p.error || running || starting || !findBtn || (findBtn.disabled && !_routeComputing);
 }
 
 function _winStart() {
@@ -3416,18 +3417,27 @@ function _winStart() {
   const body = { route, from: p.from.toISOString(), to: p.to.toISOString(), step_s: Number(document.getElementById('windowStep').value) };
   document.getElementById('windowStatus').textContent = 'Starting…';
   // Off until the window's first poll shows Cancel: a second click would start a second window (PR #51 review).
-  document.getElementById('windowStart').disabled = true;
+  // Marked on the button, which _winRefresh reads, so a refresh meanwhile keeps it off: 'post' while the
+  // request is out, then the window's id until its first poll (a poll of an older window does not count).
+  const btn = document.getElementById('windowStart');
+  btn.dataset.starting = 'post';
+  btn.disabled = true;
   authFetch(API + '/windows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, null)
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
-    .then(d => { appendLog('Departure window started: ' + d.departures + ' departures', 'done'); _winPoll(d.id); })
-    .catch(err => { document.getElementById('windowStatus').textContent = 'Could not start: ' + err.message; _winRefresh(); });
+    .then(d => { btn.dataset.starting = d.id; appendLog('Departure window started: ' + d.departures + ' departures', 'done'); _winPoll(d.id); })
+    .catch(err => { delete btn.dataset.starting; document.getElementById('windowStatus').textContent = 'Could not start: ' + err.message; _winRefresh(); });
 }
 
 function _winPoll(id) {
   clearTimeout(_winTimer);
+  const started = () => {
+    const btn = document.getElementById('windowStart');
+    if (btn.dataset.starting === id) delete btn.dataset.starting;
+  };
   authFetch(API + '/windows/' + encodeURIComponent(id), { cache: 'no-store' }, 'window')
     .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(Object.assign(new Error(t), { status: r.status }))))
     .then(w => {
+      started();
       _win = w;
       _winRender();
       // After a cancel the departure computing ends a moment later: followed until it has.
@@ -3436,9 +3446,16 @@ function _winPoll(id) {
     })
     .catch(err => {
       if (err.name === 'AbortError') return;
+      // A poll that failed (the server busy, the link down) is tried again; a window that is gone is not:
+      // deleted (another tab) or past the ones kept, it leaves the screen, so its last state (running,
+      // Cancel shown, Compare off) does not stay until a reload.
+      if (err.status === 404) {
+        started();
+        if (!_win || _win.id === id) { _win = null; _winRender(); }
+      } else {
+        _winTimer = setTimeout(() => _winPoll(id), 10000);
+      }
       document.getElementById('windowStatus').textContent = 'Window unavailable: ' + err.message;
-      // A poll that failed (the server busy, the link down) is tried again; a window that is gone is not.
-      if (err.status !== 404) _winTimer = setTimeout(() => _winPoll(id), 10000);
     });
 }
 
