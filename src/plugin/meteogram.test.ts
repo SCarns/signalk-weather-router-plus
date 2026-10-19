@@ -9,9 +9,11 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { haversineDistanceM } from '../geo/geodesy';
 import { ForecastStore, GLOBAL_BBOX, type FieldGrid, type ForecastStep } from '../data/forecast';
-import { DecodedRunWriter, openDecodedRun } from '../data/decoded';
+import { type DecodedRun, DecodedRunWriter, openDecodedRun } from '../data/decoded';
+import { LayeredWind } from '../engine/layeredwind';
 import { meteogramRows, METEOGRAM_MAX_SAMPLES, routePoints, sampleStep, trackSamples, trueWindAngle } from './meteogram';
 import { sampleConditions, type ConditionsRow } from './overlays';
+import type { TrackConditionsRow } from './protocol';
 import { trackConditions } from './worker/query';
 import type { WorkerState } from './worker/state';
 
@@ -131,7 +133,7 @@ test('meteogramRows: each sample with its conditions, the wind angle from the sa
     ])
   );
   const s = trackSamples(pts, 3600);
-  const cond = s.map(x => ({ time: x.time, wind_ms: 5, wind_dir_deg: 90 }) as ConditionsRow);
+  const cond = s.map(x => ({ time: x.time, wind_ms: 5, wind_dir_deg: 90, wind_source: 'ECMWF' }) as TrackConditionsRow);
   const rows = meteogramRows(s, cond, T0 + 2 * H);
   assert.equal(rows.length, 5);
   assert.equal(rows[0].twa_deg, 90, 'course north, wind from the east');
@@ -149,8 +151,8 @@ test('meteogramRows: each sample with its conditions, the wind angle from the sa
 
 const PARAMS = ['10u', '10v', 'msl', '10fg', 'swh', 'mwp', 'mwd'];
 
-/** A global 2° run, 9 steps 3 h apart, smooth fields that change with time and place. */
-function syntheticStore(): ForecastStore {
+/** A global 2° run, 9 steps 3 h apart, smooth fields that change with time and place (`phase` shifts them). */
+function syntheticStore(phase = 0): ForecastStore {
   const nLon = 180;
   const nLat = 91;
   const steps: ForecastStep[] = [];
@@ -160,7 +162,7 @@ function syntheticStore(): ForecastStore {
       const v = new Float32Array(nLon * nLat);
       for (let r = 0; r < nLat; r++)
         for (let c = 0; c < nLon; c++) {
-          const base = Math.sin((c + 7 * pi) * 0.11 + k * 0.4) * Math.cos((r - 45) * 0.07) * 8;
+          const base = Math.sin((c + 7 * pi) * 0.11 + k * 0.4 + phase) * Math.cos((r - 45) * 0.07) * 8;
           v[r * nLon + c] =
             p === 'msl'
               ? 101300 + base * 120
@@ -182,6 +184,49 @@ function syntheticStore(): ForecastStore {
     loadedAt: new Date(T0),
   });
 }
+
+/** A store written as a decoded run under `root`/`cycle`, and opened. */
+function decodedRun(root: string, cycle: string, cycleTimeMs: number, store: ForecastStore): DecodedRun {
+  const w = new DecodedRunWriter(root, cycle);
+  for (const s of store.steps) w.writeStep(s);
+  w.finish({ cycleTimeMs, request: { horizonHours: 24, params: [...store.meta.params] }, stepHours: store.meta.steps, decodeMs: 1 });
+  const { run, problem } = openDecodedRun(w.finalDir);
+  assert.ok(run, problem ?? '');
+  return run;
+}
+
+/** A regional 0.1° wind run over 10..14°E, 39..46°N, 9 steps 3 h apart: `speed` m/s from the south. */
+function regionalStore(speed: number): ForecastStore {
+  const grid = { lat0: 39, lon0: 10, dLat: 0.1, dLon: 0.1, nLat: 71, nLon: 41, wrapLon: false };
+  const steps: ForecastStep[] = [];
+  for (let k = 0; k < 9; k++) {
+    const fields = new Map<string, FieldGrid>();
+    fields.set('10u', { ...grid, values: new Float32Array(grid.nLat * grid.nLon).fill(0) });
+    fields.set('10v', { ...grid, values: new Float32Array(grid.nLat * grid.nLon).fill(speed) });
+    steps.push({ validMs: T0 + k * 3 * H, stepHours: k * 3, fields });
+  }
+  return new ForecastStore(steps, {
+    cycleTime: new Date(T0),
+    bbox: { west: 10, south: 39, east: 14, north: 46 },
+    steps: steps.map(s => s.stepHours),
+    params: ['10u', '10v'],
+    loadedAt: new Date(T0),
+  });
+}
+
+/** A data worker's state with `run` loaded and data under `cacheRoot`. */
+function workerState(run: DecodedRun, cacheRoot: string): WorkerState {
+  return {
+    run,
+    cacheRoot,
+    forecastMemory: { heldBytes: 0, last: null },
+    stack: { isEmpty: true },
+    overlayLand: null,
+    tides: null,
+  } as unknown as WorkerState;
+}
+
+const asRow = (c: ConditionsRow, wind_source = 'ECMWF'): TrackConditionsRow => ({ ...c, wind_source });
 
 test('track_conditions: read a chunk at a time, every row equals sampling the whole run (across the antimeridian too)', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meteogram-'));
@@ -209,14 +254,130 @@ test('track_conditions: read a chunk at a time, every row equals sampling the wh
     );
     const samples = trackSamples(pts, 3600);
     assert.equal(samples.length, 28);
-    const tc = await trackConditions(st, { points: samples.map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs })) });
+    const { result: tc, complete } = await trackConditions(st, { points: samples.map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs })) });
+    assert.equal(complete, true);
     assert.equal(tc.cycle, new Date(T0).toISOString());
     assert.equal(tc.validTo, new Date(T0 + 24 * H).toISOString());
+    assert.deepEqual(tc.regional, []);
     assert.equal(tc.rows.length, samples.length);
     const whole = { forecast: store, currents: null, land: null, tides: null };
-    samples.forEach((p, k) => assert.deepEqual(tc.rows[k], sampleConditions(whole, p.lon, p.lat, new Date(p.tMs)), `row ${k}`));
+    samples.forEach((p, k) => assert.deepEqual(tc.rows[k], asRow(sampleConditions(whole, p.lon, p.lat, new Date(p.tMs))), `row ${k}`));
     assert.ok(tc.rows.some(r => r.gust_ms !== null) && tc.rows.every(r => r.wind_ms !== null && r.swh_m !== null));
     assert.equal(st.forecastMemory.heldBytes, 0, 'every window released');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A track that starts inside the regional grid (10..14°E, 39..46°N) and leaves it eastward.
+const REGIONAL_TRACK = [
+  { lon: 11, lat: 40, h: 0 },
+  { lon: 13, lat: 45, h: 12 },
+  { lon: 20, lat: 45, h: 24 },
+];
+
+test('track_conditions: the regional models the route used are layered over ECMWF as the router does, each row naming its source', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meteogram-'));
+  try {
+    const store = syntheticStore();
+    const run = decodedRun(path.join(root, 'decoded'), '2026110206', T0, store);
+    const fine = regionalStore(20);
+    decodedRun(path.join(root, 'regional', 'AROME'), '2026110206', T0, fine);
+    const st = workerState(run, root);
+    const samples = trackSamples(routePoints(routeGeoJSON(REGIONAL_TRACK)), 3600);
+    const points = samples.map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs }));
+    const { result: tc, complete } = await trackConditions(st, { points, regional: ['AROME', 'ICON-EU'] });
+    assert.equal(complete, true);
+    assert.deepEqual(tc.regional, [{ name: 'AROME', cycle: new Date(T0).toISOString() }]);
+    assert.deepEqual(tc.regionalMissing, ['ICON-EU'], 'used by the route, not on disk now');
+
+    // Every row: the conditions with the wind the router would take there (the whole runs, layered).
+    const whole = { forecast: store, currents: null, land: null, tides: null };
+    const grid = { lat0: 39, lon0: 10, dLat: 0.1, dLon: 0.1, nLat: 71, nLon: 41, wrapLon: false };
+    const layered = new LayeredWind(store, [{ name: 'AROME', wind: fine, grid, firstMs: T0, lastMs: T0 + 24 * H }]);
+    const want = layered.atManyAtWithSource(
+      Float64Array.from(points, p => p.lon),
+      Float64Array.from(points, p => p.lat),
+      Float64Array.from(points, p => p.tMs)
+    );
+    points.forEach((p, k) =>
+      assert.deepEqual(
+        tc.rows[k],
+        asRow(sampleConditions(whole, p.lon, p.lat, new Date(p.tMs), [want.speed[k], want.dir[k]]), want.source[k] ?? 'ECMWF'),
+        `row ${k}`
+      )
+    );
+    const by = (src: string) => tc.rows.filter(r => r.wind_source === src);
+    assert.ok(by('AROME').length >= 10 && by('ECMWF').length >= 5, 'both models answer a stretch');
+    // The first ten hours are well inside its grid and hours: the regional wind alone.
+    assert.ok(
+      tc.rows.slice(0, 10).every(r => r.wind_source === 'AROME' && r.wind_ms === 20 && r.wind_dir_deg === 180),
+      'inside its grid: the regional wind'
+    );
+    assert.equal(tc.rows[0].beaufort, 8, 'what is worked out from the wind uses it');
+    assert.equal(st.forecastMemory.heldBytes, 0, 'every window released');
+
+    // A route computed on ECMWF alone: no regional wind, even where a model covers.
+    const plain = (await trackConditions(st, { points })).result;
+    assert.ok(plain.rows.every(r => r.wind_source === 'ECMWF'));
+    assert.deepEqual(plain.rows[0], asRow(sampleConditions(whole, points[0].lon, points[0].lat, new Date(points[0].tMs))));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('track_conditions: a run replaced during the query is read to the end, the answer marked incomplete', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meteogram-'));
+  try {
+    const first = syntheticStore();
+    const run1 = decodedRun(path.join(root, 'decoded'), '2026110206', T0, first);
+    const run2 = decodedRun(path.join(root, 'decoded'), '2026110212', T0 + 6 * H, syntheticStore(1.5));
+    const st = workerState(run1, root);
+    // The data worker adopts the newer run while the first chunk is read.
+    const read = run1.window.bind(run1);
+    run1.window = async opts => {
+      const w = await read(opts);
+      st.run = run2;
+      return w;
+    };
+    const samples = trackSamples(routePoints(routeGeoJSON(REGIONAL_TRACK)), 3600);
+    assert.ok(samples.length > 12, 'more than one chunk');
+    const { result: tc, complete } = await trackConditions(st, { points: samples.map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs })) });
+    assert.equal(complete, false, 'not an answer to keep');
+    assert.equal(tc.cycle, new Date(T0).toISOString(), 'the run it was read from');
+    const whole = { forecast: first, currents: null, land: null, tides: null };
+    samples.forEach((p, k) =>
+      assert.deepEqual(tc.rows[k], asRow(sampleConditions(whole, p.lon, p.lat, new Date(p.tMs))), `row ${k}: the first run`)
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('track_conditions: a run pruned during the query is read again from the start on the new one', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meteogram-'));
+  try {
+    const run1 = decodedRun(path.join(root, 'decoded'), '2026110206', T0, syntheticStore());
+    const second = syntheticStore(1.5);
+    const run2 = decodedRun(path.join(root, 'decoded'), '2026110212', T0 + 6 * H, second);
+    const st = workerState(run1, root);
+    const read = run1.window.bind(run1);
+    let calls = 0;
+    run1.window = async opts => {
+      if (++calls === 1) return read(opts);
+      // Replaced and its files deleted after the first chunk.
+      st.run = run2;
+      throw Object.assign(new Error('gone'), { code: 'ENOENT' });
+    };
+    const samples = trackSamples(routePoints(routeGeoJSON(REGIONAL_TRACK)), 3600);
+    const { result: tc, complete } = await trackConditions(st, { points: samples.map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs })) });
+    assert.equal(complete, true);
+    assert.equal(tc.cycle, new Date(T0 + 6 * H).toISOString());
+    const whole = { forecast: second, currents: null, land: null, tides: null };
+    samples.forEach((p, k) =>
+      assert.deepEqual(tc.rows[k], asRow(sampleConditions(whole, p.lon, p.lat, new Date(p.tMs))), `row ${k}: the new run`)
+    );
+    assert.equal(st.forecastMemory.heldBytes, 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

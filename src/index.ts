@@ -512,13 +512,18 @@ export = function plugin(app: SkApp): SignalKPlugin {
     const cur = wx && dataStatus ? `${wx}|${currentsKey}|${smoc}|${cfg.currents.harmonicDir ?? ''}|ss${SEA_STATE_REV}` : null;
     const t = dataStatus?.tides;
     const tide = !cfg.tides.enabled ? `${coast}|off` : t ? `${coast}|${t.run}|${t.settled}|${dataSettingsRev}` : null;
-    // Point answers (conditions, Weather API) read forecast, currents and tides.
+    // Point answers (conditions, Weather API) read forecast, currents and tides,
+    // and a route's meteogram the regional wind runs too (a new one replaces it).
     // POINT_ANSWER_REV: bumped when the answer's content changes for the same
     // data (2: current_ms null where no current source has data; 3: the
     // recalibrated sea-state index), so answers saved by an older version
     // are not served.
     const POINT_ANSWER_REV = 3;
-    const pt = cur && tide ? `${cur}|${tide}|rev${POINT_ANSWER_REV}` : null;
+    const regional = (dataStatus?.regional ?? [])
+      .map(r => `${r.source}@${r.cycle ?? ''}`)
+      .sort()
+      .join(',');
+    const pt = cur && tide ? `${cur}|${tide}|${regional}|rev${POINT_ANSWER_REV}` : null;
     const g: Record<TileGroup, string | null> = { wx, cur, tide, land: coast, pt };
     tiles.store.setGenerations(g);
   }

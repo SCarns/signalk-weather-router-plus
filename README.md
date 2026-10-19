@@ -485,8 +485,11 @@ computed with what that request says, not with the user's saved Setup.
   a chart reads out the values there and puts a marker on the route where
   the boat is then; a click sets the map's overlays to that hour. The
   route is fitted into the map above the meteogram when it opens. The
-  conditions come from the forecast loaded now; the stretch after its last
-  step is shaded.
+  conditions come from the forecast loaded now; the wind is the route's:
+  where it was computed with a regional model (AROME, ICON-EU, …) that
+  model is layered over ECMWF as the router layers it, and the note names
+  the model for each stretch. The stretch after the forecast's last step
+  is shaded.
 - **Points of sail** in the itinerary come from the route's polar at each
   leg's wind speed: in irons tighter than the polar's no-go angle (the
   tightest angle it gives any speed, with the tightest sailable angle
@@ -2108,9 +2111,16 @@ sails the great circle at the leg's even pace, so a row a fraction of the
 way through a leg's time is that fraction of the way along it. The rows
 run from the departure to the arrival (both included). The conditions are
 sampled from the forecast loaded now, which may be a newer run than the
-route was computed with; both cycles are given. Currents are those
-already loaded (the on-demand Copernicus SMOC areas are not fetched for a
-track).
+route was computed with; both cycles are given. The wind is sampled from
+the same models as the route's: the regional wind models in its summary
+(`regional_wind`) are layered over ECMWF as the router layers them (each
+inside its grid and hours, blended at its border and over its last 3 h),
+from the newest decoded run of each; `wind_source` names the model that
+answered each row. Gusts, waves, pressure and the rest are ECMWF's: a
+regional run holds 10 m wind only. Every row comes from the same runs: a
+run replaced while the rows are read gives an answer that is not kept
+for the next request. Currents are those already loaded (the on-demand
+Copernicus SMOC areas are not fetched for a track).
 
 `200`:
 
@@ -2119,7 +2129,9 @@ track).
 | `departure`, `arrival` | string | the first and last row's time |
 | `step_s` | number | the step used |
 | `step_raised` | boolean | the step was raised above the one asked for |
-| `forecast_cycle`, `forecast_valid_to` | string | the run the rows were sampled from, and its last valid time |
+| `forecast_cycle`, `forecast_valid_to` | string | the ECMWF run the rows were sampled from, and its last valid time |
+| `regional_wind` | array | `{name, cycle}` of each regional wind run layered over it |
+| `regional_wind_missing` | array | regional models the route used that have no decoded run now (ECMWF answers there) |
 | `route_forecast_cycle` | string or null | the run the route was computed with |
 | `rows` | array | one per step (below) |
 
@@ -2137,6 +2149,7 @@ cloud, indices) plus:
 | `twa_deg` | degrees | true wind angle 0..180 (0 = head to wind), from the sampled wind and the course |
 | `tack` | string or null | `port` or `starboard`: the side the wind comes from (null head to wind or dead downwind) |
 | `beyond_forecast` | boolean | after the forecast's last step: the values are those held at that step |
+| `wind_source` | string | the model that answered the wind: a regional model's name where it weighs more than half, else `ECMWF` |
 
 `400 {error}` for a bad `step_s`; `404 {error: "job not found"}`; `409
 {error: "job is <status>"}` when not `done`; `503` before the first

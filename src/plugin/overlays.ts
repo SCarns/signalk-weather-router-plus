@@ -467,8 +467,11 @@ export interface ConditionsRow {
  * dimensionless: `precip_rate_ms` in m/s, `rh` a ratio 0..1. The interval
  * fields (`precip_m`, `snowfall_m`, the fluxes) are the values of the
  * interval containing the sample time, `interval_h` hours long.
+ * `windAt`: the wind to use instead of the forecast's (speed m/s, FROM
+ * degrees), such as regional wind layered over it; what is worked out from
+ * the wind (Beaufort, sea state, feels-like) uses it too.
  */
-export function sampleConditions(src: OverlaySources, lon: number, lat: number, time: Date): ConditionsRow {
+export function sampleConditions(src: OverlaySources, lon: number, lat: number, time: Date, windAt?: [number, number]): ConditionsRow {
   const f = src.forecast;
   const finiteOr = (v: number | undefined | null): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
   let wind: number | null = null;
@@ -492,7 +495,7 @@ export function sampleConditions(src: OverlaySources, lon: number, lat: number, 
   let str: number | null = null;
   let intervalH: number | null = null;
   if (f && f.covers(lon, lat)) {
-    const [ws, wd] = f.at(lon, lat, time);
+    const [ws, wd] = windAt ?? f.at(lon, lat, time);
     wind = finiteOr(ws);
     windDir = wind === null ? null : finiteOr(wd);
     if (f.hasWaves) {

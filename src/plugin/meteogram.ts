@@ -10,15 +10,17 @@
  * carries describe the leg into it (routeformat.ts), so a sample on the
  * leg from point i to point i+1 takes its mode and speed from point i+1.
  * The data worker samples the forecast at each (position, time)
- * (worker/query.ts `track_conditions`); the angle of the wind to the
- * course is worked out from that wind, not the leg's.
+ * (worker/query.ts `track_conditions`), with the regional wind models the
+ * route was computed with layered over ECMWF as the router layers them;
+ * the angle of the wind to the course is worked out from that wind, not
+ * the leg's.
  *
  * SI throughout: m/s, m, Pa, K, degrees for directions.
  */
 
 import { haversineBearing, haversineDistanceM, projectAlongBearing } from '../geo/geodesy';
 import { norm360, wrapLon } from '../geo/angles';
-import type { ConditionsRow } from './overlays';
+import type { TrackConditionsRow } from './protocol';
 
 /** Step between samples, s: default, smallest and largest. */
 export const METEOGRAM_STEP_S = { default: 3600, min: 600, max: 6 * 3600 };
@@ -52,7 +54,7 @@ export interface TrackSample {
 
 /** A meteogram row: the track sample, the conditions there, and the wind relative to the course. */
 export type MeteogramRow = TrackSample &
-  ConditionsRow & {
+  TrackConditionsRow & {
     /** True wind angle, 0..180 degrees (0 = head to wind), from the sampled wind and the course. */
     twa_deg: number | null;
     /** The side the wind comes from: port or starboard (null head to wind, dead downwind or no wind). */
@@ -65,9 +67,13 @@ export interface Meteogram {
   departure: string;
   arrival: string;
   step_s: number;
-  /** The run the rows were sampled from, and its last valid time. */
+  /** The ECMWF run the rows were sampled from, and its last valid time. */
   forecast_cycle: string;
   forecast_valid_to: string;
+  /** The regional wind runs layered over it where the route used them; each row's `wind_source` names the model that answered. */
+  regional_wind: { name: string; cycle: string }[];
+  /** Regional models the route used that have no decoded run now: ECMWF answers there instead. */
+  regional_wind_missing: string[];
   /** The sample step was raised from the one asked for to keep the row count in bounds. */
   step_raised: boolean;
   rows: MeteogramRow[];
@@ -157,7 +163,7 @@ export function trueWindAngle(windDirDeg: number | null, cogDeg: number | null):
 }
 
 /** The rows of the meteogram: each track sample with the conditions sampled for it. */
-export function meteogramRows(samples: TrackSample[], conditions: ConditionsRow[], validToMs: number | null): MeteogramRow[] {
+export function meteogramRows(samples: TrackSample[], conditions: TrackConditionsRow[], validToMs: number | null): MeteogramRow[] {
   if (conditions.length !== samples.length) throw new Error(`expected ${samples.length} conditions rows, got ${conditions.length}`);
   return samples.map((s, k) => {
     const c = conditions[k];

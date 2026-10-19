@@ -638,7 +638,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           responses: {
             200: {
               description:
-                '{departure, arrival, step_s, step_raised, forecast_cycle, forecast_valid_to, route_forecast_cycle, rows: [{time, lon, lat, leg, mode, sog_ms, cog_deg, twa_deg, tack, beyond_forecast, …the /api/conditions row fields}]}',
+                '{departure, arrival, step_s, step_raised, forecast_cycle, forecast_valid_to, regional_wind: [{name, cycle}], regional_wind_missing: [name], route_forecast_cycle, rows: [{time, lon, lat, leg, mode, sog_ms, cog_deg, twa_deg, tack, beyond_forecast, wind_source, …the /api/conditions row fields}]}. The wind is layered from the regional models the route was computed with, as the router layers them; wind_source names the model that answered each row (ECMWF elsewhere).',
             },
             400: { description: 'Bad step_s, or a route without two timed points' },
             404: { description: 'Not found' },

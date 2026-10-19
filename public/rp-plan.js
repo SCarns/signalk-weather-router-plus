@@ -3604,7 +3604,8 @@ function _winOpen(jobId) {
 // waves, pressure and precipitation. Hovering a chart puts a marker on the
 // route where the boat is then and reads out the values there; a click
 // sets the map overlays to that hour. The rows come from the forecast loaded
-// now; the stretch after its last step is shaded (values held at that step).
+// now, the wind with the regional models the route used layered over it; the
+// stretch after its last step is shaded (values held at that step).
 const _METEO_DIMS = { h: 118, left: 46, right: 10, top: 22, bottom: 18 };
 // True wind angle in the user's angle unit (the rows carry degrees).
 function _meteoAngleUnit() {
@@ -3682,6 +3683,8 @@ function _renderMeteogram() {
   const stepOpt = [..._meteoEl('meteoStep').options].find(o => Number(o.value) === d.step_s);
   notes.push('Conditions from the ECMWF run of ' + cyc(d.forecast_cycle) + ', every ' + (stepOpt ? stepOpt.textContent : _fmt(d.step_s, 'time'))
     + (d.step_raised ? ' (raised to keep the row count down)' : '') + '.');
+  const windNote = _meteoWindNote(d, rows);
+  if (windNote) notes.push(windNote);
   if (d.route_forecast_cycle && d.route_forecast_cycle !== d.forecast_cycle)
     notes.push('The route was computed with the run of ' + cyc(d.route_forecast_cycle) + '; recompute it for a route on this run.');
   if (rows.some(r => r.beyond_forecast)) notes.push('Shaded at the end: after the forecast’s last step (' + fmtWhen(d.forecast_valid_to) + '), the values are held at that step.');
@@ -3690,6 +3693,31 @@ function _renderMeteogram() {
   _meteoBindCanvases();
   _meteoDraw();
   _meteoReadout(m.hoverIdx);
+}
+
+// Which model the wind came from, stretch by stretch: the regional models the route was computed with, layered
+// over ECMWF as the router layers them (PR #50 review). Null when ECMWF answered it all and the route used no other.
+function _meteoWindNote(d, rows) {
+  const regional = d.regional_wind || [];
+  const missing = d.regional_wind_missing || [];
+  const notes = [];
+  if (rows.some(r => r.wind_source && r.wind_source !== 'ECMWF')) {
+    const stretches = [];
+    for (let i = 0; i < rows.length; i++) {
+      const src = rows[i].wind_source || 'ECMWF';
+      let j = i;
+      while (j + 1 < rows.length && (rows[j + 1].wind_source || 'ECMWF') === src) j++;
+      stretches.push(src + ' ' + fmtWhen(rows[i].time) + (j > i ? '–' + fmtWhen(rows[j].time) : ''));
+      i = j;
+    }
+    const shown = stretches.length > 8 ? stretches.slice(0, 8).concat('…') : stretches;
+    const runs = regional.map(r => r.name + ' run of ' + _shortUtc(r.cycle)).join(', ');
+    notes.push('Wind as the route was computed with it: ' + shown.join(', ') + ' (' + runs + '); gusts, waves and the rest from ECMWF.');
+  } else if (regional.length) {
+    notes.push('Wind from ECMWF all along: ' + regional.map(r => r.name).join(', ') + ' (used by the route) does not cover this passage’s times and places.');
+  }
+  if (missing.length) notes.push(missing.join(', ') + ', used by the route, has no run here now: ECMWF instead.');
+  return notes.length ? notes.join(' ') : null;
 }
 
 function _meteoMotorLegend(rows) {
@@ -3756,7 +3784,8 @@ function _meteoReadout(i) {
   if (!r) { el.textContent = 'Hover over a chart'; meteoMarkerFeature.setGeometry(null); return; }
   const parts = [fmtWhen(r.time)];
   if (r.wind_ms != null) parts.push('wind ' + fmtSpeed(r.wind_ms) + (r.gust_ms != null ? ' (gust ' + fmtSpeed(r.gust_ms) + ')' : '')
-    + (r.wind_dir_deg != null ? ' from ' + degToCardinal(r.wind_dir_deg) : ''));
+    + (r.wind_dir_deg != null ? ' from ' + degToCardinal(r.wind_dir_deg) : '')
+    + (r.wind_source && r.wind_source !== 'ECMWF' ? ', ' + r.wind_source : ''));
   if (r.twa_deg != null) parts.push('TWA ' + fmtAngleDeg(r.twa_deg) + (r.tack ? ' ' + r.tack : ''));
   if (r.sog_ms != null) parts.push((r.mode || 'SOG') + ' ' + fmtSpeed(r.sog_ms));
   if (r.swh_m != null) parts.push('waves ' + fmtSwh(r.swh_m) + (r.mwp_s != null ? ' / ' + fmtWavePeriod(r.mwp_s) : ''));

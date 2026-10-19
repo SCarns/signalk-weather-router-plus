@@ -104,6 +104,29 @@ export class LayeredWind implements WindSource {
   }
 
   atManyAt(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): { speed: Float64Array; dir: Float64Array } {
+    const { speed, dir } = this.blend(lons, lats, timesMs);
+    return { speed, dir };
+  }
+
+  /**
+   * As atManyAt, with the source that answered each sample: the regional
+   * source whose weight there is above one half (the finest when several
+   * are), else null for the base. Counted in the shares like atManyAt.
+   */
+  atManyAtWithSource(
+    lons: Float64Array,
+    lats: Float64Array,
+    timesMs: Float64Array
+  ): { speed: Float64Array; dir: Float64Array; source: (string | null)[] } {
+    const { speed, dir, bestIdx } = this.blend(lons, lats, timesMs);
+    return { speed, dir, source: Array.from(bestIdx, ri => (ri >= 0 ? this.regional[ri].name : null)) };
+  }
+
+  private blend(
+    lons: Float64Array,
+    lats: Float64Array,
+    timesMs: Float64Array
+  ): { speed: Float64Array; dir: Float64Array; bestIdx: Int16Array } {
     const n = lons.length;
     const b = sampleAt(this.base, lons, lats, timesMs);
     const u = new Float64Array(n);
@@ -162,7 +185,7 @@ export class LayeredWind implements WindSource {
       }
     }
     this.samples += n;
-    return { speed, dir };
+    return { speed, dir, bestIdx };
   }
 
   wavesAt(lon: number, lat: number, time: Date): WaveConditions | null {

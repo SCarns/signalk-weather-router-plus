@@ -191,16 +191,27 @@ export interface QueryArgs {
   weather_point: { lat: number; lon: number; startMs: number | null; maxCount: number | null; observation?: boolean };
   /** GET /api/forecast samples at a point (result the `samples` array). */
   forecast_info: { lat: number; lon: number };
-  /** Conditions at each (position, time) of a route's track, for its meteogram (result TrackConditions). */
-  track_conditions: { points: { lon: number; lat: number; tMs: number }[] };
+  /**
+   * Conditions at each (position, time) of a route's track, for its meteogram (result TrackConditions).
+   * `regional`: the regional wind models the route was computed with (its summary's regional_wind), layered over
+   * ECMWF as the router layers them.
+   */
+  track_conditions: { points: { lon: number; lat: number; tMs: number }[]; regional?: string[] };
 }
 
-/** The `track_conditions` answer: the run sampled and one row per point, in order. */
+/** A track row: the conditions, and the wind model that answered its wind (a regional model's name, or ECMWF). */
+export type TrackConditionsRow = ConditionsRow & { wind_source: string };
+
+/** The `track_conditions` answer: the runs sampled and one row per point, in order. */
 export interface TrackConditions {
-  /** Cycle and last valid time of the run the rows were sampled from (ISO 8601). */
+  /** Cycle and last valid time of the ECMWF run the rows were sampled from (ISO 8601). */
   cycle: string;
   validTo: string;
-  rows: ConditionsRow[];
+  /** The regional wind runs layered over it (cycle ISO 8601). */
+  regional: { name: string; cycle: string }[];
+  /** Regional models the route used that have no decoded run here now: ECMWF answers there instead. */
+  regionalMissing: string[];
+  rows: TrackConditionsRow[];
 }
 
 /** The decoded run in use: where it is on disk and its index (relayed data worker → main → route worker). */

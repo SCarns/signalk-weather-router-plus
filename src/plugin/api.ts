@@ -742,7 +742,8 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
 
   // The meteogram: the boat's position at each step of the passage and the
   // conditions there and then, from the forecast loaded now (which may be a
-  // newer run than the one the route was computed with: both cycles are given).
+  // newer run than the one the route was computed with: both cycles are given),
+  // with the regional wind models the route used layered over it.
   ro.get('/api/routes/:id/meteogram', (req: Request, res: Response) => {
     withJob(req, res, async (_jobs, job) => {
       if (job.status !== 'done' || !job.geojson) {
@@ -757,9 +758,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
         const samples = trackSamples(points, stepS);
         const service = tilesOr503(res);
         if (!service) return;
+        // The regional wind models the route was computed with: the meteogram's wind is layered the same way.
+        const regional = (job.summary?.regional_wind ?? []).map(r => r.name);
         const tc = (await service.point(
           'track_conditions',
-          { points: samples.map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs })) },
+          { points: samples.map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs })), regional },
           clientGone(res)
         )) as TrackConditions;
         const body: Meteogram & { route_forecast_cycle: string | null } = {
@@ -769,6 +772,8 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
           step_raised: raised,
           forecast_cycle: tc.cycle,
           forecast_valid_to: tc.validTo,
+          regional_wind: tc.regional,
+          regional_wind_missing: tc.regionalMissing,
           route_forecast_cycle: job.summary?.forecast_cycle ?? null,
           rows: meteogramRows(samples, tc.rows, Date.parse(tc.validTo)),
         };

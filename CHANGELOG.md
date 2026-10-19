@@ -53,7 +53,13 @@ uses [Semantic Versioning](https://semver.org/).
   position along each leg's great circle at the leg's pace, and the
   conditions there from the data worker's new `track_conditions` query,
   which reads a dozen samples at a time (their box, the steps around their
-  times) rather than the box of the whole route.
+  times) rather than the box of the whole route. The wind is the route's:
+  the regional models it was computed with are layered over ECMWF as the
+  router layers them (`LayeredWind.atManyAtWithSource`), each row naming
+  the model that answered. Every chunk is read from the runs taken at the
+  start; a run replaced meanwhile leaves the answer incomplete (not kept),
+  one pruned meanwhile is read again on the new run. Saved point answers
+  follow the regional runs too.
 
 ### Changed
 
