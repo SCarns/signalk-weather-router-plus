@@ -18,6 +18,7 @@
   --danger: #b42318;
   --fresh-green: #2e7d32;
   --fresh-orange: #b26a00;
+  --warn-fg: #8a5a00;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -30,6 +31,7 @@
     --danger: #f28b82;
     --fresh-green: #81c995;
     --fresh-orange: #fdd663;
+    --warn-fg: #fdd663;
   }
 }
 html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
@@ -120,7 +122,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
 .wx-buttons { margin-top: 6px; flex-wrap: wrap; }
 .wx-buttons select { width: auto; flex: 0 0 auto; }
 .wxdata { padding: 6px 8px; border-radius: 6px; background: rgba(127,127,127,.12); }
-.wxdata.warn { color: #8a5a00; background: rgba(249,168,37,.15); }
+.wxdata.warn { color: var(--warn-fg); background: rgba(249,168,37,.15); }
 .wxdata.danger { color: var(--danger); background: rgba(211,47,47,.12); }
 .fresh { white-space: nowrap; font-weight: 600; cursor: help; }
 .fresh-green { color: var(--fresh-green); }
@@ -534,6 +536,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     groups: [],        // /api/chart-groups
     chartRows: {},     // /api/chart-groups chart_rows: chart id → the freshness rows it is drawn from
     status: null,      // the last /api/status
+    groupsKey: null,   // the data the presets were read for (weatherStatus)
     legends: null,     // /api/legends
     charts: {},        // the plugin's charts in the host's list: id → {visible, temporal}
     fc: null,          // /api/status forecast: cycle, valid_from, valid_to, model
@@ -877,7 +880,11 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     wx.endMs = Math.floor(Date.parse(f.valid_to) / HOUR_MS) * HOUR_MS;
     if (wx.time !== null && (wx.time < wx.startMs || wx.time > wx.endMs)) setTime(null, true);
     renderData();
-    if (newRun || Date.now() - wx.groupsAt > 10 * 60000) loadChartGroups();
+    // The presets follow the data: a new run, or currents or tides loaded (or gone) since they were read.
+    var dataKey = JSON.stringify([f.cycle, (s.currents || []).map(function (c) { return c.name; }), s.tides ? s.tides.run || s.tides.name : null]);
+    var newData = dataKey !== wx.groupsKey;
+    wx.groupsKey = dataKey;
+    if (newRun || newData || Date.now() - wx.groupsAt > 10 * 60000) loadChartGroups();
     else renderTime();
   }
   // The data line, coloured by the worst source the shown layers are drawn from; the connection beneath it.
@@ -1763,7 +1770,10 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     initWeather();
     if (!host.has('routes')) {
       setStatus('This chartplotter cannot show routes from extensions (no "routes" capability).', 'error');
-      get(API + '/status').then(weatherStatus).catch(function () {});
+      // The Weather tab still works: its data line is kept current (pollStatus would replace the message above).
+      (function pollWeather() {
+        get(API + '/status').then(weatherStatus).catch(function () {}).then(function () { setTimeout(pollWeather, 60000); });
+      })();
       return;
     }
     unitsReady = Promise.all([
