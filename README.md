@@ -25,7 +25,7 @@ channels or bridges.
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
 
-**Status: beta** (0.2.0-beta.2). Please report
+**Status: beta** (0.2.0-beta.3). Please report
 problems at https://github.com/motamman/signalk-weather-router-plus/issues.
 
 What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
@@ -58,9 +58,29 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   the six base fields and 1.35 GB with the extra fields (`2t`, `tprate`,
   `skt`, `2d`, `ptype`, `tcc`, `10fg`).
 
+  **When a run is due.** ECMWF publishes each cycle at once, 454 minutes
+  after its run time for 00z/12z and 387 minutes for 06z/18z (measured
+  from the server's file times for every cycle of 2026-10-16 to 19); the
+  plugin looks for a cycle from then on, and checks every source (ECMWF,
+  SMOC, RTOFS, sea level) at the *Check for a new cycle every* interval
+  (Defaults, 15 min for a new install). Each check reports what it found
+  (`/api/status` `checks`): the newest run is in use, a new run was
+  loaded, the server could not be asked (the run in use stays, not known
+  to be the newest), or the new run could not be loaded. With no
+  connection at all (no name resolves, no route to any network) a request
+  fails at once and the rest of that round asks no server; a refused
+  connection, an unreachable host or a timeout is retried and the next
+  ECMWF mirror tried, as one server failing or a slow link.
+
   **Decoded once per update, kept on disk, read per request.** The
-  decoded forecast is not kept in memory. When a new ECMWF run arrives
-  the data worker decodes it one step at a time into one reusable
+  decoded forecast is not kept in memory. When a new ECMWF run arrives a
+  child process (`plugin/forecastdecodetask.ts`) downloads what the GRIB
+  cache lacks and decodes it one step at a time, while the data worker
+  goes on answering map, conditions and Weather API requests from the
+  run in use (on the test box, 2026-10-19, uncached map tiles answered in
+  17–64 ms during a 172 s decode; before, they waited for the whole
+  decode and timed out at 120 s); the child exits with the decode, and
+  its memory with it. It decodes into one reusable
   one-step block (54.0 MB with the extra fields) plus decode buffers
   (20.8 MB: one global field as Uint32 + Float64 + Float32 + Int32) and
   writes each step to `forecast/<yyyymmddHH>/` under the
@@ -142,7 +162,11 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   exact polygons: a leg crossing or touching any coastline edge is a
   land crossing, whatever the width of the land (legs whose cells are all
   water need no polygon test).
-- **Depth:** none in this version. There is no bathymetry: depths,
+- **Depth:** only where a chart mesh covers the water (see [Chart
+  mesh](#chart-mesh-charted-depths-and-obstructions)): there the charted
+  depth, vertical clearance, rocks, wrecks, marks and structures decide
+  the route against the boat's draught and air draft and the under-keel
+  and overhead clearances. Elsewhere there is no bathymetry, and depths,
   draught and clearances play no part in the route.
 - **Currents:** a stack of sources; where several cover a point the
   highest priority with data wins, and exactly (0, 0) from a source
@@ -332,11 +356,34 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   destination, waypoints with their radii, departure) is kept in the
   browser and restored on reload; a departure that has passed is set to
   now, and the status line says so.
-- **Header.** One line per quantity with the source it comes from: wind
-  (the ECMWF run, plus any regional model), waves, currents, tides, and
-  the job queue. Only the sources that apply to the route on the map, or
-  to the map view when there is none, are listed; times are local, with
-  UTC as a tooltip.
+- **Header.** The data sources, with how fresh each one is. Collapsed (the
+  default): one line, `wind ●● | waves ● | currents ●● | tides ●`, a dot
+  per source in its colour, with **Show** on the right. Expanded (**Hide**
+  folds it again; the choice is kept in the browser): a *Data sources*
+  title, then each row (wind, waves, currents, tides) with one line per
+  source: wind the ECMWF run and any regional model, waves the ECMWF run,
+  currents each current source, tides the sea-level run, then the job
+  queue. A source that does not cover the route on the map (or the map
+  view when there is none) is listed all the same, marked *(not in this
+  view)*. Each source carries a pill with its run's age, coloured by its
+  own publication cadence: **green** until 30 minutes before its next run
+  is due, **orange** from then until an hour after, **red** after that
+  (the old run still in use) or when nothing is loaded; hover a pill for
+  the run, when it was published and when the next is due. Sources and
+  when their runs are due: ECMWF at its measured publication times (see
+  [Data](#data)); RTOFS daily, by the last file the horizon needs; SMOC
+  and sea level a day after their store last updated; AROME by run hour
+  as measured, the other regional models as signalk-grib-downloader
+  schedules them; tidal harmonics are fixed tables, green when loaded. Under
+  the rows, whatever needs saying, collapsed or not: *Processing new
+  forecast data: 00Z, step 12 of 37* while a new run decodes behind the
+  one in use; a red *Late:* line naming each red source; a line for a
+  check that failed while online ("ECMWF check failed at …: HTTP 503").
+  Under the title, the connection: blue **online** when the plugin's last
+  request reached a server, grey **No internet connection since …** when
+  it found none (freshness and the connection are separate: the data can
+  be fresh while the link is down). Times are local, with UTC as a
+  tooltip.
 - **Saved routes** (Saved tab): opening one replaces the route on the map
   (its own start, destination, waypoints and precision) and offers
   **Recompute** with the current forecast and settings, or **Keep as
@@ -502,7 +549,9 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   meanwhile (no error notes), a route started meanwhile waits for the
   forecast and its log shows the same progress, and when the forecast is
   ready every layer and the units load by themselves. The Freeboard panel
-  shows the same in its status line.
+  shows the same in its status line. A later update decodes behind the
+  run in use: the map keeps working and the header says *Processing new
+  forecast data*.
 - The page references its scripts with `?v=<tag>`, a tag that changes
   whenever a file in `public/` changes, so browsers and proxies in front
   of Signal K always load the current scripts after an update.
@@ -822,8 +871,10 @@ settings; a request can override them with
   with the same leg search (sail threshold 0, so the detour motors only
   where sailing cannot move the boat) and the detour spliced in, the
   waypoints after it moved by the time it added; the route is then
-  checked again (at most 2 passes and 5 detours). A detour that motors on
-  a sailing route is a `detour_motored` warning. A route that still
+  checked again (at most 2 passes and 5 detours). Warnings and opening
+  bridges after a detour move with its waypoints, and the detour's own
+  opening bridges are reported. A detour that motors on a `sail_max`
+  route is a `detour_motored` warning. A route that still
   crosses such a triangle fails, naming the places and what blocks them;
   nothing unchecked is returned. Water with no
   charted depth and depths inside fairways, dredged areas and recommended
@@ -848,9 +899,15 @@ change the download list at once, without a restart. A mesh is
 downloaded as the catalogue's archive (`<name>_mesh.tar.zst`, about a
 third of the unpacked size), two meshes at a time: the archive is fetched
 into `<data dir>/mesh/.dl-<name>/` (a stopped download resumes where it
-stopped), unpacked into `<name>.new/`, checked (every tile the index lists
-present, their total the catalogue's `bytes`) and swapped in; the archive
-is deleted then. Before it starts, the free disk must hold the rest of the
+stopped; each chunk is on disk before the next is read, so a dropped
+connection loses nothing received), unpacked into `<name>.new/`, checked
+(every cluster folder and tile the index lists inside the mesh folder and
+present as a file, their total the catalogue's `bytes`) and swapped in;
+the archive is deleted then. Each catalogue row is checked when the
+catalogue is read: a row missing a field the plugin uses, or whose
+`archive` is not a bare `.tar.zst` file name (a URL or a path is
+refused), is set aside with its reason on its own panel row and never
+downloaded; the other rows serve. Before it starts, the free disk must hold the rest of the
 archive and the unpacked mesh with a tenth to spare (07CGD: about 5.7 GB
 from scratch). A leg is covered when one downloaded mesh (or the
 `meshDir` folder) holds its points, and that mesh is used; a leg whose ends
@@ -1316,7 +1373,7 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 | Group | Settings (default) | A change… |
 |---|---|---|
 | `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2), under-keel clearance (0.5 m, 0–3 m), overhead clearance (2 m, 0–10 m) | applies to the next route |
-| `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (15 min = 900 s; an existing settings.json keeps its value), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
+| `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (15 min = 900 s; every source is checked at it: ECMWF, SMOC, RTOFS, sea level; an existing settings.json keeps its value), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
 | `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), tacking penalty (30 s, charged per tack or gybe by both routers), buffer from land (0 m: the route keeps at least this far from the coastline; a start or end closer is moved out to it, a passage narrower than twice it closes), buffer from unusable water (0 m: on a mesh leg the route keeps at least this far from every triangle the boat cannot use), drawbridges (ask: plan as open and report the ones crossed; open; avoid), wait at a drawbridge (0 s), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (off), comfort weight (1, 0 = off), shortcut may be slower by (0.05 = 5%), finished routes kept (50), max wind (none), max wave height (none) | applies to the next route |
@@ -2082,7 +2139,10 @@ Plugin, forecast, currents, tides and queue status. Access: readonly.
 | `workers` | `{data, route}`: each worker is ready |
 | `forecast` | null until a decoded run is ready; see below |
 | `process_rss_bytes` | resident memory of the Signal K process, bytes |
-| `forecast_error` | last forecast refresh error, or null |
+| `forecast_error` | last forecast refresh error, or null; cleared only by a check that reached ECMWF (the newest run in use, or a new one loaded) |
+| `checks` | what the last check of each source found: `{ecmwf, smoc, rtofs, tides}`, each `{outcome, at, reason}`; `outcome`: `newest`, `could-not-check` (the server could not be asked: no connection, or it failed; the run in use stays), `new-run` or `failed` (the server answered but the new run could not be loaded) |
+| `freshness` | per source in use: `{source, rows, run, published_at, next_due_at, state, reason}`; `rows`: the header rows it colours (`wind`, `waves`, `currents`, `tides`); `state`: `green` (more than 30 min before the next run is due), `orange` (from then until 60 min after), `red` (later, or nothing loaded; `reason` then says why when the times do not) |
+| `connectivity` | `{online, since, lastOkAt, reason}`: whether the data worker's last request reached a server (`online` null before the first), since when, and why not; separate from freshness |
 | `forecast_loading` | while the data worker gets a forecast: `{phase, why, cycle, done, total, started_at, text}`. `phase`: `checking` (finding the newest ECMWF cycle) or `decoding` (step `done` of `total`, downloading what the GRIB cache lacks); `why`: `first` (no decoded run on disk yet), `redecode` (the runs on disk do not fit the forecast settings or are incomplete) or `update` (a newer cycle while the run in use keeps serving); `text`: the same as one line, e.g. `"loading the forecast: decoding the 06Z cycle, step 12 of 37 (first start)"`. Null when not loading |
 | `currents` | the data worker's current sources in priority order: `{name, priority, resolutionM, bbox, validFrom, validTo}`; the CMEMS SMOC entry adds `smoc` (run, resident and on-demand areas, memory, downloads) |
 | `currents_route_worker` | the same for the route worker |

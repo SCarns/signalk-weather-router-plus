@@ -1,10 +1,46 @@
 # What's new
 
-## Unreleased
+## 0.2.0-beta.3
 
+- **See at a glance how fresh your data is.** The top of the panel shows a
+  coloured dot for each source (wind, waves, currents, tides): green while
+  it is the latest, orange when a newer run is due about now, red when the
+  newer run is late and the old one is still in use. Click **Show** for
+  each source's age and when its next run is due; a red line says what is
+  late.
+- **Online or not.** Under the title, a blue *online* or a grey *No
+  internet connection since …*. Without a connection the plugin stops
+  trying at once instead of retrying for minutes, keeps using what it has,
+  and says so, instead of quietly staying on an old forecast.
+- **The map keeps working while a new forecast arrives.** Decoding a new
+  forecast used to hold up every map tile not drawn before until it was
+  done (minutes); it now runs on its own, and the header says *Processing
+  new forecast data*.
+- **New forecasts found at the right time.** The plugin now knows when
+  ECMWF actually publishes each run, so it neither looks too early nor
+  picks it up late.
+- **Under-keel and overhead clearance** are settings now (Defaults:
+  0.5 m and 2 m), the water kept under the keel and the headroom kept above
+  the mast on the charts. The higher overhead default keeps you off bridges
+  and cables 1–2 m above your mast height that were allowed before.
+- **A route that would cross shallow water is repaired first.** When the
+  final chart check finds a stretch your boat cannot use, that stretch is
+  routed again round it; the route fails only if that does not clear it.
+- **Charts download faster and survive a dropped connection**: each chart
+  comes as one compressed file (about a third of the size), two at a time,
+  and a stopped download carries on where it stopped. **Node.js 22.15 or
+  later** is needed for this.
+- **GeoJSON download** beside GPX, with every waypoint's times, wind,
+  waves, current and depth.
+- **Currents are shown the way they flow** ("to W"), as charts and tide
+  tables give them.
 - **No more routes over islands far from the start and end.** A long route
   could pass over islands outside the area the plugin loaded coastline for
   (seen in the Caribbean). Those are now treated as land.
+- **Fixes:** a chart catalogue entry the plugin cannot use is now set aside
+  with its reason instead of breaking the chart list; a route name in
+  another script no longer downloads as a hidden file; opening bridges are
+  reported correctly after a repair.
 
 ## 0.2.0-beta.2
 
