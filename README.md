@@ -1148,7 +1148,11 @@ resolution levels 1–4 (`GSHHS_f_L1.shp` through `GSHHS_f_L4.shp`):
   1.35 GB for 72 h with the extra fields, 4.6 GB at 360 h), the GRIB files
   of the cached cycles, the coastline (about 156 MB when downloaded),
   current and tide caches, and the saved map tiles (up to the configured
-  cap, 20 GB by default).
+  cap, 20 GB by default). Each cache directory holds a
+  [cache directory tag](https://bford.info/cachedir/) (`CACHEDIR.TAG`),
+  so backups leave the caches out: Kopia by default, restic, Borg and
+  GNU tar with `--exclude-caches`. Settings, jobs, polars, the
+  coastline and the downloaded meshes are backed up.
 - Memory: tested on a Raspberry Pi 5 with 8 GB. The resource guard keeps
   the configured amount free (default 1 GB) and refuses a forecast or a
   route that would not fit.

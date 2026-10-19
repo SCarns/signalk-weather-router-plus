@@ -6,6 +6,21 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Backups skip the caches.** The forecast, current and sea-level
+  downloads, the decoded runs, the meshes' rough cuts and the saved map
+  tiles each get a `CACHEDIR.TAG` (https://bford.info/cachedir/) at start
+  (`plugin/cachedir.ts`), so backups leave them out: Kopia by default,
+  restic, Borg and GNU tar with `--exclude-caches`. A tag without the
+  signature is written again. On one boat running
+  0.1.1 these directories held 4.78 GB (`du -sb`), and files written in
+  the last 24 h made up 4.78 GB of it (`find -newermt`), so the hourly
+  backups stored a new copy of nearly all of it every day. Settings,
+  jobs, polars, the coastline and the downloaded meshes
+  are still backed up: they change rarely, and offshore they cannot be
+  downloaded again.
+
 ## [0.2.0-beta.2] - 2026-10-13
 
 ### Changed

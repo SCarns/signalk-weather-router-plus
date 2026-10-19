@@ -45,6 +45,7 @@ import { runChildTask } from './plugin/childtask';
 import { ChartsProvider } from './plugin/charts';
 import { makePlotterExtension } from './plugin/plotterext';
 import { refreshPublicFileDates } from './plugin/webfiles';
+import { tagCacheDirs } from './plugin/cachedir';
 import { scanRegional, type RegionalStatus } from './data/regional';
 import { WorkerPool, type MainRole } from './plugin/workerpool';
 import { BUNDLED_DEFAULT_POLAR, BUNDLED_POLARS_DIR } from './plugin/polars';
@@ -913,6 +914,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
     }
     const gen = ++startGen;
     const dataDir = app.getDataDirPath();
+    // Before the first download, so a backup taken meanwhile already skips them.
+    for (const p of tagCacheDirs(dataDir)) app.error(`cache directory tag: ${p}`);
     if (config.landShapefiles.length > 0) {
       // A configured coastline must be there: it is never replaced by a download.
       const bad = unreadableCoastlines(config.landShapefiles);
