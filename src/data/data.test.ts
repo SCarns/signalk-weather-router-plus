@@ -160,16 +160,21 @@ test('ForecastStore blends steps in time and reports wind FROM direction', () =>
 import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { EcmwfClient, latestExpectedCycle, parseRetryAfterMs } from './ecmwf';
+import { EcmwfClient, latestExpectedCycle, nextCycle, parseRetryAfterMs, publishedAt } from './ecmwf';
+import { isOffline } from './http';
 import { resolveCycle } from './loader';
 
-test('latestExpectedCycle applies the 400-minute lag and skips short cycles for long horizons', () => {
-  // 20:00Z minus 400 min = 13:20Z → 12z cycle.
+test('latestExpectedCycle uses the measured publication times and skips short cycles for long horizons', () => {
+  // 12z is published at 19:34Z.
   const c = latestExpectedCycle(new Date('2026-09-27T20:00:00Z'), 72 * HOUR_S);
   assert.equal(c.yyyymmdd + c.hh, '2026092712');
-  // 12:00Z minus 400 min = 05:20Z → 00z cycle.
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T19:33:59Z'), 72 * HOUR_S).hh, '06');
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T19:34:00Z'), 72 * HOUR_S).hh, '12');
+  // 06z is published at 12:27Z (387 min); 00z at 07:34Z (454 min).
   assert.equal(latestExpectedCycle(new Date('2026-09-27T12:00:00Z'), 72 * HOUR_S).hh, '00');
-  // 14:00Z minus 400 min = 07:20Z → 06z (to 144 h) is fine for 72 and 144 h but not for 150 h → falls back to 00z.
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T12:27:00Z'), 72 * HOUR_S).hh, '06');
+  assert.equal(latestExpectedCycle(new Date('2026-09-27T07:33:00Z'), 72 * HOUR_S).hh, '18');
+  // 06z (to 144 h) is fine for 72 and 144 h but not for 150 h → falls back to 00z.
   assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 72 * HOUR_S).hh, '06');
   assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 144 * HOUR_S).hh, '06');
   assert.equal(latestExpectedCycle(new Date('2026-09-27T14:00:00Z'), 150 * HOUR_S).hh, '00');
@@ -177,6 +182,70 @@ test('latestExpectedCycle applies the 400-minute lag and skips short cycles for 
   assert.equal(latestExpectedCycle(new Date('2026-10-06T18:34:00Z'), 110 * HOUR_S).hh, '06');
   assert.equal(latestExpectedCycle(new Date('2026-10-06T01:00:00Z'), 110 * HOUR_S).hh, '18');
   assert.equal(latestExpectedCycle(new Date('2026-10-06T18:34:00Z'), 145 * HOUR_S).hh, '00');
+});
+
+test('publishedAt and nextCycle: the measured lags, and the 12 h ladder when the horizon needs 00z/12z', () => {
+  assert.equal(publishedAt(cycleFor(new Date('2026-10-19T00:00:00Z'))).toISOString(), '2026-10-19T07:34:00.000Z');
+  assert.equal(publishedAt(cycleFor(new Date('2026-10-18T18:00:00Z'))).toISOString(), '2026-10-19T00:27:00.000Z');
+  const c12 = cycleFor(new Date('2026-10-18T12:00:00Z'));
+  assert.equal(nextCycle(c12, 110 * HOUR_S).time.toISOString(), '2026-10-18T18:00:00.000Z');
+  assert.equal(nextCycle(c12, 150 * HOUR_S).time.toISOString(), '2026-10-19T00:00:00.000Z');
+});
+
+test('resolveCycle with the connection already known down: the server is not asked, the cached cycle says why', async () => {
+  const dir = tmpDir();
+  let n = 0;
+  const fetchImpl = (async () => {
+    n++;
+    throw new Error('network must not be used');
+  }) as unknown as typeof fetch;
+  const client = new EcmwfClient({ baseUrl: 'https://x', fallbackUrls: [], cacheDir: dir, fetchImpl, sleepImpl: async () => undefined });
+  const cached = cycleFor(new Date('2026-09-27T12:00:00Z'));
+  for (const step of [0, 3, 6]) {
+    for (const [stream, params] of [
+      [cached.atmStream, ['10u', '10v', 'msl']],
+      [cached.waveStream, ['swh', 'mwp', 'mwd']],
+    ] as const) {
+      for (const p of params) {
+        const f = client.cachePath(cached, stream, step, p);
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        fs.writeFileSync(f, Buffer.from('GRIB....'));
+      }
+    }
+  }
+  const r = await resolveCycle(client, 6 * HOUR_S, { now: new Date('2026-09-28T03:00:00Z'), offline: 'no internet connection (test)' });
+  assert.equal(n, 0);
+  assert.equal(r.cycle.yyyymmdd + r.cycle.hh, '2026092712');
+  assert.ok(r.fallback && r.fallback.includes('no internet connection (test)'), r.fallback);
+  // Nothing cached either: the offline error itself.
+  await assert.rejects(
+    resolveCycle(new EcmwfClient({ baseUrl: 'https://x', fallbackUrls: [], cacheDir: tmpDir(), fetchImpl }), 6 * HOUR_S, {
+      offline: 'no internet connection (test)',
+    }),
+    (e: unknown) => isOffline(e)
+  );
+});
+
+test('EcmwfClient: no connection at all fails at once, with no retries and no other mirror', async () => {
+  const calls: string[] = [];
+  const sleeps: number[] = [];
+  const fetchImpl = (async (url: string | URL | Request) => {
+    calls.push(String(url));
+    throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('getaddrinfo EAI_AGAIN'), { code: 'EAI_AGAIN' }) });
+  }) as unknown as typeof fetch;
+  const client = new EcmwfClient({
+    baseUrl: 'https://primary',
+    fallbackUrls: ['https://secondary'],
+    cacheDir: tmpDir(),
+    fetchImpl,
+    sleepImpl: async ms => {
+      sleeps.push(ms);
+    },
+  });
+  await assert.rejects(client.stepPublished(cycleFor(new Date('2026-09-27T00:00:00Z')), 'oper', 0), (e: unknown) => isOffline(e));
+  assert.equal(calls.length, 1);
+  assert.equal(sleeps.length, 0);
+  assert.equal(client.baseUrl, 'https://primary');
 });
 
 test('parseRetryAfterMs handles seconds and HTTP dates', () => {

@@ -24,8 +24,9 @@ import {
   type SmocRun,
   type SmocSettings,
 } from '../../currents/smoc';
+import { isOffline, OfflineError } from '../../data/http';
 import { type ResolvedConfig } from '../config';
-import { type DataStatus, type QueryArgs } from '../protocol';
+import { type CheckedSource, type CheckOutcome, type DataStatus, type QueryArgs } from '../protocol';
 import { requireInit } from './state';
 import type { WorkerState } from './state';
 
@@ -91,15 +92,22 @@ export function sendSmoc(st: WorkerState): void {
   if (st.role === 'data') st.send({ type: 'smoc', smoc: st.smoc ? st.smoc.serialize() : null });
 }
 
+/** Record what a source's check found (st.checks, reported in the data status). */
+export function noteCheck(st: WorkerState, source: CheckedSource, outcome: CheckOutcome, reason: string | null): void {
+  st.checks[source] = { outcome, at: new Date().toISOString(), reason };
+}
+
 /**
  * Data worker: check the store for a new daily run (cheap: .zmetadata +
  * STAC), load the resident area around the vessel for the current
  * window when the run, the window or the position changed, and prune
  * superseded cached runs. Offline, the newest cached run is used.
+ * `offline`: this round already found no connection; the store is not asked.
  */
-export async function refreshSmoc(st: WorkerState): Promise<void> {
+export async function refreshSmoc(st: WorkerState, offline: string | null = null): Promise<void> {
   const { config: cfg } = requireInit(st);
   if (!cfg.currents.smocEnabled || !st.smocClient) {
+    delete st.checks.smoc;
     if (st.smoc) {
       st.smoc = null;
       rebuildStack(st);
@@ -109,7 +117,9 @@ export async function refreshSmoc(st: WorkerState): Promise<void> {
   }
   const settings = smocSettings(cfg);
   let run: SmocRun | null;
+  let checked: { outcome: CheckOutcome; reason: string | null };
   try {
+    if (offline) throw new OfflineError(offline);
     const probed = await st.smocClient.probe(st.smoc?.run ?? null);
     if (probed.settled || !st.smoc) {
       run = probed;
@@ -125,12 +135,17 @@ export async function refreshSmoc(st: WorkerState): Promise<void> {
       );
       run = st.smoc.run;
     }
+    checked = { outcome: 'newest', reason: run.settled ? null : `run ${run.key} is still being written by Copernicus Marine` };
   } catch (err) {
-    st.log('error', `smoc: cannot reach the Copernicus Marine store: ${(err as Error).message}`);
+    if (!offline) st.log('error', `smoc: cannot reach the Copernicus Marine store: ${(err as Error).message}`);
     run = st.smoc?.run ?? st.smocClient.cachedRuns()[0] ?? null;
     if (run && !st.smoc) st.log('info', `smoc: using cached run ${run.key} (offline)`);
+    checked = { outcome: 'could-not-check', reason: (err as Error).message };
   }
-  if (!run) return;
+  if (!run) {
+    noteCheck(st, 'smoc', checked.outcome, checked.reason);
+    return;
+  }
   // A run first loaded while its update was still being written is
   // reloaded from scratch once the update has finished (its cached
   // chunks may predate the update).
@@ -158,11 +173,18 @@ export async function refreshSmoc(st: WorkerState): Promise<void> {
       }
     } catch (err) {
       st.log('error', `smoc: resident area load failed: ${(err as Error).message}`);
-      if (newRun && st.smoc) return; // keep serving the previous run
+      if (newRun && st.smoc) {
+        // Keep serving the previous run.
+        noteCheck(st, 'smoc', isOffline(err) ? 'could-not-check' : 'failed', `run ${run.key}: ${(err as Error).message}`);
+        return;
+      }
     }
   } else if (newRun && !pos) {
     st.log('info', `smoc: run ${run.key}: no vessel position; nothing resident, areas load on demand`);
   }
+  if (checked.outcome === 'newest' && newRun)
+    checked = { outcome: 'new-run', reason: `run ${run.key}${run.settled ? '' : ' (still being written)'}` };
+  noteCheck(st, 'smoc', checked.outcome, checked.reason);
   if (newRun) {
     st.smoc = src;
     // Also removes the provisional directory the settled run replaces: only
@@ -232,6 +254,7 @@ export async function prepareSmocForQuery(st: WorkerState, kind: string, args: Q
 
 export function loadHarmonic(st: WorkerState, dir: string | null): void {
   st.harmonic = [];
+  st.harmonicErrors = [];
   if (!dir) return;
   let files: string[];
   try {
@@ -241,6 +264,7 @@ export function loadHarmonic(st: WorkerState, dir: string | null): void {
       .sort();
   } catch (err) {
     st.log('error', `currents: cannot read harmonic directory ${dir}: ${(err as Error).message}`);
+    st.harmonicErrors.push(`${dir}: ${(err as Error).message}`);
     return;
   }
   for (const f of files) {
@@ -255,6 +279,7 @@ export function loadHarmonic(st: WorkerState, dir: string | null): void {
       );
     } catch (err) {
       st.log('error', `currents: failed to load ${p}: ${(err as Error).message}`);
+      st.harmonicErrors.push(`${f}: ${(err as Error).message}`);
     }
   }
 }
@@ -269,12 +294,16 @@ export function sendRtofs(st: WorkerState): void {
  * shared memory and relay it. The route and tiles workers do not load RTOFS
  * themselves: they adopt the data worker's run ('rtofs' message).
  */
-export async function refreshRtofs(st: WorkerState, networkAllowed: boolean): Promise<void> {
+export async function refreshRtofs(st: WorkerState, networkAllowed: boolean, offline: string | null = null): Promise<void> {
   const { config: cfg } = requireInit(st);
   if (st.role !== 'data') return;
-  if (!cfg.currents.rtofsEnabled || !st.rtofsClient) return;
+  if (!cfg.currents.rtofsEnabled || !st.rtofsClient) {
+    delete st.checks.rtofs;
+    return;
+  }
   const horizon = cfg.currents.rtofsHorizonS;
   let run: RtofsRun | null;
+  let checked: { outcome: CheckOutcome; reason: string | null } = { outcome: 'newest', reason: null };
   const cachedRuns = st.rtofsClient.cachedRuns().filter(r => st.rtofsClient!.runFullyCached(r, horizon));
   if (networkAllowed) {
     // Fresh enough already? The daily run appears during the morning;
@@ -283,10 +312,12 @@ export async function refreshRtofs(st: WorkerState, networkAllowed: boolean): Pr
     if (st.rtofsClient.runFullyCached(today, horizon)) run = today;
     else {
       try {
+        if (offline) throw new OfflineError(offline);
         run = await st.rtofsClient.findLatestRun(horizon);
       } catch (err) {
-        st.log('error', `rtofs: ${(err as Error).message}`);
+        if (!offline) st.log('error', `rtofs: ${(err as Error).message}`);
         run = cachedRuns[0] ?? null;
+        checked = { outcome: 'could-not-check', reason: (err as Error).message };
       }
     }
   } else {
@@ -294,9 +325,13 @@ export async function refreshRtofs(st: WorkerState, networkAllowed: boolean): Pr
   }
   if (!run) {
     if (st.rtofs) st.log('info', 'rtofs: keeping the resident run');
+    noteCheck(st, 'rtofs', checked.outcome, checked.reason);
     return;
   }
-  if (st.rtofs && st.rtofs.runMs === run.time.getTime()) return;
+  if (st.rtofs && st.rtofs.runMs === run.time.getTime()) {
+    noteCheck(st, 'rtofs', checked.outcome, checked.reason);
+    return;
+  }
   try {
     const t = Date.now();
     // The whole configured RTOFS product (cfg.currents.rtofsRegion), uncropped.
@@ -312,7 +347,9 @@ export async function refreshRtofs(st: WorkerState, networkAllowed: boolean): Pr
       `rtofs: run ${run.yyyymmdd}, ${steps.length} steps, ${(st.rtofs.bytes() / 1e6).toFixed(1)} MB resident, ${((Date.now() - t) / 1000).toFixed(1)} s`
     );
     if (networkAllowed) st.rtofsClient.pruneCache([run, ...cachedRuns.slice(0, 1)]);
+    noteCheck(st, 'rtofs', checked.outcome === 'newest' ? 'new-run' : checked.outcome, checked.reason ?? `run ${run.yyyymmdd}`);
   } catch (err) {
     st.log('error', `rtofs: load failed: ${(err as Error).message}`);
+    noteCheck(st, 'rtofs', isOffline(err) ? 'could-not-check' : 'failed', `run ${run.yyyymmdd}: ${(err as Error).message}`);
   }
 }

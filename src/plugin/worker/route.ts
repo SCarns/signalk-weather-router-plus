@@ -337,7 +337,7 @@ function meshLegRunner(
         };
         const r = await runChildTask(task, 15 * 60_000, ac.signal, e => {
           if (e.event === 'progress') a.progress(e.stage, e.total, e.message);
-          else st.send({ type: 'frontier', id, leg: a.legIndex, ...compactFront(e.front) });
+          else if (e.event === 'frontier') st.send({ type: 'frontier', id, leg: a.legIndex, ...compactFront(e.front) });
         });
         if (!r.ok) {
           if (r.fatal) throw new RouteError(r.reason);

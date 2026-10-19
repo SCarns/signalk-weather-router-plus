@@ -40,7 +40,10 @@
  *              (meshcoarse.ts; the rough-cut build makes them otherwise);
  *  - mesh-waters: a leg's way across the limits of the charts: the
  *              waters it goes through, where it crosses between them, and
- *              every mesh's water as land for the coastline parts (part 5).
+ *              every mesh's water as land for the coastline parts (part 5);
+ *  - forecast-decode: one ECMWF cycle downloaded and decoded to disk
+ *              (plugin/forecastdecodetask.ts), so the data worker keeps
+ *              answering map queries meanwhile; streams its progress.
  */
 
 import { fork } from 'node:child_process';
@@ -64,6 +67,7 @@ import type { MeshLegEvent, MeshLegResult, MeshLegTask } from './meshlegtask';
 import type { MeshTransferTask, MeshTransferTaskResult } from './meshtransfer';
 import type { MeshWatersTask, MeshWatersTaskResult } from './meshwaters';
 import type { MeshDownloadResult, MeshDownloadTask } from './mesharchive';
+import type { ForecastDecodeEvent, ForecastDecodeResult, ForecastDecodeTask } from './forecastdecodetask';
 
 export type ChildTask =
   | { task: 'rmtree'; dir: string }
@@ -77,10 +81,11 @@ export type ChildTask =
   | MeshTransferTask
   | MeshJoinsTask
   | MeshWatersTask
-  | MeshDownloadTask;
+  | MeshDownloadTask
+  | ForecastDecodeTask;
 
-/** A message a task sends before its answer (the mesh leg's progress and stage fronts). */
-export type ChildEvent = MeshLegEvent;
+/** A message a task sends before its answer (the mesh leg's progress and stage fronts, the forecast decode's steps). */
+export type ChildEvent = MeshLegEvent | ForecastDecodeEvent;
 
 export interface RmtreeResult {
   /** Saved tiles (.gz) and their bytes that were in the tree. */
@@ -110,18 +115,22 @@ export type ChildTaskResult<T extends ChildTask> = T extends { task: 'rmtree' }
                     ? MeshWatersTaskResult
                     : T extends { task: 'mesh-download' }
                       ? MeshDownloadResult
-                      : RegionalDecodeResult;
+                      : T extends { task: 'forecast-decode' }
+                        ? ForecastDecodeResult
+                        : RegionalDecodeResult;
 
 const isTs = __filename.endsWith('.ts');
 
 /**
  * Run one task in a fresh child process; resolves with its answer, rejects
  * on its error, exit or timeout. An aborted `signal` kills the child and
- * rejects.
+ * rejects. `timeoutMs` null: no time limit (a forecast download over a slow
+ * link at sea can take hours; stopping the plugin aborts it). The rejected
+ * error keeps the child's error name (OfflineError: no connection).
  */
 export function runChildTask<T extends ChildTask>(
   task: T,
-  timeoutMs = 30 * 60_000,
+  timeoutMs: number | null = 30 * 60_000,
   signal?: AbortSignal,
   onEvent?: (e: ChildEvent) => void
 ): Promise<ChildTaskResult<T>> {
@@ -140,7 +149,7 @@ export function runChildTask<T extends ChildTask>(
     const finish = (fn: () => void): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
       fn();
     };
@@ -150,23 +159,34 @@ export function runChildTask<T extends ChildTask>(
         reject(new Error(`${task.task} child process cancelled`));
       });
     signal?.addEventListener('abort', onAbort, { once: true });
-    const timer = setTimeout(
-      () =>
-        finish(() => {
-          child.kill('SIGKILL');
-          reject(new Error(`${task.task} child process timed out after ${Math.round(timeoutMs / 1000)} s`));
-        }),
-      timeoutMs
-    );
+    const timer =
+      timeoutMs === null
+        ? null
+        : setTimeout(
+            () =>
+              finish(() => {
+                child.kill('SIGKILL');
+                reject(new Error(`${task.task} child process timed out after ${Math.round(timeoutMs / 1000)} s`));
+              }),
+            timeoutMs
+          );
     child.stderr?.on('data', d => {
       if (stderr.length < 4000) stderr += String(d);
     });
-    child.on('message', (m: { ok?: boolean; result?: ChildTaskResult<T>; error?: string; event?: ChildEvent }) => {
+    child.on('message', (m: { ok?: boolean; result?: ChildTaskResult<T>; error?: string; name?: string; event?: ChildEvent }) => {
       if (m.event) {
         onEvent?.(m.event);
         return;
       }
-      finish(() => (m.ok ? resolve(m.result as ChildTaskResult<T>) : reject(new Error(m.error ?? `${task.task} child process failed`))));
+      finish(() => {
+        if (m.ok) {
+          resolve(m.result as ChildTaskResult<T>);
+          return;
+        }
+        const err = new Error(m.error ?? `${task.task} child process failed`);
+        if (m.name) err.name = m.name;
+        reject(err);
+      });
     });
     child.on('error', err => finish(() => reject(err)));
     child.on('exit', (code, signal) =>
@@ -264,15 +284,21 @@ async function runTask(t: ChildTask): Promise<unknown> {
       const { downloadMeshArchive } = await import('./mesharchive');
       return downloadMeshArchive(t);
     }
+    case 'forecast-decode': {
+      const { runForecastDecodeTask } = await import('./forecastdecodetask');
+      return runForecastDecodeTask(t, event => process.send!({ event }));
+    }
   }
 }
 
 // Child side: one task, one answer, then exit.
 if (require.main === module && typeof process.send === 'function') {
+  // The parent is gone (plugin stopped, Signal K exited): nothing left to work for.
+  process.on('disconnect', () => process.exit(0));
   process.once('message', (t: ChildTask) => {
     runTask(t).then(
       result => process.send!({ ok: true, result }, () => process.exit(0)),
-      err => process.send!({ ok: false, error: (err as Error).message }, () => process.exit(1))
+      err => process.send!({ ok: false, error: (err as Error).message, name: (err as Error).name }, () => process.exit(1))
     );
   });
 }

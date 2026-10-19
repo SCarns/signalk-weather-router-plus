@@ -292,6 +292,8 @@ export interface TideStatus {
   run: string;
   run_last_time: string;
   stac_updated: string | null;
+  /** When this run appeared in the store (timeChunked .zmetadata Last-Modified), ISO. */
+  metadata_modified: string | null;
   settled: boolean;
   half_width_deg: number;
   horizon_hours: number;
@@ -528,6 +530,7 @@ export class TideSource {
       run: this.run.key,
       run_last_time: new Date(runLastMs(this.run)).toISOString(),
       stac_updated: this.run.stacUpdated,
+      metadata_modified: this.run.metadataModified,
       settled: this.run.settled,
       half_width_deg: this.settings.halfWidthDeg,
       horizon_hours: this.settings.horizonS / HOUR_S,

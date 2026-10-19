@@ -12,6 +12,7 @@ import * as http from 'node:http';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  catalogEntryProblem,
   describeMesh,
   localMeshes,
   localWins,
@@ -209,6 +210,55 @@ test('MeshManager: downloads a ticked mesh, marks it ready, re-downloads a newer
     const bad = mgr.status().meshes.find(r => r.name === '99CGD')!;
     assert.equal(bad.state, 'error');
     assert.match(bad.error!, /not in the catalogue/);
+  } finally {
+    mgr.stop();
+    close();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test('catalogEntryProblem: every field the plugin reads is checked', () => {
+  assert.equal(catalogEntryProblem(ENTRY), null);
+  const { archive: _a, ...noArchive } = ENTRY;
+  assert.match(catalogEntryProblem(noArchive)!, /no archive/);
+  assert.match(catalogEntryProblem({ ...ENTRY, archive: '01CGD_mesh.zip' })!, /not a \.tar\.zst/);
+  assert.match(catalogEntryProblem({ ...ENTRY, name: '../x' })!, /not letters, digits/);
+  assert.match(catalogEntryProblem({ ...ENTRY, build_date: 'soon' })!, /build_date/);
+  assert.match(catalogEntryProblem({ ...ENTRY, bytes: '2 GB' })!, /bytes/);
+  assert.match(catalogEntryProblem({ ...ENTRY, clusters: [] })!, /no clusters/);
+  assert.match(catalogEntryProblem({ ...ENTRY, clusters: [{ dir: '.', box: [1, 2, 3] }] })!, /valid box/);
+  assert.equal(catalogEntryProblem({ ...ENTRY, chart_build_date: null }), null);
+  assert.match(catalogEntryProblem(null)!, /not an object/);
+});
+
+test('MeshManager: an unusable catalogue row is set aside with its reason; the status still answers; the good rows download', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshsrv-'));
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshstore-'));
+  publish(root, '2026-10-10T00:00:00Z', 300);
+  // Add rows the plugin cannot use: no archive (an older build), no clusters, and one with no name at all.
+  const catFile = path.join(root, 'charts', 'mesh', 'index.json');
+  const cat = JSON.parse(fs.readFileSync(catFile, 'utf8')) as { meshes: unknown[] };
+  const { archive: _a, ...noArchive } = { ...ENTRY, name: '05CGD' };
+  cat.meshes.push(noArchive, { ...ENTRY, name: '07CGD', clusters: undefined }, { archive: 'x.tar.zst' });
+  fs.writeFileSync(catFile, JSON.stringify(cat));
+  const { url, close } = await serve(root);
+  const logs: string[] = [];
+  const mgr = new MeshManager(m => logs.push(m));
+  try {
+    mgr.configure(url + 'charts/mesh/index.json', ['01CGD', '05CGD'], store);
+    await mgr.reconcile();
+    const st = mgr.status();
+    assert.equal(st.catalog_error, null, 'the catalogue itself was read');
+    assert.equal(st.meshes.find(r => r.name === '01CGD')!.state, 'ready');
+    const noArch = st.meshes.find(r => r.name === '05CGD')!;
+    assert.equal(noArch.state, 'error');
+    assert.match(noArch.error!, /the catalogue entry is unusable: no archive/);
+    assert.equal(noArch.description, 'the catalogue entry is unusable');
+    assert.ok(!fs.existsSync(path.join(store, '05CGD')) && !fs.existsSync(downloadWorkDir(store, '05CGD')), 'not fetched');
+    assert.match(st.meshes.find(r => r.name === '07CGD')!.error!, /no clusters/);
+    assert.deepEqual(st.catalog_problems, ['row 4: no name']);
+    assert.ok(logs.some(l => /05CGD: unusable entry \(no archive/.test(l)));
   } finally {
     mgr.stop();
     close();

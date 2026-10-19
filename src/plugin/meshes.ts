@@ -111,6 +111,8 @@ export interface MeshesStatus {
   catalog_url: string;
   catalog_updated: string | null;
   catalog_error: string | null;
+  /** Catalogue rows set aside that have no usable name ("row 3: no name"); a named one is reported on its own row. */
+  catalog_problems: string[];
   store_dir: string;
   meshes: MeshRow[];
 }
@@ -148,6 +150,42 @@ export function meshArchiveUrl(catalogUrl: string, mesh: CatalogMesh): string {
 /** The folder the archive holds the mesh under (`<D>_mesh`, its name without `.tar.zst`). */
 export function meshArchiveTop(mesh: CatalogMesh): string {
   return path.basename(mesh.archive).replace(/\.tar\.zst$/, '');
+}
+
+/** A mesh name as a folder name: letters, digits, - and _ (the panel's actions take the same). */
+const MESH_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Why a catalogue row cannot be used, or null: every field this plugin reads
+ * (the download's archive and build date, the panel's description from the
+ * clusters, size and triangles), checked when the catalogue is read, so one
+ * bad row is reported on its own mesh instead of failing the download with a
+ * bare TypeError or the panel's status as a whole.
+ */
+export function catalogEntryProblem(m: unknown): string | null {
+  if (!m || typeof m !== 'object') return 'not an object';
+  const e = m as Record<string, unknown>;
+  const text = (k: string): string | null => (typeof e[k] === 'string' && (e[k] as string).trim() ? (e[k] as string) : null);
+  const name = text('name');
+  if (!name) return 'no name';
+  if (!MESH_NAME.test(name)) return `name ${JSON.stringify(name)} is not letters, digits, - and _`;
+  const archive = text('archive');
+  if (!archive) return 'no archive (the mesh archive file, e.g. 01CGD_mesh.tar.zst)';
+  if (!archive.endsWith('.tar.zst')) return `archive ${archive} is not a .tar.zst file`;
+  const built = text('build_date');
+  if (!built || Number.isNaN(Date.parse(built))) return 'no valid build_date';
+  if (e.chart_build_date != null && (typeof e.chart_build_date !== 'string' || Number.isNaN(Date.parse(e.chart_build_date))))
+    return 'chart_build_date is not a date';
+  const num = (k: string): boolean => typeof e[k] === 'number' && Number.isFinite(e[k]) && (e[k] as number) >= 0;
+  if (!num('bytes')) return 'no valid bytes';
+  if (!num('triangles')) return 'no valid triangles';
+  if (!Array.isArray(e.clusters) || e.clusters.length === 0) return 'no clusters';
+  for (const c of e.clusters) {
+    const box = (c as { box?: unknown } | null)?.box;
+    if (!Array.isArray(box) || box.length !== 4 || !box.every(v => typeof v === 'number' && Number.isFinite(v)))
+      return 'a cluster has no valid box [west, south, east, north]';
+  }
+  return null;
 }
 
 /** A human line for a catalogue entry: area, chart and build dates, size, triangles. */
@@ -353,6 +391,10 @@ export function readyMeshDirs(storeDir: string): { name: string; dirs: string[];
 export class MeshManager {
   private catalog: Catalog | null = null;
   private catalogError: string | null = null;
+  /** Catalogue rows set aside (catalogEntryProblem), by mesh name; never downloaded. */
+  private catalogProblems = new Map<string, string>();
+  /** Rows set aside that have no usable name. */
+  private catalogUnnamed: string[] = [];
   private catalogUrl = DEFAULT_MESH_CATALOG_URL;
   private ticked: string[] = [];
   private disabled: string[] = [];
@@ -553,6 +595,8 @@ export class MeshManager {
     const localByName = new Map(localMeshes(this.meshDir).map(m => [m.name, m]));
     const jobs: { entry: CatalogMesh; freshSeq: number | undefined }[] = [];
     for (const n of this.ticked) {
+      // An unusable catalogue row is reported on its row (status), not fetched; the copy on disk, if any, stays.
+      if (this.catalogProblems.has(n)) continue;
       const local = localByName.get(n);
       const entry = this.catalog?.meshes.find(m => m.name === n);
       if (!entry) {
@@ -608,7 +652,25 @@ export class MeshManager {
       const c = (await res.json()) as Catalog;
       if (!c || !Array.isArray(c.meshes)) throw new Error('not a mesh catalogue (no meshes[])');
       if (seq !== this.catalogSeq) return; // a newer read has started: its result is the one that counts
-      this.catalog = c;
+      // Each row checked on its own: a bad one is set aside with its reason, the others serve.
+      const meshes: CatalogMesh[] = [];
+      const problems = new Map<string, string>();
+      const unnamed: string[] = [];
+      (c.meshes as unknown[]).forEach((m, i) => {
+        const problem = catalogEntryProblem(m);
+        if (!problem) {
+          meshes.push(m as CatalogMesh);
+          return;
+        }
+        const name = (m as { name?: unknown } | null)?.name;
+        if (typeof name === 'string' && MESH_NAME.test(name)) problems.set(name, problem);
+        else unnamed.push(`row ${i + 1}: ${problem}`);
+      });
+      for (const [n, p] of problems) this.log(`mesh catalogue ${this.catalogUrl}: ${n}: unusable entry (${p}); not downloaded`);
+      for (const u of unnamed) this.log(`mesh catalogue ${this.catalogUrl}: ${u}; skipped`);
+      this.catalog = { ...c, meshes };
+      this.catalogProblems = problems;
+      this.catalogUnnamed = unnamed;
       this.catalogError = null;
     } catch (err) {
       if (seq !== this.catalogSeq) return;
@@ -709,18 +771,20 @@ export class MeshManager {
     // A local mesh's name in the download list (ticked in an earlier panel) is not a catalogue mesh.
     const names = new Set<string>([
       ...(this.catalog?.meshes.map(m => m.name) ?? []),
+      ...this.catalogProblems.keys(),
       ...this.onDisk(),
       ...this.ticked.filter(n => !localNames.has(n)),
     ]);
     const rows: MeshRow[] = [];
     for (const name of [...names].sort()) {
       const entry = this.catalog?.meshes.find(m => m.name === name) ?? null;
+      const problem = this.catalogProblems.get(name);
       const marker = readMarker(path.join(this.storeDir, name));
       const ticked = this.ticked.includes(name);
       let state: MeshState = 'absent';
       if (this.removing.has(name)) state = 'removing';
       else if (this.downloading.has(name)) state = 'downloading';
-      else if (this.errors.has(name)) state = 'error';
+      else if (this.errors.has(name) || (problem && !marker)) state = 'error';
       else if (marker && entry && marker.build_date !== entry.build_date) state = 'update';
       else if (marker) state = 'ready';
       const l = localByName.get(name);
@@ -740,7 +804,7 @@ export class MeshManager {
       rows.push({
         name,
         title: DISTRICT_NAMES[name] ?? name,
-        description: entry ? describeMesh(entry) : 'not in the catalogue',
+        description: entry ? describeMesh(entry) : problem ? 'the catalogue entry is unusable' : 'not in the catalogue',
         source: 'catalog',
         ticked,
         enabled: !this.disabled.includes(name),
@@ -754,7 +818,7 @@ export class MeshManager {
         catalog_build_date: entry?.build_date ?? null,
         disk_build_date: marker?.build_date ?? null,
         bytes: entry?.bytes ?? marker?.bytes ?? null,
-        error: this.errors.get(name) ?? null,
+        error: problem ? `the catalogue entry is unusable: ${problem}; not downloaded` : (this.errors.get(name) ?? null),
       });
     }
     // Local meshes (the folder managed by hand), after the catalogue's; one named like a row above is in that row.
@@ -784,6 +848,7 @@ export class MeshManager {
       catalog_url: this.catalogUrl,
       catalog_updated: this.catalog?.updated ?? null,
       catalog_error: this.catalogError,
+      catalog_problems: [...this.catalogUnnamed],
       store_dir: this.storeDir,
       meshes: rows,
     };

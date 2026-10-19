@@ -256,6 +256,40 @@ export interface ForecastLoading {
   startedAt: string;
 }
 
+/**
+ * What the last check of a source found, said plainly:
+ *  - newest: the server answered and the run in use is the newest published
+ *    (for ECMWF also: the newest cycle due by the clock is already in use);
+ *  - could-not-check: the server could not be asked (no connection, or it
+ *    failed); the run in use stays, not known to be the newest;
+ *  - new-run: a newer run was fetched and is now in use;
+ *  - failed: the server answered but the new run could not be loaded
+ *    (download, decode, memory or disk guard).
+ */
+export type CheckOutcome = 'newest' | 'could-not-check' | 'new-run' | 'failed';
+
+export interface SourceCheck {
+  outcome: CheckOutcome;
+  /** When the check ended, ISO. */
+  at: string;
+  reason: string | null;
+}
+
+/** The data worker's sources, by the key their check is kept under. */
+export type CheckedSource = 'ecmwf' | 'smoc' | 'rtofs' | 'tides';
+
+/** What the data worker's own requests found about the connection (http.ts setNetworkObserver). */
+export interface Connectivity {
+  /** null until the first request. */
+  online: boolean | null;
+  /** When the current state began, ISO. */
+  since: string | null;
+  /** Last answer from any server, ISO. */
+  lastOkAt: string | null;
+  /** Why it is offline (null when online). */
+  reason: string | null;
+}
+
 export interface DataStatus {
   forecast: {
     cycle: string;
@@ -300,6 +334,11 @@ export interface DataStatus {
   tidesError: string | null;
   /** Regional runs decoded from signalk-grib-downloader (data worker), per source. */
   regional: RegionalDecodeState[];
+  /** The last check of each source, and what it found. */
+  checks: Partial<Record<CheckedSource, SourceCheck>>;
+  connectivity: Connectivity;
+  /** Tidal-harmonic files that failed to load ("file: reason"). */
+  harmonicErrors: string[];
 }
 
 /** One regional source's decode state. */
@@ -358,7 +397,8 @@ export type WorkerToMain =
   | { type: 'log'; level: 'debug' | 'info' | 'error'; message: string }
   /** data worker: a decoded run is ready (decoded now or found on disk). */
   | { type: 'forecast'; run: ForecastRunInfo }
-  | { type: 'forecast-unchanged'; cycleTimeMs: number }
+  /** data worker: what a forecast check found (the error line clears only on newest or new-run). */
+  | { type: 'forecast-check'; check: SourceCheck }
   /** route worker: forecast memory it holds (the corridor store while a route runs). */
   | { type: 'forecast-memory'; memory: ForecastMemory }
   | { type: 'refresh-error'; message: string }

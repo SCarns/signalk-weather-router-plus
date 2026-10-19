@@ -179,6 +179,8 @@ export interface SmocStatus {
   run: string;
   run_last_time: string;
   stac_updated: string | null;
+  /** When this run appeared in the store (timeChunked .zmetadata Last-Modified), ISO. */
+  metadata_modified: string | null;
   settled: boolean;
   step_hours: number;
   horizon_hours: number;
@@ -417,6 +419,7 @@ export class SmocCurrentSource implements CurrentSourceLike {
       run: this.run.key,
       run_last_time: new Date(runLastMs(this.run)).toISOString(),
       stac_updated: this.run.stacUpdated,
+      metadata_modified: this.run.metadataModified,
       settled: this.run.settled,
       step_hours: this.settings.stepS / HOUR_S,
       horizon_hours: this.settings.horizonS / HOUR_S,
