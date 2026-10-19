@@ -335,7 +335,7 @@ export type MainToWorker =
  * a mismatch it asks again (tiles.ts TileService, prebuild.ts).
  */
 export interface DataStamp {
-  /** The decoded run read, null when the query read none. */
+  /** The decoded run read, null when the query kind reads no forecast (the current and arrows layers, the tide series): not compared, unlike a missing source. */
   forecast: { cycleMs: number; params: string[] } | null;
   /** The SMOC run sampled, null when SMOC is off or not loaded. */
   smoc: { key: string; settled: boolean } | null;

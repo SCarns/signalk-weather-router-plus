@@ -774,9 +774,14 @@ function staleAnswer(group: TileGroup): Error {
  */
 export function stampMatches(group: TileGroup, expected: DataStamp, stamp: DataStamp): boolean {
   const same = (want: unknown, got: unknown): boolean => JSON.stringify(want ?? null) === JSON.stringify(got ?? null);
-  if (group === 'wx' || group === 'cur' || group === 'pt') {
-    if (!same(expected.forecast, stamp.forecast)) return false;
-  }
+  // The forecast part is compared only when the answer read one: kinds that
+  // need no forecast (the current and arrows layers, the tide series) stamp
+  // null and are not held to the loaded run. A kind that needed the
+  // forecast either names it or errored, so a null never hides a replaced
+  // run. The other sources are compared strictly: null there means the
+  // worker had none, which is replaced (or missing) data wherever the
+  // group compares them.
+  if (stamp.forecast && !same(expected.forecast, stamp.forecast)) return false;
   if (group === 'cur' || group === 'pt') {
     if (!same(expected.smoc, stamp.smoc)) return false;
     if (!same(expected.rtofs, stamp.rtofs)) return false;

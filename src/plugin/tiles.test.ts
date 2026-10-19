@@ -283,32 +283,71 @@ test('tile service: a tile computed from replaced data is discarded and asked ag
   fs.rmSync(h.root, { recursive: true, force: true });
 });
 
-test('stamp: a group is matched only against the sources it is computed from; parts must match including nulls', () => {
+test('stamp: a group is matched against the sources it is computed from, and only those the answer read', () => {
   const off: DataStamp = { forecast: null, smoc: null, rtofs: [], tide: null };
   // The land group: matched against nothing.
   assert.ok(stampMatches('land', STAMP_A, off), 'land has no stamped sources');
-  // The weather group: only the forecast part.
+  // The weather group: the forecast part, when the answer read one.
   assert.ok(stampMatches('wx', STAMP_A, { ...STAMP_A }), 'same forecast: match');
   assert.ok(
     stampMatches('wx', STAMP_A, { ...STAMP_A, smoc: null, rtofs: [], tide: null }),
     'replaced current and tide sources do not touch wx'
   );
-  assert.equal(stampMatches('wx', STAMP_A, off), false, 'no forecast where the plugin has one: mismatch');
-  // The current group: forecast, SMOC and RTOFS.
+  assert.equal(stampMatches('wx', STAMP_A, { ...STAMP_A, forecast: STAMP_B.forecast }), false, 'another forecast run: mismatch');
+  // The current group: the forecast when read (the current and arrows layers read none), SMOC and RTOFS strictly.
   assert.ok(stampMatches('cur', STAMP_A, { ...STAMP_A, tide: null }), 'tide is not part of cur');
+  assert.ok(stampMatches('cur', STAMP_A, { ...STAMP_A, forecast: null }), 'an answer that read no forecast is not held to the loaded run');
+  assert.equal(stampMatches('cur', STAMP_A, { ...STAMP_A, forecast: STAMP_B.forecast }), false, 'a read forecast must name the loaded run');
   assert.equal(
     stampMatches('cur', STAMP_A, { ...STAMP_A, smoc: { key: 'smoc-a', settled: false } }),
     false,
     'a settledness flip is a different run'
   );
+  assert.equal(stampMatches('cur', STAMP_A, { ...STAMP_A, smoc: null }), false, 'no SMOC where the plugin has one: the answer lacked it');
   assert.equal(stampMatches('cur', STAMP_A, { ...STAMP_A, rtofs: [{ product: 'west_atl', runMs: 1 }] }), false, 'another RTOFS run: mismatch');
   // The tide group: only the tide part.
   assert.ok(stampMatches('tide', STAMP_A, { ...off, tide: STAMP_A.tide }), 'same tide run: match');
   assert.equal(stampMatches('tide', STAMP_A, off), false, 'no tide run where the plugin has one: mismatch');
-  // The point group: everything.
+  // The point group: everything the answer read.
   assert.ok(stampMatches('pt', STAMP_A, { ...STAMP_A }));
-  assert.equal(stampMatches('pt', STAMP_A, { ...STAMP_A, forecast: null }), false);
+  assert.ok(stampMatches('pt', STAMP_A, { ...STAMP_A, forecast: null }), 'the tide series reads no forecast: accepted while one is loaded');
+  assert.equal(stampMatches('pt', STAMP_A, { ...STAMP_A, tide: null }), false, 'no tide run where the plugin has one: mismatch');
   assert.equal(stampMatches('pt', off, off), true, 'nothing loaded, nothing read: match');
+});
+
+test('tile service: current and arrows tiles are accepted while a forecast is loaded (they read none)', async () => {
+  const h = handover();
+  h.store.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
+  const cur: TileId = { layer: 'current', z: 6, x: 18, y: 23, hourMs: T.hourMs };
+  const arr: TileId = { layer: 'arrows', z: 6, x: 18, y: 23, hourMs: T.hourMs };
+  // The current colour layer and the current arrows read no forecast (their
+  // kinds need none): their answers stamp no forecast and must be accepted
+  // while one is loaded, not asked for again until the browser gives up.
+  const p1 = h.svc.get(cur);
+  for (let i = 0; i < 500 && h.svc.inflightCount < 1; i++) await wait();
+  h.answer([1], { ...STAMP_A, forecast: null });
+  assert.deepEqual(JSON.parse(zlib.gunzipSync((await p1).gz).toString()), [1]);
+  const p2 = h.svc.get(arr);
+  for (let i = 0; i < 500 && h.svc.inflightCount < 1; i++) await wait();
+  const b = tileBBox(6, 18, 23);
+  h.answer([{ lon: b.west, lat: b.south }], { ...STAMP_A, forecast: null });
+  const pts = JSON.parse(zlib.gunzipSync((await p2).gz).toString()) as { lon: number }[];
+  assert.equal(pts.length, 1, 'the arrows answer was served, not retried');
+  assert.equal(h.calls.n, 2, 'each tile answered once, no retries');
+  fs.rmSync(h.root, { recursive: true, force: true });
+});
+
+test('point answers: a tide series is accepted while a forecast is loaded (it reads none)', async () => {
+  const h = handover();
+  h.store.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
+  const args = { lat: 1, lon: 2, fromMs: 0, hours: 12 };
+  const p = h.svc.point('tide_series', args as never);
+  for (let i = 0; i < 500 && h.svc.inflightCount < 1; i++) await wait();
+  // pointQuery passes no abort signal: a retry loop here would never end.
+  h.answer({ waterLevel: [] }, { ...STAMP_A, forecast: null });
+  assert.deepEqual(await p, { waterLevel: [] });
+  assert.equal(h.calls.n, 1, 'answered once, no retries');
+  fs.rmSync(h.root, { recursive: true, force: true });
 });
 
 test('tile service: an incomplete answer is served but not saved', async () => {
