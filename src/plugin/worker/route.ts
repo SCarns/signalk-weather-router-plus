@@ -960,7 +960,9 @@ export async function route(
       },
       progress,
       shouldCancel,
-      { detour, sailing: (request.mode ?? 'sail_max') !== 'motor' }
+      // Under sail_max a detour (threshold 0) motors only where sailing cannot move the boat: worth a warning. Under
+      // fastest motoring is chosen whenever it is quicker, so it says nothing about the wind.
+      { detour, sailing: (request.mode ?? 'sail_max') === 'sail_max' }
     );
     // Which model answered the wind, over every leg's samples.
     let regionalWind: { name: string; run: string; share: number }[] | undefined;
@@ -1215,10 +1217,12 @@ const REPAIR_MAX_DETOURS = 5;
  * Route again each segment the check found blocked, back to front so the
  * earlier segments keep their indices, and splice the detour in place of
  * the segment; the waypoints after it move by the time the detour added
- * (a shift, not a re-timing).
+ * (a shift, not a re-timing: the detour's own times, opening-bridge waits
+ * included). Warnings and opening bridges after it move with its
+ * waypoints; the detour's own opening bridges are added.
  * Then check again; at most REPAIR_MAX_PASSES passes and
- * REPAIR_MAX_DETOURS detours. A detour that motors on a sailing route is a
- * `detour_motored` warning: its sail threshold is 0, so it motors only
+ * REPAIR_MAX_DETOURS detours. A detour that motors on a sail_max route is
+ * a `detour_motored` warning: its sail threshold is 0, so it motors only
  * where sailing cannot move the boat. Returns the last check; the caller
  * fails the route on what it still finds.
  */
@@ -1275,6 +1279,16 @@ export async function repairViolations(
       route.waypoints = [...wps.slice(0, k + 1), ...mid, last, ...after];
       // Warnings index the route's segments (multileg.ts stitchLegs): those after the detour move with its waypoints.
       for (const w of route.warnings ?? []) if (w.leg_index > k) w.leg_index += mid.length;
+      // Opening bridges index the waypoint their crossing leg arrives at, the same way: the one on the replaced
+      // segment goes (the detour says what it passes under), those after it move, and the detour's own come in at
+      // its place (its waypoint j is the route's k + j).
+      const bridges = (route.drawbridges ?? [])
+        .filter(br => br.legIndex !== k + 1)
+        .map(br => (br.legIndex > k + 1 ? { ...br, legIndex: br.legIndex + mid.length } : br));
+      for (const br of d.drawbridges ?? []) bridges.push({ ...br, legIndex: br.legIndex + k });
+      bridges.sort((x, y) => x.legIndex - y.legIndex);
+      if (bridges.length) route.drawbridges = bridges;
+      else delete route.drawbridges;
       route.repairsApplied = (route.repairsApplied ?? 0) + 1;
       spliced++;
       progress(

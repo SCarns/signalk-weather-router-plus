@@ -88,7 +88,7 @@ test('fetchWithRetry: Retry-After raises the backoff; 404 is returned without a 
   assert.equal(bad.calls, 2);
 });
 
-test('fetchWithRetry: no connection (DNS, refused, unreachable) throws OfflineError at once; a reset or a timeout is still retried', async () => {
+test('fetchWithRetry: no connection (DNS, no network) throws OfflineError at once; one refusing or unreachable host and a reset are retried', async () => {
   const fetchFail = (code: string): typeof fetch =>
     (async () => {
       throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code }) });
@@ -96,7 +96,7 @@ test('fetchWithRetry: no connection (DNS, refused, unreachable) throws OfflineEr
   const seen: [string, string | null][] = [];
   setNetworkObserver((state, detail) => seen.push([state, detail]));
   try {
-    for (const code of ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH']) {
+    for (const code of ['ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'ENETDOWN']) {
       const sleeps: number[] = [];
       await assert.rejects(
         fetchWithRetry(
@@ -121,7 +121,25 @@ test('fetchWithRetry: no connection (DNS, refused, unreachable) throws OfflineEr
       fetchWithRetry('https://x', {}, { timeoutMs: 1000, retries: 3, fetchImpl: agg, sleepImpl: async () => undefined }),
       OfflineError
     );
-    assert.ok(seen.length >= 6 && seen.every(([s]) => s === 'offline'));
+    assert.ok(seen.length >= 5 && seen.every(([s]) => s === 'offline'));
+    // One server refusing, or a router saying it cannot reach that host: the link works, so retried (and the
+    // ECMWF client then fails over to the next mirror), not "no internet connection".
+    for (const code of ['ECONNREFUSED', 'EHOSTUNREACH']) {
+      const sleeps: number[] = [];
+      await assert.rejects(
+        fetchWithRetry(
+          'https://x',
+          {},
+          { timeoutMs: 1000, retries: 3, fetchImpl: fetchFail(code), sleepImpl: async ms => void sleeps.push(ms) }
+        ),
+        (e: unknown) => !(e instanceof OfflineError)
+      );
+      assert.equal(sleeps.length, 2, `${code}: retried with backoff`);
+    }
+    assert.ok(
+      seen.every(([s]) => s === 'offline'),
+      'a refusing host does not change what the link is known to be'
+    );
     // A reset mid-transfer is a failed download, retried as before; the answer after it says the link is up.
     const reset = responder([Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }), 200]);
     const out = await fetchWithRetry(

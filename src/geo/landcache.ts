@@ -255,10 +255,19 @@ export class OnDemandLand implements OverlayLand {
 
   forBBox(bbox: BBox, spacingDeg: number): LandMask {
     const res = chooseOverlayResolution(bbox, spacingDeg, this.maxCells);
-    const snapped = snapBBox(bbox, res);
+    // The overlay lattice samples the box's north and east edges too (overlays.ts lattice). A raster ending exactly
+    // there leaves those samples outside it, and outside a raster is land (landmask.ts isLand): so the raster reaches
+    // one cell past them.
+    const need: BBox = {
+      west: bbox.west,
+      south: bbox.south,
+      east: bbox.west + Math.min(360, bboxWidth(bbox) + res),
+      north: Math.min(90, bbox.north + res),
+    };
+    const snapped = snapBBox(need, res);
     for (let i = 0; i < this.entries.length; i++) {
       const e = this.entries[i];
-      if (e.res === res && bboxWithin(bbox, e.bbox)) {
+      if (e.res === res && bboxWithin(need, e.bbox)) {
         this.entries.splice(i, 1);
         this.entries.push(e);
         this.hits++;

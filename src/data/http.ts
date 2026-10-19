@@ -7,17 +7,23 @@
  * With `readBody` the body is read while the timer is still armed, so a
  * stalled download is retried like a failed connection.
  *
- * No connection at all (the name does not resolve, the connection is
- * refused, no route to the network or host) is not retried: it throws an
- * OfflineError at once, which the callers report as "could not check"
- * rather than as a failed download. A timeout is retried: a slow link at
- * sea looks the same as a dead one.
+ * No connection at all (no name resolves, no route to any network, the
+ * interface is down) is not retried: it throws an OfflineError at once,
+ * which the callers report as "could not check" rather than as a failed
+ * download. A refused connection, an unreachable host and a timeout are
+ * retried: one server's failure, or a slow link at sea, which looks the
+ * same as a dead one.
  */
 
 import { MINUTE_MS } from '../geo/units';
 
-/** Network error codes that mean there is no connection, not a failed transfer. */
-const OFFLINE_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENETDOWN']);
+/**
+ * Network error codes that mean there is no connection at all: no name resolves, no route to any network, the
+ * interface is down. Not ECONNREFUSED (a host answered) nor EHOSTUNREACH (usually one host or path): those are one
+ * server's failure, retried and failed over to the next mirror like any other, so one bad server does not make the
+ * whole round look offline.
+ */
+const OFFLINE_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'ENETDOWN']);
 
 export class OfflineError extends Error {
   constructor(message: string) {

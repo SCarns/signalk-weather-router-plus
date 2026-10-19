@@ -143,6 +143,20 @@ test('OnDemandLand: raster per bbox matched to the spacing, LRU reuse, exact poi
   assert.equal(land.isLandAt(0, 0), false);
 });
 
+test('OnDemandLand: a view whose north and east edges fall on the raster grid still reads its edge samples as water', () => {
+  const file = fixture();
+  const land = new OnDemandLand([file], { maxCells: 4_000_000 });
+  // At 0.01° the raster snaps to 2.56° blocks: this view's edges are exactly on block boundaries.
+  const view = { west: -28 * 2.56, south: 16 * 2.56, east: -27 * 2.56, north: 17 * 2.56 };
+  const m = land.forBBox(view, 0.05);
+  assert.equal(m.resolutionDeg, 0.01);
+  // The overlay lattice samples the edges themselves (overlays.ts lattice): open water there, not "outside the raster".
+  assert.equal(m.isLand(view.east, view.north), false, 'north-east corner');
+  assert.equal(m.isLand(-70.5, view.north), false, 'north edge');
+  assert.equal(m.isLand(view.east, 41.5), false, 'east edge');
+  assert.ok(m.isLand(-70.5, 41.5), 'the island inside is still land');
+});
+
 test('OnDemandLand: rasters saved on disk are reused by a new instance, identical to a fresh build', () => {
   const file = fixture();
   const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-landcache-'));

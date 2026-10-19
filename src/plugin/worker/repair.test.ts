@@ -134,6 +134,49 @@ test('repair: warnings after a detour move with its waypoints; those before it s
   );
 });
 
+test('repair: opening bridges after a detour move with its waypoints, the replaced segment drops its own, the detour adds its own', async () => {
+  const r = route([wp(0, 0), wp(1, 60), wp(2, 120), wp(3, 180), wp(4, 240)]);
+  // legIndex: the waypoint the crossing leg arrives at (multileg.ts stitchLegs).
+  r.drawbridges = [
+    { lon: 0.5, lat: 41, clearM: 2, legIndex: 1 },
+    { lon: 1.5, lat: 41, clearM: 3, legIndex: 2 }, // on the blocked segment 1 → 2
+    { lon: 3.5, lat: 41, clearM: 4, legIndex: 4 },
+  ];
+  await repairViolations(
+    r,
+    check([violation(1, 1.5)]),
+    {
+      sailing: true,
+      detour: async (a, b) => {
+        const d = route([wp(a.lon, 60), wp(1.4, 80), wp(1.6, 100), wp(b.lon, 120)]);
+        // The detour passes under a bridge of its own, on its leg arriving at its waypoint 2.
+        d.drawbridges = [{ lon: 1.5, lat: 41.1, clearM: 5, legIndex: 2 }];
+        return d;
+      },
+    },
+    async () => check([]),
+    quiet,
+    () => false
+  );
+  assert.deepEqual(
+    r.waypoints.map(w => w.lon),
+    [0, 1, 1.4, 1.6, 2, 3, 4]
+  );
+  assert.deepEqual(
+    (r.drawbridges ?? []).map(b => [b.clearM, b.legIndex]),
+    [
+      [2, 1],
+      [5, 3],
+      [4, 6],
+    ]
+  );
+  // Each still arrives at the waypoint after it.
+  assert.deepEqual(
+    (r.drawbridges ?? []).map(b => r.waypoints[b.legIndex].lon),
+    [1, 1.6, 4]
+  );
+});
+
 test('repair: a sailing detour stuck at Min sail speed 0 says the detour could not tack clear, not to change the setting', async () => {
   const r = route([wp(0, 0), wp(1, 60)]);
   const said: string[] = [];

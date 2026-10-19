@@ -656,6 +656,14 @@ document.querySelectorAll('#vesselTypeToggle .vt-btn').forEach(b => {
 loadPowerBoat();
 applyVesselType(getVesselType());
 
+// A download's file name from the route name: letters, digits, '.', '-' and '_' kept (ASCII), the rest '_', at most
+// 80 characters. A name with none of those (a non-Latin script) falls back to "weather_route", never a bare
+// ".geojson" (a hidden file on macOS and Linux).
+function _fileName(name, ext) {
+  const safe = String(name).replace(/[^\w.-]+/g, '_').replace(/^[_.]+|_+$/g, '').slice(0, 80);
+  return (safe || 'weather_route') + ext;
+}
+
 // Itinerary name bar: Publish (POST /api/routes/{id}/publish) and
 // Delete (DELETE /api/routes/{id}) for the route on the map.
 (function() {
@@ -674,7 +682,7 @@ applyVesselType(getVesselType());
       .then(blob => {
         const a = document.createElement('a');
         a.href = URL.createObjectURL(new Blob([blob], { type: 'application/geo+json' }));
-        a.download = name.replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) + '.geojson';
+        a.download = _fileName(name, '.geojson');
         document.body.appendChild(a);
         a.click();
         a.remove();
@@ -689,7 +697,7 @@ applyVesselType(getVesselType());
     const blob = new Blob([_routeGpx(name)], { type: 'application/gpx+xml' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = name.replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 80) + '.gpx';
+    a.download = _fileName(name, '.gpx');
     document.body.appendChild(a);
     a.click();
     a.remove();
