@@ -16,6 +16,7 @@ import { GLYPH_LAYERS, GLYPH_LAYER_SPECS, type GlyphLayer } from './glyphtiles';
 import { PNG_LAYERS, PNG_LAYER_SPECS, type PngLayer } from './pngtiles';
 import type { TileLayer } from './tiles';
 import type { DataStatus, ForecastRunInfo } from './protocol';
+import type { FreshnessRow } from './freshness';
 import type { ResourceProvider } from './plotterext';
 
 export interface ChartsDeps {
@@ -114,6 +115,29 @@ export interface ChartGroup {
   /** The /api/legends key of the group's colour layer; null when it has none (isobars). */
   legend: PngLayer | null;
 }
+
+/**
+ * The freshness rows (/api/status `freshness`, freshness.ts) each layer is
+ * drawn from, so a panel can say how fresh what it shows is. The forecast's
+ * other fields (pressure, rain, temperatures) are the ECMWF entry's, which
+ * colours the `wind` row; no map layer reads the regional wind models.
+ */
+const LAYER_ROWS: Record<PngLayer | GlyphLayer, FreshnessRow[]> = {
+  wind: ['wind'],
+  barbs: ['wind'],
+  isobars: ['wind'],
+  precip: ['wind'],
+  temperature: ['wind'],
+  sst: ['wind'],
+  waves: ['waves'],
+  wave_arrows: ['waves'],
+  current: ['currents'],
+  arrows: ['currents'],
+  // Wind against current, and the current against the waves.
+  sea_state: ['wind', 'waves', 'currents'],
+  seas: ['wind', 'waves', 'currents'],
+  tide: ['tides'],
+};
 
 /** Layers drawn from currents or tides (alone or mixed in), whose frames do not all come from the forecast run. */
 const NOT_FORECAST_ONLY = new Set<string>(['current', 'arrows', 'tide', 'sea_state', 'seas']);
@@ -220,6 +244,16 @@ export class ChartsProvider {
       if (colour && !(chartIdOf(colour) in charts)) continue;
       const ids = g.layers.map(chartIdOf).filter(id => id in charts);
       if (ids.length) out.push({ id: g.id, name: g.name, description: g.description, charts: ids, legend: colour ?? null });
+    }
+    return out;
+  }
+  /** The freshness rows each chart with data is drawn from (LAYER_ROWS), by chart resource id. */
+  chartRows(): Record<string, FreshnessRow[]> {
+    const charts = this.resources();
+    const out: Record<string, FreshnessRow[]> = {};
+    for (const l of [...PNG_LAYERS, ...GLYPH_LAYERS]) {
+      const id = chartIdOf(l);
+      if (id in charts) out[id] = LAYER_ROWS[l];
     }
     return out;
   }

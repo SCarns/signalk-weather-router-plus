@@ -1,5 +1,14 @@
 # What's new
 
+## Unreleased
+
+- **Weather in Freeboard's panel.** The Weather Router Plus panel in Freeboard
+  has a new Weather tab: one tap for Wind, Waves, Pressure, Sea state, Rain or
+  the temperatures, with its colour scale; a time bar over the whole forecast
+  to drag, step or play through the days ahead, all layers at the same hour;
+  and how fresh the data on the map is, with the same coloured dots, late
+  warnings and online line as the web page.
+
 ## 0.2.0-beta.3
 
 - **See at a glance how fresh your data is.** The top of the panel shows a
@@ -41,12 +50,6 @@
   with its reason instead of breaking the chart list; a route name in
   another script no longer downloads as a hidden file; opening bridges are
   reported correctly after a repair.
-
-- **Weather in Freeboard's panel.** The Weather Router Plus panel in Freeboard
-  has a new Weather tab: one tap for Wind, Waves, Pressure, Sea state, Rain or
-  the temperatures, with its colour scale; a time bar over the whole forecast
-  to drag, step or play through the days ahead, all layers at the same hour;
-  and how old the forecast is, flagged when no newer run has come for a day.
 
 ## 0.2.0-beta.2
 

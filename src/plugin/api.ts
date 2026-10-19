@@ -49,6 +49,7 @@ import type { QueryArgs, QueryKind, RouteRequest } from './protocol';
 import { openApiDocument } from './openapi';
 import { buildLegends } from './legends';
 import type { ChartGroup } from './charts';
+import type { FreshnessRow } from './freshness';
 import { listPolars, loadPolarCached, PolarNotFoundError, polarAngles, polarFromSpecs, polarTable, resolvePolarPath } from './polars';
 import type { BBox } from '../geo/geodesy';
 import { MESH_ACTIONS, type MeshAction } from './meshes';
@@ -75,6 +76,8 @@ export interface ApiDeps {
   tiles: () => TileService | null;
   /** The chart-layer presets a chartplotter panel offers (empty before the forecast is there). */
   chartGroups: () => ChartGroup[];
+  /** The freshness rows each of those charts is drawn from, by chart id. */
+  chartRows: () => Record<string, FreshnessRow[]>;
   /** Why the plugin is not answering yet ("starting: downloading the coastline (40 %)"), for 503 answers. */
   notReady: () => string;
   /**
@@ -384,7 +387,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     res.setHeader('Cache-Control', 'public, max-age=3600');
     json(res, 200, buildLegends());
   });
-  ro.get('/api/chart-groups', (_req: Request, res: Response) => json(res, 200, { groups: deps.chartGroups() }));
+  ro.get('/api/chart-groups', (_req: Request, res: Response) =>
+    json(res, 200, { groups: deps.chartGroups(), chart_rows: deps.chartRows() })
+  );
 
   /** Aborts when the client goes away before the answer is sent (its query then leaves the worker's queue). */
   const clientGone = (res: Response): AbortSignal => {

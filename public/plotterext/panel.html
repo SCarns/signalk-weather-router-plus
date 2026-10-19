@@ -16,6 +16,8 @@
   --primary: #1565c0;
   --primary-fg: #fff;
   --danger: #b42318;
+  --fresh-green: #2e7d32;
+  --fresh-orange: #b26a00;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -26,6 +28,8 @@
     --primary: #64b5f6;
     --primary-fg: #0b1a2b;
     --danger: #f28b82;
+    --fresh-green: #81c995;
+    --fresh-orange: #fdd663;
   }
 }
 html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
@@ -118,6 +122,13 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
 .wxdata { padding: 6px 8px; border-radius: 6px; background: rgba(127,127,127,.12); }
 .wxdata.warn { color: #8a5a00; background: rgba(249,168,37,.15); }
 .wxdata.danger { color: var(--danger); background: rgba(211,47,47,.12); }
+.fresh { white-space: nowrap; font-weight: 600; cursor: help; }
+.fresh-green { color: var(--fresh-green); }
+.fresh-orange { color: var(--fresh-orange); }
+.fresh-red { color: var(--danger); }
+#wxNet { margin-top: 4px; }
+.net-on { color: var(--primary); font-weight: 600; }
+.net-off { color: var(--muted); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -151,6 +162,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     </div>
   </section>
   <div id="wxData" class="wxdata small"></div>
+  <div id="wxNet" class="small"></div>
   <div id="wxNote" class="muted small" hidden></div>
 </div>
 
@@ -517,11 +529,11 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   // presets list; a host that names them otherwise gets no presets.
   var HOUR_MS = 3600000;
   var DAY_MS = 24 * HOUR_MS;
-  // A run older than this means the downloads have stopped: newer runs come out several times a day.
-  var WX_OUTDATED_MS = DAY_MS;
   var WX_PLAY_MS = 1500;
   var wx = {
     groups: [],        // /api/chart-groups
+    chartRows: {},     // /api/chart-groups chart_rows: chart id → the freshness rows it is drawn from
+    status: null,      // the last /api/status
     legends: null,     // /api/legends
     charts: {},        // the plugin's charts in the host's list: id → {visible, temporal}
     fc: null,          // /api/status forecast: cycle, valid_from, valid_to, model
@@ -568,12 +580,13 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   function loadChartGroups() {
     wx.groupsAt = Date.now();
     return Promise.all([
-      get(API + '/chart-groups').then(function (r) { wx.groups = r.groups || []; }),
+      get(API + '/chart-groups').then(function (r) { wx.groups = r.groups || []; wx.chartRows = r.chart_rows || {}; }),
       wx.legends ? Promise.resolve() : get(API + '/legends').then(function (l) { wx.legends = l; }).catch(function () {}),
     ]).then(loadChartList).catch(function () { renderPresets(); });
   }
 
   function renderPresets() {
+    renderData(); // its sources follow the layers shown
     var el = $('wxPresets');
     if (!host || !host.has('charts')) { el.innerHTML = ''; return; }
     if (!wx.groups.length) { el.innerHTML = '<span class="muted small">No forecast layers yet.</span>'; $('wxLegend').hidden = true; return; }
@@ -817,14 +830,44 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     window.addEventListener('resize', renderTime);
   }
 
-  // ---- data age --------------------------------------------------------------
+  // ---- data freshness --------------------------------------------------------
+  // How fresh the data is comes from the plugin (/api/status): `freshness`, each
+  // source against its own publication cadence (plugin/freshness.ts), and
+  // `connectivity`, whether its own requests reach a server, on a line of its
+  // own. The panel says it for the layers on the map, in the web page's words
+  // (rp-core.js _freshPill, _lateLine, _checkLines, _netLine).
+  var FRESH_RANK = { green: 0, orange: 1, red: 2 };
+  var CHECK_NAMES = { ecmwf: 'ECMWF', smoc: 'SMOC', rtofs: 'RTOFS', tides: 'sea level' };
+  var CHECK_ROWS = { ecmwf: ['wind', 'waves'], smoc: ['currents'], rtofs: ['currents'], tides: ['tides'] };
+  function clockText(iso) { return iso ? fmtClock(new Date(iso), { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }) : ''; }
+  function ageText(ms) { return ms < HOUR_MS ? 'under 1 h' : dayHours(Math.floor(ms / HOUR_MS)); }
+  function overlaps(a, b) { return a.some(function (r) { return b.indexOf(r) >= 0; }); }
+  // The freshness rows of the plugin's layers on the map; none shown: the forecast's own (the line names its run).
+  function shownRows() {
+    var rows = [];
+    visibleIds().forEach(function (id) {
+      (wx.chartRows[id] || []).forEach(function (r) { if (rows.indexOf(r) < 0) rows.push(r); });
+    });
+    return rows.length ? rows : ['wind', 'waves'];
+  }
+  // A source's coloured pill with its run's age; the run and its times in the tooltip.
+  function freshPill(f) {
+    var text = f.state === 'red' && !f.run ? 'none'
+      : f.published_at ? ageText(Math.max(0, Date.now() - Date.parse(f.published_at))) + ' old' : 'loaded';
+    var tip = [
+      f.source + (f.run ? ', run ' + f.run : ''),
+      f.published_at ? 'published ' + clockText(f.published_at) : '',
+      f.next_due_at ? 'next run due ' + clockText(f.next_due_at) : '',
+      f.reason || '',
+    ].filter(Boolean).join(' · ');
+    return '<span class="fresh fresh-' + esc(f.state) + '" title="' + esc(tip) + '">● ' + esc(f.source) + ' ' + esc(text) + '</span>';
+  }
   function weatherStatus(s) {
-    var box = $('wxData');
+    wx.status = s || {};
     var f = s && s.forecast;
     if (!f || !f.cycle || !f.valid_to) {
       wx.fc = null; wx.startMs = wx.endMs = null;
-      box.className = 'wxdata small';
-      box.textContent = s && s.starting ? s.starting : 'No forecast yet.';
+      renderData();
       renderTime();
       return;
     }
@@ -833,23 +876,52 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     wx.startMs = Math.ceil(Date.parse(f.valid_from || f.cycle) / HOUR_MS) * HOUR_MS;
     wx.endMs = Math.floor(Date.parse(f.valid_to) / HOUR_MS) * HOUR_MS;
     if (wx.time !== null && (wx.time < wx.startMs || wx.time > wx.endMs)) setTime(null, true);
-    var cycleMs = Date.parse(f.cycle), age = Date.now() - cycleMs;
-    var run = new Date(cycleMs).toLocaleString(undefined, { timeZone: 'UTC', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ' UTC';
-    var ageText = age < HOUR_MS ? 'under 1 h' : dayHours(Math.floor(age / HOUR_MS));
-    var until = fmtClock(new Date(wx.endMs), { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-    var head = esc(f.model || 'Forecast') + ' · run ' + esc(run) + ', ' + esc(ageText) + ' old · until ' + esc(until);
-    var kind = '', note = '';
-    if (Date.now() > wx.endMs) {
-      kind = 'danger';
-      note = 'The forecast has run out: there is no weather data for now.';
-    } else if (age > WX_OUTDATED_MS) {
-      kind = 'warn';
-      note = 'Outdated: no newer run for ' + ageText + '. New runs come out several times a day, so the downloads have probably stopped (no internet?).';
-    }
-    box.className = 'wxdata small' + (kind ? ' ' + kind : '');
-    box.innerHTML = head + (note ? '<br><b>' + esc(note) + '</b>' : '');
+    renderData();
     if (newRun || Date.now() - wx.groupsAt > 10 * 60000) loadChartGroups();
     else renderTime();
+  }
+  // The data line, coloured by the worst source the shown layers are drawn from; the connection beneath it.
+  function renderData() {
+    var s = wx.status;
+    if (!s) return; // no status yet
+    var box = $('wxData');
+    var c = s.connectivity;
+    $('wxNet').innerHTML = !c || c.online == null ? ''
+      : c.online ? '<span class="net-on">● online</span>'
+      : '<span class="net-off" title="' + esc(c.reason || '') + '">● No internet connection since ' + esc(clockText(c.since)) + '</span>';
+    var f = s.forecast;
+    if (!f || !f.cycle || !f.valid_to) {
+      box.className = 'wxdata small';
+      box.textContent = s.starting ? s.starting : 'No forecast yet.';
+      return;
+    }
+    var rows = shownRows();
+    // The map layers are drawn from ECMWF alone: the regional wind models (routes only) are left out.
+    var regional = ((s.regional && s.regional.sources) || []).map(function (x) { return x.name; });
+    var fresh = (s.freshness || []).filter(function (x) { return regional.indexOf(x.source) < 0 && overlaps(x.rows || [], rows); });
+    var worst = fresh.reduce(function (w, x) { return FRESH_RANK[x.state] > FRESH_RANK[w] ? x.state : w; }, 'green');
+    var run = new Date(Date.parse(f.cycle)).toLocaleString(undefined, { timeZone: 'UTC', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ' UTC';
+    var until = fmtClock(new Date(wx.endMs), { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    var html = esc(f.model || 'Forecast') + ' · run ' + esc(run) + ' · until ' + esc(until);
+    if (fresh.length) html += '<br>' + fresh.map(freshPill).join(' ');
+    fresh.filter(function (x) { return x.state === 'red'; }).forEach(function (x) {
+      html += '<br><b>Late: ' + esc(x.source) + ' ' + esc(x.reason || 'next run was due ' + clockText(x.next_due_at) + ', still on ' + x.run) + '</b>';
+    });
+    // What a check could not do while online; offline, the connection line says it.
+    var online = !(c && c.online === false);
+    Object.keys(s.checks || {}).forEach(function (k) {
+      var ck = s.checks[k];
+      if (!overlaps(CHECK_ROWS[k] || [], rows)) return;
+      if (!(ck.outcome === 'failed' || (ck.outcome === 'could-not-check' && online))) return;
+      html += '<br>' + esc((CHECK_NAMES[k] || k) + (ck.outcome === 'failed' ? ' update failed' : ' check failed') + ' at ' + clockText(ck.at) + (ck.reason ? ': ' + tokenText(ck.reason) : ''));
+    });
+    var kind = worst === 'red' ? 'danger' : worst === 'orange' ? 'warn' : '';
+    if (Date.now() > wx.endMs) {
+      kind = 'danger';
+      html += '<br><b>The forecast has run out: there is no weather data for now.</b>';
+    }
+    box.className = 'wxdata small' + (kind ? ' ' + kind : '');
+    box.innerHTML = html;
   }
   function wxNote(text) { var n = $('wxNote'); n.textContent = text; n.hidden = !text; }
 

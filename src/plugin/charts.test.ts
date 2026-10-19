@@ -55,6 +55,17 @@ test('charts: the groups hold only the charts with data, colour layer first, and
   assert.equal(byName.Tide, undefined);
 });
 
+test('charts: each chart with data names the freshness rows it is drawn from', () => {
+  const rows = provider(PARAMS, true).chartRows();
+  assert.deepEqual(rows['wrp-wind-speed'], ['wind']);
+  assert.deepEqual(rows['wrp-isobars'], ['wind'], 'the forecast run: the ECMWF entry');
+  assert.deepEqual(rows['wrp-wave-height'], ['waves']);
+  assert.deepEqual(rows['wrp-current-arrows'], ['currents']);
+  assert.deepEqual(rows['wrp-sea-state'], ['wind', 'waves', 'currents']);
+  assert.equal(rows['wrp-tide-height'], undefined, 'no tides: not a chart');
+  assert.deepEqual(Object.keys(rows).sort(), Object.keys(provider(PARAMS, true).resources()).sort());
+});
+
 test('charts: a group whose colour layer has no data is left out, not offered with its glyphs alone', () => {
   // Currents but no tides: the current arrows are there, the tide height is not.
   const byName = Object.fromEntries(

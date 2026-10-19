@@ -683,10 +683,15 @@ forecast hour from one place, as a chartplotter's weather view does:
   and **Now** to go back to the current hour. All the plugin's layers show
   the same hour, so switching from Waves to Wind keeps it. Keys: arrows
   step, Page Up/Down a day, Home now, End the last hour.
-- **The data's age**: the model, the run (UTC), how old it is, and when
-  the forecast ends. Over 24 h old it is flagged as outdated: new runs
-  come out several times a day, so the downloads have stopped (no
-  internet at sea, for example). Past its end it is flagged in red.
+- **How fresh the data is**: the model, the run (UTC) and when the
+  forecast ends, then a coloured pill per source the shown layers are
+  drawn from, with its run's age (the run, when it was published and when
+  the next one is due in its tooltip), as the web page's header shows them
+  (`/api/status` `freshness`; the map layers read ECMWF, so the regional
+  wind models are not listed). The worst colours the line; a red source
+  gets a Late line, and a failed check says so. The connection is on a
+  line of its own (`connectivity`): online, or no internet connection
+  since when. Past the forecast's end it is flagged in red.
 
 It needs a chartplotter with the `charts` and `charts.time` capabilities
 (Freeboard-SK 3.2 or later), which pass the chosen hour on to the tiles

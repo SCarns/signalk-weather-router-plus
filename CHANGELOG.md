@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Weather tab in the Freeboard panel** (issue #53). The plotter-extension panel
+  has a Weather and a Route tab; routing is unchanged. The Weather tab shows
+  the chart groups as presets (`chart.setVisibility`, `chart.setOrder`), the
+  preset's legend from `/api/legends`, a forecast time bar over the whole run
+  (days in the ship's zone, now, drag, step, play) that sets one hour on all
+  the plugin's layers (`chart.setTime`), and how fresh the data is, from
+  `/api/status` as the web page shows it: a pill per source the shown layers
+  are drawn from (`freshness`, coloured by its own cadence, the worst
+  colouring the line), a Late line for a red one, failed checks, the
+  connection on a line of its own (`connectivity`), and the forecast run
+  out past `valid_to`. It follows changes made in the host's chart
+  list and Time palette (`chart.*` events). The manifest lists `charts` and
+  `charts.time` as optional.
+- `GET /api/chart-groups`: the chart groups with the charts that have their
+  data now, colour layer first, and the colour layer's legend key; and
+  `chart_rows`, the freshness rows each chart is drawn from.
+- Chart `time` blocks carry `forecast: true` and, for the layers drawn from
+  the forecast alone, `issued` (the run's time), as proposed in
+  SignalK/freeboard-sk#1075. Hosts ignore fields they do not know.
+
 ## [0.2.0-beta.3] - 2026-10-19
 
 ### Added
@@ -220,23 +244,6 @@ uses [Semantic Versioning](https://semver.org/).
   jobs, polars, the coastline and the downloaded meshes
   are still backed up: they change rarely, and offshore they cannot be
   downloaded again.
-
-### Added
-
-- **Weather tab in the Freeboard panel** (issue #53). The plotter-extension panel
-  has a Weather and a Route tab; routing is unchanged. The Weather tab shows
-  the chart groups as presets (`chart.setVisibility`, `chart.setOrder`), the
-  preset's legend from `/api/legends`, a forecast time bar over the whole run
-  (days in the ship's zone, now, drag, step, play) that sets one hour on all
-  the plugin's layers (`chart.setTime`), and the run's age: outdated over
-  24 h, expired past `valid_to`. It follows changes made in the host's chart
-  list and Time palette (`chart.*` events). The manifest lists `charts` and
-  `charts.time` as optional.
-- `GET /api/chart-groups`: the chart groups with the charts that have their
-  data now, colour layer first, and the colour layer's legend key.
-- Chart `time` blocks carry `forecast: true` and, for the layers drawn from
-  the forecast alone, `issued` (the run's time), as proposed in
-  SignalK/freeboard-sk#1075. Hosts ignore fields they do not know.
 
 ## [0.2.0-beta.2] - 2026-10-13
 
