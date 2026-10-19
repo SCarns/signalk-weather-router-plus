@@ -64,10 +64,24 @@ interface Entry {
 }
 
 /**
+ * The box a raster at `res` must cover for `bbox`. The overlay lattice samples the box's north and east edges too
+ * (overlays.ts lattice). A raster ending exactly there leaves those samples outside it, and outside a raster is land
+ * (landmask.ts isLand): so the raster reaches one cell past them.
+ */
+function overlayNeed(bbox: BBox, res: number): BBox {
+  return {
+    west: bbox.west,
+    south: bbox.south,
+    east: bbox.west + Math.min(360, bboxWidth(bbox) + res),
+    north: Math.min(90, bbox.north + res),
+  };
+}
+
+/**
  * Resolution for samples `spacingDeg` apart: a quarter of the spacing
  * (so a sample's cell is small next to the gap between samples), snapped
- * down to the offered set, then coarsened until the snapped bbox fits
- * the cell budget.
+ * down to the offered set, then coarsened until the raster forBBox builds
+ * (the needed box, snapped) fits the cell budget.
  */
 export function chooseOverlayResolution(bbox: BBox, spacingDeg: number, maxCells: number): number {
   const target = Math.max(OVERLAY_LAND_RESOLUTIONS[0], spacingDeg / 4);
@@ -75,7 +89,7 @@ export function chooseOverlayResolution(bbox: BBox, spacingDeg: number, maxCells
   while (i + 1 < OVERLAY_LAND_RESOLUTIONS.length && OVERLAY_LAND_RESOLUTIONS[i + 1] <= target) i++;
   for (; i < OVERLAY_LAND_RESOLUTIONS.length; i++) {
     const r = OVERLAY_LAND_RESOLUTIONS[i];
-    const b = snapBBox(bbox, r);
+    const b = snapBBox(overlayNeed(bbox, r), r);
     if (Math.ceil(bboxWidth(b) / r) * Math.ceil((b.north - b.south) / r) <= maxCells) return r;
   }
   return OVERLAY_LAND_RESOLUTIONS[OVERLAY_LAND_RESOLUTIONS.length - 1];
@@ -255,10 +269,11 @@ export class OnDemandLand implements OverlayLand {
 
   forBBox(bbox: BBox, spacingDeg: number): LandMask {
     const res = chooseOverlayResolution(bbox, spacingDeg, this.maxCells);
-    const snapped = snapBBox(bbox, res);
+    const need = overlayNeed(bbox, res);
+    const snapped = snapBBox(need, res);
     for (let i = 0; i < this.entries.length; i++) {
       const e = this.entries[i];
-      if (e.res === res && bboxWithin(bbox, e.bbox)) {
+      if (e.res === res && bboxWithin(need, e.bbox)) {
         this.entries.splice(i, 1);
         this.entries.push(e);
         this.hits++;

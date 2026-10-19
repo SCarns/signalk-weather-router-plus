@@ -80,7 +80,7 @@ test('migration converts the old plugin config to SI settings and ignores region
   assert.ok(Math.abs(m.values.vessel.motorSpeed - 6 * 0.514444444) < 1e-6, 'kt → m/s');
   // Vessel keys the router never used (draught, clearances, tack penalty…) are not carried over, nor the
   // name (Signal K's vessels.self.name is used).
-  assert.deepEqual(Object.keys(m.values.vessel).sort(), ['motorSpeed', 'polarPerformance']);
+  assert.deepEqual(Object.keys(m.values.vessel).sort(), ['motorSpeed', 'overheadClearance', 'polarPerformance', 'underKeelClearance']);
   assert.equal(m.values.forecast.horizon, 48 * 3600, 'h → s');
   assert.equal(m.values.forecast.refreshInterval, 3600, 'min → s');
   assert.ok(Math.abs(m.values.routing.sailThreshold - 4.9 * 0.514444444) < 1e-6, 'kt → m/s');

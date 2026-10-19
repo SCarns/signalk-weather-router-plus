@@ -4,14 +4,16 @@
  * plugin config ticks for download, and their copies on disk.
  *
  * On disk, under `<data dir>/mesh/`: one folder per mesh named as in the
- * catalogue (`01CGD`), a mirror of the published `charts/mesh/<D>/`
- * folder (the mesh's own `index.json` — or `meshes.json` plus one
- * sub-folder per cluster — and the `.bin` tiles), plus a marker
- * `.wrp-mesh.json` written when the copy is complete, holding the
- * catalogue entry it was taken from. A download goes into `<D>.new/` and
- * is swapped into place when complete, so a route never sees a partial
- * mesh; the previous copy, if any, serves until then. A mesh unticked in
- * the config is deleted.
+ * catalogue (`01CGD`), the published mesh folder unpacked from its archive
+ * (the mesh's own `index.json` — or `meshes.json` plus one sub-folder per
+ * cluster — and the `.bin` tiles), plus a marker `.wrp-mesh.json` written
+ * when the copy is complete, holding the catalogue entry it was taken
+ * from. A download fetches the catalogue's `archive` (`<D>_mesh.tar.zst`)
+ * into the hidden working folder `.dl-<D>/` (resumed where it stopped),
+ * unpacks it into `<D>.new/` and swaps that into place when complete and
+ * checked, so a route never sees a partial mesh; the previous copy, if
+ * any, serves until then (plugin/mesharchive.ts). A mesh unticked in the
+ * config is deleted, with its working folder.
  *
  * A local mesh (the `meshDir` folder you manage yourself) with the same
  * name as a published one: whichever was built later is used (localWins:
@@ -21,8 +23,9 @@
  *
  * The catalogue is read at start and once a day; a mesh whose catalogue
  * `build_date` is newer than its marker's is downloaded again. Downloads
- * run one at a time in a child process (childtask.ts `mesh-download`),
- * which reports progress through `<D>.new/.progress.json`.
+ * run MESH_DOWNLOADS_AT_ONCE at a time, each in a child process
+ * (childtask.ts `mesh-download`), which reports progress through
+ * `.dl-<D>/progress.json`.
  *
  * The route worker does not use this class: it lists the markers under
  * the store directory itself when a route starts (worker/route.ts).
@@ -31,6 +34,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { runChildTask } from './childtask';
+import { DOWNLOAD_PROGRESS_FILE, downloadWorkDir, type MeshDownloadProgress } from './mesharchive';
 
 /** One mesh as the catalogue lists it (s57Work build-mesh.yml, "Write charts/mesh/index.json"). */
 export interface CatalogMesh {
@@ -95,8 +99,8 @@ export interface MeshRow {
   local_dir: string | null;
   local_build_date: string | null;
   state: MeshState;
-  /** Files copied so far and in total, while downloading. */
-  progress: { files: number; total: number; bytes: number } | null;
+  /** While downloading: the archive's bytes fetched (phase download) or read and unpacked (phase unpack) of its size, and the files written. */
+  progress: MeshDownloadProgress | null;
   catalog_build_date: string | null;
   disk_build_date: string | null;
   bytes: number | null;
@@ -107,6 +111,8 @@ export interface MeshesStatus {
   catalog_url: string;
   catalog_updated: string | null;
   catalog_error: string | null;
+  /** Catalogue rows set aside that have no usable name ("row 3: no name"); a named one is reported on its own row. */
+  catalog_problems: string[];
   store_dir: string;
   meshes: MeshRow[];
 }
@@ -129,14 +135,61 @@ export const DEFAULT_MESH_CATALOG_URL = 'https://pub-281728c6a69f4f549cf0ec4e83f
 export const CATALOG_REFRESH_MS = 24 * 3600 * 1000;
 const CATALOG_TIMEOUT_MS = 30_000;
 export const MARKER_FILE = '.wrp-mesh.json';
-export const PROGRESS_FILE = '.progress.json';
+/** Meshes downloaded at the same time (the owner's choice, 2026-10-18). */
+export const MESH_DOWNLOADS_AT_ONCE = 2;
 
-/** The folder a catalogue entry's files are read from: the catalogue URL's folder plus the entry's `dir`. */
-export function meshBaseUrl(catalogUrl: string, mesh: CatalogMesh): string {
-  const folder = catalogUrl.replace(/\/[^/]*$/, '/');
-  // The catalogue sits in charts/mesh/; its `dir` is written relative to charts/ (`mesh/<D>/`).
-  const dir = mesh.dir.replace(/^mesh\//, '').replace(/\/$/, '');
-  return new URL(dir + '/', folder).toString();
+/**
+ * A catalogue entry's archive: the catalogue sits in `charts/mesh/`, and its
+ * `archive` (`<D>_mesh.tar.zst`) is published in `charts/`, as its `dir`
+ * (`mesh/<D>/`) is written relative to `charts/`.
+ */
+export function meshArchiveUrl(catalogUrl: string, mesh: CatalogMesh): string {
+  return new URL(mesh.archive, new URL('../', catalogUrl)).toString();
+}
+
+/** The folder the archive holds the mesh under (`<D>_mesh`, its name without `.tar.zst`). */
+export function meshArchiveTop(mesh: CatalogMesh): string {
+  return path.basename(mesh.archive).replace(/\.tar\.zst$/, '');
+}
+
+/** A mesh name as a folder name: letters, digits, - and _ (the panel's actions take the same). */
+const MESH_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+/** A catalogue `archive`: a bare file name ending .tar.zst (no slash, no scheme, not starting with a dot). */
+const ARCHIVE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}\.tar\.zst$/;
+
+/**
+ * Why a catalogue row cannot be used, or null: every field this plugin reads
+ * (the download's archive and build date, the panel's description from the
+ * clusters, size and triangles), checked when the catalogue is read, so one
+ * bad row is reported on its own mesh instead of failing the download with a
+ * bare TypeError or the panel's status as a whole.
+ */
+export function catalogEntryProblem(m: unknown): string | null {
+  if (!m || typeof m !== 'object') return 'not an object';
+  const e = m as Record<string, unknown>;
+  const text = (k: string): string | null => (typeof e[k] === 'string' && (e[k] as string).trim() ? (e[k] as string) : null);
+  const name = text('name');
+  if (!name) return 'no name';
+  if (!MESH_NAME.test(name)) return `name ${JSON.stringify(name)} is not letters, digits, - and _`;
+  const archive = text('archive');
+  if (!archive) return 'no archive (the mesh archive file, e.g. 01CGD_mesh.tar.zst)';
+  // A bare file name published beside the catalogue (meshArchiveUrl): never a URL or a path, so a catalogue cannot
+  // send the plugin's downloads to another address.
+  if (!ARCHIVE_NAME.test(archive)) return `archive ${archive} is not a .tar.zst file name (letters, digits, ., - and _; no path or URL)`;
+  const built = text('build_date');
+  if (!built || Number.isNaN(Date.parse(built))) return 'no valid build_date';
+  if (e.chart_build_date != null && (typeof e.chart_build_date !== 'string' || Number.isNaN(Date.parse(e.chart_build_date))))
+    return 'chart_build_date is not a date';
+  const num = (k: string): boolean => typeof e[k] === 'number' && Number.isFinite(e[k]) && (e[k] as number) >= 0;
+  if (!num('bytes')) return 'no valid bytes';
+  if (!num('triangles')) return 'no valid triangles';
+  if (!Array.isArray(e.clusters) || e.clusters.length === 0) return 'no clusters';
+  for (const c of e.clusters) {
+    const box = (c as { box?: unknown } | null)?.box;
+    if (!Array.isArray(box) || box.length !== 4 || !box.every(v => typeof v === 'number' && Number.isFinite(v)))
+      return 'a cluster has no valid box [west, south, east, north]';
+  }
+  return null;
 }
 
 /** A human line for a catalogue entry: area, chart and build dates, size, triangles. */
@@ -342,6 +395,10 @@ export function readyMeshDirs(storeDir: string): { name: string; dirs: string[];
 export class MeshManager {
   private catalog: Catalog | null = null;
   private catalogError: string | null = null;
+  /** Catalogue rows set aside (catalogEntryProblem), by mesh name; never downloaded. */
+  private catalogProblems = new Map<string, string>();
+  /** Rows set aside that have no usable name. */
+  private catalogUnnamed: string[] = [];
   private catalogUrl = DEFAULT_MESH_CATALOG_URL;
   private ticked: string[] = [];
   private disabled: string[] = [];
@@ -361,7 +418,7 @@ export class MeshManager {
   private freshSeq = 0;
   /** Names the owner asked for (Download, Update): the next pass fetches them even when the folder's copy is newer. */
   private requested = new Set<string>();
-  private downloading: string | null = null;
+  private downloading = new Set<string>();
   private removing = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private ctrl: AbortController | null = null;
@@ -420,13 +477,14 @@ export class MeshManager {
   }
 
   /**
-   * Stop the download running for this mesh (the child is killed, its
-   * partial folder stays for the next pass to resume or remove) and start
-   * the loop again, so the pass runs with the list as it now is. True when
-   * a download of that mesh was running.
+   * Stop the download running for this mesh and start the loop again, so
+   * the pass runs with the list as it now is (the children are killed: a
+   * download of another mesh running beside it resumes from its archive's
+   * part; this one's working folder goes with the mesh when it has been
+   * taken off the list). True when a download of that mesh was running.
    */
   cancel(name: string): boolean {
-    if (this.downloading !== name) return false;
+    if (!this.downloading.has(name)) return false;
     const running = !!this.ctrl;
     this.stop();
     if (running) this.run();
@@ -528,18 +586,21 @@ export class MeshManager {
         fs.rmSync(path.join(this.storeDir, n), { recursive: true, force: true });
         fs.rmSync(path.join(this.storeDir, `${n}.new`), { recursive: true, force: true });
         fs.rmSync(path.join(this.storeDir, `${n}.old`), { recursive: true, force: true });
+        fs.rmSync(downloadWorkDir(this.storeDir, n), { recursive: true, force: true });
         this.log(`mesh ${n}: removed (not in the download list)`);
       } catch (err) {
         this.errors.set(n, `removal failed: ${(err as Error).message}`);
       }
       this.removing.delete(n);
     }
-    // Ticked meshes: missing or older than the catalogue → download, one at a time. A local mesh of the
-    // same name stops the download only when it was built at the same time or later (localWins); a ticked
-    // name that is only a local mesh (ticked in an earlier panel) is not a catalogue mesh.
+    // Ticked meshes: missing or older than the catalogue → download, MESH_DOWNLOADS_AT_ONCE at a time. A local
+    // mesh of the same name stops the download only when it was built at the same time or later (localWins); a
+    // ticked name that is only a local mesh (ticked in an earlier panel) is not a catalogue mesh.
     const localByName = new Map(localMeshes(this.meshDir).map(m => [m.name, m]));
+    const jobs: { entry: CatalogMesh; freshSeq: number | undefined }[] = [];
     for (const n of this.ticked) {
-      if (signal.aborted) return;
+      // An unusable catalogue row is reported on its row (status), not fetched; the copy on disk, if any, stays.
+      if (this.catalogProblems.has(n)) continue;
       const local = localByName.get(n);
       const entry = this.catalog?.meshes.find(m => m.name === n);
       if (!entry) {
@@ -554,14 +615,23 @@ export class MeshManager {
       if (!asked && local && localWins(local.build_date, entry.build_date)) continue;
       const marker = readMarker(path.join(this.storeDir, n));
       if (!again && marker && marker.build_date === entry.build_date) continue;
-      await this.download(entry, signal, again);
-      // A request stands until a download succeeds, so a failure is retried at the next pass; a fresh request made
-      // while this download ran is newer than the one seen and stands too.
-      if (!signal.aborted && !this.errors.has(n)) {
-        this.requested.delete(n);
-        if (this.fresh.get(n) === freshSeq) this.fresh.delete(n);
-      }
+      jobs.push({ entry, freshSeq });
     }
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < jobs.length && !signal.aborted) {
+        const { entry, freshSeq } = jobs[next++];
+        const n = entry.name;
+        await this.download(entry, signal, freshSeq !== undefined);
+        // A request stands until a download succeeds, so a failure is retried at the next pass; a fresh request
+        // made while this download ran is newer than the one seen and stands too.
+        if (!signal.aborted && !this.errors.has(n)) {
+          this.requested.delete(n);
+          if (this.fresh.get(n) === freshSeq) this.fresh.delete(n);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(MESH_DOWNLOADS_AT_ONCE, jobs.length) }, worker));
   }
 
   /**
@@ -586,7 +656,27 @@ export class MeshManager {
       const c = (await res.json()) as Catalog;
       if (!c || !Array.isArray(c.meshes)) throw new Error('not a mesh catalogue (no meshes[])');
       if (seq !== this.catalogSeq) return; // a newer read has started: its result is the one that counts
-      this.catalog = c;
+      // Each row checked on its own: a bad one is set aside with its reason, the others serve.
+      const meshes: CatalogMesh[] = [];
+      const problems = new Map<string, string>();
+      const unnamed: string[] = [];
+      (c.meshes as unknown[]).forEach((m, i) => {
+        const problem = catalogEntryProblem(m);
+        if (!problem) {
+          meshes.push(m as CatalogMesh);
+          return;
+        }
+        const name = (m as { name?: unknown } | null)?.name;
+        if (typeof name === 'string' && MESH_NAME.test(name)) problems.set(name, problem);
+        else unnamed.push(`row ${i + 1}: ${problem}`);
+      });
+      // A name with a usable row is served by it, whether an unusable row of the same name comes before or after.
+      for (const m of meshes) problems.delete(m.name);
+      for (const [n, p] of problems) this.log(`mesh catalogue ${this.catalogUrl}: ${n}: unusable entry (${p}); not downloaded`);
+      for (const u of unnamed) this.log(`mesh catalogue ${this.catalogUrl}: ${u}; skipped`);
+      this.catalog = { ...c, meshes };
+      this.catalogProblems = problems;
+      this.catalogUnnamed = unnamed;
       this.catalogError = null;
     } catch (err) {
       if (seq !== this.catalogSeq) return;
@@ -598,13 +688,24 @@ export class MeshManager {
   private async download(entry: CatalogMesh, signal: AbortSignal, fresh = false): Promise<void> {
     const dest = path.join(this.storeDir, entry.name);
     const tmp = `${dest}.new`;
-    this.downloading = entry.name;
+    const work = downloadWorkDir(this.storeDir, entry.name);
+    this.downloading.add(entry.name);
     this.errors.delete(entry.name);
     const t0 = Date.now();
     try {
-      this.log(`mesh ${entry.name}: downloading ${(entry.bytes / 1e9).toFixed(1)} GB from ${meshBaseUrl(this.catalogUrl, entry)}`);
+      const url = meshArchiveUrl(this.catalogUrl, entry);
+      this.log(`mesh ${entry.name}: downloading ${url} (${(entry.bytes / 1e9).toFixed(1)} GB unpacked)`);
       const r = await runChildTask(
-        { task: 'mesh-download', base: meshBaseUrl(this.catalogUrl, entry), dest: tmp, build: entry.build_date, fresh },
+        {
+          task: 'mesh-download',
+          url,
+          work,
+          dest: tmp,
+          top: meshArchiveTop(entry),
+          build: entry.build_date,
+          bytes: entry.bytes,
+          fresh,
+        },
         6 * 3600_000,
         signal
       );
@@ -618,13 +719,13 @@ export class MeshManager {
         completed: new Date().toISOString(),
       };
       fs.writeFileSync(path.join(tmp, MARKER_FILE), JSON.stringify(marker, null, 1));
-      fs.rmSync(path.join(tmp, PROGRESS_FILE), { force: true });
-      // Swap: the old copy (if any) served until now.
+      // Swap: the old copy (if any) served until now. The archive goes once the mesh is in place.
       const old = `${dest}.old`;
       fs.rmSync(old, { recursive: true, force: true });
       if (fs.existsSync(dest)) fs.renameSync(dest, old);
       fs.renameSync(tmp, dest);
       fs.rmSync(old, { recursive: true, force: true });
+      fs.rmSync(work, { recursive: true, force: true });
       this.log(
         `mesh ${entry.name}: ready, ${r.files} files, ${(r.bytes / 1e9).toFixed(2)} GB in ${((Date.now() - t0) / 1000).toFixed(0)} s`
       );
@@ -635,17 +736,17 @@ export class MeshManager {
       this.errors.set(entry.name, (err as Error).message);
       this.log(`mesh ${entry.name}: download failed: ${(err as Error).message}`);
     } finally {
-      this.downloading = null;
+      this.downloading.delete(entry.name);
     }
   }
 
+  /** The mesh names on disk: their folders, copies in progress and left over, and download working folders. */
   private onDisk(): string[] {
     try {
       return fs
         .readdirSync(this.storeDir)
-        .filter(n => !n.startsWith('.'))
-        .map(n => n.replace(/\.(new|old)$/, ''))
-        .filter((n, i, a) => a.indexOf(n) === i);
+        .map(n => (n.startsWith('.dl-') ? n.slice(4) : n.startsWith('.') ? '' : n.replace(/\.(new|old)$/, '')))
+        .filter((n, i, a) => n !== '' && a.indexOf(n) === i);
     } catch {
       return [];
     }
@@ -653,12 +754,10 @@ export class MeshManager {
 
   private progressOf(name: string): MeshRow['progress'] {
     try {
-      const p = JSON.parse(fs.readFileSync(path.join(this.storeDir, `${name}.new`, PROGRESS_FILE), 'utf8')) as {
-        files: number;
-        total: number;
-        bytes: number;
-      };
-      return { files: p.files, total: p.total, bytes: p.bytes };
+      const p = JSON.parse(
+        fs.readFileSync(path.join(downloadWorkDir(this.storeDir, name), DOWNLOAD_PROGRESS_FILE), 'utf8')
+      ) as MeshDownloadProgress;
+      return { phase: p.phase, bytes: p.bytes, total: p.total, files: p.files };
     } catch {
       return null;
     }
@@ -678,18 +777,20 @@ export class MeshManager {
     // A local mesh's name in the download list (ticked in an earlier panel) is not a catalogue mesh.
     const names = new Set<string>([
       ...(this.catalog?.meshes.map(m => m.name) ?? []),
+      ...this.catalogProblems.keys(),
       ...this.onDisk(),
       ...this.ticked.filter(n => !localNames.has(n)),
     ]);
     const rows: MeshRow[] = [];
     for (const name of [...names].sort()) {
       const entry = this.catalog?.meshes.find(m => m.name === name) ?? null;
+      const problem = this.catalogProblems.get(name);
       const marker = readMarker(path.join(this.storeDir, name));
       const ticked = this.ticked.includes(name);
       let state: MeshState = 'absent';
       if (this.removing.has(name)) state = 'removing';
-      else if (this.downloading === name) state = 'downloading';
-      else if (this.errors.has(name)) state = 'error';
+      else if (this.downloading.has(name)) state = 'downloading';
+      else if (this.errors.has(name) || (problem && !marker)) state = 'error';
       else if (marker && entry && marker.build_date !== entry.build_date) state = 'update';
       else if (marker) state = 'ready';
       const l = localByName.get(name);
@@ -709,7 +810,7 @@ export class MeshManager {
       rows.push({
         name,
         title: DISTRICT_NAMES[name] ?? name,
-        description: entry ? describeMesh(entry) : 'not in the catalogue',
+        description: entry ? describeMesh(entry) : problem ? 'the catalogue entry is unusable' : 'not in the catalogue',
         source: 'catalog',
         ticked,
         enabled: !this.disabled.includes(name),
@@ -723,7 +824,7 @@ export class MeshManager {
         catalog_build_date: entry?.build_date ?? null,
         disk_build_date: marker?.build_date ?? null,
         bytes: entry?.bytes ?? marker?.bytes ?? null,
-        error: this.errors.get(name) ?? null,
+        error: problem ? `the catalogue entry is unusable: ${problem}; not downloaded` : (this.errors.get(name) ?? null),
       });
     }
     // Local meshes (the folder managed by hand), after the catalogue's; one named like a row above is in that row.
@@ -753,6 +854,7 @@ export class MeshManager {
       catalog_url: this.catalogUrl,
       catalog_updated: this.catalog?.updated ?? null,
       catalog_error: this.catalogError,
+      catalog_problems: [...this.catalogUnnamed],
       store_dir: this.storeDir,
       meshes: rows,
     };

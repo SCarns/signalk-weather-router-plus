@@ -153,8 +153,7 @@ export function chooseTerminal(ctx: SearchContext, guide: SkeletonGuide, stages:
   );
   const clearPool = pool.filter((_c, i) => !poolHop[i]);
   const choose = clearPool.length ? clearPool : pool;
-  // The nearest candidate (elapsed time as tie-break): the reference
-  // implementation's choice, kept as the fallback.
+  // The nearest candidate (elapsed time as tie-break), kept as the fallback.
   let bestC = choose[0];
   for (const c of choose) {
     const [d, t] = score(c);

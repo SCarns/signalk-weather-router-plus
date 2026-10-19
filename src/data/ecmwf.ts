@@ -17,7 +17,7 @@
  */
 
 import * as fs from 'node:fs';
-import { fetchWithRetry, sleep } from './http';
+import { fetchWithRetry, isOffline, sleep } from './http';
 import { MINUTE_MS, HOUR_MS, HOUR_S } from '../geo/units';
 import * as path from 'node:path';
 
@@ -88,27 +88,56 @@ export interface EcmwfClientOptions {
   sleepImpl?: (ms: number) => Promise<void>;
 }
 
-/** Publication lag assumed for the wall-clock "expected cycle" rule (same as the planner). */
-export const PUBLICATION_LAG_MINUTES = 400;
+/**
+ * Minutes from a cycle's nominal time to its publication on the open-data
+ * server: every file of the cycle appears at once. Measured from the
+ * Last-Modified of the +108 h index files on data.ecmwf.int for every
+ * cycle from 2026-10-16 00z to 2026-10-19 00z (14 cycles, both streams):
+ * 00z/12z at 07:34/19:34 UTC, 06z/18z at 12:27/00:27 UTC, to the minute
+ * every time.
+ */
+export const MAIN_PUBLICATION_LAG_MINUTES = 454;
+export const SHORT_PUBLICATION_LAG_MINUTES = 387;
+
+/** When a cycle is published on the open-data server. */
+export function publishedAt(c: Pick<Cycle, 'time' | 'maxStep'>): Date {
+  const lag = c.maxStep === MAIN_MAX_STEP ? MAIN_PUBLICATION_LAG_MINUTES : SHORT_PUBLICATION_LAG_MINUTES;
+  return new Date(c.time.getTime() + lag * MINUTE_MS);
+}
+
+/** Does a cycle run at least as far as the horizon (06z/18z stop at 144 h)? */
+function coversHorizon(c: Cycle, horizonHours: number): boolean {
+  return c.maxStep >= horizonHours || c.maxStep === MAIN_MAX_STEP;
+}
 
 /**
- * The most recent cycle that should be published by `now`, given a
- * ~400 minute publication lag: cycles run at 00/06/12/18Z. When the
- * horizon exceeds what the 06z/18z cycles publish (144 h), only 00z/12z
- * cycles qualify. A cycle qualifies when it runs at least as far as the
- * horizon (the same test as findLatestCycle), not when one of its 3-hourly
- * steps lands exactly on it: with a 110 h horizon the last step is 108 h,
- * and the old test rejected every 06z/18z run (brain, 2026-10-06: the 00z
- * run stayed in use all day while the 06z run had been published for hours).
+ * The most recent cycle published by `now` (publishedAt): cycles run at
+ * 00/06/12/18Z. When the horizon exceeds what the 06z/18z cycles publish
+ * (144 h), only 00z/12z cycles qualify. A cycle qualifies when it runs at
+ * least as far as the horizon (the same test as findLatestCycle), not when
+ * one of its 3-hourly steps lands exactly on it: with a 110 h horizon the
+ * last step is 108 h, and the old test rejected every 06z/18z run (brain,
+ * 2026-10-06: the 00z run stayed in use all day while the 06z run had been
+ * published for hours).
  */
 export function latestExpectedCycle(now: Date, horizonS: number): Cycle {
   const horizonHours = horizonS / HOUR_S;
-  const t = new Date(now.getTime() - PUBLICATION_LAG_MINUTES * MINUTE_MS);
-  let start = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate(), Math.floor(t.getUTCHours() / 6) * 6));
+  let start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), Math.floor(now.getUTCHours() / 6) * 6));
   for (;;) {
     const c = cycleFor(start);
-    if (c.maxStep >= horizonHours || c.maxStep === MAIN_MAX_STEP) return c;
+    if (coversHorizon(c, horizonHours) && publishedAt(c).getTime() <= now.getTime()) return c;
     start = new Date(start.getTime() - 6 * HOUR_MS);
+  }
+}
+
+/** The cycle after `c` that the horizon can use (6 h later, or 12 h when only 00z/12z qualify). */
+export function nextCycle(c: Pick<Cycle, 'time'>, horizonS: number): Cycle {
+  const horizonHours = horizonS / HOUR_S;
+  let t = c.time.getTime() + 6 * HOUR_MS;
+  for (;;) {
+    const n = cycleFor(new Date(t));
+    if (coversHorizon(n, horizonHours)) return n;
+    t += 6 * HOUR_MS;
   }
 }
 
@@ -184,11 +213,12 @@ export class EcmwfClient {
   }
 
   /**
-   * HTTP request with the planner's retry policy: up to `retries`
+   * HTTP request with the shared retry policy (http.ts): up to `retries`
    * attempts per mirror, exponential backoff 2, 4, 8, 16, 32 s (capped
    * at 60 s), `Retry-After` honoured, retried only on 408/429/5xx and
    * network errors. When a mirror is exhausted the next mirror takes
-   * over for the rest of the session. 404/403 are returned as-is.
+   * over for the rest of the session. 404/403 are returned as-is. No
+   * connection at all (OfflineError) is thrown at once, mirrors untried.
    */
   private async request(pathSuffix: string, init: RequestInit = {}): Promise<Response> {
     let lastErr: unknown;
@@ -205,6 +235,8 @@ export class EcmwfClient {
         });
         return r.response;
       } catch (err) {
+        // No connection at all: another mirror is no more reachable.
+        if (isOffline(err)) throw err;
         lastErr = err;
       }
       if (m + 1 < this.mirrors.length) {
@@ -226,7 +258,7 @@ export class EcmwfClient {
   /**
    * Newest cycle whose atmosphere and wave streams both have the
    * requested final step published. Starts from the wall-clock expected
-   * cycle (now minus the publication lag) and walks back in 6 h cycles,
+   * cycle (the newest whose publication time has passed) and walks back in 6 h cycles,
    * up to `maxAgeHours`, so the usual case costs two HEAD requests.
    */
   async findLatestCycle(horizonS: number, opts: { mainCyclesOnly?: boolean; maxAgeHours?: number; now?: Date } = {}): Promise<Cycle> {

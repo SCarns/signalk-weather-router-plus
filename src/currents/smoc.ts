@@ -179,6 +179,8 @@ export interface SmocStatus {
   run: string;
   run_last_time: string;
   stac_updated: string | null;
+  /** When this run appeared in the store (timeChunked .zmetadata Last-Modified), ISO. */
+  metadata_modified: string | null;
   settled: boolean;
   step_hours: number;
   horizon_hours: number;
@@ -383,11 +385,23 @@ export class SmocCurrentSource implements CurrentSourceLike {
   ensure(
     bbox: BBox,
     steps: number[],
-    opts: { reason: string; deadlineMs?: number; shouldCancel?: () => boolean; coarseOk?: boolean; onIncomplete?: () => void } = {
+    opts: {
+      reason: string;
+      deadlineMs?: number;
+      shouldCancel?: () => boolean;
+      coarseOk?: boolean;
+      onIncomplete?: () => void;
+      as?: { res: ArcoResolution; layout: ArcoLayout };
+    } = {
       reason: 'on demand',
     }
   ): Promise<boolean> {
     return this.set.ensure(bbox, steps, AREA_MARGIN_CELLS, opts);
+  }
+
+  /** The resolution and layout of the area in memory that answers `bbox` × `steps` (ArcoAreaSet.answering), or null. */
+  answering(bbox: BBox, steps: number[]): { res: ArcoResolution; layout: ArcoLayout } | null {
+    return this.set.answering(bbox, steps, AREA_MARGIN_CELLS);
   }
 
   noteDownload(reason: string, s: DownloadStats): void {
@@ -405,6 +419,7 @@ export class SmocCurrentSource implements CurrentSourceLike {
       run: this.run.key,
       run_last_time: new Date(runLastMs(this.run)).toISOString(),
       stac_updated: this.run.stacUpdated,
+      metadata_modified: this.run.metadataModified,
       settled: this.run.settled,
       step_hours: this.settings.stepS / HOUR_S,
       horizon_hours: this.settings.horizonS / HOUR_S,

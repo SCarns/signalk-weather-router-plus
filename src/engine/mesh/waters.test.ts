@@ -35,7 +35,14 @@ function rect(recordNumber: number, lon0: number, lat0: number, lon1: number, la
 }
 
 const RULES: MeshRules = { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 };
-const COARSE: CoarseRules = { draughtM: 2, airDraftM: 18, bufferM: 0, openingBridges: 'open' };
+const COARSE: CoarseRules = {
+  draughtM: 2,
+  airDraftM: 18,
+  underKeelClearanceM: 0.5,
+  overheadClearanceM: 1,
+  bufferM: 0,
+  openingBridges: 'open',
+};
 const BOX = { west: -1, south: -1, east: 7, north: 3 };
 const NAMES = { start: 'the start', end: 'the end' };
 type Cells = { i: number; j: number; depth?: number }[];

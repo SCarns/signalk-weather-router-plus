@@ -265,6 +265,12 @@ export class ExperimentalPropagator {
    */
   private layOut(a: Waypoint, b: Waypoint, cp: ConvexPolar, env: Env): Waypoint[] | null {
     const motorIfStuck = env.sim.modePolicy === 'sail_max' && env.sim.sailThreshMs > 0;
+    // Stuck with a threshold of 0: say loudly that the threshold is why (the owner's decision, 2026-10-15: no
+    // backtracking in the layout; the route fails and names the setting that lets it motor out).
+    const stuck = (what: string): RouteError =>
+      new RouteError(
+        `${env.who}: ROUTE FAILED: ${what}. Min sail speed is 0 (never motor), so the boat may not motor where it cannot tack: set Min sail speed above 0`
+      );
     const pts: Waypoint[] = [];
     let at: Waypoint = a;
     let lastHeading = -1;
@@ -343,6 +349,10 @@ export class ExperimentalPropagator {
         // can go on.
         const p = placeOn(theta, D, false, [theta]);
         if (!p && motorIfStuck) return null;
+        if (!p && env.sim.modePolicy === 'sail_max')
+          throw stuck(
+            `the leg from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} to ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be sailed at ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)}`
+          );
         if (!p)
           throw new RouteError(
             `${env.who}: the leg from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} to ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be sailed at ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)} under the ${env.sim.modePolicy} policy; ${env.advice}`
@@ -383,6 +393,10 @@ export class ExperimentalPropagator {
         // job a0a18bcb, the passage south of Monomoy).
         if (!this.land.legCrossesLandExact(at.lon, at.lat, b.lon, b.lat) && this.sailable(at, b.lon, b.lat, env) !== null) return pts;
         if (motorIfStuck) return null;
+        if (env.sim.modePolicy === 'sail_max')
+          throw stuck(
+            `the beat from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} towards ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be tacked at ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)}: every tack tried crossed land or could not be sailed, and the course itself cannot be sailed straight`
+          );
         throw new RouteError(
           `${env.who}: the beat from ${a.lat.toFixed(4)}, ${a.lon.toFixed(4)} towards ${b.lat.toFixed(4)}, ${b.lon.toFixed(4)} cannot be tacked at ${at.lat.toFixed(4)}, ${at.lon.toFixed(4)}: every tack tried crossed land or could not be sailed under the ${env.sim.modePolicy} policy, and the course itself cannot be sailed straight; ${env.advice}`
         );

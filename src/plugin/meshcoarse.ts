@@ -29,10 +29,10 @@
  * build 18.9 s, with its joins to 07CGD 59.3 s; 08CGD's 30.6 s and 117.5 s).
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { BBox } from '../geo/geodesy';
+import { type BBox, boxesMeet, latLonText } from '../geo/geodesy';
 import {
   boundarySeeds,
   buildCoarseMap,
@@ -48,6 +48,7 @@ import { JoinFinder, JOINS_VERSION } from '../engine/mesh/joins';
 import { type BoundarySeeds, PagedMesh, type PagedTile } from '../engine/mesh/paged';
 import type { MeshRules } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
+import { DEFAULT_OVERHEAD_M, DEFAULT_UKC_M } from '../vessel/vessel';
 
 export const COARSE_DIR = 'mesh-coarse';
 /** Rough cuts kept per mesh build (other boats' maps beyond these are removed, oldest first). */
@@ -67,18 +68,177 @@ export function coarseFile(dataDir: string, meshDir: string, rules: CoarseRules)
   return path.join(
     dataDir,
     COARSE_DIR,
-    `${coarseKey(meshDir)}-v${COARSE_VERSION}-d${r.draughtM.toFixed(2)}-a${r.airDraftM.toFixed(2)}-b${r.bufferM.toFixed(2)}-${r.openingBridges === 'avoid' ? 'x' : 'o'}.json`
+    `${coarseKey(meshDir)}-v${COARSE_VERSION}-d${r.draughtM.toFixed(2)}-a${r.airDraftM.toFixed(2)}-u${r.underKeelClearanceM.toFixed(2)}-o${r.overheadClearanceM.toFixed(2)}-b${r.bufferM.toFixed(2)}-${r.openingBridges === 'avoid' ? 'x' : 'o'}.json`
   );
 }
 
-/** A rough cut's rules from a mesh leg's (the buffer absent: none; opening bridges absent: open). */
-export function coarseRulesOf(rules: Pick<MeshRules, 'draughtM' | 'airDraftM' | 'bufferM' | 'openingBridges'>): CoarseRules {
+/**
+ * A rough cut's rules from a mesh leg's (the buffer absent: none; opening bridges absent: open), each length to the
+ * centimetre the file name carries (coarseFile): one file is one set of rules, so a boat or buffer that differs
+ * only past the centimetre (2.31648 m, a buffer of 9.999999999999988 m saved in feet) reads the cut the name
+ * promises instead of being refused by it (readCoarseMap compares exactly).
+ */
+export function coarseRulesOf(
+  rules: Pick<MeshRules, 'draughtM' | 'airDraftM' | 'bufferM' | 'openingBridges' | 'underKeelClearanceM' | 'overheadClearanceM'>
+): CoarseRules {
+  const cm = (m: number): number => Math.round(m * 100) / 100;
   return {
-    draughtM: rules.draughtM,
-    airDraftM: rules.airDraftM,
-    bufferM: rules.bufferM ?? 0,
+    draughtM: cm(rules.draughtM),
+    airDraftM: cm(rules.airDraftM),
+    underKeelClearanceM: cm(rules.underKeelClearanceM ?? DEFAULT_UKC_M),
+    overheadClearanceM: cm(rules.overheadClearanceM ?? DEFAULT_OVERHEAD_M),
+    bufferM: cm(rules.bufferM ?? 0),
     openingBridges: rules.openingBridges === 'avoid' ? 'avoid' : 'open',
   };
+}
+
+/** A build lock older than this is from a build that died (the child tasks' own limit is 15 minutes). */
+const BUILD_LOCK_STALE_MS = 20 * 60_000;
+/** How often a build waiting on another's lock looks again. */
+const BUILD_LOCK_POLL_MS = 1000;
+/** A lock's guard without a pid older than this was left by a step that died before writing it (a step holds it for one read, stat and remove). */
+const GUARD_STALE_MS = 30_000;
+/** When this process started (process-wide, worker threads included): a guard with this pid dated before it is an earlier process's. */
+const PROCESS_START_MS = Date.now() - process.uptime() * 1000;
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** The pid on a lock's first line, or 0. */
+function lockPid(text: string): number {
+  const pid = Number(text.split('\n')[0]);
+  return Number.isInteger(pid) && pid > 0 ? pid : 0;
+}
+
+/**
+ * Remove `lock` when `same` holds for its contents and date, holding `<lock>.guard` (created exclusively), so a stale
+ * lock's removal and its owner's release never interleave and neither removes a lock taken anew meanwhile. False
+ * when another holds the guard (try again). A guard left by a process that died inside this synchronous step is
+ * removed: its pid gone; this process's pid on a guard dated before this process started (the pid reused); or no pid
+ * (died before writing it) and older than GUARD_STALE_MS. A guard whose owner is alive is never removed for its age.
+ */
+function removeLockIf(lock: string, same: (text: string, mtimeMs: number) => boolean): boolean {
+  const guard = `${lock}.guard`;
+  let fd: number;
+  try {
+    fd = fs.openSync(guard, 'wx');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    try {
+      const pid = lockPid(fs.readFileSync(guard, 'utf8'));
+      const mtimeMs = fs.statSync(guard).mtimeMs;
+      const dead =
+        pid === 0 ? Date.now() - mtimeMs > GUARD_STALE_MS : pid === process.pid ? mtimeMs < PROCESS_START_MS : !processAlive(pid);
+      if (dead) fs.rmSync(guard, { force: true });
+    } catch {
+      /* gone meanwhile */
+    }
+    return false;
+  }
+  try {
+    try {
+      fs.writeSync(fd, `${process.pid}\n`);
+    } finally {
+      fs.closeSync(fd);
+    }
+    let text: string;
+    let mtimeMs: number;
+    try {
+      text = fs.readFileSync(lock, 'utf8');
+      mtimeMs = fs.statSync(lock).mtimeMs;
+    } catch {
+      return true; // gone already
+    }
+    if (same(text, mtimeMs)) fs.rmSync(lock, { force: true });
+    return true;
+  } finally {
+    fs.rmSync(guard, { force: true });
+  }
+}
+
+/**
+ * Run `build` for `file` (a rough cut, or a joins file) holding `<file>.lock`, created exclusively, so the main
+ * thread's rebuild and a route's own build never build the same file at once (each in its own child process, the
+ * same work twice). A build finding the lock taken waits for it to go, then calls `build` itself unless the file is
+ * there by then (result null: the other build made it; `waited` tells the caller). A lock left by a process that is gone, or older than
+ * BUILD_LOCK_STALE_MS, is removed. Cancelled through `signal` while waiting.
+ */
+export async function withBuildLock<T>(
+  file: string,
+  build: () => Promise<T>,
+  opts: { signal?: AbortSignal; onWait?: () => void } = {}
+): Promise<{ waited: boolean; result: T | null }> {
+  const lock = `${file}.lock`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  // This call's own token (pid first): only the lock that still holds it is this call's to release.
+  const token = `${process.pid}\n${randomUUID()}\n`;
+  const pause = (): Promise<void> => new Promise(r => setTimeout(r, BUILD_LOCK_POLL_MS));
+  let waited = false;
+  for (;;) {
+    if (opts.signal?.aborted) throw new Error('build cancelled');
+    let fd: number | null = null;
+    try {
+      fd = fs.openSync(lock, 'wx');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+    if (fd !== null) {
+      try {
+        fs.writeSync(fd, token);
+      } finally {
+        fs.closeSync(fd);
+      }
+      try {
+        // Another build finished while this one waited: its file is the same one this would write.
+        if (waited && fs.existsSync(file)) return { waited, result: null };
+        return { waited, result: await build() };
+      } finally {
+        while (!removeLockIf(lock, text => text === token)) await pause();
+      }
+    }
+    // Taken: the holder's pid and the lock's age decide whether it is still building.
+    let stale: boolean;
+    let text: string;
+    let mtimeMs: number;
+    try {
+      text = fs.readFileSync(lock, 'utf8');
+      mtimeMs = fs.statSync(lock).mtimeMs;
+      const pid = lockPid(text);
+      stale = Date.now() - mtimeMs > BUILD_LOCK_STALE_MS || (pid !== 0 && pid !== process.pid && !processAlive(pid));
+    } catch {
+      continue; // gone meanwhile (or not written yet): try again
+    }
+    if (stale) {
+      // Removed only while it is still the lock inspected (same contents and date), not one taken anew since.
+      if (!removeLockIf(lock, (t, m) => t === text && m === mtimeMs)) await pause();
+      continue;
+    }
+    if (!waited) opts.onWait?.();
+    waited = true;
+    await new Promise(r => setTimeout(r, BUILD_LOCK_POLL_MS));
+  }
+}
+
+/**
+ * A rough cut taken into use: its map and boundary file dated now, so pruneCoarse, which keeps the newest
+ * COARSE_KEEP_PER_MESH per build by date, never removes the one a route is reading. Best effort: a file that cannot be
+ * re-dated is still used.
+ */
+export function markCoarseUsed(mapFile: string): void {
+  const now = new Date();
+  for (const f of [mapFile, boundaryFile(mapFile)]) {
+    try {
+      fs.utimesSync(f, now, now);
+    } catch {
+      /* gone or read-only: the route reads it as it is */
+    }
+  }
 }
 
 /** The tile-boundary file (.bnd) beside a rough-cut file. */
@@ -108,9 +268,7 @@ export function readBoundary(file: string): BoundarySeeds {
 
 /** Whether two mesh folders' extents (their indexes) meet: only then can their waters join. */
 export function meshesMeet(dirA: string, dirB: string): boolean {
-  const a = MeshStore.open(dirA).index;
-  const b = MeshStore.open(dirB).index;
-  return a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north;
+  return boxesMeet(MeshStore.open(dirA).index, MeshStore.open(dirB).index);
 }
 
 /** The joins file of a rough cut (its map file) towards another mesh folder. */
@@ -188,7 +346,7 @@ function joinsTo(pa: PagedMesh, storeA: MeshStore, other: { dir: string; mapFile
 
 /**
  * Remove the rough cuts of builds no longer in use (`liveKeys`) or of
- * another version, and beyond COARSE_KEEP_PER_MESH per build the oldest
+ * another version, and beyond COARSE_KEEP_PER_MESH per build the least recently built or used (markCoarseUsed)
  * (a map, its boundary file and its joins files go together); and joins
  * files towards a build no longer in use. Returns how many maps went.
  */
@@ -252,6 +410,8 @@ export function readCoarseMap(file: string, store: MeshStore, rules: CoarseRules
     map.triangles !== store.index.triangles ||
     map.draughtM !== rules.draughtM ||
     map.airDraftM !== rules.airDraftM ||
+    map.underKeelClearanceM !== rules.underKeelClearanceM ||
+    map.overheadClearanceM !== rules.overheadClearanceM ||
     map.bufferM !== rules.bufferM ||
     map.openingBridges !== rules.openingBridges
   )
@@ -397,6 +557,8 @@ export function runMeshReachTask(t: MeshReachTask): MeshReachResult {
     map.triangles !== store.index.triangles ||
     map.draughtM !== t.rules.draughtM ||
     map.airDraftM !== t.rules.airDraftM ||
+    map.underKeelClearanceM !== t.rules.underKeelClearanceM ||
+    map.overheadClearanceM !== t.rules.overheadClearanceM ||
     map.bufferM !== t.rules.bufferM ||
     map.openingBridges !== t.rules.openingBridges
   )
@@ -506,6 +668,8 @@ export function runMeshSnapTask(t: MeshSnapTask): MeshSnapResult {
     map.triangles !== store.index.triangles ||
     map.draughtM !== t.rules.draughtM ||
     map.airDraftM !== t.rules.airDraftM ||
+    map.underKeelClearanceM !== t.rules.underKeelClearanceM ||
+    map.overheadClearanceM !== t.rules.overheadClearanceM ||
     map.bufferM !== t.rules.bufferM ||
     map.openingBridges !== t.rules.openingBridges
   )
@@ -553,7 +717,7 @@ export function runMeshSnapTask(t: MeshSnapTask): MeshSnapResult {
     if (!nu)
       return {
         ok: false,
-        reason: `${p.name}, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}, ${why}, and no usable water connected to the route was found`,
+        reason: `${p.name}, at ${latLonText(p.lat, p.lon)}, ${why}, and no usable water connected to the route was found`,
       };
     const [lon, lat] = pm.fromXY(nu.x, nu.y);
     // Usable water of its own that this mesh does not connect to the route's within the limit: the stop stays; its
@@ -563,11 +727,19 @@ export function runMeshSnapTask(t: MeshSnapTask): MeshSnapResult {
       out.push({ lon: p.lon, lat: p.lat, movedM: 0, why: null, outsideGroup: true });
       continue;
     }
-    if (nu.distM > t.maxMoveM)
+    if (nu.distM > t.maxMoveM) {
+      // The route's water is the last stop's: when this stop's nearest usable water is close but the nearest water
+      // connected to the last stop is far, the last stop sits in water the boat cannot reach from here (an enclosed
+      // pond, a bridged basin), and that is what to say.
+      const near = pm.nearestUsable(px, py);
+      const isolatedEnd = p !== last && near !== null && near.distM <= t.maxMoveM;
       return {
         ok: false,
-        reason: `${p.name}, at ${p.lat.toFixed(4)}, ${p.lon.toFixed(4)}, ${why}; the nearest water this boat can use, connected to the route, is {length:${nu.distM.toFixed(0)}} away at ${lat.toFixed(4)}, ${lon.toFixed(4)}, more than {length:${t.maxMoveM}}; move it there or into deeper water`,
+        reason: isolatedEnd
+          ? `${last.name} is in water this boat cannot reach from ${p.name} on the chart mesh (the water near ${p.name} does not connect to it); the nearest water connected to ${last.name} is {length:${nu.distM.toFixed(0)}} from ${p.name}, at ${latLonText(lat, lon)}; move ${last.name} into water the boat can enter, or ${p.name} there`
+          : `${p.name}, at ${latLonText(p.lat, p.lon)}, ${why}; the nearest water this boat can use, connected to the route, is {length:${nu.distM.toFixed(0)}} away at ${latLonText(lat, lon)}, more than {length:${t.maxMoveM}}; move it there or into deeper water`,
       };
+    }
     out.push({ lon, lat, movedM: nu.distM, why, outsideGroup: usable });
   }
   return { ok: true, points: out };

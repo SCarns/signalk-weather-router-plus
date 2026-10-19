@@ -419,6 +419,60 @@ test('tacking penalty: a dead-upwind leg with a large penalty tacks no more ofte
   }
 });
 
+test("smoother's own step: it changes the smoother's sampling only; the search keeps sim.simStepM", async () => {
+  const land = LandMask.fromPolygons([rect(1, 0.3, -0.3, 0.7, 1.3)], BBOX, 0.005);
+  const polar = PolarDiagram.parse(POLAR_CSV, ',');
+  const [plan] = planLegs(
+    [
+      { lon: 0, lat: 0.5 },
+      { lon: 1, lat: 0.5 },
+    ],
+    'precise',
+    300
+  );
+  // Wind 12 kt from 060°, every sample counted (one atManyAt call per sub-step of a batch).
+  const run = async (smoother: boolean, smootherSimStepM?: number): Promise<{ r: Route; calls: number }> => {
+    let calls = 0;
+    const wind = {
+      hasWaves: false,
+      at: (): [number, number] => {
+        calls++;
+        return [12 * 0.514444, 60];
+      },
+      atMany: (lons: Float64Array) => ({
+        speed: new Float64Array(lons.length).fill(12 * 0.514444),
+        dir: new Float64Array(lons.length).fill(60),
+      }),
+      atManyAt: (lons: Float64Array) => {
+        calls++;
+        return { speed: new Float64Array(lons.length).fill(12 * 0.514444), dir: new Float64Array(lons.length).fill(60) };
+      },
+      wavesAt: () => null,
+      validRange: [T0, new Date(T0.getTime() + 48 * 3600e3)] as [Date, Date],
+    };
+    const { inp } = inputs(land, {
+      polar,
+      vessel: makeVessel({ motorSpeedMs: 1 }),
+      sim: { modePolicy: 'sail_max', sailThreshMs: 1, simStepM: 200 },
+      loadAreas: async () => wind,
+      smoother,
+      ...(smootherSimStepM !== undefined ? { smootherSimStepM } : {}),
+    });
+    const r = await runLegPipeline(inp, plan, 0, [0, 0.5], T0);
+    return { r, calls };
+  };
+  const coords = (r: Route) => r.waypoints.map(w => [w.lon, w.lat, w.time.getTime()]);
+  // Without the smoother the step does nothing: the search is the same, sample for sample.
+  const off = await run(false);
+  const offCoarse = await run(false, 5000);
+  assert.deepEqual(coords(offCoarse.r), coords(off.r));
+  assert.equal(offCoarse.calls, off.calls);
+  // With it, a coarser smoother step takes fewer samples than the search's 200 m.
+  const on = await run(true);
+  const onCoarse = await run(true, 5000);
+  assert.ok(onCoarse.calls < on.calls, `samples with a 5000 m smoother step ${onCoarse.calls}, with 200 m ${on.calls}`);
+});
+
 test('tackBetween: the wind changing sides is a tack; dead upwind or downwind is neither side', () => {
   assert.equal(tackBetween(45, 315, 0), true, 'starboard to port, wind from north');
   assert.equal(tackBetween(45, 60, 0), false, 'same side');

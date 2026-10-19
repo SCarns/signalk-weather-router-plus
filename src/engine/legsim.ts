@@ -1,18 +1,16 @@
 /**
  * Leg-time simulation along a fixed great-circle line, and the batched
- * candidate scorer the propagator uses. Port of routing/engine/leg_sim.py
- * and ocean_propagator._score_candidates_from_parent.
+ * candidate scorer the propagator uses.
  *
  * Mode policy:
  *  - motor:    always motor
  *  - fastest:  sail when sail speed > motor speed
  *  - sail_max: sail when the polar speed is at least sailThreshMs, else motor
  *
- * Deviation from the reference (2026-09-29, user decision): leg_sim.py's
- * sail_max also sails when vmg > 0.25 m/s or sail >= 1.0 m/s. With the
+ * sail_max (2026-09-29, user decision): the threshold alone decides; no
+ * extra sail-when-vmg > 0.25 m/s or sail >= 1.0 m/s tests. With the
  * heading on the leg bearing vmg equals the polar speed, so those tests
- * made the boat sail above 0.25 m/s whatever the threshold; the
- * threshold alone decides here.
+ * would make the boat sail above 0.25 m/s whatever the threshold.
  */
 
 import { haversineBearing, haversineDistanceM, projectAlongBearing, DEG } from '../geo/geodesy';
@@ -278,8 +276,8 @@ export interface CandidateScores {
  * into nSteps = ceil(max(legDistM)/simStepM) sub-steps; each candidate
  * samples the environment at its own clock (the parent's time plus the
  * time its own sub-steps took so far), through the sources' per-point-time
- * lookups where they have them. Deviation from the reference, which used
- * one shared time per sub-step (parent time + k × a motor-speed step
+ * lookups where they have them. Not one shared time per sub-step (parent
+ * time + k × a motor-speed step
  * estimate) for every candidate: on a long sailing leg that read the
  * forecast hours away from when the boat is there (structural cleanup,
  * decision D, 2026-10-01: measured on brain as a 16 min arrival

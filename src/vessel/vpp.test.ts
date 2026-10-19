@@ -1,15 +1,12 @@
 /**
- * EmpiricalVPP port vs. the routing server's Python.
+ * EmpiricalVPP against recorded reference tables.
  *
- * Reference values below were produced by the parent project's own code
- * (routePlanning commit 35ff42b's routing/vessel/vpp.py,
- * vpp_empirical.py and routers/vpp.py; Python 3.14.3, numpy 2.4.4) with
- * specs passed through the endpoint's pydantic BoatSpecsModel, exactly as
- * POST /polar-from-specs does. `csv` is the byte-for-byte output of
- * PolarDiagram.save_csv(header_label=<slug>) (CRLF line ends).
+ * Reference values below are recorded outputs of the empirical VPP for
+ * the specs shown. `csv` is the byte-for-byte expected polar file (CRLF
+ * line ends).
  *
  * Every table cell is required to match to 1e-6 relative (1e-12 absolute
- * for zero cells); in practice the port reproduces the Python bit for bit.
+ * for zero cells); in practice they match bit for bit.
  */
 
 import { test } from 'node:test';
@@ -469,10 +466,10 @@ const REF_SLUGS: Record<string, string> = {
 const REL_TOL = 1e-6;
 
 for (const [name, ref] of Object.entries(REF)) {
-  test(`VPP ${name}: every cell matches the Python to 1e-6 relative`, () => {
-    // The Python used the rounded knot 0.514444 for its wind speeds; the
-    // port evaluates at those same speeds here so the comparison is of the
-    // VPP alone. The production table uses the exact knot (geo/units).
+  test(`VPP ${name}: every cell matches the reference to 1e-6 relative`, () => {
+    // The reference used the rounded knot 0.514444 for its wind speeds; the
+    // table is evaluated at those same speeds here so the comparison is of
+    // the VPP alone. The production table uses the exact knot (geo/units).
     const t = computePolarTable(ref.specs, ref.tws_ms);
     assert.deepEqual(t.twa_deg, [...POLAR_TWA_DEG]);
     assert.deepEqual(t.tws_ms, ref.tws_ms);
@@ -487,7 +484,7 @@ for (const [name, ref] of Object.entries(REF)) {
         const a = t.speeds_ms[i][j];
         const r = ref.speeds_ms[i][j];
         const ok = r === 0 ? Math.abs(a) <= 1e-12 : Math.abs(a - r) / Math.abs(r) <= REL_TOL;
-        assert.ok(ok, `${name} twa=${t.twa_deg[i]} tws=${ref.tws_ms[j]}: ts=${a} py=${r}`);
+        assert.ok(ok, `${name} twa=${t.twa_deg[i]} tws=${ref.tws_ms[j]}: got=${a} ref=${r}`);
       }
     }
   });
@@ -496,7 +493,7 @@ for (const [name, ref] of Object.entries(REF)) {
     assert.deepEqual(validateSpecs(ref.specs), ref.warnings);
   });
 
-  test(`VPP ${name}: CSV identical to PolarDiagram.save_csv and loads back`, () => {
+  test(`VPP ${name}: CSV identical to the reference and loads back`, () => {
     const t = computePolarTable(ref.specs, ref.tws_ms);
     const csv = polarCsv(t, slugifyPolarName(name));
     assert.equal(csv, ref.csv);
@@ -512,7 +509,7 @@ for (const [name, ref] of Object.entries(REF)) {
   });
 }
 
-test('VPP: catamaran -> UnsupportedHull with the Python message', () => {
+test('VPP: catamaran -> UnsupportedHull with the reference message', () => {
   const specs: BoatSpecs = { ...REF.catalina_36.specs, hull_type: 'catamaran' };
   assert.throws(
     () => computePolarTable(specs),
@@ -522,7 +519,7 @@ test('VPP: catamaran -> UnsupportedHull with the Python message', () => {
   assert.doesNotThrow(() => validateSpecs(specs));
 });
 
-test('validate(): hard errors match the Python ValueError messages', () => {
+test('validate(): hard errors match the reference messages', () => {
   const base = REF.catalina_36.specs;
   const cases: [string, Partial<BoatSpecs>][] = [
     ['lwl_gt_loa', { lwl_m: 11.5 }],
@@ -539,7 +536,7 @@ test('validate(): hard errors match the Python ValueError messages', () => {
   }
 });
 
-test('slugify matches routers/vpp.py _slugify', () => {
+test('slugify matches the reference slugs', () => {
   for (const [n, s] of Object.entries(REF_SLUGS)) assert.equal(slugifyPolarName(n), s, JSON.stringify(n));
 });
 

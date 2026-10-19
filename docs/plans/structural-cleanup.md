@@ -9,8 +9,8 @@ unused time compared 161/161 identical). Baseline on the Mac: 230 tests,
 226 pass, 4 skipped, 0 fail; lint 0 errors (8 pre-existing no-console
 warnings); typecheck clean.
 Phase 1.1 built 2026-10-01 (`src/geo/units.ts`; golden routes unchanged
-by the metre-per-degree change; VPP parity tests evaluate at the
-Python's wind speeds, decision F). Phase 1.2 built 2026-10-01
+by the metre-per-degree change; VPP parity tests evaluate at their
+recorded tables' wind speeds, decision F). Phase 1.2 built 2026-10-01
 (`src/geo/angles.ts`: norm360, wrapLon, lonOffset, unwrapLonNear,
 twaFromHeading, foldTwa; every inline form replaced; golden samples and
 routes bit-exact; the four `(Math.atan2(..) * 180) / Math.PI` wind
@@ -133,7 +133,7 @@ identical except 5 of 155 `bilinearCorners` cases with a negative input
 coordinate, where arco's copy produced negative indices (out-of-bounds
 reads) and the shared form clamps as the other samplers did; fixture
 regenerated after that review. `harmonic.ts` interp/pointAt stay: they
-clamp the fraction, not the coordinate, and mirror the Python reference.
+clamp the fraction, not the coordinate.
 The three bbox→index routines (regionForBBox, DecodedRun.geometry,
 cropField) are not unified here (different edge rules; phase 5 candidate).
 Phase 3.3 built 2026-10-01: `data/http.ts` (`fetchWithRetry`,
@@ -206,9 +206,8 @@ point), SMOC, RTOFS and the harmonic source (points grouped by
 prediction bin, one grid per bin as before); `scoreCandidatesFromParent`
 advances each candidate's own clock and samples through `windAtTimes /
 currentAtTimes / wavesAtTimes` (batched where the source can, `at`
-point by point otherwise). The shared motor-speed clock is gone; this is
-a documented deviation from the reference. Golden routes identical (their
-winds do not vary in time). Brain measurement 2026-10-01 (server restarted 19:11 EDT, same cycle,
+point by point otherwise). The shared motor-speed clock is gone. Golden
+routes identical (their winds do not vary in time). Brain measurement 2026-10-01 (server restarted 19:11 EDT, same cycle,
 tiles 161/161 identical): same two routes, fixed departure
 2026-10-02T12:00Z, per-candidate clock vs the original build (scalar
 final leg, shared motor clock for candidates) vs the motor-clock build:
@@ -390,8 +389,8 @@ data format, each named once.
       the 6th significant digit; the golden tiles tell whether a pixel
       moves — if any does, record it in the CHANGELOG as a correction).
     - `VPP_KTS_TO_MS` (`vessel/vpp_empirical.ts:27`), `CSV_KTS_TO_MS`
-      (`:183`), `KT` (`vessel/vpp_physics.ts:331`): these reproduce a
-      Python port that used the rounded 0.514444. Replace with the
+      (`:183`), `KT` (`vessel/vpp_physics.ts:331`): these use the rounded
+      0.514444 of the tables they were checked against. Replace with the
       exact `KTS_TO_MS` (decision F). Re-run `vpp.test.ts` and
       `vpp_physics.test.ts`; where a golden table fails, regenerate it
       with the exact constant and list the changed values (expected:
@@ -721,8 +720,8 @@ Phase 1 deliverable: `grep -rnE '0\.5144|1\.94384|111_?[0-9]{3}|85\.0511|Math\.P
     `eslint.config.mjs` with browser globals and `no-undef: off` (the
     shared scope defeats it), `no-unused-vars: warn`; fix what it
     finds. DECISION C covers whether to go further (ES modules).
-5.6 Comments that still say "the routing server" / "the parent" /
-    "Pydantic" (`overlays.ts:45,359-362`, `legends.ts:2-5`,
+5.6 Comments that describe the code by another program's names
+    (`overlays.ts:45,359-362`, `legends.ts:2-5`,
     `polars.ts:91,163,215,259`) → say what the code does; the
     misplaced doc blocks (`protocol.ts:145`, `index.ts:823-831`,
     `geodesy.ts:86-94`) move to their functions.
@@ -750,7 +749,7 @@ E. DECIDED (user, 2026-10-01): keep the coarse-A* fallback; add a
    counter of fallback runs to the data status so brain logs show how
    often it happens.
 F. DECIDED (user, 2026-10-01): the exact SI constant `1852/3600`
-   everywhere, including the VPP port; regenerate any golden table that
+   everywhere, including the VPP; regenerate any golden table that
    differs and record the changed values.
 
 ## Order and size

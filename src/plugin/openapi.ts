@@ -529,7 +529,8 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           requestBody: { required: true, content: { 'application/json': { schema: routeRequest } } },
           responses: {
             202: { description: '{id, status, links}; Location header = links.self' },
-            400: { description: 'Invalid request' },
+            400: { description: 'Invalid request, or a vessel.polar token that is not in the library' },
+            413: { description: 'The request body is over 64 KB' },
             429: { description: 'Queue full (16 queued jobs)' },
             503: { description: 'Plugin not started' },
           },
@@ -684,6 +685,24 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             502: { description: 'The catalogue could not be read; the list as it stands' },
             503: { description: 'Plugin not started' },
           },
+        },
+      },
+      '/api/meshes/rough-cut': {
+        post: {
+          summary:
+            "Rebuild every chart mesh's rough cut for the boat's Signal K draught and air draft, in the background (readwrite); progress in GET /api/meshes `rough_cut`",
+          responses: {
+            202: { description: 'The rough-cut status: {running, done, total, last, error, draught_m, air_draft_m}' },
+            500: { description: 'Could not start' },
+            503: { description: 'Plugin not started' },
+          },
+        },
+      },
+      '/api/coastline/download': {
+        post: {
+          summary:
+            'Start (or retry now) the GSHHG coastline download (readwrite; works before a coastline is installed); progress in GET /api/status `coastline`',
+          responses: { 202: { description: '{status: "download requested; see /api/status coastline"}' } },
         },
       },
       '/api/openapi.json': {

@@ -6,6 +6,111 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Under-keel and overhead clearance** (vessel settings, defaults 0.5 m and
+  2 m; request overrides `vessel.under_keel_clearance_m`,
+  `vessel.overhead_clearance_m`): the margins over the draught and the air
+  draft on chart-mesh legs, which were fixed at 0.5 m and 1 m. The higher
+  overhead default blocks bridges and cables 1–2 m above the air draft that
+  passed before. Rough cuts carry them in their
+  rules and file names (`COARSE_VERSION` 6; existing rough cuts are rebuilt
+  once, on demand).
+- **The final depth check repairs before it fails** (`worker/route.ts`
+  `repairViolations`): each segment that crosses water a chart mesh blocks for
+  the boat is routed again with the leg search at a sail threshold of 0 and
+  the detour spliced in, the later waypoints shifted by the time it added; at
+  most 2 passes and 5 detours. A detour that motors on a sailing route is a
+  `detour_motored` warning. A route still crossing such water fails as before.
+  `repairs_applied` reports the detours (it was always 0).
+- **GeoJSON download** beside GPX in the Itinerary tab: the route line and
+  every waypoint with its times, wind, waves, current and depth.
+- **Route request fields `tack_penalty`** (s, 0..3600; overrides
+  `routing.tackPenalty`) **and `smoother_sim_step_m`** (m, 50..5000; the
+  smoother's own step, overriding `routing.simStep` for the smoother only).
+  API only; absent, routes are as before.
+
+### Changed
+
+- **Chart meshes download as their archives, two at a time.** Each mesh
+  is fetched as the catalogue's `<name>_mesh.tar.zst` (about a third of the
+  unpacked size: 7.2 GB for all eight published meshes against 21.3 GB),
+  resumed with a Range request where a download stopped, unpacked by the
+  plugin itself (zstd from Node's zlib, its own tar reader: plain files and
+  folders only, nothing outside the mesh folder), and checked before it is
+  swapped in: every tile the index lists present, their total equal to the
+  catalogue's `bytes`. A free-disk check comes first. The file-by-file
+  download is gone; the panel shows the archive's progress (downloading,
+  then unpacking).
+- **Node.js 22.15 or later** is required (was 20.10): the mesh archives
+  are zstd, which Node's own zlib unpacks from 22.15 on. Signal K 2.33
+  itself needs Node 22.
+- **Min sail speed 0 and a stretch the boat cannot sail or tack out of** fails
+  the route saying "set Min sail speed above 0" (refined router).
+- **Currents are shown as the direction they flow to** ("0.2 kn to W (265°)")
+  in the itinerary, its text and the plotter panel, as the API gives them;
+  they were turned round and shown as "from".
+- **Headings and directions in whole degrees**, with no space before ° or %.
+- **Softer coast on the land-masked colour layers** (waves, current, sea
+  state, precipitation, sea temperature, tide), in the web app and the
+  chartplotter PNG tiles alike: the tile's alpha is blurred (σ 1 px), so the
+  colour fades over about 2 px at the shore instead of stopping at a hard
+  edge; edges of no-data areas soften the same way. The no-data hatch stays
+  sharp.
+- **Shorter legend titles:** Wave height, Precipitation, Air temperature,
+  Sea-surface temperature.
+- **`POST /api/routes`** refuses a `vessel.polar` that is not in the library
+  (400) and a body over 64 KB (413) before the job is queued; the polar was
+  found missing only when the job ran.
+- **Polar calculator:** where no reef or flattening keeps the heel within the
+  limit, the boat speed is 0 (it was the fully depowered speed past the limit).
+
+### Fixed
+
+- **The same rough cut could be built twice at once**: the rebuild after a
+  mesh download (or the Rebuild button) and a route needing that rough cut
+  each started their own child process. A lock file beside the rough cut
+  (and beside each joins file) now lets one build at a time; the other waits
+  and uses its result. A lock left by a process that is gone is cleared.
+- **A server-only update could leave a browser on old web scripts**: npm's
+  copies of unchanged web files are untagged and dated 1985, and the
+  re-tagging ran only when their content changed. It now also runs when
+  index.html does not carry the current tag.
+- **Rough-cut tile edges used the fixed margins** (`coarse.ts`
+  `boundarySeeds`): with any other clearance the tile-boundary record
+  disagreed with the rough cut and its name. On the test box (2026-10-18) the
+  0.5 m and 1 m records now differ for two of three meshes.
+- **A cancel during the notes read was lost** (`index.ts`): the route worker
+  clears its cancel flag when a route starts, so a job cancelled before it was
+  sent to the worker ran anyway. It is now finished at once.
+- **Server-Sent Events replayed nothing** when `Last-Event-ID` was not a
+  number; it now replays everything.
+- **Repair warnings** named the detour's own threshold ("set Min sail speed
+  above 0") as if it were the user's setting, and `detour_motored` gave the
+  leg number where every other warning gives the segment; warnings after a
+  detour now move with its waypoints.
+- **A mesh leg ran without CMEMS SMOC** when the worker's answer came from an
+  area of another layout than the one the leg box alone would pick ("chunk …
+  is not cached and the network is disabled"); the mesh process now loads the
+  layout that answered.
+- **A rough cut built for a boat or buffer differing past the centimetre was
+  refused and never rebuilt** (a buffer saved in feet, 9.999999999999988 m):
+  the rules are rounded to the centimetre the file name carries.
+- **Tidal-harmonic currents on long routes** predicted whole grids again and
+  again (more bins than the grid cache holds); points at their own times now
+  predict only the cells they read. Same values.
+- **The snap refusal** names the destination when its water cannot be
+  reached from a stop, instead of telling the user to move the stop.
+- **The OpenAPI document** lists `POST /api/meshes/rough-cut` and
+  `POST /api/coastline/download`.
+- **Routes no longer cross land outside the route's box**
+  (`geo/landmask.ts`): a point or leg outside the land raster's box was
+  counted as water, and with no coastline loaded there, routes went over
+  islands (Caribbean, 2026-10-15: Aruba, Curaçao, Bonaire, Venezuela,
+  Barbados); each such check also scanned every coastline ring near the
+  leg (up to 1.8 s a check; the polish took 9 minutes on that route).
+  Outside the box is now land.
+
 ## [0.2.0-beta.2] - 2026-10-13
 
 ### Changed
@@ -597,7 +702,7 @@ uses [Semantic Versioning](https://semver.org/).
   failure names the box and the cap.
 - The open-water search between two narrow passages of a mesh route drew
   its own coarse skeleton on the coastline instead of using the mesh
-  route, as the hybrid rule says (job 219300ca, 2026-10-08: the coarse
+  route (job 219300ca, 2026-10-08: the coarse
   skeleton cut across the tip of Monomoy, every first-stage candidate
   towards it was on land, the one survivor went up the wrong side of the
   island and the search was boxed in after 20 stages). The mesh route and
@@ -610,8 +715,7 @@ uses [Semantic Versioning](https://semver.org/).
   fan around it (a zero-length leg in the mesh route; the motored walk hid
   it, the tack layout refused it). A point equal to the last one emitted is
   skipped, as Recast's `appendVertex` does; the route's geometry is
-  unchanged, with one point fewer where the Python experiment's funnel
-  repeats one.
+  unchanged, with one point fewer where a corner was emitted twice.
 - Apply the GSHHG L1/L2/L3/L4 land/water hierarchy to global water grids,
   route rasters, refined masks and exact polygon checks. The full global
   grid is rebuilt from all four levels; old overlay caches are invalidated.
@@ -1228,7 +1332,7 @@ it holding duplicate data.
     0.514444: the stop values move in the sixth significant digit.
   - Polar tables computed from boat specs (empirical and physics VPP)
     use the exact knot for the table's wind speeds; the parity tests
-    against the Python reference evaluate at the Python's wind speeds
+    evaluate at the wind speeds their recorded tables were made at
     (which used the rounded knot) so the comparison is of the VPP alone.
   - The metre-per-degree heuristics for land-sampling step, smoother
     tolerance and tile radius used 111 195, 111 000 and 111 320 m; all
@@ -1324,9 +1428,8 @@ it holding duplicate data.
   fatal flag; cancellation is one class, never a message match) and the
   API maps HTTP status by error class; one progress-callback shape;
   tests moved next to what they test; the web app's scripts are linted
-  (four assignments-in-conditions fixed); comments that described the
-  code by reference to the former server say what the code does; the
-  GeoJSON / Signal K route formats, the conditions derivations and the
+  (four assignments-in-conditions fixed); comments say what the code
+  does; the GeoJSON / Signal K route formats, the conditions derivations and the
   isobar tracer moved from the engine to the plugin layer.
 
 ### Added
@@ -1577,11 +1680,9 @@ it holding duplicate data.
 
 ### Fixed
 
-- README: the introduction wrongly described this plugin as a
-  server-free sibling of `signalk-weather-router`. It now says what the
-  "plus" is (the map overlays, drawn from the same data the routing
-  uses) and that inshore routing (depths, channels, bridges) is not done
-  here but by the separate router.zeddisplay.com.
+- README: the introduction now says what the "plus" is (the map
+  overlays, drawn from the same data the routing uses) and that the
+  plugin does not route on depths, channels or bridges.
 
 ## [0.1.0-beta.3] - 2026-09-30
 
@@ -1638,8 +1739,8 @@ builds before this release, with their measurements, is in
 
 #### Routing
 
-- Isochrone router (a TypeScript port of the routePlanning subsector
-  router) in a worker thread, against the vessel's polar. Modes
+- Isochrone router (a subsector isochrone search) in a worker thread,
+  against the vessel's polar. Modes
   `sail_max` (sail when the polar speed reaches the sail threshold,
   motor otherwise), `fastest` and `motor`, with a motor speed. (This
   entry also listed a tack penalty, under-keel and overhead margins and a

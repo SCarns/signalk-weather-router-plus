@@ -11,14 +11,11 @@
  * Each file (~38 MB) is a regular lat/lon grid (west_atl: 0.08°, 100°W
  * to 54°W, 10°N to 44.8°N) with simple packing and a bit map over land.
  * Fields used: `ubaro` (discipline 10, category 1, number 194) and
- * `vbaro` (10, 1, 195), m/s, the same depth-averaged velocities the
- * reference implementation reads from the NetCDF product.
+ * `vbaro` (10, 1, 195), m/s, depth-averaged velocities.
  *
- * Sampling mirrors the reference RTOFS source: linear in time between
- * bracketing steps with a ±1 h grace beyond the ends, and (0, 0) for
- * "no data". Spatially, bilinear on the regular grid (the reference uses
- * 4-neighbour inverse distance on the curvilinear NetCDF grid; the GRIB2
- * product is already regular, so bilinear is the equivalent).
+ * Sampling: linear in time between bracketing steps with a ±1 h grace
+ * beyond the ends, and (0, 0) for "no data". Spatially, bilinear on the
+ * regular grid.
  */
 
 import * as fs from 'node:fs';

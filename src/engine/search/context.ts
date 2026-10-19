@@ -183,11 +183,10 @@ export function buildContext(prop: PropagatorParams, args: ComputeRouteArgs): Se
   const cruise = vessel.motorSpeedMs;
   if (!(cruise > 0)) throw new RouteError('vessel.motorSpeedMs must be > 0');
   ctx.cruise = cruise;
-  // Stage budget. The reference implementation sizes K stages to the
-  // straight-line distance; here the budget is re-sized to the coarse
-  // skeleton's length once it is known (skeleton.ts), so a passage that
-  // must detour around land still fits in K stages instead of running out
-  // of stages short of the destination.
+  // Stage budget: K stages sized to the straight-line distance, re-sized
+  // to the coarse skeleton's length once it is known (skeleton.ts), so a
+  // passage that must detour around land still fits in K stages instead
+  // of running out of stages short of the destination.
   ctx.budget = sizeBudget(totalDistM, cruise, prop.K, prop.k);
   return ctx;
 }

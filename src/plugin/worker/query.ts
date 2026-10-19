@@ -167,15 +167,19 @@ export async function buildTile(st: WorkerState, id: number, tile: TileId, tmp: 
 async function answer(st: WorkerState, kind: string, args: QueryArgs[keyof QueryArgs]): Promise<{ result: unknown; complete: boolean }> {
   let win: ForecastStore | null = null;
   try {
+    // The refresh runs beside the queries (worker.ts): a new SMOC or tide source can replace the one this query
+    // prepared while it awaits; then it is sampled from a source that has not loaded the query's area.
+    const smoc0 = st.smoc;
     const smocComplete = await prepareSmocForQuery(st, kind, args);
     // A late background load can evict what was just loaded while this query awaits the rest.
     const evictions = (): number => (st.smoc?.evictions ?? 0) + (st.tides?.evictions ?? 0);
     const evicted0 = evictions();
+    const tides0 = st.tides;
     const tidesComplete = await prepareTidesForQuery(st, kind, args);
     const tide = kind === 'conditions' ? await conditionsTide(st, args as QueryArgs['conditions']) : null;
     win = await queryWindow(st, kind, args);
     // Last await before sampling (synchronous from here), and before this query's own trim below.
-    const notEvicted = evictions() === evicted0;
+    const notEvicted = evictions() === evicted0 && st.smoc === smoc0 && st.tides === tides0;
     const src = overlaySources(st, win);
     let result: unknown;
     switch (kind) {
@@ -318,5 +322,8 @@ export function dataStatus(st: WorkerState): DataStatus {
     tides: st.tides ? st.tides.status() : null,
     tidesError: st.tidesError,
     regional: [...st.regional.values()],
+    checks: { ...st.checks },
+    connectivity: { ...st.connectivity },
+    harmonicErrors: [...st.harmonicErrors],
   };
 }

@@ -2,6 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildLegends } from './legends';
 
+test('legends: the titles the legend box shows', () => {
+  const L = buildLegends();
+  assert.deepEqual(
+    ['wind', 'current', 'waves', 'precip', 'temperature', 'sst', 'sea_state'].map(k => L[k].title),
+    ['Wind', 'Current', 'Wave height', 'Precipitation', 'Air temperature', 'Sea-surface temperature', 'Sea state']
+  );
+});
+
 test('legends: tide ramp diverges around 0 from −3 to +3 m', () => {
   const L = buildLegends().tide;
   assert.equal(L.si_unit, 'm');

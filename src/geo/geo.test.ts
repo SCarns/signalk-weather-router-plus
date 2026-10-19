@@ -55,7 +55,7 @@ test('projectAlongBearing inverts distance/bearing and wraps the antimeridian', 
 
 test('perpendicular offset sign and magnitude', () => {
   // Reference track due east along the equator; a point 1° north is
-  // ~111 km off track. The reference formula (asin(sin d13 · sin(θ13 − θ12)))
+  // ~111 km off track. The cross-track formula (asin(sin d13 · sin(θ13 − θ12)))
   // returns NEGATIVE for points left of the track; the sign only has to
   // be consistent, since it is used for binning.
   const off = perpendicularOffsetM(0, 0, 10, 0, 5, 1);

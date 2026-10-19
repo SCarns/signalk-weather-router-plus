@@ -2,7 +2,7 @@
  * Land mask built from coastline polygons (GSHHG L1–L4 or OSM land
  * polygons), rasterised over a route bounding box.
  *
- * Two query paths, mirroring the routing engine this is ported from:
+ * Two query paths:
  *  - `isLandBulk` / `legsCrossLandBulk`: raster lookup; a leg is walked
  *    cell by cell (every cell its path crosses, finest patch first), used
  *    in the propagator's hot per-stage candidate filter.
@@ -12,7 +12,7 @@
  *
  * The raster is conservative: a cell is land if its centre is inside a
  * polygon OR a polygon edge passes through it. That second rule stands
- * in for the buffered-polygon test in the original (peninsulas narrower
+ * in for a buffered-polygon test (peninsulas narrower
  * than a cell must still block a leg). `rasterStreamed` can also build a
  * centre-sampled raster (land iff the cell centre is inside a polygon),
  * used by the global water grid build.
@@ -586,7 +586,11 @@ export class LandMask implements LandTest {
     return i * this.nx + j;
   }
 
-  /** Raster land test (finest patch first). Positions outside the raster are reported as water. */
+  /**
+   * Raster land test (finest patch first). Positions outside the raster are land. Nothing was
+   * loaded there (fromShapefiles loads the polygons of its box only), so "water" was a guess, and routes went over
+   * islands outside the corridor box (Caribbean, 2026-10-15: Aruba, Curaçao, Bonaire, Venezuela, Barbados).
+   */
   isLand(lon: number, lat: number): boolean {
     if (this.patches.length) {
       for (const p of this.patches) {
@@ -595,7 +599,7 @@ export class LandMask implements LandTest {
       }
     }
     const idx = this.cellIndex(lon, lat);
-    return idx >= 0 && this.raster[idx] === 1;
+    return idx < 0 || this.raster[idx] === 1;
   }
 
   /** Raster land test for arrays. */
@@ -613,6 +617,8 @@ export class LandMask implements LandTest {
    * centre is classified as water by the hierarchy, so the whole cell is water.
    */
   isLandExact(lon: number, lat: number): boolean {
+    // Outside the box nothing is loaded; unknown is land (see isLand).
+    if (this.cellIndex(lon, lat) < 0 && !this.inAnyPatch(lon, lat)) return true;
     if (this.edgeCells && this.shapes.length) {
       for (const p of this.patches) {
         const pi = patchIndex(p, lon, lat);
@@ -703,7 +709,7 @@ export class LandMask implements LandTest {
     const yP = latP - this.bbox.south;
     const yQ = latQ - this.bbox.south;
     return walkGrid(xP / r, yP / r, xQ / r, yQ / r, (i, j, t0, t1) => {
-      if (i < 0 || i >= this.nx || j < 0 || j >= this.ny) return false; // outside the raster: water, as isLand
+      if (i < 0 || i >= this.nx || j < 0 || j >= this.ny) return true; // outside the raster: land, as isLand
       if (this.patches.length) {
         const lonC = this.bbox.west + (i + 0.5) * r;
         const latC = this.bbox.south + (j + 0.5) * r;
@@ -750,9 +756,11 @@ export class LandMask implements LandTest {
   }
 
   legCrossesLandExact(lonA: number, latA: number, lonB: number, latB: number): boolean {
-    // The raster only speaks for its own box: outside it, fall through to the polygons.
-    const inside = this.cellIndex(lonA, latA) >= 0 && this.cellIndex(lonB, latB) >= 0;
-    if (inside && this.edgeCells && this.shapes.length && !this.legCrossesRaster(lonA, latA, lonB, latB)) return false;
+    // An end outside the box is on unknown ground, which is land (see isLand). It was a fall
+    // through to the polygons, which hold nothing there: legs over unloaded islands passed, each after a scan of
+    // every coastline ring near the leg (up to 1.8 s a check, the polish's 9 minutes on the Caribbean route).
+    if (this.cellIndex(lonA, latA) < 0 || this.cellIndex(lonB, latB) < 0) return true;
+    if (this.edgeCells && this.shapes.length && !this.legCrossesRaster(lonA, latA, lonB, latB)) return false;
     if (!this.shapes.length) return this.legCrossesRaster(lonA, latA, lonB, latB);
     if (this.isLandPolygons(lonA, latA) || this.isLandPolygons(lonB, latB)) return true;
     // The buffer: every edge within it of the move, searched in a box grown by it.

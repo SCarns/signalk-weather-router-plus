@@ -190,7 +190,7 @@ export function buildLegends(): Record<string, LegendEntry> {
     wind: { title: 'Wind', quantity: 'speed', category: 'speed', si_unit: 'm/s', kind: 'gradient', stops: WIND_STOPS },
     current: { title: 'Current', quantity: 'speed', category: 'speed', si_unit: 'm/s', kind: 'gradient', stops: CURRENT_STOPS },
     waves: {
-      title: 'Significant wave height',
+      title: 'Wave height',
       quantity: 'wave_height',
       category: 'depth',
       si_unit: 'm',
@@ -198,7 +198,7 @@ export function buildLegends(): Record<string, LegendEntry> {
       stops: WAVE_STOPS,
     },
     precip: {
-      title: 'Precipitation rate',
+      title: 'Precipitation',
       quantity: 'precip_depth_rate',
       category: null,
       si_unit: 'm/s',
@@ -207,7 +207,7 @@ export function buildLegends(): Record<string, LegendEntry> {
       fade_below: PRECIP_FADE_BELOW,
     },
     temperature: {
-      title: 'Air temperature (2 m)',
+      title: 'Air temperature',
       quantity: 'temperature',
       category: 'temperature',
       si_unit: 'K',
@@ -215,7 +215,7 @@ export function buildLegends(): Record<string, LegendEntry> {
       stops: TEMP_STOPS,
     },
     sst: {
-      title: 'Sea surface temperature',
+      title: 'Sea-surface temperature',
       quantity: 'temperature',
       category: 'temperature',
       si_unit: 'K',

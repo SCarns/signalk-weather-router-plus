@@ -1,16 +1,13 @@
 /**
  * Route simplification after the propagator: RDP thinning, then the
- * shortcut smoother. Port of routePlanning's `_rdp_simplify`
- * (routing/engine/hybrid.py) and `shortcut_smoother`
- * (routing/engine/smoother.py), run in the same order, per leg.
+ * shortcut smoother, per leg.
  *
  * Land checks are the plugin's own: the leg's land raster
  * (`legsCrossLandBulk`, every cell the leg crosses, as the propagator) and, for
  * the smoother, the exact polygons (`legCrossesLandExact`, as the final
- * validation). The plugin has no bathymetry or chart data, so the
- * parent's depth and S-57 passage checks have no counterpart.
+ * validation).
  *
- * Deviation from the parent: after smoothing, waypoints whose time moved
+ * After smoothing, waypoints whose time moved
  * get their wind, waves and current sampled again at the new time.
  */
 
@@ -23,7 +20,7 @@ import type { Route, Waypoint } from './route';
 import type { PolarDiagram } from '../vessel/polar';
 import type { VesselParams } from '../vessel/vessel';
 
-/** Mode-preservation thresholds (smoother.py). */
+/** Mode-preservation thresholds. */
 const SAIL_PRESERVE_FLOOR_S = 60.0;
 const SAIL_PRESERVE_ORIG_FRAC = 0.5;
 const SAIL_PRESERVE_CANDIDATE_FRAC = 0.5;
@@ -102,7 +99,7 @@ export interface SmootherArgs {
 }
 
 /**
- * Greedy backward pass (smoother.py): anchored at the last waypoint, try
+ * Greedy backward pass: anchored at the last waypoint, try
  * to replace the waypoints between an earlier one and the anchor with one
  * straight leg; accept when the leg is clear of land, its simulated time
  * is within `tolerance` of the legs it replaces, and (sail_max) a
@@ -189,7 +186,7 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
   return drops;
 }
 
-/** Distance, time and per-mode totals from the waypoint list (validate._recompute_totals). */
+/** Distance, time and per-mode totals from the waypoint list. */
 export function recomputeTotals(route: Route): void {
   const wps = route.waypoints;
   let dist = 0;

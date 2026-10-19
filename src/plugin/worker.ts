@@ -41,7 +41,8 @@ import { RtofsClient, RtofsCurrentSource, rtofsForRegion } from '../currents/rto
 import { SmocCurrentSource } from '../currents/smoc';
 import { TideSource } from '../tides/sealevel';
 import { type MainToWorker, type WorkerRole, type WorkerToMain } from './protocol';
-import { requireInit } from './worker/state';
+import { setNetworkObserver } from '../data/http';
+import { noteNetwork, requireInit } from './worker/state';
 import { refreshForecast } from './worker/forecast';
 import { prepareWaterGrid } from './worker/landgrid';
 import {
@@ -121,26 +122,37 @@ const st: WorkerState = {
   routeWindow: null,
   routeRegional: [],
   cancelledQueries: new Set<number>(),
+  checks: {},
+  connectivity: { online: null, since: null, lastOkAt: null, reason: null },
+  lastOfflineMs: 0,
+  harmonicErrors: [],
+  decodeAbort: null,
 };
+// The data worker's requests say whether there is a connection (status, and a refresh round stops asking servers).
+if (role === 'data') setNetworkObserver((state, reason) => noteNetwork(st, state, reason));
 
 /**
  * Refresh RTOFS (both roles) and, in the data worker, the forecast and
  * CMEMS SMOC. The route worker never decodes a forecast or loads the SMOC
  * resident area itself: it reads the data worker's decoded run from disk
- * (location relayed by the main thread) and adopts its SMOC memory.
+ * (location relayed by the main thread) and adopts its SMOC memory. Once a
+ * request of this round finds no connection, the sources after it are not
+ * asked (each uses what it has and reports "could not check" with the reason).
  */
 export async function refresh(st: WorkerState, force: boolean): Promise<void> {
   const networkAllowed = st.role === 'data';
-  await refreshRtofs(st, networkAllowed);
+  const t0 = Date.now();
+  const offline = (): string | null => (st.lastOfflineMs >= t0 ? `skipped: ${st.connectivity.reason ?? 'no internet connection'}` : null);
+  await refreshRtofs(st, networkAllowed, offline());
   sendCurrents(st);
   if (st.role === 'data') {
-    await refreshForecast(st, force);
+    await refreshForecast(st, force, offline());
     // After the forecast, so a first boot is not held up by the SMOC resident download.
-    await refreshSmoc(st);
+    await refreshSmoc(st, offline());
     sendCurrents(st);
-    await refreshTides(st);
+    await refreshTides(st, offline());
     st.send({ type: 'tides-run', run: st.tides?.run ?? null });
-    // Last: optional finer wind from signalk-grib-downloader's runs.
+    // Last: optional finer wind from signalk-grib-downloader's runs (local files, no network).
     await refreshRegional(st);
   }
 }
@@ -351,9 +363,46 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       return;
     }
     case 'shutdown':
+      st.decodeAbort?.abort();
       if (st.gridBuilder) await st.gridBuilder.terminate();
       process.exit(0);
   }
+}
+
+const logFailure = (msg: MainToWorker, err: unknown): void => {
+  st.log('error', `worker: ${(err as Error).stack ?? (err as Error).message}`);
+  if (msg.type === 'route') st.send({ type: 'error', id: msg.id, message: (err as Error).message });
+  if (msg.type === 'refresh') st.send({ type: 'refresh-error', message: (err as Error).message });
+  if (msg.type === 'query' || msg.type === 'build-tile') st.send({ type: 'query-error', id: msg.id, message: (err as Error).message });
+};
+
+/**
+ * The data worker's network work (refresh rounds, the reloads of a settings
+ * change) runs one at a time in its own queue, beside the messages: map,
+ * conditions and Weather API queries are answered from the data in use
+ * while it runs, instead of waiting behind it (brain, 2026-10-19: an
+ * uncached map tile timed out at 120 s during a 172 s decode). A refresh
+ * asked for while one waits to start joins it (force if either asked); one
+ * asked for while one runs is done once after it.
+ */
+let background: Promise<void> = Promise.resolve();
+let refreshQueued: { force: boolean } | null = null;
+function inBackground(msg: MainToWorker, fn: () => Promise<void>): void {
+  background = background.then(fn).catch(err => logFailure(msg, err));
+}
+function queueRefresh(msg: Extract<MainToWorker, { type: 'refresh' }>): void {
+  if (msg.position !== undefined) st.vesselPos = msg.position;
+  if (refreshQueued) {
+    refreshQueued.force ||= msg.force ?? false;
+    return;
+  }
+  const queued = { force: msg.force ?? false };
+  refreshQueued = queued;
+  inBackground(msg, async () => {
+    refreshQueued = null;
+    await refresh(st, queued.force);
+    st.send({ type: 'data-status', status: dataStatus(st) });
+  });
 }
 
 let chain: Promise<void> = Promise.resolve();
@@ -363,12 +412,14 @@ port.on('message', (msg: MainToWorker) => {
     st.cancelledQueries.add(msg.id);
     return;
   }
-  chain = chain
-    .then(() => handle(st, msg))
-    .catch(err => {
-      st.log('error', `worker: ${(err as Error).stack ?? (err as Error).message}`);
-      if (msg.type === 'route') st.send({ type: 'error', id: msg.id, message: (err as Error).message });
-      if (msg.type === 'refresh') st.send({ type: 'refresh-error', message: (err as Error).message });
-      if (msg.type === 'query' || msg.type === 'build-tile') st.send({ type: 'query-error', id: msg.id, message: (err as Error).message });
-    });
+  // Initialised first (its own message chain); the rest of the data worker's network work beside the queries.
+  if (role === 'data' && msg.type === 'refresh') {
+    chain = chain.then(() => queueRefresh(msg));
+    return;
+  }
+  if (role === 'data' && msg.type === 'config') {
+    chain = chain.then(() => inBackground(msg, () => handle(st, msg)));
+    return;
+  }
+  chain = chain.then(() => handle(st, msg)).catch(err => logFailure(msg, err));
 });

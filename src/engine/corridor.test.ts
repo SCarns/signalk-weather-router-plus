@@ -356,12 +356,29 @@ test('width profile: an islet on the skeleton is not a narrow passage; a strait 
   ];
   const w = widthProfile(m, pts);
   assert.ok(w[1] > 1500 && w[1] < 2600, `strait width ${w[1]}`);
-  // Open water far from land: Infinity.
-  const w2 = widthProfile(m, [
+  // Open water far from land: Infinity. The mask must know that water: its box holds the point (outside its box a
+  // mask answers land).
+  const open = LandMask.fromShapefiles([SHP], { west: 145, east: 155, south: -5, north: 5 }, { resolutionDeg: 0.002 });
+  const w2 = widthProfile(open, [
     { lon: 150, lat: 0 },
     { lon: 150.1, lat: 0 },
   ]);
   assert.equal(w2[0], Infinity);
+});
+
+test('land mask: outside its box is land (nothing was loaded there), so no leg passes over unloaded coast', () => {
+  const m = LandMask.fromShapefiles([SHP], { west: 165, east: 175, south: -6, north: 6 }, { resolutionDeg: 0.002 });
+  // Inside the box, open water and the channel are water.
+  assert.equal(m.isLand(170, 5.8), false);
+  assert.equal(m.isLandExact(170, 5.8), false);
+  assert.equal(m.legCrossesLandExact(170, -5.8, 170, 5.8), false); // through the 0.02° channel
+  // Outside the box (beyond the 0.1° pad), every check says land.
+  assert.equal(m.isLand(150, 0), true);
+  assert.equal(m.isLandExact(150, 0), true);
+  assert.equal(m.legCrossesLandExact(170, 5.8, 170, 8), true); // ends outside
+  assert.equal(m.legCrossesLandExact(160, 5.8, 180, 5.8), true); // starts and ends outside
+  assert.deepEqual([...m.legsCrossLandBulk([170, 170], [5.8, 5.8], [170, 166], [5.9, 7])], [0, 1]);
+  assert.equal(m.clearAlong(170, 5.8, 0, 100_000).m < 50_000, true); // stops at the box edge (6.1°N), ~33 km north
 });
 
 test("mergeVias puts each segment's automatic vias before the user via ending it", () => {

@@ -112,7 +112,7 @@ test('collapseRuns: approximate waypoints join their legs into one run with circ
   );
 });
 
-test('validateLegOptions follows the reference (approximate needs radius > 0, 0..5000)', () => {
+test('validateLegOptions: approximate needs radius > 0, radii 0..5000', () => {
   assert.equal(validateLegOptions(undefined, undefined, undefined), null);
   assert.equal(validateLegOptions('approximate', undefined, []), null); // default 200
   assert.match(validateLegOptions('approximate', 0, [])!, /> 0/);

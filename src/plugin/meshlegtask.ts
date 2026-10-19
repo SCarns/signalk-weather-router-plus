@@ -12,6 +12,7 @@ import * as path from 'node:path';
 import { HarmonicCurrentSource } from '../currents/harmonic';
 import { loadRtofsSteps, RtofsClient, RtofsCurrentSource, rtofsRunFor } from '../currents/rtofs';
 import { SmocClient, SmocCurrentSource, type SmocRun, type SmocSettings } from '../currents/smoc';
+import type { ArcoLayout, ArcoResolution } from '../data/arco';
 import { CurrentStack } from '../currents/stack';
 import type { CurrentSourceLike } from '../currents/types';
 import { openDecodedRun } from '../data/decoded';
@@ -57,6 +58,8 @@ export interface MeshLegTask {
   simplifyM: number;
   smoother: boolean;
   smootherTolerance: number;
+  /** The smoother's simulation step, metres (absent: sim.simStepM). */
+  smootherSimStepM?: number;
   drawbridges: DrawbridgeChoice;
   bridgeWaitS: number;
   /** The rough cut's tile-boundary file for this mesh and boat (meshcoarse.ts): seeds of the buffer across tile edges. */
@@ -70,7 +73,15 @@ export interface MeshLegTask {
   /** The currents the worker holds, as the child can rebuild them from disk; null for none. */
   currents: {
     /** SMOC: the run, and the area and steps the worker loaded (and so wrote to the cache) for this leg; the child asks for exactly these. */
-    smoc: { cacheDir: string; run: SmocRun; settings: SmocSettings; area: BBox; steps: number[] } | null;
+    smoc: {
+      cacheDir: string;
+      run: SmocRun;
+      settings: SmocSettings;
+      area: BBox;
+      steps: number[];
+      /** The resolution and layout that answered the area in the worker (SmocCurrentSource.answering): the chunks on disk. */
+      as: { res: ArcoResolution; layout: ArcoLayout } | null;
+    } | null;
     rtofs: { cacheDir: string; region: string; runMs: number; horizonS: number; stepS: number } | null;
     harmonicDir: string | null;
   } | null;
@@ -121,6 +132,7 @@ export async function runMeshLegTask(t: MeshLegTask, emit: (e: MeshLegEvent) => 
     simplifyM: t.simplifyM,
     smoother: t.smoother,
     smootherTolerance: t.smootherTolerance,
+    smootherSimStepM: t.smootherSimStepM,
     drawbridges: t.drawbridges,
     bridgeWaitS: t.bridgeWaitS,
     progress,
@@ -201,7 +213,7 @@ async function loadCurrents(t: MeshLegTask, box: BBox, progress: MeshLegArgs['pr
       const src = new SmocCurrentSource(c.run, c.settings, client);
       // The worker's area and steps, so the layout and the chunks are the ones it wrote.
       if (c.steps.length) {
-        await src.ensure(c.area, c.steps, { reason: 'mesh leg' });
+        await src.ensure(c.area, c.steps, { reason: 'mesh leg', ...(c.as ? { as: c.as } : {}) });
         sources.push(src);
         progress(
           0,

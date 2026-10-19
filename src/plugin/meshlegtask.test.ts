@@ -18,6 +18,7 @@ import { SmocClient, SmocCurrentSource } from '../currents/smoc';
 import { H, makeMock, SETTINGS, T0, URLS } from '../currents/smoc.mock.test';
 import { bboxFromLonLat } from '../geo/geodesy';
 import { MESH_BOX_PAD_MAX_DEG } from '../engine/mesh/route';
+import type { ArcoLayout } from '../data/arco';
 
 test('mesh-leg child task: the leg planned where the mesh is, progress streamed, depths from the triangles', async () => {
   const dir = writeTwoTileMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-')), [10, 10, 7.5, 7.5]);
@@ -138,7 +139,11 @@ test('mesh-leg child task: CMEMS SMOC of a provisional run is read from the cach
         bridgeWaitS: 0,
         forecast: null,
         regional: null,
-        currents: { smoc: { cacheDir, run, settings: SETTINGS, area, steps }, rtofs: null, harmonicDir: null },
+        currents: {
+          smoc: { cacheDir, run, settings: SETTINGS, area, steps, as: worker.answering(area, steps) },
+          rtofs: null,
+          harmonicDir: null,
+        },
       },
       60_000,
       undefined,
@@ -156,4 +161,83 @@ test('mesh-leg child task: CMEMS SMOC of a provisional run is read from the cach
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(cacheDir, { recursive: true, force: true });
   }
+});
+
+test('mesh-leg child task: CMEMS SMOC is read from the layout that answered in the worker (the resident area), not the one the leg box alone would choose', async () => {
+  const dir = writeTwoTileMesh(fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-')), [10, 10, 7.5, 7.5]);
+  const [plan] = planLegs(
+    [
+      { lon: 0.25, lat: 0.1 },
+      { lon: 1.75, lat: 0.1 },
+    ],
+    'precise',
+    300
+  );
+  const departureMs = T0 + 6 * H;
+  const area = bboxFromLonLat([0.25, 1.75], [0.1, 0.1], MESH_BOX_PAD_MAX_DEG);
+  // rima, 2026-10-15: "chunk geo/utotal/… is not cached and the network is disabled" when the worker's answer came
+  // from an area loaded from another layout.
+  const failedWithout: string[] = [];
+  const layouts: ArcoLayout[] = ['time', 'geo'];
+  for (const layout of layouts) {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-smoc-'));
+    try {
+      const mock = makeMock();
+      const client = new SmocClient({ cacheDir, urls: URLS, fetchImpl: mock.fetch, sleepImpl: async () => undefined });
+      const run = await client.probe();
+      client.saveRun(run);
+      if (!run.levels[layout]) continue;
+      const worker = new SmocCurrentSource(run, SETTINGS, client);
+      const steps = worker.stepsBetween(departureMs, departureMs + 24 * H);
+      await worker.ensure(area, steps, { reason: 'resident', as: { res: 'full', layout } });
+      assert.deepEqual(worker.answering(area, steps), { res: 'full', layout });
+      const fetched = mock.total();
+      const leg = async (as: { res: 'full' | 'ds4'; layout: ArcoLayout } | null): Promise<string[]> => {
+        const events: ChildEvent[] = [];
+        const r = await runChildTask(
+          {
+            task: 'mesh-leg',
+            dir,
+            plan,
+            legIndex: 0,
+            legStart: [0.25, 0.1],
+            legDepartureMs: departureMs,
+            tag: '',
+            multi: false,
+            rules: { draughtM: 2, airDraftM: 18, motorSpeedMs: 2 },
+            vessel: makeVessel({ motorSpeedMs: 2, draughtM: 2, airDraftM: 18 }),
+            polar: null,
+            sim: { modePolicy: 'motor', sailThreshMs: 2.5, simStepM: 200 },
+            propagator: { subsectors: 20, headings: 30 },
+            stages: 12,
+            simplifyM: 0,
+            smoother: false,
+            smootherTolerance: 0.05,
+            drawbridges: 'ask',
+            bridgeWaitS: 0,
+            forecast: null,
+            regional: null,
+            currents: { smoc: { cacheDir, run, settings: SETTINGS, area, steps, as }, rtofs: null, harmonicDir: null },
+          },
+          60_000,
+          undefined,
+          e => events.push(e)
+        );
+        assert.ok(r.ok, r.ok ? '' : r.reason);
+        return events.filter(e => e.event === 'progress').map(e => (e.event === 'progress' ? e.message : ''));
+      };
+      const lines = await leg(worker.answering(area, steps));
+      assert.ok(
+        lines.some(m => /^chart mesh: CMEMS SMOC read from the cache/.test(m)),
+        `${layout}: ${lines.join('\n')}`
+      );
+      assert.equal(mock.total(), fetched, `${layout}: the child fetched nothing`);
+      if ((await leg(null)).some(m => /SMOC not read from the cache .*not cached and the network is disabled/.test(m)))
+        failedWithout.push(layout);
+    } finally {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+    }
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.equal(failedWithout.length, 1, `without the worker's layout the child misses one layout's chunks: ${failedWithout.join(', ')}`);
 });

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **No more routes over islands far from the start and end.** A long route
+  could pass over islands outside the area the plugin loaded coastline for
+  (seen in the Caribbean). Those are now treated as land.
+
 ## 0.2.0-beta.2
 
 - **Trips across the edge of the charts.** A trip that leaves the charts,

@@ -13,13 +13,31 @@ export interface VesselParams {
   draughtM: number | null;
   /** Air draft (height above the waterline), m; null = unknown (the chart mesh is then not used). */
   airDraftM: number | null;
+  /**
+   * Water kept under the keel, m. Charted depth must be at least draught + this
+   * (the plugin's earlier fixed 0.5 m is the default).
+   */
+  underKeelClearanceM: number;
+  /** Headroom kept above the mast, m. Charted clearance must be at least the air draft + this (default 2 m). */
+  overheadClearanceM: number;
 }
+
+/**
+ * The clearances' defaults and the ranges a vessel may set, m: the one place for them (the settings, the route
+ * request's validation and the mesh rules all read these).
+ */
+export const DEFAULT_UKC_M = 0.5;
+export const UKC_M_RANGE: readonly [number, number] = [0, 3];
+export const DEFAULT_OVERHEAD_M = 2;
+export const OVERHEAD_M_RANGE: readonly [number, number] = [0, 10];
 
 export const DEFAULT_VESSEL: VesselParams = {
   motorSpeedMs: 3.09,
   polarPerformance: 1,
   draughtM: null,
   airDraftM: null,
+  underKeelClearanceM: DEFAULT_UKC_M,
+  overheadClearanceM: DEFAULT_OVERHEAD_M,
 };
 
 /** Merge a partial override onto defaults, validating ranges. */
@@ -39,6 +57,8 @@ export function makeVessel(partial: Partial<VesselParams>): VesselParams {
   check('polarPerformance', 0.3, 1.2);
   if (v.draughtM !== null) check('draughtM', ...DRAUGHT_M_RANGE);
   if (v.airDraftM !== null) check('airDraftM', ...AIR_DRAFT_M_RANGE);
+  check('underKeelClearanceM', ...UKC_M_RANGE);
+  check('overheadClearanceM', ...OVERHEAD_M_RANGE);
   return v;
 }
 

@@ -2,8 +2,7 @@
  * Spherical geodesy helpers. All distances in metres, angles in degrees
  * unless a name says otherwise. Longitudes are kept in [-180, 180).
  *
- * Earth radius matches the routing engine this is ported from
- * (6 371 008.8 m, the IUGG mean radius).
+ * Earth radius: 6 371 008.8 m, the IUGG mean radius.
  */
 
 import { DEG, R_EARTH_M, RAD } from './units';
@@ -222,4 +221,14 @@ export function bboxFromLonLat(lons: number[], lats: number[], padLon = 0, padLa
     return { west: -180, south, east: 180, north };
   }
   return { west: wrapLon(wmin), south, east: wrapLon(wmax), north };
+}
+
+/** Two boxes in plain degrees share at least a point (no antimeridian handling: the mesh indexes and tile extents). */
+export function boxesMeet(a: BBox, b: BBox): boolean {
+  return a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north;
+}
+
+/** A position as the logs and messages write it: "41.4900, -71.3300" (latitude first, four decimals, about 10 m). */
+export function latLonText(lat: number, lon: number): string {
+  return `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
 }

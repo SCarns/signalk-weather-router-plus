@@ -20,7 +20,14 @@ import { type BoundarySeeds, PagedMesh } from './paged';
 import { blockedTriangles, type MeshRules, searchMesh } from './route';
 import { FLAG_OPENING_BRIDGE, MeshStore } from './store';
 
-const RULES: CoarseRules = { draughtM: 2, airDraftM: 18, bufferM: 0, openingBridges: 'open' };
+const RULES: CoarseRules = {
+  draughtM: 2,
+  airDraftM: 18,
+  underKeelClearanceM: 0.5,
+  overheadClearanceM: 1,
+  bufferM: 0,
+  openingBridges: 'open',
+};
 const SEARCH = { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 };
 const U = [
   { i: 0, j: 0 },
@@ -197,6 +204,20 @@ test('paged mesh: the buffer crosses a tile edge from the rough cut’s blocked 
       assert.deepEqual(Array.from(avoid.blocked), [1, 1]);
       const open = new PagedMesh(store, { ...SEARCH, bufferM: 10, openingBridges: 'open' }, 1, boundary).tile(0);
       assert.deepEqual(Array.from(open.blocked), [0, 0]);
+    }
+  );
+});
+
+test('boundary record: the tile-edge triangles are blocked under the rules’ under-keel clearance, not a fixed 0.5 m', () => {
+  // (1, 0) 2.3 m deep for a 2 m draught: blocked at 0.5 m of clearance, clear at 0.2 m.
+  withMesh(
+    [
+      { i: 0, j: 0 },
+      { i: 1, j: 0, depth: 2.3 },
+    ],
+    store => {
+      assert.deepEqual(Array.from(boundarySeeds(store, RULES).blocked), [3]);
+      assert.deepEqual(Array.from(boundarySeeds(store, { ...RULES, underKeelClearanceM: 0.2 }).blocked), []);
     }
   );
 });

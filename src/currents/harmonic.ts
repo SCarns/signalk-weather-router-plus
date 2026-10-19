@@ -1,6 +1,6 @@
 /**
- * Tidal currents predicted from harmonic constituents stored in the
- * routing project's `.npz` layout (FES2014 or NECOFS extracts):
+ * Tidal currents predicted from harmonic constituents stored in this
+ * `.npz` layout (FES2014 or NECOFS extracts):
  *
  *   lats, lons                      1-D, ascending
  *   constituents                    string array
@@ -9,12 +9,20 @@
  *   bbox                            [south, west, north, east]
  *   source_name, priority, resolution_m
  *
- * Prediction, per the reference implementation:
+ * Prediction:
  *   u(cm/s) = Σ_c f_c · A_c · cos( G_c·π/180 + u_c − g_c·π/180 )
  * with (u_c, f_c, G_c) from pyTMD's `arguments(..., corrections="FES")`
  * (ported in tidal_arguments.ts). The whole grid is predicted once per
  * 5-minute time bin and cached; points are then bilinear on the grid,
  * with any NaN corner giving (0, 0) = no data.
+ *
+ * Points at their own times (atManyAt, a route's leg
+ * timing) predict only the cells they read, kept per bin, unless the
+ * bin's whole grid is already cached. A route spans more bins than the
+ * grid cache holds (NECOFS: ~31 grids, 2.6 h), so whole grids were
+ * predicted again and again (Newport → Block Island: 5 min in the
+ * polish). A cell's value is the same sum in the same order as the
+ * grid's, so the results are identical.
  *
  * Memory: the constituent arrays are kept at the file's float32 precision
  * in ONE SharedArrayBuffer per file (a NECOFS GoM3 extract is 116 MB;
@@ -33,6 +41,8 @@ import { bboxContains, dateToMjd, type CurrentSourceLike, type SourceBBox } from
 const CM_S_TO_MS = 0.01;
 /** Default byte cap for the per-source prediction cache (u and v float32 grids per 5-min bin). */
 const CACHE_MAX_BYTES = 64e6;
+/** Cells kept by the per-cell prediction cache (atManyAt), over all bins: ~40 B each. */
+const CELL_CACHE_MAX = 1_500_000;
 
 /** A source's data in a structured-clone-friendly form; the constituent block stays shared. */
 export interface SerializedHarmonic {
@@ -81,6 +91,9 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
   private readonly cache = new Map<number, { u: Float32Array; v: Float32Array }>();
   /** Tidal arguments per 5-min bin, for single-point predictions (tiny). */
   private readonly argCache = new Map<number, ReturnType<typeof tidalArguments>>();
+  /** Per 5-min bin, the cells predicted one at a time (atManyAt): cell → [u, v] cm/s at float32, as predictGrid stores. */
+  private readonly cellCache = new Map<number, Map<number, [number, number]>>();
+  private cellCount = 0;
   readonly cacheBinMinutes = 5;
   readonly cacheMaxEntries: number;
 
@@ -139,8 +152,8 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
         );
     }
 
-    // Drop constituents the argument port does not support, as the
-    // reference drops those pyTMD rejects (e.g. la2).
+    // Drop constituents the tidal-argument code does not support (those
+    // pyTMD rejects, e.g. la2).
     const keep: number[] = [];
     const dropped: string[] = [];
     allCons.forEach((c, i) => (isSupportedConstituent(c) ? keep.push(i) : dropped.push(c)));
@@ -245,13 +258,18 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
    * whole grid (NECOFS-GOM3: 501×501 cells, ~230 ms per grid on a Pi 5).
    * Same result as interpolating the full grid.
    */
-  private pointAt(key: number, lon: number, lat: number): [number, number] {
+  private argsFor(key: number): ReturnType<typeof tidalArguments> {
     let args = this.argCache.get(key);
     if (!args) {
       args = tidalArguments(key, this.constituents);
       this.argCache.set(key, args);
       while (this.argCache.size > 4096) this.argCache.delete(this.argCache.keys().next().value as number);
     }
+    return args;
+  }
+
+  private pointAt(key: number, lon: number, lat: number): [number, number] {
+    const args = this.argsFor(key);
     const nLat = this.lats.length;
     const nLon = this.lons.length;
     const latIdx = (lat - this.lats[0]) / this.latStep;
@@ -287,10 +305,9 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
 
   /**
    * Bilinear sample of a grid (cm/s); NaN if any corner is NaN. Indices
-   * clamp to the edges. The reference computes the fractional index in
-   * float32 (its lat/lon axes are float32 and numpy promotes the Python
-   * scalar to float32); this port uses double, which differs from the
-   * reference by up to ~1e-5 m/s on strong currents.
+   * clamp to the edges. The fractional index is computed in double;
+   * computed in float32 it would differ by up to ~1e-5 m/s on strong
+   * currents.
    */
   private interp(grid: Float32Array, lon: number, lat: number): number {
     const nLat = this.lats.length;
@@ -365,16 +382,74 @@ export class HarmonicCurrentSource implements CurrentSourceLike {
       else byBin.set(key, [k]);
     }
     for (const [key, idx] of byBin) {
-      const g = this.cachedGrid(key); // the key is the bin's own MJD
+      // A grid already predicted for the bin serves it; otherwise only the cells these points read are predicted.
+      const g = this.cache.get(key); // the key is the bin's own MJD
+      if (g) {
+        this.cache.delete(key);
+        this.cache.set(key, g);
+      }
+      const cells = g ? null : this.cellsFor(key);
       for (const k of idx) {
-        const uu = this.interp(g.u, lons[k], lats[k]);
-        const vv = this.interp(g.v, lons[k], lats[k]);
+        let uu: number;
+        let vv: number;
+        if (g) {
+          uu = this.interp(g.u, lons[k], lats[k]);
+          vv = this.interp(g.v, lons[k], lats[k]);
+        } else [uu, vv] = this.interpCells(key, cells!, lons[k], lats[k]);
         if (Number.isNaN(uu) || Number.isNaN(vv)) continue;
         u[k] = uu * CM_S_TO_MS;
         v[k] = vv * CM_S_TO_MS;
       }
     }
+    this.trimCells();
     return { u, v };
+  }
+
+  /** The bin's per-cell cache (most recently used last). */
+  private cellsFor(key: number): Map<number, [number, number]> {
+    let m = this.cellCache.get(key);
+    if (m) this.cellCache.delete(key);
+    else m = new Map();
+    this.cellCache.set(key, m);
+    return m;
+  }
+
+  /** Drop the least recently used bins' cells while over CELL_CACHE_MAX (the bin in use stays). */
+  private trimCells(): void {
+    while (this.cellCount > CELL_CACHE_MAX && this.cellCache.size > 1) {
+      const oldest = this.cellCache.keys().next().value as number;
+      this.cellCount -= this.cellCache.get(oldest)!.size;
+      this.cellCache.delete(oldest);
+    }
+  }
+
+  /** interp's bilinear sample (u and v) from cells predicted on demand: the same corners, weights and order. */
+  private interpCells(key: number, cells: Map<number, [number, number]>, lon: number, lat: number): [number, number] {
+    const nLat = this.lats.length;
+    const nLon = this.lons.length;
+    const latIdx = (lat - this.lats[0]) / this.latStep;
+    const lonIdx = (lon - this.lons[0]) / this.lonStep;
+    let i0 = Math.floor(latIdx);
+    let j0 = Math.floor(lonIdx);
+    i0 = Math.max(0, Math.min(i0, nLat - 2));
+    j0 = Math.max(0, Math.min(j0, nLon - 2));
+    const di = Math.max(0, Math.min(1, latIdx - i0));
+    const dj = Math.max(0, Math.min(1, lonIdx - j0));
+    const cell = (c: number): [number, number] => {
+      let x = cells.get(c);
+      if (!x) {
+        x = this.predictCell(this.argsFor(key), c);
+        cells.set(c, x);
+        this.cellCount++;
+      }
+      return x;
+    };
+    const c00 = cell(i0 * nLon + j0);
+    const c01 = cell(i0 * nLon + j0 + 1);
+    const c10 = cell((i0 + 1) * nLon + j0);
+    const c11 = cell((i0 + 1) * nLon + j0 + 1);
+    const bil = (k: 0 | 1): number => c00[k] * (1 - di) * (1 - dj) + c01[k] * (1 - di) * dj + c10[k] * di * (1 - dj) + c11[k] * di * dj;
+    return [bil(0), bil(1)];
   }
 
   cacheBytes(): number {

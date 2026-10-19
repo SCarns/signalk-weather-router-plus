@@ -1,6 +1,7 @@
 # signalk-weather-router-plus
 
-Standalone open-water weather routing as a Signal K plugin. No outside
+Weather routing as a Signal K plugin: in open water by the coastline, and
+on the charts where a chart mesh is configured. No outside
 service: everything runs in Signal K's process and in short-lived
 processes the plugin starts itself. The plugin downloads ECMWF open-data
 forecasts by HTTP byte range, decodes the CCSDS-packed GRIB2 fields in
@@ -14,10 +15,12 @@ runtime npm dependencies.
 The "plus" is the overlays: wind, temperature, tide, current and more,
 drawn from the same data the routing uses.
 
-What it does not do: it routes in open water and avoids land, but knows
-nothing about depths, channels or bridges. (US inshore routing was too
-much for a plugin; it lives in the separate
-[router.zeddisplay.com](https://router.zeddisplay.com).)
+Depths, channels and bridges are known only where a chart mesh is
+configured: a leg inside one is routed on the charts (charted depth,
+vertical clearance, rocks, wrecks, marks, structures; see
+[Chart mesh](#chart-mesh-charted-depths-and-obstructions)). Elsewhere the
+plugin avoids land by the coastline and knows nothing about depths,
+channels or bridges.
 
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
@@ -537,7 +540,9 @@ and the panel runs in a sandboxed iframe served from
   speed under sail below which the router motors; the plugin's routing
   setting by default, in Freeboard's speed unit), and the **Limits**: a
   maximum wind speed and wave height that no leg may exceed (empty = no
-  limit; the routing settings' values by default). Progress is shown;
+  limit; the routing settings' values by default). With a min sail speed
+  of 0 (never motor) a stretch the boat cannot sail or tack out of fails
+  the route, saying "set Min sail speed above 0". Progress is shown;
   Cancel stops the job. The map
   is fitted to the result; the panel shows distance and time in
   Freeboard's unit preferences, the sailing/motoring split, the arrival
@@ -616,9 +621,8 @@ Freeboard's map menu needs a change to Freeboard; see
 
 ## Routing engine
 
-A port of the routePlanning `OceanPropagator` (subsector isochrone,
-Hagiwara 1989 / Chen & Mao 2024), guided by a corridor from a global
-water grid:
+The `OceanPropagator`, a subsector isochrone router (Hagiwara 1989 /
+Chen & Mao 2024), guided by a corridor from a global water grid:
 
 1. **Corridor.** A* on the [global water grid](#global-water-grid) finds
    a land-avoiding corridor from the start to the end of each leg (see
@@ -626,6 +630,8 @@ water grid:
    the Strait of Gibraltar, far outside the box around the endpoints).
    The route's land raster, the CMEMS SMOC area loaded for the route and
    the first-boot forecast crop cover the corridor's box plus 1°.
+   Outside that box nothing is loaded, so the router treats it as land:
+   a route never leaves the box.
 2. **Consistency with the route raster.** A flood fill on the route's
    (conservative) land raster, inside a band of grid cells along the
    corridor, must connect start and end. Where it stops, because the
@@ -678,14 +684,18 @@ on the charts rather than the coastline: a constrained triangulation of
 the chart area (`src/engine/mesh/`) whose triangles carry the charted
 depth, vertical clearance, rocks, wrecks and obstructions, marks,
 structures and fairways. A triangle is blocked when its charted depth is
-under the draught + 0.5 m (outside a fairway, dredged area or recommended
-track), its clearance under the air draft + 1 m, a rock or wreck has less
-than draught + 0.5 m over it (or no charted depth), it holds a mark (a
+under the draught + the under-keel clearance (outside a fairway, dredged
+area or recommended track), its clearance under the air draft + the
+overhead clearance, a rock or wreck has less than draught + the under-keel
+clearance over it (or no charted depth), it holds a mark (a
 channel mark inside a fairway or dredged area excepted) or a structure,
 or it lies in an area marked to avoid on a Signal K note. The draught and
 air draft are the vessel's Signal K base data (`design.draft.maximum`,
 `design.airHeight`; a request can override them with `vessel.draught_m`
-and `vessel.air_draft_m`); the mesh is not used until both are set.
+and `vessel.air_draft_m`); the mesh is not used until both are set. The
+under-keel clearance (0.5 m) and overhead clearance (2 m) are vessel
+settings; a request can override them with
+`vessel.under_keel_clearance_m` and `vessel.overhead_clearance_m`.
 
 - **Motor:** the whole leg is an A* over the mesh's triangle edges with a
   shore and shallow-water penalty, pulled tight by the funnel algorithm.
@@ -700,8 +710,9 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   the process that holds the mesh: the search, the tack layout, the polish
   and the smoother test every move by walking the mesh triangles it
   crosses and stopping at the first one the boat cannot use (charted depth
-  under the draught + 0.5 m off a fairway, clearance under the air draft +
-  1 m, a rock or wreck shallower than that or uncharted, a mark, a
+  under the draught + the under-keel clearance off a fairway, clearance
+  under the air draft + the overhead clearance, a rock or wreck shallower
+  than the draught + the under-keel clearance or uncharted, a mark, a
   structure, an area to avoid), the same test the mesh route is built
   with. That process reads the forecast window, the regional wind runs,
   the cached currents (RTOFS, CMEMS SMOC, harmonics) and the polar from
@@ -716,7 +727,7 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   waypoint on a depth contour reports the usable side.
 - **Opening bridges:** the mesh marks bascule, swing, lift, draw and
   transporter bridges (flag bit 7) and stores their open clearance, or
-  none when the chart gives none. The clearance rule (air draft + 1 m)
+  none when the chart gives none. The clearance rule (air draft + the overhead clearance)
   applies to that open clearance. The Drawbridges setting (Defaults tab;
   a request's `drawbridges` overrides it) is ask, open or avoid: ask plans the route as if
   they open and, when the finished route passes under one, lists the
@@ -806,9 +817,15 @@ and `vessel.air_draft_m`); the mesh is not used until both are set.
   walked through every mesh it meets, segment by segment and triangle by
   triangle (the walk the routers test their moves with), against the same
   rules: depth, clearance, rocks and wrecks, marks, structures, opening
-  bridges under Drawbridges = Avoid, areas to avoid (no buffer). A route
-  that crosses any triangle the boat cannot use fails, naming the places
-  and what blocks them; nothing unchecked is returned. Water with no
+  bridges under Drawbridges = Avoid, areas to avoid (no buffer). Each
+  segment that crosses a triangle the boat cannot use is routed again
+  with the same leg search (sail threshold 0, so the detour motors only
+  where sailing cannot move the boat) and the detour spliced in, the
+  waypoints after it moved by the time it added; the route is then
+  checked again (at most 2 passes and 5 detours). A detour that motors on
+  a sailing route is a `detour_motored` warning. A route that still
+  crosses such a triangle fails, naming the places and what blocks them;
+  nothing unchecked is returned. Water with no
   charted depth and depths inside fairways, dredged areas and recommended
   tracks pass, as the blocking rules pass them. Where two meshes overlap,
   a stretch either one blocks fails, whichever covers it first. Where the
@@ -827,7 +844,15 @@ from a catalogue and downloads the ticked ones (`mesh.catalogUrl`,
 once with the panel's "Check for updates" button
 (`POST /api/meshes/refresh`). The panel's per-mesh buttons (Download,
 Update, Download again, Remove, Cancel; `POST /api/meshes/{name}/{action}`)
-change the download list at once, without a restart. A leg is covered when one downloaded mesh (or the
+change the download list at once, without a restart. A mesh is
+downloaded as the catalogue's archive (`<name>_mesh.tar.zst`, about a
+third of the unpacked size), two meshes at a time: the archive is fetched
+into `<data dir>/mesh/.dl-<name>/` (a stopped download resumes where it
+stopped), unpacked into `<name>.new/`, checked (every tile the index lists
+present, their total the catalogue's `bytes`) and swapped in; the archive
+is deleted then. Before it starts, the free disk must hold the rest of the
+archive and the unpacked mesh with a tenth to spare (07CGD: about 5.7 GB
+from scratch). A leg is covered when one downloaded mesh (or the
 `meshDir` folder) holds its points, and that mesh is used; a leg whose ends
 lie in two meshes uses both (above).
 The job log says what the mesh did ("chart mesh: …") and the summary's
@@ -918,9 +943,8 @@ cost is 0. Each waypoint carries the sea on the leg into it
 ### Waypoints (legs)
 
 A waypoint is an end point and a start point by another name: it ends
-one leg and starts the next (port of the routePlanning
-`compute_multi_leg_route`). Each leg is routed as its own route, with its
-own corridor, land raster, isochrone search (K stages per leg) and
+one leg and starts the next. Each leg is routed as its own route, with
+its own corridor, land raster, isochrone search (K stages per leg) and
 retries, departing at the previous leg's arrival time so wind, current
 and waves move on with the boat. The legs are then stitched: the
 duplicate junction point is dropped, distances and sailing/motoring
@@ -938,9 +962,8 @@ never `role: "via"`). Progress messages are prefixed `leg 2/4: …`.
   like the final leg to the destination).
 - **`approximate`**: the route only has to pass through the waypoint's
   circle (`arrival_radius_m`, default 200 m, or the waypoint's own
-  `radius_m`). As in the reference (`hybrid.py`, collapsed ocean runs),
-  consecutive legs joined by approximate waypoints are routed as **one
-  search** from the run's start to its end, with each waypoint circle as
+  `radius_m`). Consecutive legs joined by approximate waypoints are
+  routed as **one search** from the run's start to its end, with each waypoint circle as
   a via the winning branch must pass through in order. The track carries
   on through the waypoint instead of ending there and restarting, and the
   point where it passes the circle carries `role: "via"`. Progress
@@ -948,10 +971,9 @@ never `role: "via"`). Progress messages are prefixed `leg 2/4: …`.
   circle(s) … in one search`.
 
 The final destination is always exact. Routes without waypoints are one
-leg, unchanged. Where this differs from the reference:
+leg, unchanged. Further:
 - after a precise waypoint the next leg starts where the previous one
-  ended (the reference restarts from the canonical waypoint and trims the
-  stitch), so the track is continuous;
+  ended, so the track is continuous;
 - a branch whose next waypoint circle is closer than one stage step also
   gets a candidate that steps straight into the circle. Without it a
   branch reaches a small circle only if a full stage step (tens of km)
@@ -969,9 +991,9 @@ the same time (Baja, 4 legs: 11.9 / 12.0 s against 11.5 / 11.8 s per leg)
 and held more forecast (3.0 MB against at most 2.0 MB per leg) and SMOC
 (2.5 MB against at most 0.9 MB).
 
-One deliberate difference from the reference: the stage budget is sized
-to the corridor length, not the straight-line distance, so detours around
-land fit within the configured number of stages.
+The stage budget is sized to the corridor length, not the straight-line
+distance, so detours around land fit within the configured number of
+stages.
 
 If a route arrives after the last forecast step, conditions are held at
 the last step. The GeoJSON carries `forecast_valid_to`,
@@ -1043,9 +1065,9 @@ tacking. The polar files themselves are not changed.
 When a parent's primary heading sweep yields nothing (its headings in
 the polar's no-go angle, on land or over a limit), that parent alone gets
 the wider sweeps (±120°, then half step, then the full circle at a quarter
-step) while its siblings keep their primary candidates; the reference
-implementation widened only when the whole stage's sweep was empty, which
-left a front beating to windward tacking in place.
+step) while its siblings keep their primary candidates. Widening only
+when the whole stage's sweep is empty would leave a front beating to
+windward tacking in place.
 
 The candidate nearest each goal always survives a stage's subsector
 pruning (the bin cost prices the remaining distance at motor speed, which
@@ -1141,7 +1163,9 @@ resolution levels 1–4 (`GSHHS_f_L1.shp` through `GSHHS_f_L4.shp`):
   React 19 Admin UI that came with 2.24.0); tested on 2.33.0. Read-only users can use
   the web app on servers that support per-route access (see
   [API](#api)); on older servers every route is admin-only.
-- Node.js 20.10 or later (the server's own Node).
+- Node.js 22.15 or later (the server's own Node; Signal K 2.33 itself
+  needs 22): the chart mesh archives are zstd, which Node's own zlib
+  unpacks from 22.15 on.
 - Internet access for the forecast, current, tide and coastline
   downloads.
 - Disk in the Signal K data directory: the decoded forecast (about
@@ -1228,7 +1252,7 @@ React and needs no build step for it.
 |---|---|
 | `landShapefiles` | comma-separated absolute paths; blank = download GSHHG 2.3.7 full-resolution levels 1–4 once (see [Install](#install)) |
 | `mesh.catalogUrl` | the `index.json` listing the published meshes (the s57Work build's `charts/mesh/index.json`); blank = the US-ENC catalogue on R2 |
-| `mesh.downloads` | names from the catalogue (`01CGD`, `07CGD`, …) ticked in the plugin panel; each is mirrored into `<data dir>/mesh/<name>/` and kept current (the catalogue is read at start, daily, and on the panel's "Read the catalogue now" button; a newer `build_date` is downloaded again and swapped in); an unticked mesh is deleted. `/api/meshes` and `/api/status` `meshes` list every mesh with its state |
+| `mesh.downloads` | names from the catalogue (`01CGD`, `07CGD`, …) ticked in the plugin panel; each is downloaded as its archive and unpacked into `<data dir>/mesh/<name>/` and kept current (the catalogue is read at start, daily, and on the panel's "Read the catalogue now" button; a newer `build_date` is downloaded again and swapped in); an unticked mesh is deleted. `/api/meshes` and `/api/status` `meshes` list every mesh with its state |
 | `mesh.disabled` | downloaded meshes switched off for routing (kept on disk); the panel's *Use* tick |
 | `mesh.preferLocal`, `mesh.preferDownload` | names that exist both as a download and in `meshDir`, where the router uses your folder's copy, or the download, whatever the build dates; the panel's *downloaded / my folder* choice. In neither list: the newer build |
 | `meshDir` | a mesh folder you manage yourself — one mesh (`index.json` and its tiles, or `meshes.json` with cluster sub-folders) or a folder of such mesh folders — used beside the downloaded ones and listed in the panel as *local* with its own *Use* tick; blank = none. See [Chart mesh](#chart-mesh-charted-depths-and-obstructions) |
@@ -1291,8 +1315,8 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 
 | Group | Settings (default) | A change… |
 |---|---|---|
-| `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2) | applies to the next route |
-| `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
+| `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2), under-keel clearance (0.5 m, 0–3 m), overhead clearance (2 m, 0–10 m) | applies to the next route |
+| `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (15 min = 900 s; an existing settings.json keeps its value), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
 | `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
 | `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
 | `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), tacking penalty (30 s, charged per tack or gybe by both routers), buffer from land (0 m: the route keeps at least this far from the coastline; a start or end closer is moved out to it, a passage narrower than twice it closes), buffer from unusable water (0 m: on a mesh leg the route keeps at least this far from every triangle the boat cannot use), drawbridges (ask: plan as open and report the ones crossed; open; avoid), wait at a drawbridge (0 s), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (off), comfort weight (1, 0 = off), shortcut may be slower by (0.05 = 5%), finished routes kept (50), max wind (none), max wave height (none) | applies to the next route |
@@ -1613,7 +1637,7 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `precision` | `"precise"` or `"approximate"` | | `"precise"` | `precise`: each leg ends exactly on its waypoint; `approximate`: the route only has to pass through the waypoint's circle; consecutive approximate waypoints are normally routed as one search through their circles in order, and leg by leg when no branch passes through all of them |
 | `arrival_radius_m` | number | m | 200 | 0..5000; must be > 0 with `"approximate"`. Ignored in precise mode and for the destination |
 | `departure` | string | ISO 8601 | now | an empty string also means now |
-| `mode` | `"sail_max"`, `"fastest"` or `"motor"` | | `"sail_max"` | mode policy. `motor`: always motor, and no forecast is used; `fastest`: sail when the polar speed beats the motor speed; `sail_max`: sail when the polar speed is at or above `sail_thresh_ms`, otherwise motor (`src/engine/legsim.ts`). The parent routePlanning server also sails above 0.25 m/s VMG or 1.0 m/s whatever the threshold; this plugin does not |
+| `mode` | `"sail_max"`, `"fastest"` or `"motor"` | | `"sail_max"` | mode policy. `motor`: always motor, and no forecast is used; `fastest`: sail when the polar speed beats the motor speed; `sail_max`: sail when the polar speed is at or above `sail_thresh_ms`, otherwise motor (`src/engine/legsim.ts`) |
 | `stages` | number | count | setting `routing.stages` (20) | 4..200; isochrone stages per leg |
 | `sail_thresh_ms` | number | m/s | setting `routing.sailThreshold` | ≥ 0 |
 | `max_wind_ms` | number | m/s | setting `routing.maxWind` (none) | 0..100; a leg is not allowed where the forecast wind speed is above this |
@@ -1621,6 +1645,8 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `simplify_m` | number | m | setting `routing.simplify` | 0..5000; route simplification tolerance, 0 = off |
 | `smoother` | boolean | | setting `routing.smoother` | run the shortcut smoother |
 | `smoother_tolerance` | number | ratio | setting `routing.smootherTolerance` | 0..0.5; how much slower a shortcut may be (0.05 = 5%). The Route tab's *Smoothing* (Default / On / Off) sends `smoother`; it runs for both routers |
+| `smoother_sim_step_m` | number | m | setting `routing.simStep` (200) | 50..5000; the step the smoother times its shortcuts with; the search keeps `routing.simStep` |
+| `tack_penalty` | number | s | setting `routing.tackPenalty` (30) | 0..3600; seconds lost per tack or gybe, charged by both routers, on chart-mesh stretches and in repair detours too |
 | `comfort_weight` | number | | setting `routing.comfortWeight` (1) | 0..3; how much the search avoids rough water as the boat meets it (the encounter index). 0 = off, the fastest route. See [Comfort](#comfort-rough-water) |
 | `name` | string | | `<prefix> <lat>,<lon> → <lat>,<lon>` | name of the Signal K route record (trimmed). The default uses the `publish.routeNamePrefix` setting (`WRP`) and the start and end to two decimals |
 | `publish` | boolean | | setting `publish.toResources` (on) | save the finished route to the Resources API |
@@ -1635,6 +1661,8 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | `vessel.polar` | string | | the configured `polarFile` | a token from `GET /api/polars`, at most 200 characters; see below |
 | `vessel.draught_m` | number | m | Signal K `design.draft.maximum` | 0.1..30; with `air_draft_m`, lets the [chart mesh](#chart-mesh-charted-depths-and-obstructions) route the leg |
 | `vessel.air_draft_m` | number | m | Signal K `design.airHeight` | 0.5..100 |
+| `vessel.under_keel_clearance_m` | number | m | setting (0.5) | 0..3; charted depth on chart-mesh legs must be at least the draught plus this |
+| `vessel.overhead_clearance_m` | number | m | setting (2) | 0..10; charted clearance on chart-mesh legs must be at least the air draft plus this |
 | `router` | `"standard"` or `"refined"` | | setting `routing.router` (`standard`) | the [open-water router](#open-water-router-standard-or-refined) |
 | `search` | `"normal"`, `"moderate"` or `"maximum"` | | `normal` | search method (the Route tab's *Method*): `normal` = the routing settings as they are; `moderate` = stages 40, 100 cross-track bins, headings ±60° at 1° (a better route; about 2 min on a 600 nm passage on a Raspberry Pi 5); `maximum` = stages 40, 150 bins, ±60° at 0.5° (the best; about 6 min). An explicit `stages` still wins |
 
@@ -1661,18 +1689,19 @@ Validation happens in two places:
   `arrival_radius_m`, `radius_m`, `mode`, `departure`, `stages`,
   `sail_thresh_ms`, `simplify_m`, `smoother`, `smoother_tolerance`,
   `name`, `vessel`, `vessel.polar_performance`
-  and `vessel.polar` outside the limits above. The message names the
+  and `vessel.polar` outside the limits above, or a `vessel.polar` token
+  that is not in the library. The message names the
   field, e.g. `"stages must be 4..200"`.
 - **When the job runs** (the job ends `failed` with the message):
   coordinates outside latitude −90..90 or longitude −180..360;
   the other `vessel.*` ranges above (the message uses the internal
-  name, e.g. `vessel.motorSpeedMs must be a number in [0.01, 50] (got 60)`);
-  a `vessel.polar` token that is not in the library.
+  name, e.g. `vessel.motorSpeedMs must be a number in [0.01, 50] (got 60)`).
 
 | Status | Body |
 |---|---|
 | 202 | `{id, status: "queued", links}`; header `Location: <links.self>` |
 | 400 | `{error}`: invalid request (above) |
+| 413 | `{error}`: the request body is over 64 KB (it is kept with the job and returned in every job list) |
 | 429 | `{error: "job queue is full"}`: 16 jobs are already waiting |
 
 `links` has `self`, `events`, `result`, `skeleton`, `cancel` and
@@ -1798,7 +1827,7 @@ LineString `properties`:
 | `arrival` | string | ISO 8601 | |
 | `waypoint_count` | number | count | route points |
 | `validated` | boolean | | |
-| `repairs_applied` | number | count | always 0 |
+| `repairs_applied` | number | count | detours the final depth check spliced in |
 | `smoother_drops` | number | count | points the shortcut smoother removed |
 | `forecast_cycle` | string | ISO 8601 | when a forecast was used |
 | `auto_vias` | `[{name, lat, lon, width_m, radius_m}]` | degrees, m | automatic vias; present when any |
@@ -1813,7 +1842,7 @@ LineString `properties`:
 | `stop_count` | number | count | start + waypoints + destination; present with `snaps` |
 | `start_original`, `start_anchor`, `start_snap_distance_m` | `[lon, lat]`, `[lon, lat]`, number | degrees, m | present when the start was moved: the drawn point, where the route starts, and the distance between them |
 | `end_original`, `end_anchor`, `end_snap_distance_m` | as above | | present when the destination was moved |
-| `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired}`, `violation` `"leg_crosses_land"` or `"leg_too_shallow"`, `from`/`to` `[lon, lat]` |
+| `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired, detail?}`, `violation` `"leg_crosses_land"`, `"wind_over_limit"`, `"waves_over_limit"` or `"detour_motored"` (a depth-check detour that motored on a sailing route; `detail` its motoring time, seconds), `from`/`to` `[lon, lat]` |
 | `land_crossings` | number | count | present when a warning is `leg_crosses_land` |
 | `has_land_crossing` | boolean | | `true` when `land_crossings` is present |
 | `max_swh_m` | number | m | highest significant wave height at a route point; present when wave data was sampled |
@@ -1843,7 +1872,7 @@ Point `properties` (one feature per route point, in order):
 | `seas_side` | string or null | | `"port"` or `"starboard"`: the side the waves come from; null dead ahead or astern |
 | `seas_sector` | string | | `head` (0–30°), `bow` (30–60°), `beam` (60–120°), `quarter` (120–150°), `following` (150–180°) |
 | `encounter_index` | number | index | `sea_index` weighted for the angle: × 1.3 in head seas, × 1.05 abeam, × 0.8 in following seas, a cosine between (`src/engine/seas.ts`); the sea as the boat meets it |
-| `leg` | string | | engine that produced the waypoint; always `"ocean"` in this plugin (kept for compatibility with the routePlanning server, which also uses other values) |
+| `leg` | string | | engine that produced the waypoint; always `"ocean"` in this plugin |
 | `role` | string | | `"via"` on the junction point of each request waypoint |
 | `tack` | boolean | | `true` on a tack or gybe point the experimental router placed |
 | `leg_distance_m` | number | m | distance to the next point; absent on the last point |
@@ -1854,8 +1883,7 @@ Point `properties` (one feature per route point, in order):
 | `snap_distance_m`, `original` | number, `[lon, lat]` | m, degrees | present on a start, via or end point that was on land and was moved: how far, and the drawn point |
 
 The optional point properties are present only when the value was
-sampled and is finite. Property names match the routePlanning server's
-GeoJSON, so consumers of either can read both.
+sampled and is finite.
 
 #### GET /api/routes/{id}/skeleton
 
@@ -2408,8 +2436,9 @@ started.
 
 Generate a polar with the physics polar calculator
 (`src/vessel/vpp_physics.ts`: ORC 2026 sail forces, Delft hull
-resistance, a heeling limit; see `docs/plans/vpp-physics.md`), write it
-to `<polarsDir>/user/<slug>.csv` in the routing server's CSV layout, and
+resistance, a heeling limit (where no reef or flattening keeps the heel
+within it, the speed is 0); see `docs/plans/vpp-physics.md`), write it
+to `<polarsDir>/user/<slug>.csv` in the library's CSV layout, and
 return it. Access: readwrite.
 
 Body `{name, specs, overwrite?}`:

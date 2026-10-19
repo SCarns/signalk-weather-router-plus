@@ -20,7 +20,7 @@ import type { RtofsClient, RtofsCurrentSource } from '../../currents/rtofs';
 import type { SmocClient, SmocCurrentSource } from '../../currents/smoc';
 import type { SeaLevelClient, TideSource } from '../../tides/sealevel';
 import type { ResolvedConfig } from '../config';
-import type { DataStatus, ForecastMemory, ForecastRunInfo, VesselPosition, WorkerRole, WorkerToMain } from '../protocol';
+import type { Connectivity, DataStatus, ForecastMemory, ForecastRunInfo, VesselPosition, WorkerRole, WorkerToMain } from '../protocol';
 
 export interface WorkerState {
   readonly role: WorkerRole;
@@ -79,6 +79,32 @@ export interface WorkerState {
   routeRegional: ForecastStore[];
   /** Queries the main thread cancelled before they started (its client went away). */
   readonly cancelledQueries: Set<number>;
+  /** The last check of each source (data worker). */
+  readonly checks: DataStatus['checks'];
+  /** What this thread's requests found about the connection (data worker). */
+  connectivity: Connectivity;
+  /** When a request last found no connection (ms; 0 = never): a refresh round stops asking servers after it. */
+  lastOfflineMs: number;
+  /** Tidal-harmonic files that failed to load (data worker). */
+  harmonicErrors: string[];
+  /** Kills the forecast decode child process (plugin stopped). */
+  decodeAbort: AbortController | null;
+}
+
+/** A request's finding about the connection: a server answered ('ok'), or there was no connection ('offline', why). */
+export function noteNetwork(st: WorkerState, state: 'ok' | 'offline', reason: string | null): void {
+  const now = new Date();
+  const c = st.connectivity;
+  const online = state === 'ok';
+  if (c.online !== online) c.since = now.toISOString();
+  c.online = online;
+  if (online) {
+    c.lastOkAt = now.toISOString();
+    c.reason = null;
+  } else {
+    c.reason = reason;
+    st.lastOfflineMs = now.getTime();
+  }
 }
 
 export function requireInit(st: WorkerState): { config: ResolvedConfig; client: EcmwfClient } {

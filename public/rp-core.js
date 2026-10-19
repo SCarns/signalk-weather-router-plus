@@ -106,7 +106,11 @@ export function _fmt(siValue, key) {
   if (!c) return UNIT_MISSING;
   if (c.text) return c.text(siValue);
   const t = c.fn(siValue).toFixed(c.precision);
-  return (t === '-0' ? '0' : t) + (c.unit ? ' ' + c.unit : '');
+  return (t === '-0' ? '0' : t) + unitSuffix(c.unit);
+}
+// The unit after the number: a space before "kn", "m", "hPa"; none before "°" and "%".
+export function unitSuffix(unit) {
+  return unit ? (unit === '°' || unit === '%' ? unit : ' ' + unit) : '';
 }
 export function fmtSpeed(ms)        { return _fmt(ms, 'speed'); }
 export function fmtDist(m)          { return _fmt(m, 'distance'); }
@@ -132,7 +136,7 @@ export function unitQuantityText(cat, si) {
   const c = UI_UNITS[TOKEN_QUANTITY[cat]];
   if (!c || !Number.isFinite(si)) return UNIT_MISSING;
   if (c.text) return c.text(si);
-  return Number(c.fn(si).toPrecision(3)) + (c.unit ? ' ' + c.unit : '');
+  return Number(c.fn(si).toPrecision(3)) + unitSuffix(c.unit);
 }
 export function unitTextHtml(text) {
   return escapeHtml(text).replace(UNIT_TOKEN, (_, q, v) =>
@@ -147,7 +151,16 @@ export function fillUnitTokens(root = document) {
 }
 
 /** An angle the plugin gives in degrees, in the user's angle unit. */
-export function fmtAngleDeg(deg)    { return deg == null ? null : _fmt(deg * Math.PI / 180, 'angle'); }
+// Headings and directions: whole degrees (a tenth of a degree says nothing a helm can use); another angle unit as the preferences format it.
+export function fmtAngleDeg(deg) {
+  if (deg == null) return null;
+  const c = UI_UNITS.angle;
+  if (c && !c.text && c.unit === '°') {
+    const v = Math.round(c.fn(deg * Math.PI / 180));
+    return (Object.is(v, -0) ? 0 : v) + '°';
+  }
+  return _fmt(deg * Math.PI / 180, 'angle');
+}
 // Display-unit descriptor for chart axes and legends: {fn, u, p};
 // fn converts SI → display (may be non-linear, e.g. Beaufort). When the
 // unit is unresolved, `missing` is set and fn gives NaN.
@@ -1052,52 +1065,150 @@ function _shortLocal(iso) {
   return '<span title="' + escapeHtml(d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC') + '">' + escapeHtml(local) + '</span>';
 }
 
-// Regional wind models whose grid meets the route or the map view, as text for the wind line.
+// ─────────── Freshness (status `freshness`, plugin/freshness.ts) ───────────
+// Each source's run against its own cadence: green until 30 min before the
+// next run is due, orange until 60 min after, then red. A pill per source on
+// its row, with the run's age; the times are in the tooltip.
+let _fresh = new Map();   // source name → freshness entry of the last status
+function _clockText(iso) {
+  return iso ? fmtClock(new Date(iso), { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }) : '';
+}
+// The pill's words: the run's age, "loaded" for a fixed table, "none" when nothing is loaded.
+function _freshText(f) {
+  const age = f.published_at ? Math.max(0, (Date.now() - Date.parse(f.published_at)) / 1000) : null;
+  return f.state === 'red' && !f.run ? 'none' : age === null ? 'loaded' : _fmt(age, 'time') + ' old';
+}
+// The header's sources list collapsed to one line of dots (remembered in this browser).
+let _statusCollapsed = (() => { try { return localStorage.getItem('statusCollapsed') !== 'false'; } catch (_) { return true; } })();
+(function () {
+  const el = document.getElementById('dataStatus');
+  if (!el) return;
+  el.addEventListener('click', e => {
+    if (!e.target.closest('.ds-toggle')) return;
+    _statusCollapsed = !_statusCollapsed;
+    try { localStorage.setItem('statusCollapsed', String(_statusCollapsed)); } catch (_) { /* private window */ }
+    redrawStatusLine();
+  });
+})();
+function _freshPill(name) {
+  const f = _fresh.get(name);
+  if (!f) return '';
+  const text = _freshText(f);
+  const tip = [
+    f.source + (f.run ? ', run ' + f.run : ''),
+    f.published_at ? 'published ' + _clockText(f.published_at) : '',
+    f.next_due_at ? 'next run due ' + _clockText(f.next_due_at) : '',
+    f.reason || '',
+  ].filter(Boolean).join(' · ');
+  return ' <span class="fresh fresh-' + f.state + '" title="' + escapeHtml(tip) + '">● ' + escapeHtml(text) + '</span>';
+}
+// One line naming whatever is late, red.
+function _lateLine() {
+  const late = [..._fresh.values()].filter(f => f.state === 'red');
+  if (!late.length) return '';
+  return '<br><span class="err">Late: ' + late.map(f => escapeHtml(f.source) + ' ' + escapeHtml(
+    f.reason || ('next run was due ' + _clockText(f.next_due_at) + ', still on ' + f.run)
+  )).join('; ') + '</span>';
+}
+// The connection, separate from freshness: blue when the last request reached a server, grey when there was none.
+function _netLine(c) {
+  if (!c || c.online === null) return '';
+  return c.online
+    ? '<span class="net-on">● online</span>'
+    : '<span class="net-off" title="' + escapeHtml(c.reason || '') + '">● No internet connection since ' + escapeHtml(_clockText(c.since)) + '</span>';
+}
+// What a check could not do while online (a server that failed, a download that failed); offline says it on its own line.
+const _CHECK_NAMES = { ecmwf: 'ECMWF', smoc: 'SMOC', rtofs: 'RTOFS', tides: 'sea level' };
+function _checkLines(s) {
+  const online = s.connectivity && s.connectivity.online !== false;
+  return Object.entries(s.checks || {})
+    .filter(([, c]) => c.outcome === 'failed' || (c.outcome === 'could-not-check' && online))
+    .map(([k, c]) => '<br><span class="warn">' + (_CHECK_NAMES[k] || escapeHtml(k)) + (c.outcome === 'failed' ? ' update failed' : ' check failed')
+      + ' at ' + escapeHtml(_clockText(c.at)) + (c.reason ? ': ' + unitTextHtml(c.reason) : '') + '</span>')
+    .join('');
+}
+// New forecast data being processed while the run in use keeps serving.
+function _processingLine(s) {
+  const l = s.forecast_loading;
+  if (!s.forecast || !l || l.phase !== 'decoding') return '';
+  const cyc = l.cycle ? String(l.cycle).slice(11, 13) + 'Z' : '';
+  return '<br><span class="processing">Processing new forecast data' + (cyc ? ': ' + cyc : '') + (l.total ? ', step ' + l.done + ' of ' + l.total : '') + '</span>';
+}
+
+// Every usable regional wind model, one item each for the wind row; one whose grid does not meet the route or the
+// map view says so (it is listed all the same, so the list and the collapsed dots show the same sources).
+const _NOT_HERE = ' <span class="not-here">(not in this view)</span>';
 function _regionalWind(r, area) {
-  if (!r) return '';
-  const ok = (r.sources || []).filter(x => x.run && !x.problem && (!x.domain || _meets(x.domain, area)));
+  if (!r) return [];
+  const ok = (r.sources || []).filter(x => x.run && !x.problem);
   if (!ok.length) {
     // The downloader is there but has nothing usable: say why.
     return r.root && !(r.sources || []).some(x => x.run && !x.problem)
-      ? ' · regional: <span class="warn">' + escapeHtml(r.note || ((r.sources || [])[0] || {}).problem || 'no complete run') + '</span>'
-      : '';
+      ? ['regional: <span class="warn">' + escapeHtml(r.note || ((r.sources || [])[0] || {}).problem || 'no complete run') + '</span>']
+      : [];
   }
   const rw = document.getElementById('regionalWind');
   const off = rw && !rw.checked ? ' <span class="warn">(off for routes: Regional wind unticked)</span>' : '';
-  return ' · ' + ok.map(x => {
+  return ok.map(x => {
     const d = x.decoded;
     const state = d && d.skipped ? ' (not used: ' + escapeHtml(d.skipped) + ')'
       : d && d.error ? ' <span class="warn">' + unitTextHtml(d.error) + '</span>'
       : d && d.cycle && x.run.slice(0, 13).replace(/[-T]/g, '') === d.cycle ? ' (decoded)'
       : ' (decoding)';
-    return escapeHtml(x.name) + ' ' + _shortUtc(x.run) + (x.validTo ? ', to ' + _shortLocal(x.validTo) : '') + state;
-  }).join(', ') + off;
+    const here = !x.domain || _meets(x.domain, area);
+    return escapeHtml(x.name) + ' ' + _shortUtc(x.run) + (x.validTo ? ', to ' + _shortLocal(x.validTo) : '') + state + _freshPill(x.name) + off + (here ? '' : _NOT_HERE);
+  });
 }
 
 function _statusLine(s) {
   const f = s.forecast;
+  _fresh = new Map((s.freshness || []).map(x => [x.source, x]));
   if (s.starting) return '<span class="warn">' + unitTextHtml(s.starting) + '</span>';
   if (!f) return s.forecast_error && !s.forecast_loading
     ? '<span class="warn">no forecast loaded</span>: ' + unitTextHtml(s.forecast_error)
     : '<span class="warn">loading the forecast</span> (see below)';
   const area = _area();
-  const run = escapeHtml(f.model || 'forecast') + ' <span class="nowrap">' + _shortUtc(f.cycle) + ' → ' + _shortLocal(f.valid_to) + '</span>';
+  const run = escapeHtml(f.model || 'forecast') + ' <span class="nowrap">' + _shortUtc(f.cycle) + ' → ' + _shortLocal(f.valid_to) + '</span>' + _freshPill('ECMWF');
   // Only the current sources that apply to the route or the map view. SMOC
   // is worldwide (any area loads on demand), its box is only the standing
   // area around the boat; the others cover their own box.
+  // Every current source is listed (as the collapsed dots show them); one that does not cover the route or the view says so.
   const applies = c => /SMOC/i.test(c.name) || _meets(c.bbox, area);
-  const curList = Array.isArray(s.currents) ? s.currents.filter(applies) : [];
+  const curList = Array.isArray(s.currents) ? s.currents : [];
   const t = s.tides;
   const tides = s.tides_enabled === false ? 'off (Settings)'
     : s.tides_error ? '<span class="warn">' + unitTextHtml(s.tides_error) + '</span>'
-    : t ? escapeHtml(t.name.replace(/ hourly sea level \((\S+) tide\)/, ' ($1)')) + (t.run ? ', run ' + _shortUtc(t.run) : '')
+    : t ? escapeHtml(t.name.replace(/ hourly sea level \((\S+) tide\)/, ' ($1)')) + (t.run ? ', run ' + _shortUtc(t.run) : '') + _freshPill(t.name)
     : 'loading';
-  const row = (k, v) => '<span class="statusKey">' + k + '</span> ' + v;
-  return row('wind', run + _regionalWind(s.regional, area))
-    + '<br>' + row('waves', f.has_waves ? escapeHtml(f.model || 'forecast') + ', same run' : '<span class="warn">none in this run</span>')
-    + '<br>' + row('currents', curList.length ? curList.map(c => escapeHtml(c.name)).join(', ') : 'none here')
-    + '<br>' + row('tides', tides)
-    + (s.jobs ? '<br>' + row('jobs', (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued') : '')
+  // Sources that are enabled but have nothing loaded have no row entry of their own: their red pill goes on the currents row.
+  const curNames = new Set(curList.map(c => c.name));
+  const missing = [..._fresh.values()].filter(x => x.rows.includes('currents') && !x.run && x.state === 'red' && !curNames.has(x.source));
+  // Each row's name on its own line, then one bulleted line per source.
+  const row = (k, items) =>
+    '<div class="statusKey">' + k + '</div><ul class="src-list">' + items.map(v => '<li>' + v + '</li>').join('') + '</ul>';
+  const currents = curList
+    .map(c => escapeHtml(c.name) + _freshPill(c.name) + (applies(c) ? '' : _NOT_HERE))
+    .concat(missing.map(x => escapeHtml(x.source) + _freshPill(x.source)));
+  const toggle = '<button type="button" class="ds-toggle" aria-expanded="' + !_statusCollapsed + '" title="'
+    + (_statusCollapsed ? 'Show the data sources in full' : 'Collapse the data sources to one line') + '">'
+    + (_statusCollapsed ? 'Show ▾' : 'Hide ▴') + '</button>';
+  // Collapsed: each row's name and one dot per source in its colour (the details in the dot's tooltip), rows separated by pipes.
+  const dots = k => [..._fresh.values()].filter(x => x.rows.includes(k))
+    .map(x => '<span class="fresh fresh-' + x.state + ' fresh-dot" title="' + escapeHtml(x.source + ': ' + _freshText(x)) + '"></span>').join('');
+  const body = _statusCollapsed
+    ? '<div class="ds-head"><span class="ds-summary">'
+      + ['wind', 'waves', 'currents', 'tides'].map(k => '<span class="statusKey">' + k + '</span>' + dots(k)).join('<span class="ds-pipe">|</span>')
+      + '</span>' + toggle + '</div>'
+    : '<div class="ds-head"><span class="ds-title">Data sources</span>' + toggle + '</div>'
+      + row('wind', [run, ..._regionalWind(s.regional, area)])
+      + row('waves', [f.has_waves ? escapeHtml(f.model || 'forecast') + ', same run' + _freshPill('ECMWF') : '<span class="warn">none in this run</span>'])
+      + row('currents', currents.length ? currents : ['none here'])
+      + row('tides', [tides])
+      + (s.jobs ? '<span class="statusKey">jobs</span> ' + (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued' : '');
+  return body
+    + _processingLine(s)
+    + _lateLine()
+    + _checkLines(s)
     // A refused reload (e.g. the memory guard) while the previous forecast keeps serving.
     + (s.forecast_error ? '<br><span class="warn">' + unitTextHtml(s.forecast_error) + '</span>' : '');
 }
@@ -1182,6 +1293,8 @@ export function loadPluginStatus() {
       _lastStatus = s;
       window.dispatchEvent(new CustomEvent('rp:status', { detail: s }));
       if (el) el.innerHTML = _statusLine(s);
+      const net = document.getElementById('netStatus');
+      if (net) net.innerHTML = _netLine(s.connectivity);
       _noteWaiting(s);
       // First start (coastline, first forecast): check again soon, not in 30 s.
       clearTimeout(_statusSoon);
@@ -1189,12 +1302,12 @@ export function loadPluginStatus() {
       if (fi) {
         const f = s.forecast;
         fi.innerHTML = f
-          ? 'Cycle <b>' + f.cycle + '</b><br>valid ' + f.valid_from + ' → ' + f.valid_to + '<br>coverage ' + (f.coverage || 'global')
+          ? 'Cycle <b>' + escapeHtml(f.cycle) + '</b><br>valid ' + escapeHtml(f.valid_from) + ' → ' + escapeHtml(f.valid_to) + '<br>coverage ' + escapeHtml(f.coverage || 'global')
             + (typeof f.decoded_bytes === 'number' ? ', ' + _fmt(f.decoded_bytes, 'data_size') + ' decoded on disk' : '')
             + (f.memory ? ', ' + _fmt(f.memory.data_worker_held_bytes + f.memory.route_worker_held_bytes, 'data_size') + ' in memory now' : '')
-            + '<br>params: ' + (f.params || []).join(', ') + (s.extra_fields ? '' : '<br><span style="color:var(--warn)">extra fields (temperature, precipitation, SST, humidity) are off in Settings</span>')
-            + (s.rtofs_run ? '<br>RTOFS run ' + s.rtofs_run : '')
-            + (s.vessel ? '<br>vessel ' + (s.vessel.name || '—') + ', motor ' + (fmtSpeed(s.vessel.motorSpeedMs) || '—') : '')
+            + '<br>params: ' + escapeHtml((f.params || []).join(', ')) + (s.extra_fields ? '' : '<br><span style="color:var(--warn)">extra fields (temperature, precipitation, SST, humidity) are off in Settings</span>')
+            + (s.rtofs_run ? '<br>RTOFS run ' + escapeHtml(s.rtofs_run) : '')
+            + (s.vessel ? '<br>vessel ' + escapeHtml(s.vessel.name || '—') + ', motor ' + (fmtSpeed(s.vessel.motorSpeedMs) || '—') : '')
           : '<span style="color:var(--warn)">No forecast loaded' + (s.forecast_error ? ': ' + unitTextHtml(s.forecast_error) : '') + '</span>';
       }
       window.dispatchEvent(new Event('rp:status'));

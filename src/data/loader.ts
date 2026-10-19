@@ -29,6 +29,7 @@ import {
   type NanFillScratch,
 } from './forecast';
 import { cycleName, type DecodedIndex, type DecodedRunWriter } from './decoded';
+import { OfflineError } from './http';
 
 export interface LoadOptions {
   /** Forecast horizon, seconds (the ECMWF step ladder is in hours; converted once here). */
@@ -54,15 +55,19 @@ export interface ResolvedCycle {
 }
 
 /**
- * Choose the cycle to load, planner-style:
+ * Choose the cycle to load:
  *  1. the wall-clock expected cycle when it is fully cached → no network;
  *  2. otherwise ask the server for the newest complete cycle;
- *  3. if that fails, the newest fully cached cycle, if any.
+ *  3. if that fails, the newest fully cached cycle, if any (`fallback`
+ *     says why: the server could not be asked, so this is not known to
+ *     be the newest).
+ * `offline`: the connection is already known to be down (this refresh
+ * round); step 2 is skipped with that reason.
  */
 export async function resolveCycle(
   client: EcmwfClient,
   horizonS: number,
-  opts: { now?: Date; includeWaves?: boolean; extraAtmParams?: string[]; log?: (m: string) => void } = {}
+  opts: { now?: Date; includeWaves?: boolean; extraAtmParams?: string[]; log?: (m: string) => void; offline?: string } = {}
 ): Promise<ResolvedCycle> {
   const log = opts.log ?? (() => undefined);
   const atm = [...ATM_PARAMS, ...(opts.extraAtmParams ?? [])];
@@ -73,6 +78,7 @@ export async function resolveCycle(
     return { cycle: expected, fromCache: true };
   }
   try {
+    if (opts.offline) throw new OfflineError(opts.offline);
     const cycle = await client.findLatestCycle(horizonS, { now: opts.now });
     return { cycle, fromCache: client.cycleFullyCached(cycle, horizonS, atm, wave) };
   } catch (err) {

@@ -1211,6 +1211,8 @@ function _paintTile(grid, spec, mask, ext, gx0, gy0) {
   const span = (v1 - v0) || 1;
   const R = 6378137;
   const [ex0, ey0, ex1, ey1] = ext;
+  // Pixels the "no data" hatch marks, drawn after the coast is softened so it stays sharp.
+  const hatched = [];
   for (let y = 0; y < N; y++) {
     const my = ey1 - (y + 0.5) / N * (ey1 - ey0);
     const lat = (2 * Math.atan(Math.exp(my / R)) - Math.PI / 2) * 180 / Math.PI;
@@ -1222,10 +1224,7 @@ function _paintTile(grid, spec, mask, ext, gx0, gy0) {
         // Water (per the coastline) the source model has no value for:
         // channels narrower than its grid. Hatch it so a gap never reads as
         // zero. Needs the coastline tile to know it is water.
-        if (spec.hatchNoData && mask && ((gx0 + x + gy0 + y) % 7) < 1) {
-          const o = (y * N + x) * 4;
-          data[o] = 96; data[o + 1] = 96; data[o + 2] = 96; data[o + 3] = 150;
-        }
+        if (spec.hatchNoData && mask && ((gx0 + x + gy0 + y) % 7) < 1) hatched.push((y * N + x) * 4);
         continue;
       }
       if (sampleLand) { const l = sampleLand(lon, lat); if (l != null && l > 0.5) continue; }
@@ -1238,7 +1237,56 @@ function _paintTile(grid, spec, mask, ext, gx0, gy0) {
       data[o] = lut[idx * 3]; data[o + 1] = lut[idx * 3 + 1]; data[o + 2] = lut[idx * 3 + 2]; data[o + 3] = Math.round(a * 255);
     }
   }
+  if (spec.maskLand) _featherAlpha(data);
+  for (const o of hatched) { data[o] = 96; data[o + 1] = 96; data[o + 2] = 96; data[o + 3] = 150; }
   return data;
+}
+// The coast softened, as the plugin's PNG tiles (src/plugin/pngtiles.ts featherAlpha): with land left transparent,
+// the whole alpha blurred (Gaussian, σ = 1 px, radius 4 px, edges repeated); a pixel that had no colour takes the
+// alpha-weighted colour of the pixels the blur brings in, not black.
+const _FEATHER_KERNEL = (() => {
+  const k = Array.from({ length: 9 }, (_v, i) => Math.exp(-((i - 4) ** 2) / 2));
+  const sum = k.reduce((a, b) => a + b, 0);
+  return k.map(v => v / sum);
+})();
+function _featherBlur(src) {
+  const n = OVERLAY_TILE_PX;
+  const pass = (s, horizontal) => {
+    const out = new Float32Array(s.length);
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        let acc = 0;
+        for (let k = -4; k <= 4; k++) {
+          const ii = horizontal ? Math.min(n - 1, Math.max(0, i + k)) : i;
+          const jj = horizontal ? j : Math.min(n - 1, Math.max(0, j + k));
+          acc += s[jj * n + ii] * _FEATHER_KERNEL[k + 4];
+        }
+        out[j * n + i] = acc;
+      }
+    }
+    return out;
+  };
+  return pass(pass(src, true), false);
+}
+function _featherAlpha(rgba) {
+  const n = OVERLAY_TILE_PX * OVERLAY_TILE_PX;
+  const alpha = new Float32Array(n);
+  for (let p = 0; p < n; p++) alpha[p] = rgba[p * 4 + 3];
+  const a2 = _featherBlur(alpha);
+  const fill = [];
+  let needFill = false;
+  for (let p = 0; p < n; p++) if (alpha[p] === 0 && a2[p] >= 0.5) { needFill = true; break; }
+  if (needFill)
+    for (let c = 0; c < 3; c++) {
+      const pre = new Float32Array(n);
+      for (let p = 0; p < n; p++) pre[p] = rgba[p * 4 + c] * alpha[p];
+      fill.push(_featherBlur(pre));
+    }
+  for (let p = 0; p < n; p++) {
+    const a = Math.floor(a2[p] + 1e-6);
+    if (alpha[p] === 0 && a > 0) for (let c = 0; c < 3; c++) rgba[p * 4 + c] = Math.round(fill[c][p] / Math.max(a2[p], 1e-6));
+    rgba[p * 4 + 3] = a;
+  }
 }
 // Symmetric auto-scale (tide height) across tiles: the scale grows to the
 // largest |value| over water in the tiles loaded for this hour; when it

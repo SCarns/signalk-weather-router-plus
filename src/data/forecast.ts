@@ -21,7 +21,7 @@
  * Wind direction is meteorological (FROM). Wave fields carry NaN over
  * land in the source; a limited nearest-neighbour fill (up to
  * `waveFillCells` cells) is applied so coastal waypoints still get a
- * value, matching the reference implementation's `_wave_nanfill_limited`.
+ * value.
  */
 
 import type { DecodeScratch, Grib2Grid, Grib2Message } from '../grib/grib2';
@@ -299,8 +299,7 @@ export function cropField(grid: Grib2Grid, values: Float64Array, bbox: BBox, mar
 }
 
 /**
- * Limited nearest-neighbour fill of NaN cells, as in the reference
- * implementation's `_wave_nanfill_limited`: every NaN cell takes the
+ * Limited nearest-neighbour fill of NaN cells: every NaN cell takes the
  * value of the nearest valid cell (Euclidean, in cells) scaled by
  * clip(1 - d / maxCells, 0, 1). Cells farther than `maxCells` from any
  * valid cell therefore become 0, not NaN. A grid with no valid cell at

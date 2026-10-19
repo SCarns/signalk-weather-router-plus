@@ -8,8 +8,8 @@
  * Regenerate on purpose only:  GOLDEN_UPDATE=1 npm test
  *
  * Not covered: HarmonicCurrentSource.interp / pointAt (private, needs
- * tidal constituents); its own tests compare against the Python
- * reference.
+ * tidal constituents); its own tests compare against recorded reference
+ * values.
  */
 
 import { test } from 'node:test';

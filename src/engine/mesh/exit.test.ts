@@ -34,7 +34,14 @@ function rect(recordNumber: number, lon0: number, lat0: number, lon1: number, la
 const RULES = { draughtM: 2, airDraftM: 18, motorSpeedMs: 3 };
 const BOX = { west: -1, south: -1, east: 5, north: 3 };
 
-const COARSE: CoarseRules = { draughtM: 2, airDraftM: 18, bufferM: 0, openingBridges: 'open' };
+const COARSE: CoarseRules = {
+  draughtM: 2,
+  airDraftM: 18,
+  underKeelClearanceM: 0.5,
+  overheadClearanceM: 1,
+  bufferM: 0,
+  openingBridges: 'open',
+};
 
 function withMesh(
   fn: (store: MeshStore, map: CoarseMap) => void,

@@ -27,8 +27,7 @@ released. For what the released plugin does, see
   `sail_thresh_ms`) and motors otherwise. Before, it also sailed whenever
   the VMG along the leg was above 0.25 m/s or the polar speed was at least
   1.0 m/s; since that VMG equals the polar speed, the boat sailed above
-  0.25 m/s (≈ 0.5 kn) and the threshold never decided. This deliberately
-  differs from the parent routePlanning server (`leg_sim.py`).
+  0.25 m/s (≈ 0.5 kn) and the threshold never decided.
 
 - **The polar generator ("Create polar from boat specs…",
   `POST /api/polar-from-specs`) uses a new physics calculator**
@@ -133,14 +132,13 @@ released. For what the released plugin does, see
   than needed. Every cycle now uses `oper`/`wave`; a 06z/18z cycle is used
   whenever the horizon is 144 h or less.
 
-- **Approximate waypoints now carry the route through the circle**, as in
-  routePlanning: consecutive legs joined by approximate waypoints are
-  routed as one search that must pass through each waypoint circle in
+- **Approximate waypoints now carry the route through the circle**:
+  consecutive legs joined by approximate waypoints are routed as one
+  search that must pass through each waypoint circle in
   order, instead of each leg ending at the circle and the next restarting
   there (only the last `arrival_radius_m` of each leg differed from
   Precise before). A branch whose next circle is closer than one stage
-  step also tries a step straight into it (not in the reference; without
-  it small circles were missed where the course turns). If no branch
+  step also tries a step straight into it (without it small circles were missed where the course turns). If no branch
   passes every circle, the run falls back to leg-by-leg routing and the
   log says so.
 
@@ -173,9 +171,8 @@ released. For what the released plugin does, see
   2026-09-28 12Z forecast). One search ran for the whole route and each
   waypoint was a disc that some fixed-length stage step had to happen to
   cross; near a turn the steps cut the corner and missed it. Waypoints
-  are now leg ends: each leg is routed on its own (port of the
-  routePlanning `compute_multi_leg_route`), departing at the previous
-  leg's arrival, and the legs are stitched. The same request now succeeds
+  are now leg ends: each leg is routed on its own, departing at the
+  previous leg's arrival, and the legs are stitched. The same request now succeeds
   in precise and approximate mode (500 m and 200 m), motor and sail_max.
   Routes without waypoints are unchanged (byte-identical GeoJSON against
   the previous build for Baja sail_max / motor and Lisbon → Palma).
@@ -271,8 +268,8 @@ released. For what the released plugin does, see
   is unchanged. The Settings tab shows it in the user's Signal K
   percentage unit.
 
-- **Route simplification** (port of the parent's `_rdp_simplify` and
-  `shortcut_smoother`), per leg, after the search: waypoints within
+- **Route simplification** (Ramer–Douglas–Peucker thinning, then a
+  shortcut smoother), per leg, after the search: waypoints within
   10 m of the straight line between their neighbours are dropped when
   that line is clear of land, then runs of waypoints are replaced by one
   straight leg when it is clear of land and its simulated time is at most
@@ -287,8 +284,8 @@ released. For what the released plugin does, see
   to starboard.
 
 - Request fields `precision` (`"precise"` default, `"approximate"`) and
-  `arrival_radius_m` (default 200, 0..5000, > 0 for approximate), as in
-  routePlanning; a waypoint's `radius_m` overrides the radius for that
+  `arrival_radius_m` (default 200, 0..5000, > 0 for approximate); a
+  waypoint's `radius_m` overrides the radius for that
   waypoint. Precise legs end exactly on the waypoint; an approximate leg
   ends as soon as the route enters the waypoint's circle and the next leg
   starts there. The destination is always exact.
@@ -350,8 +347,7 @@ snapshot.
 
 #### Added
 
-- **Routing engine**: TypeScript port of the routePlanning subsector
-  isochrone router (coarse A* skeleton, heading sweep per stage, leg
+- **Routing engine**: a subsector isochrone router (coarse A* skeleton, heading sweep per stage, leg
   simulator against the polar, vias as pass-through discs), running in a
   worker thread. Modes `sail_max`, `fastest`, `motor`.
 - **Forecast**: ECMWF IFS 0.25° open data fetched by HTTP byte range from
@@ -385,8 +381,7 @@ snapshot.
   Precipitation, plus a Raw table.
 - **Polars**: polar library picker (configured default plus a polars
   directory), polar diagram, point-of-sail angles, per-route polar
-  choice, and "Create polar from boat specs" (empirical VPP, matches the
-  routePlanning Python output cell for cell).
+  choice, and "Create polar from boat specs" (empirical VPP).
 - **Settings tab** in the webapp for vessel, routing, forecast, currents,
   tides and publishing, stored server-side in `settings.json` and shared
   by all clients. Values migrated from the old plugin configuration on

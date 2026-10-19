@@ -141,11 +141,11 @@ export function buildGuide(ctx: SearchContext, sk: SkeletonData): SkeletonGuide 
       }
     }
     if (ti < 0) return [eLon, eLat];
-    // Open water (deviation from the reference): aim parallel to the
-    // skeleton from the parent itself. Aiming at the skeleton point pulled
-    // every branch back to the line, so a detour of hundreds of km could
-    // never form: Tonga → Auckland, the front never got more than 170 km
-    // off the direct line while a route 479 km west was 15 h faster.
+    // Open water: aim parallel to the skeleton from the parent itself.
+    // Aiming at the skeleton point pulled every branch back to the line,
+    // so a detour of hundreds of km could never form: Tonga → Auckland,
+    // the front never got more than 170 km off the direct line while a
+    // route 479 km west was 15 h faster.
     // Narrow water keeps the skeleton aim, which is what finds channels.
     if (pLon !== undefined && pLat !== undefined && widths && !Number.isFinite(widths[idx])) {
       const b = haversineBearing(skeleton[idx].lon, skeleton[idx].lat, skeleton[ti].lon, skeleton[ti].lat);

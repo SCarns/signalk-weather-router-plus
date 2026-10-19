@@ -75,9 +75,8 @@ export interface ComputeRouteArgs {
   tackPenaltyS?: number;
   simStepM?: number;
   /**
-   * Stop as soon as a candidate is within this distance of the end (the
-   * reference's arrival_radius_m, rule (a)); the one-stage-step rule (b)
-   * always applies as well.
+   * Stop as soon as a candidate is within this distance of the end (rule
+   * (a)); the one-stage-step rule (b) always applies as well.
    */
   arrivalRadiusM?: number;
   /**

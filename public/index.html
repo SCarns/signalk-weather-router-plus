@@ -350,6 +350,31 @@
   #dataStatus .statusKey { color: var(--tack-starboard); font-weight: 600; }
   #dataStatus .warn { color: var(--warn); font-weight: 600; }
   #dataStatus .err { color: var(--danger); font-weight: 600; }
+  /* Freshness of each source (rp-core.js _freshPill): green, orange, red by its own cadence. */
+  #dataStatus .fresh { white-space: nowrap; font-weight: 700; color: #fff; border-radius: 999px; padding: 0 6px; cursor: help; }
+  #dataStatus .fresh-green { background: var(--tack-starboard); }
+  #dataStatus .fresh-orange { background: var(--mode-motoring); }
+  #dataStatus .fresh-red { background: var(--danger); }
+  /* The connection, under the title: blue when online, grey when not (separate from freshness). */
+  #netStatus { font-size: var(--f-xs); }
+  #netStatus .net-on { color: var(--go); font-weight: 600; }
+  #netStatus .net-off { color: var(--text-muted); font-weight: 600; }
+  /* Collapse toggle and the collapsed line: each row's name and a dot per source. */
+  #dataStatus .ds-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-2); margin-bottom: 2px; }
+  #dataStatus .ds-title { font-weight: 700; color: var(--text); font-size: var(--f-sm); }
+  #dataStatus .ds-toggle {
+    flex: none; border: 1px solid var(--go); background: var(--surface); color: var(--go); cursor: pointer;
+    border-radius: var(--r-sm); padding: 1px 8px; font: inherit; font-size: var(--f-xs); font-weight: 700;
+  }
+  #dataStatus .ds-toggle:hover { background: var(--go); color: #fff; }
+  #dataStatus .ds-summary { white-space: nowrap; }
+  #dataStatus .ds-pipe { color: var(--text-muted); margin: 0 6px; }
+  #dataStatus .not-here { color: var(--text-muted); font-style: italic; }
+  #dataStatus .fresh-dot { display: inline-block; width: 9px; height: 9px; padding: 0; margin-left: 3px; vertical-align: 0; }
+  /* One line per source under its row's name. */
+  #dataStatus ul.src-list { margin: 0 0 2px; padding-left: 14px; }
+  #dataStatus ul.src-list li { list-style: disc; }
+  #dataStatus .processing { color: var(--text-2); font-style: italic; }
   /* The sea state arrows' A/B style selector: one line under its checkbox (overrides #panel label / input). */
   #panel #seasStyleRow { display: flex; align-items: center; gap: var(--s-2); margin: 0 0 var(--s-1) 22px; font-size: 11px; color: var(--text-2); }
   #panel #seasStyleRow label { display: inline-flex; align-items: center; margin: 0; font-size: 11px; cursor: pointer; }
@@ -599,7 +624,11 @@
 <div id="panel">
   <div id="panelHead">
   <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
-    <h3 style="margin:0;">Weather Router Plus</h3>
+    <div>
+      <h3 style="margin:0;">Weather Router Plus</h3>
+      <!-- The connection (rp-core.js _netLine): blue online, grey offline. -->
+      <div id="netStatus"></div>
+    </div>
     <div id="dataStatus">loading status…</div>
   </div>
   <!-- While the server gets its first forecast (or the coastline): one calm notice instead of failing layers (rp-core.js). -->
@@ -790,7 +819,7 @@
   </div>
   </details>
 
-  <!-- Waypoint behaviour: precision + radius (as routePlanning's route-planner.html). -->
+  <!-- Waypoint behaviour: precision + radius. -->
   <details class="subsection">
   <summary>Waypoint behaviour</summary>
   <div class="subsection-body">
@@ -937,6 +966,7 @@
       <input type="text" id="routeNameInput" placeholder="(untitled)" readonly style="flex:1;padding:4px 6px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);margin:0;">
       <button id="routePublish" type="button" title="Save this route to the Signal K Resources API" style="padding:4px 10px;font-size:var(--f-xs);background:var(--go);color:#fff;border:0;border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Publish</button>
       <button id="routeGpx" type="button" title="Download this route as a GPX file (route points with their times and legs), for plotters that import GPX" style="padding:4px 10px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);cursor:pointer;font-weight:600;">GPX</button>
+      <button id="routeGeojson" type="button" title="Download this route as GeoJSON (the route line and every waypoint with its times, wind, waves, current and depth)" style="padding:4px 10px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);cursor:pointer;font-weight:600;">GeoJSON</button>
       <button id="routeDelete" type="button" title="Delete this route job" style="padding:4px 10px;font-size:var(--f-xs);background:var(--danger);color:#fff;border:0;border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Delete</button>
       <span id="routeNameStatus" style="color:var(--ink-text-muted);min-width:28px;"></span>
     </div>

@@ -7,7 +7,8 @@
  * route's rules (route.ts blockedTriangles: depth, clearance, hazard,
  * mark, structure, opening bridge under Drawbridges = Avoid, area to
  * avoid; no buffer: the buffer is a margin, not a depth) is a violation;
- * the caller fails the route on any. Where no mesh triangle is, the
+ * the caller repairs the segment it is on (worker/route.ts
+ * repairViolations) and fails the route on any left. Where no mesh triangle is, the
  * stretch is counted as outside the mesh and not judged: a mesh edge with
  * no neighbour is either land or the end of the charts, and the mesh does
  * not say which (part 5).
@@ -18,7 +19,8 @@
  * process (plugin/meshchecktask.ts).
  */
 
-import { bboxFromLonLat, haversineDistanceM, type BBox } from '../../geo/geodesy';
+import { bboxFromLonLat, boxesMeet, haversineDistanceM, type BBox } from '../../geo/geodesy';
+import { DEFAULT_OVERHEAD_M, DEFAULT_UKC_M } from '../../vessel/vessel';
 import type { LegDepth } from '../route';
 import { MeshLand } from './land';
 import { PagedMesh } from './paged';
@@ -37,13 +39,18 @@ import {
 } from './store';
 
 /** The rules the route was planned with, as far as they decide what is blocked. */
-export type CheckRules = Pick<MeshRules, 'draughtM' | 'airDraftM' | 'openingBridges' | 'avoid'>;
+export type CheckRules = Pick<
+  MeshRules,
+  'draughtM' | 'airDraftM' | 'openingBridges' | 'avoid' | 'underKeelClearanceM' | 'overheadClearanceM'
+>;
 
 export type ViolationKind = 'depth' | 'hazard' | 'clearance' | 'opening bridge' | 'mark' | 'structure' | 'area to avoid';
 
 /** The first triangle of a run of blocked triangles along the route. */
 export interface DepthViolation {
   leg: number;
+  /** The route segment it is on: waypoint `segment` → `segment + 1` of the checked path (for the repair). */
+  segment: number;
   lon: number;
   lat: number;
   kind: ViolationKind;
@@ -67,6 +74,8 @@ interface Piece {
   a: [number, number];
   b: [number, number];
   leg: number;
+  /** The path segment the piece is cut from (path[seg] → path[seg + 1]). */
+  seg: number;
   lengthM: number;
   /** Covered stretches as fractions of the piece [from, to), each with what covers it, in walking order per store. */
   covered: { f0: number; f1: number; tri: TriInfo }[];
@@ -80,8 +89,8 @@ interface TriInfo {
 
 /** Why a blocked triangle is blocked, in the order blockedTriangles tests (route.ts). */
 function blockedKind(flags: number, depth: number, clear: number, hazv: number, rules: CheckRules): ViolationKind {
-  const minClear = rules.airDraftM + 1;
-  const minDepth = rules.draughtM + 0.5;
+  const minClear = rules.airDraftM + (rules.overheadClearanceM ?? DEFAULT_OVERHEAD_M);
+  const minDepth = rules.draughtM + (rules.underKeelClearanceM ?? DEFAULT_UKC_M);
   if (rules.openingBridges === 'avoid' && flags & FLAG_OPENING_BRIDGE) return 'opening bridge';
   if (clear !== NO_VALUE && clear < minClear) return 'clearance';
   if (!(flags & FLAG_NAVIGABLE) && depth !== NO_VALUE && depth < minDepth) return 'depth';
@@ -101,17 +110,13 @@ function cutPieces(path: [number, number][], legOf: number[]): Piece[] {
     for (let i = 0; i < n; i++) {
       const p0: [number, number] = [a[0] + ((b[0] - a[0]) * i) / n, a[1] + ((b[1] - a[1]) * i) / n];
       const p1: [number, number] = [a[0] + ((b[0] - a[0]) * (i + 1)) / n, a[1] + ((b[1] - a[1]) * (i + 1)) / n];
-      out.push({ a: p0, b: p1, leg: legOf[k - 1], lengthM: len / n, covered: [] });
+      out.push({ a: p0, b: p1, leg: legOf[k - 1], seg: k - 1, lengthM: len / n, covered: [] });
     }
   }
   return out;
 }
 
 const boxOf = (p: Piece): BBox => bboxFromLonLat([p.a[0], p.b[0]], [p.a[1], p.b[1]], 0.01);
-
-function meets(a: BBox, b: BBox): boolean {
-  return a.west <= b.east && b.west <= a.east && a.south <= b.north && b.south <= a.north;
-}
 
 /**
  * Add [f0, f1) to the piece. Usable water fills only what no mesh covers yet; water a mesh blocks takes its stretch
@@ -201,7 +206,7 @@ export function checkRouteOnMeshes(
     const land = new MeshLand(new PagedMesh(store, { ...rules, motorSpeedMs: 1 }, cl));
     for (const p of pieces) {
       const pb = boxOf(p);
-      if (!meets(pb, extent)) continue;
+      if (!boxesMeet(pb, extent)) continue;
       // The tiles the walk has passed go: only those meeting this piece stay.
       land.pm.retain(T => T.bbox[0] <= pb.east && pb.west <= T.bbox[2] && T.bbox[1] <= pb.north && pb.south <= T.bbox[3]);
       walkPiece(land, p, rules);
@@ -236,7 +241,7 @@ export function checkRouteOnMeshes(
       if (c.tri.blocked) {
         if (!inRun || c.f0 > lastEnd + 1e-9) {
           const [lon, lat] = at(p, c.f0);
-          violations.push({ leg: p.leg, lon, lat, kind: c.tri.blocked, value: c.tri.value });
+          violations.push({ leg: p.leg, segment: p.seg, lon, lat, kind: c.tri.blocked, value: c.tri.value });
         }
         inRun = true;
       } else inRun = false;

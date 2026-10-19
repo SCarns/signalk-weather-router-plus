@@ -163,7 +163,7 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
     arrival: wps.length ? wps[wps.length - 1].time.toISOString() : null,
     waypoint_count: wps.length,
     validated: route.validated,
-    repairs_applied: 0,
+    repairs_applied: route.repairsApplied ?? 0,
     smoother_drops: route.smootherDrops ?? 0,
   };
   if (route.forecastCycle) props.forecast_cycle = route.forecastCycle;

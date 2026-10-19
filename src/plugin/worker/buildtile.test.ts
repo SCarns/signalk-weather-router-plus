@@ -64,6 +64,11 @@ function state(sent: WorkerToMain[]): WorkerState {
     routeWindow: null,
     routeRegional: [],
     cancelledQueries: new Set(),
+    checks: {},
+    connectivity: { online: null, since: null, lastOkAt: null, reason: null },
+    lastOfflineMs: 0,
+    harmonicErrors: [],
+    decodeAbort: null,
   };
 }
 

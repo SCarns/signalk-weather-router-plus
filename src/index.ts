@@ -39,7 +39,7 @@ import { runLastMs, type ArcoRun } from './data/arco';
 import { gshhgInstalled, gshhgInstalledAt, unreadableCoastlines } from './geo/gshhg';
 import { Coastline } from './plugin/coastline';
 import { localMeshes, MeshManager, meshesToOpen, readyMeshDirs } from './plugin/meshes';
-import { coarseFile, coarseKey, coarseRulesOf, meshesMeet, pruneCoarse } from './plugin/meshcoarse';
+import { coarseFile, coarseKey, coarseRulesOf, joinsFile, meshesMeet, pruneCoarse, withBuildLock } from './plugin/meshcoarse';
 import * as fs from 'node:fs';
 import { runChildTask } from './plugin/childtask';
 import { ChartsProvider } from './plugin/charts';
@@ -58,9 +58,21 @@ import type {
   MainToWorker,
   QueryArgs,
   QueryKind,
+  SourceCheck,
   VesselPosition,
   WorkerToMain,
 } from './plugin/protocol';
+import {
+  arcoFreshness,
+  ecmwfFreshness,
+  type Freshness,
+  harmonicFailure,
+  harmonicFreshness,
+  regionalFreshness,
+  rtofsFreshness,
+} from './plugin/freshness';
+import { SMOC_NAME } from './currents/smoc';
+import { SL_NAME } from './tides/sealevel';
 import type { SerializedSmoc } from './currents/smoc';
 import { rtofsForRegion, type SerializedRtofs } from './currents/rtofs';
 import type { SerializedHarmonic } from './currents/harmonic';
@@ -125,6 +137,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
   /** Current sources last reported by the data worker (name list + RTOFS run), to tell the route worker to reload. */
   let currentsKey = '';
   let forecastError: string | null = null;
+  /** What the last forecast check found (newest, could not check, new run, failed). */
+  let forecastCheck: SourceCheck | null = null;
   /** The data worker's forecast loading progress (null when it is not loading one). */
   let forecastLoading: ForecastLoading | null = null;
   /** Routes since the plugin was loaded whose corridor search failed and ran on the coarse skeleton (decision E). */
@@ -149,6 +163,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let startGen = 0;
   /** A route started before the first forecast was ready: sent to the route worker when it is (see startServices). */
   let waitingForForecast: Job | null = null;
+  /** The job last sent to the route worker: only it can be cancelled through the worker's flag (see cancelRunning). */
+  let routeAtWorker: string | null = null;
 
   /** Why the services are not up yet, for API answers and the status (`starting`). */
   function notStartedReason(): string {
@@ -187,6 +203,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
       }
     }
     if (!jobs || jobs.runningId !== job.id) return; // cancelled meanwhile
+    routeAtWorker = job.id;
+    // Cleared here, not by the worker when the route starts: a cancel between this post and the start stays set.
+    Atomics.store(pool.cancelFlag, 0, 0);
     pool.post('route', { type: 'route', id: job.id, request: job.request, avoid, self: selfDesign() });
   }
 
@@ -272,6 +291,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
     const rules = coarseRulesOf({
       draughtM: self.draughtM,
       airDraftM: self.airDraftM,
+      underKeelClearanceM: config.vessel.underKeelClearanceM,
+      overheadClearanceM: config.vessel.overheadClearanceM,
       bufferM: config.routing.navigableBufferM,
       openingBridges: config.routing.drawbridges === 'avoid' ? 'avoid' : 'open',
     });
@@ -299,16 +320,20 @@ export = function plugin(app: SkApp): SignalKPlugin {
       for (const d of dirs) {
         if (signal.aborted) return;
         roughCut.running = `${d.name} (${path.basename(d.dir)})`;
-        const r = await runChildTask(
-          { task: 'mesh-coarse', dir: d.dir, out: coarseFile(dataDir, d.dir, rules), rules, joins: othersOf(d) },
-          15 * 60_000,
-          signal
+        const out = coarseFile(dataDir, d.dir, rules);
+        // One build of a file at a time, here or in a route (worker/route.ts ensureRoughCut): one under way is waited for.
+        const { result: r } = await withBuildLock(
+          out,
+          () => runChildTask({ task: 'mesh-coarse', dir: d.dir, out, rules, joins: othersOf(d) }, 15 * 60_000, signal),
+          { signal, onWait: () => (roughCut.running = `${d.name} (${path.basename(d.dir)}): waiting for a route's build of it`) }
         );
         roughCut.done++;
-        log(
-          `rough cut ${d.name} ${path.basename(d.dir)}: ${r.pieces} pieces, ${r.links} links, ${r.bytes} bytes in ${r.ms} ms` +
-            (r.joins.length ? `; joins ${r.joins.map(j => `to ${j.name} ${j.joins} (${j.ms} ms)`).join(', ')}` : '')
-        );
+        if (r)
+          log(
+            `rough cut ${d.name} ${path.basename(d.dir)}: ${r.pieces} pieces, ${r.links} links, ${r.bytes} bytes in ${r.ms} ms` +
+              (r.joins.length ? `; joins ${r.joins.map(j => `to ${j.name} ${j.joins} (${j.ms} ms)`).join(', ')}` : '')
+          );
+        else log(`rough cut ${d.name} ${path.basename(d.dir)}: built meanwhile by a route`);
       }
       // One mesh new or updated: the other meshes' joins towards its new build (their rough cuts already built).
       if (only)
@@ -319,18 +344,23 @@ export = function plugin(app: SkApp): SignalKPlugin {
             if (signal.aborted) return;
             if (!meshesMeet(o.dir, d.dir)) continue;
             roughCut.running = `joins of ${o.name} (${path.basename(o.dir)}) to ${d.name}`;
-            const j = await runChildTask(
-              {
-                task: 'mesh-joins',
-                dir: o.dir,
-                mapFile,
-                rules,
-                other: { dir: d.dir, mapFile: coarseFile(dataDir, d.dir, rules), name: d.name },
-              },
-              15 * 60_000,
-              signal
+            const { result: j } = await withBuildLock(
+              joinsFile(mapFile, d.dir),
+              () =>
+                runChildTask(
+                  {
+                    task: 'mesh-joins',
+                    dir: o.dir,
+                    mapFile,
+                    rules,
+                    other: { dir: d.dir, mapFile: coarseFile(dataDir, d.dir, rules), name: d.name },
+                  },
+                  15 * 60_000,
+                  signal
+                ),
+              { signal }
             );
-            log(`rough cut joins ${o.name} ${path.basename(o.dir)} to ${d.name}: ${j.joins} in ${j.ms} ms`);
+            if (j) log(`rough cut joins ${o.name} ${path.basename(o.dir)} to ${d.name}: ${j.joins} in ${j.ms} ms`);
           }
         }
       const removed = pruneCoarse(dataDir, new Set(open.flatMap(m => m.dirs.map(d => coarseKey(d)))));
@@ -539,6 +569,47 @@ export = function plugin(app: SkApp): SignalKPlugin {
     return { ...scan, sources: scan.sources.map(s => ({ ...s, decoded: dec.get(s.name) ?? null })) };
   }
 
+  /** Does the forecast in use carry waves? */
+  function forecastHasWaves(): boolean {
+    if (!forecastRun) return false;
+    return dataStatus?.forecast?.hasWaves ?? forecastRun.index.steps.every(s => ['swh', 'mwp', 'mwd'].every(p => s.params.includes(p)));
+  }
+
+  /** How fresh every source in use is, by its own cadence (plugin/freshness.ts). */
+  function freshnessList(nowMs: number): Freshness[] {
+    if (!config) return [];
+    const cfg = config;
+    const out: Freshness[] = [ecmwfFreshness(forecastRun?.index.cycleTimeMs ?? null, cfg.forecast.horizonS, forecastHasWaves(), nowMs)];
+    // Regional models layered over the wind: those decoded or waiting to be (not the ones skipped as no finer than ECMWF).
+    const decoded = new Map((dataStatus?.regional ?? []).map(d => [d.source, d]));
+    for (const s of regionalStatus().sources) {
+      const d = decoded.get(s.name);
+      if (!s.run || s.problem || d?.skipped) continue;
+      out.push(regionalFreshness(s.name, s.model, d?.cycle ?? null, nowMs));
+    }
+    const currents = dataStatus?.currents ?? [];
+    let smoc = false;
+    let rtofs = false;
+    for (const c of currents) {
+      if (c.smoc) {
+        smoc = true;
+        out.push(arcoFreshness(c.name, ['currents'], c.smoc.run, c.smoc.metadata_modified, nowMs));
+      } else if (c.name.startsWith('RTOFS-')) {
+        rtofs = true;
+        out.push(rtofsFreshness(c.name, rtofsShared?.runMs ?? null, cfg.currents.rtofsHorizonS, nowMs));
+      } else out.push(harmonicFreshness(c.name));
+    }
+    if (cfg.currents.smocEnabled && !smoc) out.push(arcoFreshness(SMOC_NAME, ['currents'], null, null, nowMs));
+    if (cfg.currents.rtofsEnabled && !rtofs)
+      out.push(rtofsFreshness(`RTOFS-${cfg.currents.rtofsRegion}`, null, cfg.currents.rtofsHorizonS, nowMs));
+    for (const e of dataStatus?.harmonicErrors ?? []) out.push(harmonicFailure(e));
+    if (cfg.tides.enabled) {
+      const t = dataStatus?.tides ?? null;
+      out.push(arcoFreshness(SL_NAME, ['tides'], t?.run ?? null, t?.metadata_modified ?? null, nowMs));
+    }
+    return out;
+  }
+
   function updateStatus(): void {
     if (stopped) return;
     if (forecastRun) {
@@ -662,8 +733,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'forecast-memory':
         if (role === 'route') routeForecastMemory = msg.memory;
         return;
-      case 'forecast-unchanged':
-        if (role === 'data') updateStatus();
+      case 'forecast-check':
+        if (role !== 'data') return;
+        forecastCheck = msg.check;
+        // Only a check that reached ECMWF and found the newest run in use (or brought a new one) clears the error line.
+        if (msg.check.outcome === 'newest' || msg.check.outcome === 'new-run') forecastError = null;
+        updateStatus();
         return;
       case 'forecast-loading': {
         if (role !== 'data') return;
@@ -991,6 +1066,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     pool.rejectPending('plugin stopped');
     jobs?.failRunning('plugin stopped');
     waitingForForecast = null;
+    routeAtWorker = null;
     jobs = null;
     prebuilder?.stop();
     prebuilder = null;
@@ -1051,9 +1127,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
               coverage: 'global',
               storage: 'decoded-on-disk',
               loaded_at: new Date(forecastRun.loadedAtMs).toISOString(),
-              has_waves:
-                dataStatus?.forecast?.hasWaves ??
-                forecastRun.index.steps.every(s => ['swh', 'mwp', 'mwd'].every(p => s.params.includes(p))),
+              has_waves: forecastHasWaves(),
               // 'disk': a complete decoded run was found on disk (no decode); 'grib': decoded from the GRIB cache / download.
               source: forecastRun.source,
               ready_ms: forecastRun.readyMs,
@@ -1077,6 +1151,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
           : null,
         process_rss_bytes: process.memoryUsage().rss,
         forecast_error: forecastError,
+        // What the last check of each source found; ECMWF's as the main thread last heard it.
+        checks: { ...(dataStatus?.checks ?? {}), ...(forecastCheck ? { ecmwf: forecastCheck } : {}) },
+        // How fresh each source in use is (green / orange / red) by its own cadence.
+        freshness: freshnessList(Date.now()),
+        // Whether the data worker's last request reached a server; separate from freshness.
+        connectivity: dataStatus?.connectivity ?? null,
         currents: dataStatus?.currents ?? [],
         currents_route_worker: routeCurrents ?? [],
         corridor_fallbacks: corridorFallbacks,
@@ -1139,6 +1219,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
         // Still waiting for the first forecast: nothing was sent to the worker.
         if (waitingForForecast && waitingForForecast.id === id) {
           waitingForForecast = null;
+          jobs?.onError(id, 'cancelled', true);
+          return;
+        }
+        // Running but not sent yet (dispatchRoute is reading the notes): dispatchRoute clears the flag before it
+        // posts the route, so the flag would be lost. Finished here; dispatchRoute sees it is no longer running and drops it.
+        if (routeAtWorker !== id) {
           jobs?.onError(id, 'cancelled', true);
           return;
         }
