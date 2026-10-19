@@ -688,10 +688,12 @@ forecast hour from one place, as a chartplotter's weather view does:
   drawn from, with its run's age (the run, when it was published and when
   the next one is due in its tooltip), as the web page's header shows them
   (`/api/status` `freshness`; the map layers read ECMWF, so the regional
-  wind models are not listed). The worst colours the line; a red source
-  gets a Late line, and a failed check says so. The connection is on a
-  line of its own (`connectivity`): online, or no internet connection
-  since when. Past the forecast's end it is flagged in red.
+  wind models are not listed; when the panel cannot read the
+  chartplotter's chart list, every source is). The worst colours the
+  line; a red source gets a Late line, and a failed check says so. The
+  connection is on a line of its own (`connectivity`): online, or no
+  internet connection since when. Past the forecast's end it is flagged
+  in red.
 
 It needs a chartplotter with the `charts` and `charts.time` capabilities
 (Freeboard-SK 3.2 or later), which pass the chosen hour on to the tiles

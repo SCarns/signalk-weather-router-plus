@@ -539,6 +539,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     groupsKey: null,   // the data the presets were read for (weatherStatus)
     legends: null,     // /api/legends
     charts: {},        // the plugin's charts in the host's list: id → {visible, temporal}
+    layersKnown: null, // which of them are on the map: null until the chart list is read, false when it cannot be
     fc: null,          // /api/status forecast: cycle, valid_from, valid_to, model
     startMs: null,     // the bar: the run's first and last whole hour
     endMs: null,
@@ -575,17 +576,25 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         if (c.visible && c.time && c.time.value && adopt === null) adopt = Date.parse(c.time.value);
       });
       wx.charts = seen;
+      wx.layersKnown = true;
       if (adopt !== null && isFinite(adopt) && wx.time === null) wx.time = adopt;
       renderPresets();
       renderTime();
-    }).catch(function (e) { wxNote('The chart list is not available: ' + e.message); });
+    }).catch(function (e) {
+      if (wx.layersKnown === null) wx.layersKnown = false;
+      wxNote('The chart list is not available: ' + e.message);
+      renderData();
+    });
   }
   function loadChartGroups() {
     wx.groupsAt = Date.now();
     return Promise.all([
       get(API + '/chart-groups').then(function (r) { wx.groups = r.groups || []; wx.chartRows = r.chart_rows || {}; }),
       wx.legends ? Promise.resolve() : get(API + '/legends').then(function (l) { wx.legends = l; }).catch(function () {}),
-    ]).then(loadChartList).catch(function () { renderPresets(); });
+    ]).then(loadChartList).catch(function () {
+      if (wx.layersKnown === null) wx.layersKnown = false;
+      renderPresets();
+    });
   }
 
   function renderPresets() {
@@ -846,7 +855,11 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   function ageText(ms) { return ms < HOUR_MS ? 'under 1 h' : dayHours(Math.floor(ms / HOUR_MS)); }
   function overlaps(a, b) { return a.some(function (r) { return b.indexOf(r) >= 0; }); }
   // The freshness rows of the plugin's layers on the map; none shown: the forecast's own (the line names its run).
+  // Before the host's chart list is read: none yet ([]). When the panel cannot tell what is on the map
+  // (no chart list, no "charts" capability): every source (null), so none that is late is left out.
   function shownRows() {
+    if (wx.layersKnown === null) return [];
+    if (wx.layersKnown === false) return null;
     var rows = [];
     visibleIds().forEach(function (id) {
       (wx.chartRows[id] || []).forEach(function (r) { if (rows.indexOf(r) < 0) rows.push(r); });
@@ -903,9 +916,10 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       return;
     }
     var rows = shownRows();
+    var drawn = function (r) { return rows === null || overlaps(r, rows); };
     // The map layers are drawn from ECMWF alone: the regional wind models (routes only) are left out.
     var regional = ((s.regional && s.regional.sources) || []).map(function (x) { return x.name; });
-    var fresh = (s.freshness || []).filter(function (x) { return regional.indexOf(x.source) < 0 && overlaps(x.rows || [], rows); });
+    var fresh = (s.freshness || []).filter(function (x) { return regional.indexOf(x.source) < 0 && drawn(x.rows || []); });
     var worst = fresh.reduce(function (w, x) { return FRESH_RANK[x.state] > FRESH_RANK[w] ? x.state : w; }, 'green');
     var run = new Date(Date.parse(f.cycle)).toLocaleString(undefined, { timeZone: 'UTC', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ' UTC';
     var until = fmtClock(new Date(wx.endMs), { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -918,7 +932,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var online = !(c && c.online === false);
     Object.keys(s.checks || {}).forEach(function (k) {
       var ck = s.checks[k];
-      if (!overlaps(CHECK_ROWS[k] || [], rows)) return;
+      if (!drawn(CHECK_ROWS[k] || [])) return;
       if (!(ck.outcome === 'failed' || (ck.outcome === 'could-not-check' && online))) return;
       html += '<br>' + esc((CHECK_NAMES[k] || k) + (ck.outcome === 'failed' ? ' update failed' : ' check failed') + ' at ' + clockText(ck.at) + (ck.reason ? ': ' + tokenText(ck.reason) : ''));
     });
@@ -949,6 +963,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     try { tab = localStorage.getItem('wrp-plotterext-tab'); } catch (_) {}
     showTab(tab === 'route' ? 'route' : 'weather');
     if (!host.has('charts')) {
+      wx.layersKnown = false;
       wxNote('This chartplotter cannot switch charts for extensions (no "charts" capability): use its chart list.');
       return;
     }
