@@ -223,6 +223,10 @@ test('catalogEntryProblem: every field the plugin reads is checked', () => {
   const { archive: _a, ...noArchive } = ENTRY;
   assert.match(catalogEntryProblem(noArchive)!, /no archive/);
   assert.match(catalogEntryProblem({ ...ENTRY, archive: '01CGD_mesh.zip' })!, /not a \.tar\.zst/);
+  // A bare file name only: no URL to another address, no path out of the catalogue's folder.
+  for (const archive of ['http://127.0.0.1:8080/x.tar.zst', '../private/x.tar.zst', 'sub/x.tar.zst', '/etc/x.tar.zst', '.x.tar.zst'])
+    assert.match(catalogEntryProblem({ ...ENTRY, archive })!, /no path or URL/, archive);
+  assert.equal(catalogEntryProblem({ ...ENTRY, archive: '14CGD_mesh.v2.tar.zst' }), null);
   assert.match(catalogEntryProblem({ ...ENTRY, name: '../x' })!, /not letters, digits/);
   assert.match(catalogEntryProblem({ ...ENTRY, build_date: 'soon' })!, /build_date/);
   assert.match(catalogEntryProblem({ ...ENTRY, bytes: '2 GB' })!, /bytes/);

@@ -154,6 +154,8 @@ export function meshArchiveTop(mesh: CatalogMesh): string {
 
 /** A mesh name as a folder name: letters, digits, - and _ (the panel's actions take the same). */
 const MESH_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+/** A catalogue `archive`: a bare file name ending .tar.zst (no slash, no scheme, not starting with a dot). */
+const ARCHIVE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,200}\.tar\.zst$/;
 
 /**
  * Why a catalogue row cannot be used, or null: every field this plugin reads
@@ -171,7 +173,9 @@ export function catalogEntryProblem(m: unknown): string | null {
   if (!MESH_NAME.test(name)) return `name ${JSON.stringify(name)} is not letters, digits, - and _`;
   const archive = text('archive');
   if (!archive) return 'no archive (the mesh archive file, e.g. 01CGD_mesh.tar.zst)';
-  if (!archive.endsWith('.tar.zst')) return `archive ${archive} is not a .tar.zst file`;
+  // A bare file name published beside the catalogue (meshArchiveUrl): never a URL or a path, so a catalogue cannot
+  // send the plugin's downloads to another address.
+  if (!ARCHIVE_NAME.test(archive)) return `archive ${archive} is not a .tar.zst file name (letters, digits, ., - and _; no path or URL)`;
   const built = text('build_date');
   if (!built || Number.isNaN(Date.parse(built))) return 'no valid build_date';
   if (e.chart_build_date != null && (typeof e.chart_build_date !== 'string' || Number.isNaN(Date.parse(e.chart_build_date))))

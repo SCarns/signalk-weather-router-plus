@@ -1123,7 +1123,7 @@ function _checkLines(s) {
   const online = s.connectivity && s.connectivity.online !== false;
   return Object.entries(s.checks || {})
     .filter(([, c]) => c.outcome === 'failed' || (c.outcome === 'could-not-check' && online))
-    .map(([k, c]) => '<br><span class="warn">' + (_CHECK_NAMES[k] || escapeHtml(k)) + (c.outcome === 'failed' ? ' update failed' : ' not checked')
+    .map(([k, c]) => '<br><span class="warn">' + (_CHECK_NAMES[k] || escapeHtml(k)) + (c.outcome === 'failed' ? ' update failed' : ' check failed')
       + ' at ' + escapeHtml(_clockText(c.at)) + (c.reason ? ': ' + unitTextHtml(c.reason) : '') + '</span>')
     .join('');
 }

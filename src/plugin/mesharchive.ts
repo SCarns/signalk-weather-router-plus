@@ -242,25 +242,43 @@ export class TarExtractor extends Writable {
 /**
  * The tiles the unpacked mesh's indexes list (its `index.json`, or each
  * cluster's under `meshes.json`): all present, and their total. Throws
- * naming a missing tile.
+ * naming a missing tile. Every cluster folder and tile the indexes name must
+ * lie inside the unpacked folder and every tile be a plain file: a listed
+ * `../01CGD/x.bin` would otherwise be found in the copy already on disk and
+ * pass for a tile the archive does not hold.
  */
 export function checkUnpacked(dest: string): { tiles: number; bytes: number } {
+  const root = path.resolve(dest);
+  const inside = (rel: string, what: string): string => {
+    const p = path.resolve(root, rel);
+    if (p !== root && !p.startsWith(root + path.sep)) throw new Error(`the archive's index lists ${what} ${rel} outside the mesh`);
+    return p;
+  };
   let clusters = [''];
-  if (!fs.existsSync(path.join(dest, 'index.json'))) {
-    const m = readJson<{ meshes: { dir: string }[] }>(path.join(dest, 'meshes.json'));
+  if (!fs.existsSync(path.join(root, 'index.json'))) {
+    const m = readJson<{ meshes: { dir: string }[] }>(path.join(root, 'meshes.json'));
     if (!m || !Array.isArray(m.meshes)) throw new Error('the archive holds no index.json or meshes.json');
-    clusters = m.meshes.map(c => c.dir);
+    clusters = m.meshes.map(c => String(c.dir));
   }
   let tiles = 0;
   let bytes = 0;
   for (const c of clusters) {
-    const ix = readJson<{ tiles: { file: string }[] }>(path.join(dest, c, 'index.json'));
+    const dir = inside(c, 'the cluster folder');
+    const ix = readJson<{ tiles: { file: string }[] }>(path.join(dir, 'index.json'));
     if (!ix || !Array.isArray(ix.tiles)) throw new Error(`${path.join(c, 'index.json')}: missing or unreadable in the archive`);
     for (const t of ix.tiles) {
-      const n = sizeOf(path.join(dest, c, t.file));
-      if (n < 0) throw new Error(`${path.join(c, t.file)}: listed in the index, missing from the archive`);
+      const rel = path.join(c, String(t.file));
+      const file = inside(rel, 'the tile');
+      let st: fs.Stats | null = null;
+      try {
+        st = fs.lstatSync(file);
+      } catch {
+        // missing
+      }
+      if (!st) throw new Error(`${rel}: listed in the index, missing from the archive`);
+      if (!st.isFile()) throw new Error(`${rel}: listed in the index as a tile, not a file in the archive`);
       tiles++;
-      bytes += n;
+      bytes += st.size;
     }
   }
   return { tiles, bytes };

@@ -13,7 +13,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
-import { ARCHIVE_PART, downloadMeshArchive, type MeshDownloadTask, TarExtractor } from './mesharchive';
+import { ARCHIVE_PART, checkUnpacked, downloadMeshArchive, type MeshDownloadTask, TarExtractor } from './mesharchive';
 import { type TarEntry, tarOf, zstd } from './tarfixture';
 
 const TOP = '01CGD_mesh';
@@ -132,6 +132,37 @@ test('mesh archive: not enough disk for the rest of the archive and the mesh is 
     assert.deepEqual(s.ranges, [], 'nothing fetched');
   } finally {
     s.close();
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test('checkUnpacked: a tile or cluster the index names outside the mesh, or a folder named as a tile, is refused', () => {
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-check-'));
+  const dest = path.join(store, '01CGD.new');
+  const write = (index: unknown, files: Record<string, number>, dirs: string[] = []): void => {
+    fs.rmSync(dest, { recursive: true, force: true });
+    fs.mkdirSync(dest, { recursive: true });
+    fs.writeFileSync(path.join(dest, 'index.json'), JSON.stringify(index));
+    for (const [f, n] of Object.entries(files)) fs.writeFileSync(path.join(dest, f), Buffer.alloc(n, 1));
+    for (const d of dirs) fs.mkdirSync(path.join(dest, d));
+  };
+  try {
+    // The copy already on disk beside it holds the tile the archive lacks.
+    fs.mkdirSync(path.join(store, '01CGD'));
+    fs.writeFileSync(path.join(store, '01CGD', 'old.bin'), Buffer.alloc(100, 1));
+    write({ tiles: [{ file: 'a.bin' }, { file: '../01CGD/old.bin' }] }, { 'a.bin': 10 });
+    assert.throws(() => checkUnpacked(dest), /lists the tile \.\.\/01CGD\/old\.bin outside the mesh/);
+    write({ tiles: [{ file: 'a.bin' }, { file: 'sub' }] }, { 'a.bin': 10 }, ['sub']);
+    assert.throws(() => checkUnpacked(dest), /sub: listed in the index as a tile, not a file/);
+    // A multi-cluster index whose cluster folder leaves the mesh.
+    fs.rmSync(dest, { recursive: true, force: true });
+    fs.mkdirSync(dest, { recursive: true });
+    fs.writeFileSync(path.join(dest, 'meshes.json'), JSON.stringify({ meshes: [{ dir: '../01CGD' }] }));
+    assert.throws(() => checkUnpacked(dest), /lists the cluster folder \.\.\/01CGD outside the mesh/);
+    // A good one still counts.
+    write({ tiles: [{ file: 'a.bin' }, { file: 'b.bin' }] }, { 'a.bin': 10, 'b.bin': 20 });
+    assert.deepEqual(checkUnpacked(dest), { tiles: 2, bytes: 30 });
+  } finally {
     fs.rmSync(store, { recursive: true, force: true });
   }
 });
