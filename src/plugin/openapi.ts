@@ -572,7 +572,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           responses: {
             204: { description: 'Deleted' },
             404: { description: 'Not found' },
-            409: { description: 'Job is running' },
+            409: { description: "Job is running, or a departure window's (deleted with its window)" },
             503: { description: 'Plugin not started' },
           },
         },
@@ -704,7 +704,11 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         },
         delete: {
           summary: 'Delete a finished window and its route jobs',
-          responses: { 204: { description: 'Deleted' }, 404: { description: 'Not found' }, 409: { description: 'Still running' } },
+          responses: {
+            204: { description: 'Deleted' },
+            404: { description: 'Not found' },
+            409: { description: 'Still running, or cancelled with a departure still stopping' },
+          },
         },
       },
       '/api/windows/{id}/cancel': {

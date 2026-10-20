@@ -243,6 +243,7 @@ test('cancel: departures not started are cancelled, the running one is stopped, 
   const running = h.jobs.runningId!;
   assert.equal(h.windows.cancel(w.id), true);
   assert.deepEqual(h.cancelled, [running], 'the route worker is told to stop');
+  assert.equal(h.windows.delete(w.id), false, 'not deleted while its departure is stopping');
   // The worker answers the cancel.
   h.jobs.onError(running, 'cancelled', true);
   const c = h.windows.get(w.id)!;

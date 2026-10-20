@@ -26,6 +26,7 @@ let _settingPrecisionFromRoute = false;  // true while a loaded route sets the p
 let routeActive = false;      // a route is displayed for the current markers
 let _routeStale = false;      // markers changed since that route was computed
 let _routeComputing = false;  // a route job is running
+let _routeReady = false;      // start, end (power mode: the boat) set; Find Route on unless computing
 // The displayed route's points in route order, [{ lonLat, via, time (ms) }], for Live
 // mode. routeSource.getFeatures() is not in route order (spatial index).
 let _routePoints = [];
@@ -630,6 +631,7 @@ function refreshFindRouteEnabled() {
   } else if (status) {
     status.textContent = '';
   }
+  _routeReady = !blocked; // Compare departures needs the same, but may start while a route computes
   if (_routeComputing) blocked = true;
   btn.disabled = blocked;
   _winRefresh();
@@ -3406,7 +3408,9 @@ function _winRefresh() {
   const running = !document.getElementById('windowCancel').hidden;
   const starting = 'starting' in btn.dataset; // _winStart: until the new window's first poll
   count.textContent = p.error || (p.n + ' departure' + (p.n === 1 ? '' : 's') + ', from ' + fmtWhen(p.from.toISOString()) + ' to ' + fmtWhen(p.to.toISOString()));
-  btn.disabled = !!p.error || running || starting || !findBtn || (findBtn.disabled && !_routeComputing);
+  // Not Find Route's own state: a route computing turns that off, and a start or end cleared meanwhile left
+  // Compare on, to throw in buildRoutePayload (PR #51 review).
+  btn.disabled = !!p.error || running || starting || !findBtn || !_routeReady;
 }
 
 function _winStart() {

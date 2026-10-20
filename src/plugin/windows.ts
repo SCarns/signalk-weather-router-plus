@@ -273,10 +273,15 @@ export class WindowManager {
     return true;
   }
 
-  /** Delete a finished window and its route jobs. */
+  /** A cancelled window whose departure's route worker has not stopped yet: its job ends when the worker answers. */
+  stopping(w: DepartureWindow): boolean {
+    return w.departures.some(d => d.job_id !== null && this.jobs.get(d.job_id)?.status === 'running');
+  }
+
+  /** Delete a finished window and its route jobs; not while it runs, nor while it is stopping (PR #51 review). */
   delete(id: string): boolean {
     const w = this.windows.get(id);
-    if (!w || w.status === 'running') return false;
+    if (!w || w.status === 'running' || this.stopping(w)) return false;
     for (const d of w.departures) {
       if (!d.job_id) continue;
       this.byJob.delete(d.job_id);

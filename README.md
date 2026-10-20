@@ -2054,6 +2054,7 @@ readwrite.
 | 204 | none |
 | 404 | `{error: "job not found"}` |
 | 409 | `{error: "cancel the running job before deleting it"}` |
+| 409 | `{error: "a departure window's route: delete the window (DELETE …/api/windows/{window})"}`: a departure window's jobs go with their window |
 
 ### Departure windows
 
@@ -2122,7 +2123,8 @@ Access: readonly. `200`:
 `GET /api/windows?limit=` lists the windows newest first in the same
 form. `POST /api/windows/{id}/cancel` → `202 {id, status}`: the
 departures not started are cancelled and the one computing is stopped.
-`DELETE /api/windows/{id}` → `204`, or `409` while it is running.
+`DELETE /api/windows/{id}` → `204`, or `409` while it is running, and
+after a cancel until the departure computing has stopped.
 
 ### Forecast and conditions
 

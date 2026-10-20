@@ -812,6 +812,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
         json(res, 409, { error: 'cancel the running job before deleting it' });
         return;
       }
+      // Its window waits for it, and shows its route (PR #51 review): it goes with the window.
+      if (job.windowId) {
+        json(res, 409, { error: `a departure window's route: delete the window (DELETE ${deps.basePath}/api/windows/${job.windowId})` });
+        return;
+      }
       jobs.delete(job.id);
       res.status(204).end();
     });
@@ -873,7 +878,10 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   rw.delete('/api/windows/:id', (req: Request, res: Response) => {
     withWindow(req, res, (windows, id) => {
       if (!windows.delete(id)) {
-        json(res, 409, { error: 'cancel the window before deleting it' });
+        const running = windows.get(id)!.status === 'running';
+        json(res, 409, {
+          error: running ? 'cancel the window before deleting it' : 'a cancelled departure is still stopping; try again in a moment',
+        });
         return;
       }
       res.status(204).end();

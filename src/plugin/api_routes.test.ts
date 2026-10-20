@@ -1,6 +1,7 @@
 /**
  * The route API's checks before a job is queued (a request too large, a polar not in the library), the event
- * stream's replay when Last-Event-ID is not a number, and a departure window's route read back from disk.
+ * stream's replay when Last-Event-ID is not a number, a departure window's route read back from disk, and what
+ * the deletes of a window and of its routes wait for.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,6 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { registerApi, type ApiDeps } from './api';
 import { JobManager } from './jobs';
+import { WindowManager } from './windows';
 
 type Handler = (req: unknown, res: unknown) => unknown;
 interface Answer {
@@ -183,6 +185,49 @@ test('POST /api/windows: no body is 400, too large 413 and a polar not in the li
     const ok = await call('POST /api/windows', { body: { route: { ...ROUTE, vessel: { polar: 'a.csv' } }, from, to } });
     assert.equal(ok.status, 202);
     assert.equal(created.length, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("DELETE /api/routes/:id: a departure window's job is 409; DELETE /api/windows/:id: 409 until a cancelled departure has stopped", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-jobs-'));
+  try {
+    const jobs = new JobManager(dir, 50, '/x');
+    const stopping: string[] = [];
+    const windows = new WindowManager(jobs, dir, { cancelRunning: id => stopping.push(id), forecastValidToMs: () => null }, '/x');
+    const call = api(jobs as unknown as Record<string, unknown>, dir, windows as unknown as Record<string, unknown>);
+    // An ordinary route computing; the window's first departure waits behind it.
+    const other = jobs.submit({ ...ROUTE, departure: '2026-11-02T00:00:00.000Z' });
+    const w = windows.create({ route: ROUTE, from: '2026-11-02T00:00:00.000Z', to: '2026-11-02T06:00:00.000Z', step_s: 6 * 3600 });
+    const first = w.departures[0].job_id!;
+    assert.equal(jobs.get(first)!.status, 'queued');
+
+    // Deleted through the route API, the window would wait for it forever (a slot of the two taken).
+    const del = await call('DELETE /api/routes/:id', { params: { id: first } });
+    assert.equal(del.status, 409);
+    assert.match(String(del.body.error), /^a departure window's route: delete the window \(DELETE \/x\/api\/windows\//);
+    jobs.onError(other.id, 'failed');
+    assert.equal(jobs.runningId, first, 'still queued, so it is computed next');
+    assert.equal(windows.get(w.id)!.departures[0].status, 'running');
+
+    // Running: 409. Cancelled, its departure still stopping: 409, the job kept with its window.
+    assert.equal((await call('DELETE /api/windows/:id', { params: { id: w.id } })).status, 409);
+    assert.equal((await call('POST /api/windows/:id/cancel', { params: { id: w.id } })).status, 202);
+    assert.deepEqual(stopping, [first]);
+    assert.equal(windows.get(w.id)!.status, 'cancelled');
+    const early = await call('DELETE /api/windows/:id', { params: { id: w.id } });
+    assert.equal(early.status, 409);
+    assert.match(String(early.body.error), /^a cancelled departure is still stopping/);
+    assert.ok(windows.get(w.id) && jobs.get(first), 'the window and its job are kept');
+    // The route worker stops: the window goes, and its job with it.
+    jobs.onError(first, 'cancelled', true);
+    assert.equal(windows.get(w.id)!.departures[0].status, 'cancelled');
+    assert.equal((await call('DELETE /api/windows/:id', { params: { id: w.id } })).status, 204);
+    assert.equal(windows.get(w.id), undefined);
+    assert.equal(jobs.get(first), undefined);
+    assert.ok(!fs.existsSync(path.join(dir, `${first}.json`)), "the job's file is deleted");
+    windows.close();
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
