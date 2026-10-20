@@ -679,6 +679,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           responses: {
             202: { description: '{id, status: "running", departures, links}' },
             400: { description: '{error}' },
+            413: { description: 'The request body is over 64 KB' },
             429: { description: 'Two windows are being computed already' },
             503: { description: 'Plugin not started' },
           },

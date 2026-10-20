@@ -2089,8 +2089,8 @@ Access: readwrite. Body:
 | `step_s` | number | s | 21600 | 3600..86400 between departures; at most 48 departures |
 
 `202 {id, status: "running", departures, links}`; `400 {error}` for a bad
-body (a route error is prefixed `route: `); `429` when two windows are
-being computed already.
+body (a route error is prefixed `route: `); `413 {error}` when the request
+body is over 64 KB; `429` when two windows are being computed already.
 
 #### GET /api/windows/{id}
 
