@@ -77,6 +77,12 @@ export interface Meteogram {
   /** The sample step was raised from the one asked for to keep the row count in bounds. */
   step_raised: boolean;
   rows: MeteogramRow[];
+  /**
+   * False when the forecast, a regional run, the currents or the tides changed while the rows were read (not kept;
+   * asked again, the newest are read). The forecast fields are still those of the runs named above; the currents and
+   * tides may be from two sources, or missing.
+   */
+  complete: boolean;
 }
 
 function num(v: unknown): number | null {

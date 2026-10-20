@@ -760,11 +760,12 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
         if (!service) return;
         // The regional wind models the route was computed with: the meteogram's wind is layered the same way.
         const regional = (job.summary?.regional_wind ?? []).map(r => r.name);
-        const tc = (await service.point(
+        const answer = await service.pointWithStatus(
           'track_conditions',
           { points: samples.map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs })), regional },
           clientGone(res)
-        )) as TrackConditions;
+        );
+        const tc = answer.result as TrackConditions;
         const body: Meteogram & { route_forecast_cycle: string | null } = {
           departure: samples[0].time,
           arrival: samples[samples.length - 1].time,
@@ -776,6 +777,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
           regional_wind_missing: tc.regionalMissing,
           route_forecast_cycle: job.summary?.forecast_cycle ?? null,
           rows: meteogramRows(samples, tc.rows, Date.parse(tc.validTo)),
+          complete: answer.complete,
         };
         json(res, 200, body);
       } catch (err) {

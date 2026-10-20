@@ -2135,6 +2135,7 @@ Copernicus SMOC areas are not fetched for a track).
 | `regional_wind` | array | `{name, cycle}` of each regional wind run layered over it |
 | `regional_wind_missing` | array | regional models the route used that have no decoded run now (ECMWF answers there) |
 | `route_forecast_cycle` | string or null | the run the route was computed with |
+| `complete` | boolean | false when the forecast, a regional run, the currents or the tides changed while the rows were read: the answer is not kept, and asked again it is read from the newest. The forecast fields are still those of the runs named here; the currents and tides may be from two sources, or missing. The web app then says to reopen the meteogram |
 | `rows` | array | one per step (below) |
 
 Row fields: every [`/api/conditions`](#get-apiconditions) row field

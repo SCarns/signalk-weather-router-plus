@@ -3681,6 +3681,8 @@ function _renderMeteogram() {
     + '" aria-valuemin="0" aria-valuemax="' + Math.max(0, rows.length - 1) + '" aria-valuenow="0" style="display:block;cursor:crosshair;touch-action:pan-y;"></canvas></div>').join('');
   const notes = [];
   const cyc = c => _shortUtc(c);
+  // The data changed while the rows were read (PR #50 review): the currents or tides may mix two sources.
+  if (d.complete === false) notes.push('These conditions were read while the forecast, the currents or the tides changed: close and open the meteogram again for the newest.');
   const stepOpt = [..._meteoEl('meteoStep').options].find(o => Number(o.value) === d.step_s);
   notes.push('Conditions from the ECMWF run of ' + cyc(d.forecast_cycle) + ', every ' + (stepOpt ? stepOpt.textContent : _fmt(d.step_s, 'time'))
     + (d.step_raised ? ' (raised to keep the row count down)' : '') + '.');
