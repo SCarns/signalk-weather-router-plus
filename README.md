@@ -402,8 +402,8 @@ computed with what that request says, not with the user's saved Setup.
   map view, open tabs, layer toggles and the plan stay per browser.
   Without a login with write access, or with security off (Signal K then
   keeps no application data), the choices are kept in the browser only,
-  as before ([Users](#users)). The Freeboard panel keeps its polar, mode
-  and min sail speed in the same store ([In Freeboard-SK](#in-freeboard-sk)).
+  as before ([Users](#users)). The Freeboard panel keeps its polar, mode,
+  min sail speed and limits in the same store ([In Freeboard-SK](#in-freeboard-sk)).
 - **Header.** The data sources, with how fresh each one is. Collapsed (the
   default): one line, `wind ●● | waves ● | currents ●● | tides ●`, a dot
   per source in its colour, with **Show** on the right. Expanded (**Hide**
@@ -640,11 +640,10 @@ and the panel runs in a sandboxed iframe served from
   maximum wind speed and wave height that no leg may exceed (empty = no
   limit; the routing settings' values by default). With a min sail speed
   of 0 (never motor) a stretch the boat cannot sail or tack out of fails
-  the route, saying "set Min sail speed above 0". The polar, mode and min
-  sail speed are the web app's Setup choices: the panel reads and writes
-  them in the same store, so the same Signal K user has the same polar in
-  both ([Users](#users)). The limits are not kept by the web app and stay
-  in the browser. Progress is shown;
+  the route, saying "set Min sail speed above 0". The polar, mode, min
+  sail speed and limits are the web app's Setup choices: the panel reads
+  and writes them in the same store, so the same Signal K user has the
+  same polar and limits in both ([Users](#users)). Progress is shown;
   Cancel stops the job. The map
   is fitted to the result; the panel shows distance and time in
   Freeboard's unit preferences, the sailing/motoring split, the arrival

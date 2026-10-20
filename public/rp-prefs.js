@@ -35,7 +35,7 @@
 // src/tokensecurity.ts and src/interfaces/applicationData.js. So the
 // server side of a per-user feature sees the same name as this module.
 // The Freeboard panel (plotterext/panel.html) uses this store too, for
-// the polar, the mode and the min sail speed.
+// the polar, the mode, the min sail speed and the route limits.
 
 export const PREFS_URL = '/signalk/v1/applicationData/user/signalk-weather-router-plus/1.0.0';
 export const LOGIN_STATUS_URL = '/skServer/loginStatus';

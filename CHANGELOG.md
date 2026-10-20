@@ -50,9 +50,10 @@ uses [Semantic Versioning](https://semver.org/).
   read (3 s at most); the legend box and the position poll, which waited
   for the page's `load` event, start at once when it has already fired.
   Without a login with write access the choices stay in the browser.
-  The Freeboard panel keeps its polar, mode and min sail speed in the same
-  store (its own `wrp-plotterext-*` keys from before are read only while
-  the store has none). README, Users: the user is the Signal K login name
+  The Freeboard panel keeps its polar, mode, min sail speed and limits
+  (max wind and wave height, the web app's `routeVar:maxWind:si` and
+  `routeVar:maxSwh:si`) in the same store (its own `wrp-plotterext-*` keys
+  from before are read only while the store has none). README, Users: the user is the Signal K login name
   (`req.skPrincipal.identifier`, as `loginStatus` reports it), nothing is
   per user without a login, and a read-only user owns nothing.
 
