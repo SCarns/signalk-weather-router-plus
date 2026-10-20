@@ -659,7 +659,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
                   required: ['route', 'from', 'to'],
                   properties: {
                     route: {
-                      type: 'object',
+                      ...routeRequest,
                       description: 'The route request, as POST /api/routes takes it; departure and publish are set per departure',
                     },
                     from: { type: 'string', format: 'date-time', description: 'Earliest departure' },
@@ -715,7 +715,8 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       '/api/windows/{id}/cancel': {
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         post: {
-          summary: 'Cancel the departures not computed yet (the one computing is stopped)',
+          summary:
+            'Cancel the departures not computed yet, and ask the one computing to stop: it stops when the route worker next checks, so DELETE answers 409 until then',
           responses: { 202: { description: '{id, status}' }, 404: { description: 'Not found' } },
         },
       },

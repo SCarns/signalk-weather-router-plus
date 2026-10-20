@@ -2122,7 +2122,8 @@ Access: readonly. `200`:
 
 `GET /api/windows?limit=` lists the windows newest first in the same
 form. `POST /api/windows/{id}/cancel` → `202 {id, status}`: the
-departures not started are cancelled and the one computing is stopped.
+departures not started are cancelled, and the one computing is asked to
+stop; it stops when the route worker next checks, a moment later.
 `DELETE /api/windows/{id}` → `204`, or `409` while it is running, and
 after a cancel until the departure computing has stopped.
 
