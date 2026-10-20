@@ -80,6 +80,8 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
   let remote = false;         // the server keeps this user's choices
   let user = null;            // the logged-in user load() found
   const legacy = new Map();   // ownerless choices from before this module, waiting for the user's answer
+  let reading = false;        // load() is waiting for the server
+  const setWhileReading = new Set(); // choices made meanwhile: they win over the server's
 
   const local = {
     get(key) { try { return storage ? storage.getItem(key) : null; } catch (_) { return null; } },
@@ -179,6 +181,7 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       local.set(key, value);
       if (!isUserPref(key)) return;
       legacy.delete(key);     // set now: the user's own choice
+      if (reading) setWhileReading.add(key);
       if (values.get(key) === value) return;
       values.set(key, value);
       if (!remote) return;
@@ -239,6 +242,7 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
       const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
       const signal = ctrl ? ctrl.signal : undefined;
+      reading = true;
       try {
         [data, login] = await Promise.all([
           getJson(url, signal),
@@ -248,16 +252,22 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
         /* no answer in time: this browser only */
       } finally {
         if (t !== null) clearTimeout(t);
+        reading = false;
       }
+      // A page whose controls work before this answers (the Freeboard panel): what the user chose meanwhile is newer
+      // than the server's value, so it is kept and sent up.
+      const mine = new Set(setWhileReading);
+      setWhileReading.clear();
       if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
       remote = true;
       for (const [key, value] of Object.entries(data)) {
-        if (!isUserPref(key) || typeof value !== 'string') continue;
+        if (!isUserPref(key) || typeof value !== 'string' || mine.has(key)) continue;
         values.set(key, value);
         local.set(key, value);
       }
+      for (const key of mine) pending.set(key, values.get(key));
       user = login && login.status === 'loggedIn' && typeof login.username === 'string' ? login.username : null;
-      if (user === null) return true;   // the owner of this browser's choices is unknown: leave them be
+      if (user === null) { send(); return true; }   // the owner of this browser's choices is unknown: leave them be
       const owner = local.get(OWNER_KEY);
       for (const key of local.keys()) {
         if (!isUserPref(key) || values.has(key)) continue;

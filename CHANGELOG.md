@@ -53,7 +53,9 @@ uses [Semantic Versioning](https://semver.org/).
   The Freeboard panel keeps its polar, mode, min sail speed and limits
   (max wind and wave height, the web app's `routeVar:maxWind:si` and
   `routeVar:maxSwh:si`) in the same store (its own `wrp-plotterext-*` keys
-  from before are read only while the store has none). README, Users: the user is the Signal K login name
+  from before are read only while the store has none). Its controls work
+  before the store has read the server: a choice made meanwhile is kept
+  over the stored one and sent up. README, Users: the user is the Signal K login name
   (`req.skPrincipal.identifier`, as `loginStatus` reports it), nothing is
   per user without a login, and a read-only user owns nothing.
 

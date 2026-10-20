@@ -1010,19 +1010,33 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     if (v === null || v === '') { try { v = localStorage.getItem(oldKey); } catch (_) { v = null; } }
     return v;
   }
+  // A change made before the store's module is there waits for it (prefsReady), in order; the store keeps a change
+  // made while it reads the server over the server's value. Without the store: the panel's old key.
   function setChoice(key, oldKey, value) {
-    if (!prefs) { try { localStorage.setItem(oldKey, value); } catch (_) {} return; }
+    if (!prefs) {
+      prefsReady.then(function () {
+        if (prefs) setChoice(key, oldKey, value);
+        else { try { localStorage.setItem(oldKey, value); } catch (_) {} }
+      });
+      return;
+    }
     prefs.set(key, value);
     try { localStorage.removeItem(oldKey); } catch (_) {}
   }
   prefsReady.then(function () {
     var m = prefs && prefs.get('routeVar:mode');
+    if ($('mode').dataset.touched) return; // chosen here before the store was there: that choice stands
     if (m && [].some.call($('mode').options, function (o) { return o.value === m; })) {
       $('mode').value = m;
       showSailThresh();
     }
   });
-  $('mode').addEventListener('change', function () { if (prefs) prefs.set('routeVar:mode', this.value); });
+  $('mode').addEventListener('change', function () {
+    var v = this.value;
+    this.dataset.touched = '1';
+    if (prefs) prefs.set('routeVar:mode', v);
+    else prefsReady.then(function () { if (prefs) prefs.set('routeVar:mode', v); });
+  });
 
   // ---- polars, waypoints --------------------------------------------------
   function loadPolars() {

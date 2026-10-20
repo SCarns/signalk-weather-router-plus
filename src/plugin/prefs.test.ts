@@ -40,6 +40,8 @@ interface ServerOpts {
   postStatus?: number[];
   /** Hold every POST until release() is called. */
   holdPosts?: boolean;
+  /** Hold the read of the choices until releaseGet() is called. */
+  holdGet?: boolean;
 }
 
 /**
@@ -51,6 +53,7 @@ function fakeServer(stored: Record<string, unknown> | null, opts: ServerOpts = {
   const doc: Record<string, unknown> = { ...(stored ?? {}) };
   const user = opts.user === undefined ? 'dirk' : opts.user;
   const held: (() => void)[] = [];
+  const heldGets: (() => void)[] = [];
   let posts = 0;
   const fetchFn = async (url: string, init: { method?: string; body?: string; keepalive?: boolean } = {}) => {
     const method = init.method ?? 'GET';
@@ -60,6 +63,7 @@ function fakeServer(stored: Record<string, unknown> | null, opts: ServerOpts = {
       return Response.json(user ? { status: 'loggedIn', username: user } : { status: 'notLoggedIn' });
     }
     if (method === 'GET') {
+      if (opts.holdGet) await new Promise<void>(r => heldGets.push(r));
       const status = opts.getStatus ?? 200;
       return new Response(status === 200 ? JSON.stringify(doc) : 'no', { status });
     }
@@ -79,7 +83,10 @@ function fakeServer(stored: Record<string, unknown> | null, opts: ServerOpts = {
   const release = () => {
     for (const r of held.splice(0)) r();
   };
-  return { calls, doc, fetchFn, postCalls, release };
+  const releaseGet = () => {
+    for (const r of heldGets.splice(0)) r();
+  };
+  return { calls, doc, fetchFn, postCalls, release, releaseGet };
 }
 
 const quiet = { warn: () => {} };
@@ -503,4 +510,22 @@ test('blocked localStorage: a choice still holds for the page and still reaches 
   assert.equal(prefs.get('vesselType'), 'power');
   await prefs.flush();
   assert.equal(srv.doc.vesselType, 'power');
+});
+
+test('a choice made while load() waits for the server wins over the stored one and is sent up', async () => {
+  // The Freeboard panel opens its controls before the read answers (the web app waits for load()).
+  const storage = new MemStorage();
+  storage.setItem(OWNER_KEY, 'dirk');
+  const srv = fakeServer({ 'routeVar:mode': 'fastest', polarPath: 'a.pol' }, { holdGet: true });
+  const prefs = createPrefs({ storage, fetchFn: srv.fetchFn, delayMs: 0, log: quiet });
+  const loading = prefs.load();
+  await wait(5);
+  prefs.set('routeVar:mode', 'sail_max');
+  srv.releaseGet();
+  assert.equal(await loading, true);
+  assert.equal(prefs.get('routeVar:mode'), 'sail_max');
+  assert.equal(storage.getItem('routeVar:mode'), 'sail_max');
+  assert.equal(prefs.get('polarPath'), 'a.pol', 'the other choices come from the server');
+  await prefs.flush();
+  assert.equal(srv.doc['routeVar:mode'], 'sail_max');
 });
