@@ -110,8 +110,29 @@ test('sampleStep: the step asked for unless the passage would need too many rows
   assert.deepEqual(sampleStep(4 * 86400, 3600), { stepS: 3600, raised: false });
   const long = sampleStep(90 * 86400, 600);
   assert.equal(long.raised, true);
-  assert.ok(Math.ceil((90 * 86400) / long.stepS) + 1 <= METEOGRAM_MAX_SAMPLES + 1);
   assert.equal(long.stepS % 60, 0, 'whole minutes');
+  // The rows trackSamples gives, departure and arrival included (PR #50 review: arrival made 1001). Passages
+  // just under and over a whole number of steps, around the limit and far past it.
+  const rows = (durationS: number, stepS: number) => {
+    const pts = routePoints(
+      routeGeoJSON([
+        { lon: -9.4, lat: 38.7, h: 0 },
+        { lon: -16.9, lat: 32.6, h: durationS / 3600 },
+      ])
+    );
+    return trackSamples(pts, sampleStep(durationS, stepS).stepS).length;
+  };
+  // 599999 s at 600 s: 1000 steps after departure, then arrival: raised (to the next whole minute, 660 s).
+  assert.deepEqual(sampleStep(599_999, 600), { stepS: 660, raised: true });
+  assert.equal(rows(599_999, 600), 911);
+  assert.deepEqual(sampleStep(599_400, 600), { stepS: 600, raised: false }, '999 steps exactly: 1000 rows, not raised');
+  assert.equal(rows(599_400, 600), METEOGRAM_MAX_SAMPLES);
+  for (const step of [600, 3600, 21600])
+    for (const k of [998, 999, 1000, 1001, 1500, 4000, 12960])
+      for (const d of [-1, 0, 1]) {
+        const durationS = k * step + d;
+        assert.ok(rows(durationS, step) <= METEOGRAM_MAX_SAMPLES, `${durationS} s at ${step} s: ${rows(durationS, step)} rows`);
+      }
 });
 
 test('trueWindAngle: 0 head to wind, 180 dead downwind, the side the wind comes from', () => {

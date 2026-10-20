@@ -24,7 +24,7 @@ import type { TrackConditionsRow } from './protocol';
 
 /** Step between samples, s: default, smallest and largest. */
 export const METEOGRAM_STEP_S = { default: 3600, min: 600, max: 6 * 3600 };
-/** At most this many samples; a longer passage takes a coarser step. */
+/** At most this many samples (rows, departure and arrival included); a longer passage takes a coarser step. */
 export const METEOGRAM_MAX_SAMPLES = 1000;
 
 /** One route point as the GeoJSON carries it (the fields this module reads). */
@@ -106,9 +106,11 @@ export function routePoints(geojson: unknown): RoutePoint[] {
 /**
  * The sample step actually used: the one asked for, raised (in whole
  * minutes) when the passage would need more than METEOGRAM_MAX_SAMPLES.
+ * The rows are the steps after departure plus departure itself
+ * (trackSamples), so at most METEOGRAM_MAX_SAMPLES - 1 steps.
  */
 export function sampleStep(durationS: number, stepS: number): { stepS: number; raised: boolean } {
-  const need = Math.ceil(durationS / METEOGRAM_MAX_SAMPLES);
+  const need = Math.ceil(durationS / (METEOGRAM_MAX_SAMPLES - 1));
   if (stepS >= need) return { stepS, raised: false };
   return { stepS: Math.ceil(need / 60) * 60, raised: true };
 }
