@@ -896,8 +896,9 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     wx.endMs = Math.floor(Date.parse(f.valid_to) / HOUR_MS) * HOUR_MS;
     if (wx.time !== null && (wx.time < wx.startMs || wx.time > wx.endMs)) setTime(null, true);
     renderData();
-    // The presets follow the data: a new run, or currents or tides loaded (or gone) since they were read.
-    var dataKey = JSON.stringify([f.cycle, (s.currents || []).map(function (c) { return c.name; }), s.tides ? s.tides.run || s.tides.name : null]);
+    // The presets follow the data: a new run, the run's fields or its waves (a reload of the same run with other
+    // settings, PR #54 review), or currents or tides loaded (or gone) since they were read.
+    var dataKey = JSON.stringify([f.cycle, f.params, f.has_waves, (s.currents || []).map(function (c) { return c.name; }), s.tides ? s.tides.run || s.tides.name : null]);
     var newData = dataKey !== wx.groupsKey;
     wx.groupsKey = dataKey;
     if (newRun || newData || Date.now() - wx.groupsAt > 10 * 60000) loadChartGroups();
@@ -1786,6 +1787,15 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   connectHost().then(function (h) {
     host = h;
     initWeather();
+    // The units and the ship's time zone, before the routes check: the Weather tab's legends and clocks use them
+    // on a chartplotter without routes too (PR #54 review).
+    unitsReady = Promise.all([
+      host.has('units') ? host.call('units.get').then(function (r) { units = r.units || null; }).catch(function () {}) : Promise.resolve(),
+      loadSkUnits(),
+      loadSeaBands(),
+    ]);
+    unitsReady.then(renderPresets);
+    var shipTime = loadShipTime().then(function () { renderTime(); renderData(); });
     if (!host.has('routes')) {
       setStatus('This chartplotter cannot show routes from extensions (no "routes" capability).', 'error');
       // The Weather tab still works: its data line is kept current (pollStatus would replace the message above).
@@ -1794,13 +1804,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       })();
       return;
     }
-    unitsReady = Promise.all([
-      host.has('units') ? host.call('units.get').then(function (r) { units = r.units || null; }).catch(function () {}) : Promise.resolve(),
-      loadSkUnits(),
-      loadSeaBands(),
-    ]);
     unitsReady.then(loadSailThreshDefault);
-    unitsReady.then(renderPresets);
     // The host's visible routes: seed from route.list, then follow the events.
     host.subscribe(['route.**'], function (name, ev) {
       if (!ev || !ev.routeId) return;
@@ -1836,7 +1840,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       if (!vessel && v) setVessel(v.latitude, v.longitude);
     }).catch(function () {});
     if (!host.has('map')) $('useCentre').hidden = true;
-    loadShipTime().then(function () { renderTime(); if (result && result.points) showResult(result.props, result.n); });
+    shipTime.then(function () { if (result && result.points) showResult(result.props, result.n); });
     pollStatus();
     loadPolars();
     loadWaypoints();

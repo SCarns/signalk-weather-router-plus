@@ -663,7 +663,8 @@ it, shown in one tap: *Wind* (speed, barbs), *Waves* (height, wave arrows),
 isobars), *Air temperature* and *Sea temperature* (with isobars and
 arrows). Two colour layers over each other are unreadable, so no group
 has more than one. A group holds the layers whose data is there and is
-rewritten when the forecast is reloaded; it needs the server's `groups`
+rewritten when the forecast is reloaded; without its colour layer's data
+(Pressure: the isobars') it is left out. It needs the server's `groups`
 collection, which Freeboard creates.
 
 **Weather tab.** The panel's Weather tab switches the layers and the

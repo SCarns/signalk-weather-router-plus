@@ -78,6 +78,20 @@ test('charts: a group whose colour layer has no data is left out, not offered wi
   assert.deepEqual(byName['Sea temperature'].charts, ['wrp-sea-temperature', 'wrp-current-arrows']);
 });
 
+test('charts: a group is left out without its first layer: no Pressure of wind barbs alone (PR #54 review)', () => {
+  const byName = Object.fromEntries(
+    provider(PARAMS.filter(p => p !== 'msl'))
+      .groups()
+      .map(g => [g.name.replace(' (Weather Router Plus)', ''), g])
+  );
+  assert.equal(byName.Pressure, undefined);
+  assert.deepEqual(byName.Wind.charts, ['wrp-wind-speed', 'wrp-wind-barbs']);
+  // Rain and air temperature keep their colour layer, without the isobars.
+  assert.equal(byName.Rain.charts.length, 1);
+  assert.equal(byName.Rain.legend, 'precip');
+  assert.equal(byName['Air temperature'].charts.length, 1);
+});
+
 test('charts: a forecast without waves leaves the wave groups out', () => {
   const names = provider(PARAMS.filter(p => !['swh', 'mwp', 'mwd'].includes(p)))
     .groups()

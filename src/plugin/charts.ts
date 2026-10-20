@@ -43,8 +43,8 @@ const CHART_OVERRIDE_KEYS = ['defaultOpacity', 'displayMinZoom', 'imageAdjustmen
  * collection: named sets a chartplotter shows in one tap). One group per
  * colour layer, with its glyphs, written whenever the forecast is
  * (re)loaded and holding the layers whose data is there; ids are fixed,
- * so they are updated in place, and a group with no available layer is
- * left out. Needs a `groups` collection on the
+ * so they are updated in place, and a group whose first layer has no
+ * data is left out. Needs a `groups` collection on the
  * server (Freeboard creates one in resources-provider); otherwise skipped.
  */
 const CHART_GROUPS: { id: string; name: string; description: string; layers: (PngLayer | GlyphLayer)[] }[] = [
@@ -233,17 +233,18 @@ export class ChartsProvider {
   }
   /**
    * The chart groups with the charts that have their data now. A group whose
-   * colour layer has no data is left out, and so is one with no chart at all.
+   * first layer (its colour layer, or Pressure's isobars) has no data is left out.
    */
   groups(): ChartGroup[] {
     const charts = this.resources();
     const out: ChartGroup[] = [];
     for (const g of CHART_GROUPS) {
       const colour = g.layers.find((l): l is PngLayer => (PNG_LAYERS as readonly string[]).includes(l));
-      // A group named after its colour layer (Tide) is not offered with only its glyphs (current arrows).
-      if (colour && !(chartIdOf(colour) in charts)) continue;
+      // A group is named after its first layer: Tide is not offered with only the current arrows, nor
+      // Pressure with only the wind barbs (PR #54 review).
+      if (!(chartIdOf(g.layers[0]) in charts)) continue;
       const ids = g.layers.map(chartIdOf).filter(id => id in charts);
-      if (ids.length) out.push({ id: g.id, name: g.name, description: g.description, charts: ids, legend: colour ?? null });
+      out.push({ id: g.id, name: g.name, description: g.description, charts: ids, legend: colour ?? null });
     }
     return out;
   }
