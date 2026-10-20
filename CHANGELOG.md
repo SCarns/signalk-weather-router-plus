@@ -64,6 +64,18 @@ uses [Semantic Versioning](https://semver.org/).
   saved point answers stay (the regional runs are not part of their
   generation). One read from a run decoded since the data worker's last
   report is answered but not kept.
+- **Setup choices with security off** (`src/plugin/sharedprefs.ts`,
+  `GET`/`POST /api/prefs`). Signal K has no users and keeps no application
+  data with security off, so the choices stayed in each browser. The
+  plugin now keeps one set for every browser, `prefs.json` in its data
+  directory; the web app and the Freeboard panel read and write it as
+  they do a user's application data (JSON Patch, string values, 64 KB at
+  most). It is not a cache: it sits outside the `CACHEDIR.TAG`
+  directories, so backups keep it. With security on the endpoint answers
+  405, which stops the page's writes; unlike a write to a user's
+  application data, a write to it reads no login status first. After security is
+  switched on or off, a browser's choices from the other side are asked
+  about (Keep / Discard), not dropped or sent.
 
 ### Changed
 
@@ -98,7 +110,8 @@ uses [Semantic Versioning](https://semver.org/).
   toggles and the plan stay per browser. Module start-up waits for the one
   read (3 s at most); the legend box and the position poll, which waited
   for the page's `load` event, start at once when it has already fired.
-  Without a login with write access the choices stay in the browser.
+  With security on but without a login with write access the choices
+  stay in the browser.
   The Freeboard panel keeps its polar, mode, min sail speed and limits
   (max wind and wave height, the web app's `routeVar:maxWind:si` and
   `routeVar:maxSwh:si`) in the same store. Its own `wrp-plotterext-*`

@@ -28,6 +28,7 @@ import {
 } from './plugin/config';
 import { AIR_DRAFT_M_RANGE, DRAUGHT_M_RANGE } from './vessel/vessel';
 import { mergeSettings, reloadsFor, settingsSchema, SettingsStore, SettingsValidationError } from './plugin/settings';
+import { SharedPrefsStore } from './plugin/sharedprefs';
 import { checkDecodeResources } from './plugin/memguard';
 import { siText } from './plugin/unittext';
 import { JobManager, type Job } from './plugin/jobs';
@@ -107,6 +108,11 @@ interface SkApp {
     setResource: (type: string, id: string, data: Record<string, unknown>, providerId?: string) => Promise<void>;
     listResources?: (type: string, params: Record<string, unknown>, providerId?: string) => Promise<Record<string, unknown>>;
   };
+  /**
+   * The server's security strategy. Not in the plugin API's types, but the app a plugin gets is a copy of the server's
+   * (signalk-server, src/interfaces/plugins.ts); with security off it is the dummy strategy, isDummy() true.
+   */
+  securityStrategy?: { isDummy?: () => boolean };
 }
 
 interface SignalKPlugin {
@@ -1315,6 +1321,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (!settings || stopped) throw new NotStartedError();
         return { values: settings.values, schema: settingsSchema() };
       },
+      sharedPrefs: new SharedPrefsStore(app.getDataDirPath()),
+      // Unknown (no strategy): treated as security on, so the shared store is never opened by mistake.
+      securityOff: () => app.securityStrategy?.isDummy?.() === true,
       updateSettings: (partial: unknown) => {
         if (!settings || stopped) throw new NotStartedError();
         // Resource guard: refuse a forecast change the device cannot do

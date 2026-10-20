@@ -5,6 +5,8 @@
  *   GET  /api/status                plugin, forecast, currents and queue status
  *   GET  /api/settings              web-app settings {values, schema} (SI)
  *   PUT  /api/settings              partial update → validated, saved, applied live
+ *   GET  /api/prefs                 the Setup choices every browser shares, with security off (405 with it on)
+ *   POST /api/prefs                 JSON Patch (add / remove) to them, as to Signal K's application data
  *   GET  /api/forecast              forecast metadata (+ series at ?lat=&lon=)
  *   POST /api/forecast/refresh      re-check ECMWF / NOMADS
  *   POST /api/meshes/rough-cut      rebuild the chart meshes' rough cuts for the boat (background)
@@ -62,6 +64,7 @@ import { listPolars, loadPolarCached, PolarNotFoundError, polarAngles, polarFrom
 import type { BBox } from '../geo/geodesy';
 import { MESH_ACTIONS, type MeshAction } from './meshes';
 import { SettingsValidationError, type AppSettings, type SettingsGroup, type SettingSpec } from './settings';
+import { SharedPrefsError, type SharedPrefsStore } from './sharedprefs';
 import { checkTile, roundHour, TILE_LAYERS, type TileLayer, type TileService } from './tiles';
 import { joinField, joinLandMask, joinPoints, joinPressure, type TileGetter } from './tilejoin';
 import { isPngLayer, PNG_LAYERS, PngCache, renderTilePng } from './pngtiles';
@@ -117,6 +120,10 @@ export interface ApiDeps {
     values: AppSettings;
     schema: { groups: { id: SettingsGroup; label: string; help: string }[]; settings: readonly SettingSpec[] };
   };
+  /** The Setup choices every browser shares while security is off (sharedprefs.ts). */
+  sharedPrefs: SharedPrefsStore;
+  /** True when Signal K runs with security off (no users, no application data). */
+  securityOff: () => boolean;
   /** Validate, persist and apply a partial settings update. */
   updateSettings: (partial: unknown) => {
     values: AppSettings;
@@ -282,6 +289,34 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       json(res, 200, deps.updateSettings(req.body));
     } catch (err) {
       if (err instanceof SettingsValidationError) json(res, 400, { error: err.message, errors: err.errors });
+      else fail(res, err, 500);
+    }
+  });
+
+  // The Setup choices with security off: one set for every browser (README, Users). With security on they are the
+  // user's, in Signal K's application data, and these answer 405 as Signal K does with it off.
+  const sharedPrefsOr405 = (res: Response): SharedPrefsStore | null => {
+    if (deps.securityOff()) return deps.sharedPrefs;
+    json(res, 405, { error: "security is on: the choices are kept per user in Signal K's application data" });
+    return null;
+  };
+  ro.get('/api/prefs', (_req: Request, res: Response) => {
+    const store = sharedPrefsOr405(res);
+    if (!store) return;
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      json(res, 200, store.read());
+    } catch (err) {
+      fail(res, err, 500);
+    }
+  });
+  rw.post('/api/prefs', (req: Request, res: Response) => {
+    const store = sharedPrefsOr405(res);
+    if (!store) return;
+    try {
+      json(res, 200, store.patch(req.body));
+    } catch (err) {
+      if (err instanceof SharedPrefsError) json(res, err.status, { error: err.message });
       else fail(res, err, 500);
     }
   });
