@@ -79,8 +79,8 @@ export interface Meteogram {
   rows: MeteogramRow[];
   /**
    * False when the forecast, a regional run, the currents or the tides changed while the rows were read (not kept;
-   * asked again, the newest are read). The forecast fields are still those of the runs named above; the currents and
-   * tides may be from two sources, or missing.
+   * a subsequent request reads the newest runs). The forecast fields are still those of the runs named above; the
+   * currents and tides may be from two sources, or missing.
    */
   complete: boolean;
 }
