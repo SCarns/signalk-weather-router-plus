@@ -548,7 +548,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     playTimer: null,
     applyTimer: null,
     sent: {},          // chart id → [{t, at}]: times the panel set that the host has not echoed yet
-    groupsAt: 0,       // when the presets were last read
+    groupsAt: 0,       // when the presets were last read (0 after a failed read: read again at the next poll)
     dragging: false,
   };
   function ourIds() { return Object.keys(wx.charts); }
@@ -577,11 +577,13 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       });
       wx.charts = seen;
       wx.layersKnown = true;
+      if ($('wxNote').textContent.indexOf('The chart list is not available') === 0) wxNote(''); // read again, now it is
       if (adopt !== null && isFinite(adopt) && wx.time === null) wx.time = adopt;
       renderPresets();
       renderTime();
     }).catch(function (e) {
       if (wx.layersKnown === null) wx.layersKnown = false;
+      wx.groupsAt = 0; // read again at the next status poll, not 10 minutes on (PR #54 review)
       wxNote('The chart list is not available: ' + e.message);
       renderData();
     });
@@ -593,6 +595,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       wx.legends ? Promise.resolve() : get(API + '/legends').then(function (l) { wx.legends = l; }).catch(function () {}),
     ]).then(loadChartList).catch(function () {
       if (wx.layersKnown === null) wx.layersKnown = false;
+      wx.groupsAt = 0; // as above
       renderPresets();
     });
   }

@@ -689,8 +689,9 @@ forecast hour from one place, as a chartplotter's weather view does:
   the next one is due in its tooltip), as the web page's header shows them
   (`/api/status` `freshness`; the map layers read ECMWF, so the regional
   wind models are not listed; when the panel cannot read the
-  chartplotter's chart list, every source is). The worst colours the
-  line; a red source gets a Late line, and a failed check says so. The
+  chartplotter's chart list or the presets, every source is, and both
+  are read again with the next status a minute later). The worst colours
+  the line; a red source gets a Late line, and a failed check says so. The
   connection is on a line of its own (`connectivity`): online, or no
   internet connection since when. Past the forecast's end it is flagged
   in red.
