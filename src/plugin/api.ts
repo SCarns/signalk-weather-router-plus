@@ -13,6 +13,7 @@
  *   GET  /api/polars/table?path=    polar table in m/s
  *   POST /api/polar-from-specs      generate a polar from boat specs (physics calculator) into the user polar directory
  *   GET  /api/legends               colour ramps (SI stops) for every layer
+ *   GET  /api/chart-groups          the chart-layer presets (charts with their data now, legend key)
  *   GET  /api/field?layer=&bbox=&time=&res=     JSON grid for a heatmap/streamline layer (layer=tide: tide_m)
  *   GET  /api/wind-points?bbox=&time=&res=      wind barb points (speed_ms, dir_deg FROM)
  *   GET  /api/currents?bbox=&time=&res=         current arrow points (dir_deg TO)
@@ -47,6 +48,8 @@ import { type JobManager, type Job } from './jobs';
 import type { QueryArgs, QueryKind, RouteRequest } from './protocol';
 import { openApiDocument } from './openapi';
 import { buildLegends } from './legends';
+import type { ChartGroup } from './charts';
+import type { FreshnessRow } from './freshness';
 import { listPolars, loadPolarCached, PolarNotFoundError, polarAngles, polarFromSpecs, polarTable, resolvePolarPath } from './polars';
 import type { BBox } from '../geo/geodesy';
 import { MESH_ACTIONS, type MeshAction } from './meshes';
@@ -71,6 +74,10 @@ export interface ApiDeps {
   query: <K extends QueryKind>(kind: K, args: QueryArgs[K], signal?: AbortSignal) => Promise<unknown>;
   /** Map overlay tiles (null before the plugin has started). */
   tiles: () => TileService | null;
+  /** The chart-layer presets a chartplotter panel offers (empty before the forecast is there). */
+  chartGroups: () => ChartGroup[];
+  /** The freshness rows each of those charts is drawn from, by chart id. */
+  chartRows: () => Record<string, FreshnessRow[]>;
   /** Why the plugin is not answering yet ("starting: downloading the coastline (40 %)"), for 503 answers. */
   notReady: () => string;
   /**
@@ -380,6 +387,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     res.setHeader('Cache-Control', 'public, max-age=3600');
     json(res, 200, buildLegends());
   });
+  ro.get('/api/chart-groups', (_req: Request, res: Response) =>
+    json(res, 200, { groups: deps.chartGroups(), chart_rows: deps.chartRows() })
+  );
 
   /** Aborts when the client goes away before the answer is sent (its query then leaves the worker's queue). */
   const clientGone = (res: Response): AbortSignal => {

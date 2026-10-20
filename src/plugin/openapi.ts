@@ -333,6 +333,13 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           responses: { 200: { description: 'OK' } },
         },
       },
+      '/api/chart-groups': {
+        get: {
+          summary:
+            'The chart-layer presets a chartplotter panel offers: {groups: [{id, name, description, charts: [chart resource ids, colour layer first], legend: /api/legends key or null}], chart_rows: {chart id: [the /api/status freshness rows it is drawn from: wind, waves, currents, tides]}}; only the charts whose data is there now, and no group without any',
+          responses: { 200: { description: 'OK' } },
+        },
+      },
       '/api/currents': {
         get: {
           summary: 'Current arrows on a lattice (display values, extended to the coast as for /api/field?layer=current)',

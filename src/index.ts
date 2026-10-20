@@ -1236,6 +1236,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
       publish,
       query,
       tiles: () => tiles,
+      chartGroups: () => charts.groups(),
+      chartRows: () => charts.chartRows(),
       downloadCoastline: () => coast.requestDownload(),
       meshes: () => ({ ...meshes.status(), rough_cut: roughCutStatus() }),
       refreshMeshes: () => meshes.refresh(),

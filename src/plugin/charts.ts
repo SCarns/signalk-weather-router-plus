@@ -16,6 +16,7 @@ import { GLYPH_LAYERS, GLYPH_LAYER_SPECS, type GlyphLayer } from './glyphtiles';
 import { PNG_LAYERS, PNG_LAYER_SPECS, type PngLayer } from './pngtiles';
 import type { TileLayer } from './tiles';
 import type { DataStatus, ForecastRunInfo } from './protocol';
+import type { FreshnessRow } from './freshness';
 import type { ResourceProvider } from './plotterext';
 
 export interface ChartsDeps {
@@ -42,8 +43,8 @@ const CHART_OVERRIDE_KEYS = ['defaultOpacity', 'displayMinZoom', 'imageAdjustmen
  * collection: named sets a chartplotter shows in one tap). One group per
  * colour layer, with its glyphs, written whenever the forecast is
  * (re)loaded and holding the layers whose data is there; ids are fixed,
- * so they are updated in place, and a group with no available layer is
- * left out. Needs a `groups` collection on the
+ * so they are updated in place, and a group whose first layer has no
+ * data is left out. Needs a `groups` collection on the
  * server (Freeboard creates one in resources-provider); otherwise skipped.
  */
 const CHART_GROUPS: { id: string; name: string; description: string; layers: (PngLayer | GlyphLayer)[] }[] = [
@@ -103,6 +104,47 @@ const CHART_GROUPS: { id: string; name: string; description: string; layers: (Pn
     layers: ['sst', 'arrows'],
   },
 ];
+
+/** A preset of chart layers as the chartplotter panel offers it: the group's charts that have their data now. */
+export interface ChartGroup {
+  id: string;
+  name: string;
+  description: string;
+  /** Chart resource ids, colour layer first. */
+  charts: string[];
+  /** The /api/legends key of the group's colour layer; null when it has none (isobars). */
+  legend: PngLayer | null;
+}
+
+/**
+ * The freshness rows (/api/status `freshness`, freshness.ts) each layer is
+ * drawn from, so a panel can say how fresh what it shows is. The forecast's
+ * other fields (pressure, rain, temperatures) are the ECMWF entry's, which
+ * colours the `wind` row; no map layer reads the regional wind models.
+ */
+const LAYER_ROWS: Record<PngLayer | GlyphLayer, FreshnessRow[]> = {
+  wind: ['wind'],
+  barbs: ['wind'],
+  isobars: ['wind'],
+  precip: ['wind'],
+  temperature: ['wind'],
+  sst: ['wind'],
+  waves: ['waves'],
+  wave_arrows: ['waves'],
+  current: ['currents'],
+  arrows: ['currents'],
+  // Wind against current, and the current against the waves.
+  sea_state: ['wind', 'waves', 'currents'],
+  seas: ['wind', 'waves', 'currents'],
+  tide: ['tides'],
+};
+
+/** Layers drawn from currents or tides (alone or mixed in), whose frames do not all come from the forecast run. */
+const NOT_FORECAST_ONLY = new Set<string>(['current', 'arrows', 'tide', 'sea_state', 'seas']);
+
+/** The chart resource id a layer is published under (`wrp-…`). */
+const chartIdOf = (l: PngLayer | GlyphLayer): string =>
+  (l in PNG_LAYER_SPECS ? PNG_LAYER_SPECS[l as PngLayer] : GLYPH_LAYER_SPECS[l as GlyphLayer]).chartId;
 
 export class ChartsProvider {
   private overrides: Record<string, Record<string, unknown>> = {};
@@ -167,6 +209,10 @@ export class ChartsProvider {
         from: new Date(fromMs).toISOString(),
         to: new Date(Math.max(fromMs, lastMs)).toISOString(),
         step: HOUR_MS,
+        // Frames ahead of now are forecast frames, there already (SignalK/freeboard-sk#1075),
+        // and, for the layers drawn from the forecast alone, the run they come from.
+        forecast: true,
+        ...(NOT_FORECAST_ONLY.has(layer) ? {} : { issued: new Date(forecastRun.index.cycleTimeMs).toISOString() }),
       },
       refreshInterval: 600_000,
       bounds: [-180, -MERC_MAX_LAT, 180, MERC_MAX_LAT],
@@ -185,15 +231,36 @@ export class ChartsProvider {
     }
     return out;
   }
+  /**
+   * The chart groups with the charts that have their data now. A group whose
+   * first layer (its colour layer, or Pressure's isobars) has no data is left out.
+   */
+  groups(): ChartGroup[] {
+    const charts = this.resources();
+    const out: ChartGroup[] = [];
+    for (const g of CHART_GROUPS) {
+      const colour = g.layers.find((l): l is PngLayer => (PNG_LAYERS as readonly string[]).includes(l));
+      // A group is named after its first layer: Tide is not offered with only the current arrows, nor
+      // Pressure with only the wind barbs (PR #54 review).
+      if (!(chartIdOf(g.layers[0]) in charts)) continue;
+      const ids = g.layers.map(chartIdOf).filter(id => id in charts);
+      out.push({ id: g.id, name: g.name, description: g.description, charts: ids, legend: colour ?? null });
+    }
+    return out;
+  }
+  /** The freshness rows each chart with data is drawn from (LAYER_ROWS), by chart resource id. */
+  chartRows(): Record<string, FreshnessRow[]> {
+    const charts = this.resources();
+    const out: Record<string, FreshnessRow[]> = {};
+    for (const l of [...PNG_LAYERS, ...GLYPH_LAYERS]) {
+      const id = chartIdOf(l);
+      if (id in charts) out[id] = LAYER_ROWS[l];
+    }
+    return out;
+  }
   async publishGroups(): Promise<void> {
     if (!this.deps.app.resourcesApi?.setResource || this.deps.isStopped()) return;
-    const charts = this.resources();
-    const groups = CHART_GROUPS.map(g => ({
-      ...g,
-      charts: g.layers
-        .map(l => (l in PNG_LAYER_SPECS ? PNG_LAYER_SPECS[l as PngLayer] : GLYPH_LAYER_SPECS[l as GlyphLayer]).chartId)
-        .filter(id => id in charts),
-    })).filter(g => g.charts.length > 0);
+    const groups = this.groups();
     const key = JSON.stringify(groups.map(g => [g.id, g.charts]));
     if (key === this.groupsWritten) return;
     try {
