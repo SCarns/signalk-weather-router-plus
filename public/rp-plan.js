@@ -67,11 +67,13 @@ function _mapFitPadding() {
   const r = panel.getBoundingClientRect(), w = window.innerWidth, h = window.innerHeight;
   if (r.width >= w * 0.9 && r.top > h * 0.3) pad[2] = Math.round(h - r.top) + 20;
   else if (r.left > w * 0.3) pad[1] = Math.round(w - r.left) + 20;
-  // The meteogram across the bottom (the top on a phone) covers the map too.
+  // The meteogram across the bottom (the top on a phone) covers the map too. Which edge it is on is told by its
+  // centre: at its 62vh cap its top edge is at 0.38 h less the attribution's height, above 0.3 h in a short
+  // window (PR #50 review).
   const mg = document.getElementById('meteogram');
   if (mg && !mg.hidden) {
     const m = mg.getBoundingClientRect();
-    if (m.top > h * 0.3) pad[2] = Math.max(pad[2], Math.round(h - m.top) + 20);
+    if (m.top + m.bottom > h) pad[2] = Math.max(pad[2], Math.round(h - m.top) + 20);
     else pad[0] = Math.max(pad[0], Math.round(m.bottom) + 20);
   }
   return pad;
