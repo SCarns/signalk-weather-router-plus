@@ -66,7 +66,8 @@ uses [Semantic Versioning](https://semver.org/).
   report is answered but not kept. On a phone the bottom sheet takes at
   most 35 % of the height while the meteogram is open at the top (65 %
   otherwise), so the route is fitted between the two; at 390×844 they
-  left about 15 px of map.
+  left about 15 px of map. The zoom and locate buttons, which sat on the
+  meteogram's title there, move to just below it while it is open.
 - **Setup choices with security off** (`src/plugin/sharedprefs.ts`,
   `GET`/`POST /api/prefs`). Signal K has no users and keeps no application
   data with security off, so the choices stayed in each browser. The

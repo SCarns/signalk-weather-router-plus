@@ -326,6 +326,9 @@
     /* The meteogram open at the top: the sheet takes less, so the route shows between them (at 390×844 the two
        left about 15 px of map at the sheet's 65vh). */
     body.meteogram-open #panel { max-height: 35vh; }
+    /* The zoom and locate buttons (top left) would sit on the meteogram's title: below it, on the map between the
+       two. 10px + 32vh is the meteogram's bottom at its cap, which its charts reach. */
+    body.meteogram-open .ol-zoom { top: calc(10px + 32vh + 8px); }
     #panel::before {
       content: "";
       display: block; margin: 0 auto var(--s-2);

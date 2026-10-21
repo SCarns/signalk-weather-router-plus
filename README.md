@@ -507,7 +507,8 @@ computed with what that request says, not with the user's saved Setup.
   route is fitted into the map above the meteogram when it opens. On a
   phone the meteogram is at the top and the bottom sheet takes at most
   35 % of the height while it is open (65 % otherwise), so the route is
-  fitted between them. The
+  fitted between them, and the zoom and locate buttons move from the top
+  left to just below the meteogram. The
   conditions come from the forecast loaded now; the wind is the route's:
   where it was computed with a regional model (AROME, ICON-EU, …) that
   model is layered over ECMWF as the router layers it, and the note names
