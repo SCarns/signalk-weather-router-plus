@@ -31,6 +31,7 @@ import { mergeSettings, reloadsFor, settingsSchema, SettingsStore, SettingsValid
 import { checkDecodeResources } from './plugin/memguard';
 import { siText } from './plugin/unittext';
 import { JobManager, type Job } from './plugin/jobs';
+import { windowNotification, WindowManager, type DepartureWindow } from './plugin/windows';
 import { registerApi } from './plugin/api';
 import { NotStartedError } from './plugin/errors';
 import { TileService, TileStore, tileGroup, type TileGroup } from './plugin/tiles';
@@ -122,6 +123,8 @@ interface SignalKPlugin {
 export = function plugin(app: SkApp): SignalKPlugin {
   let config: ResolvedConfig | null = null;
   let jobs: JobManager | null = null;
+  /** Departure windows (windows.ts): created with the job manager. */
+  let windows: WindowManager | null = null;
   /** The decoded run in use (where it is on disk and its index), relayed to the route worker. */
   let forecastRun: ForecastRunInfo | null = null;
   /** Forecast memory the route worker holds (its corridor store while a route runs). */
@@ -208,6 +211,23 @@ export = function plugin(app: SkApp): SignalKPlugin {
     // Cleared here, not by the worker when the route starts: a cancel between this post and the start stays set.
     Atomics.store(pool.cancelFlag, 0, 0);
     pool.post('route', { type: 'route', id: job.id, request: job.request, avoid, self: selfDesign() });
+  }
+
+  /** Stop the running job: the route worker checks the flag; one still waiting for the first forecast fails at once. */
+  function cancelRunningJob(id: string): void {
+    // Still waiting for the first forecast: nothing was sent to the worker.
+    if (waitingForForecast && waitingForForecast.id === id) {
+      waitingForForecast = null;
+      jobs?.onError(id, 'cancelled', true);
+      return;
+    }
+    // Running but not sent yet (dispatchRoute is reading the notes): dispatchRoute clears the flag before it
+    // posts the route, so the flag would be lost. Finished here; dispatchRoute sees it is no longer running and drops it.
+    if (routeAtWorker !== id) {
+      jobs?.onError(id, 'cancelled', true);
+      return;
+    }
+    Atomics.store(pool.cancelFlag, 0, 1);
   }
 
   /** Send a job waiting for the first forecast to the route worker. */
@@ -655,6 +675,16 @@ export = function plugin(app: SkApp): SignalKPlugin {
   }
 
   function notify(job: Job, state: 'normal' | 'alert' | 'warn', message: string): void {
+    notifyAt(job.id, state, message);
+  }
+
+  /** A departure window finished: one notification for it (its departures' routes send none). */
+  function notifyWindow(w: DepartureWindow): void {
+    const { state, message } = windowNotification(w);
+    notifyAt(w.id, state, message);
+  }
+
+  function notifyAt(id: string, state: 'normal' | 'alert' | 'warn', message: string): void {
     if (!config?.publish.notifications || !app.handleMessage) return;
     try {
       app.handleMessage(PLUGIN_ID, {
@@ -662,7 +692,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           {
             values: [
               {
-                path: `notifications.weatherRouterPlus.${job.id}`,
+                path: `notifications.weatherRouterPlus.${id}`,
                 value: { state, method: [], message, timestamp: new Date().toISOString() },
               },
             ],
@@ -676,7 +706,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
 
   async function publish(id: string): Promise<string> {
     if (!jobs) throw new NotStartedError();
-    const job = jobs.get(id);
+    const job = jobs.full(id);
     if (!job || !job.skRoute) throw new Error('job has no route');
     if (!app.resourcesApi?.setResource) throw new Error('this Signal K server has no Resources API');
     try {
@@ -840,12 +870,14 @@ export = function plugin(app: SkApp): SignalKPlugin {
         }
         const job = jobs?.get(msg.id);
         if (job) {
-          notify(
-            job,
-            'normal',
-            // SI: the client converts to its user's units.
-            `route ready: ${Math.round(msg.summary.total_distance_m)} m, ${Math.round(msg.summary.total_time_s)} s`
-          );
+          // A departure window's routes: one notification for the window when it is done (notifyWindow).
+          if (!job.windowId)
+            notify(
+              job,
+              'normal',
+              // SI: the client converts to its user's units.
+              `route ready: ${Math.round(msg.summary.total_distance_m)} m, ${Math.round(msg.summary.total_time_s)} s`
+            );
           const wantPublish = job.request.publish ?? config?.publish.toResources ?? false;
           if (wantPublish) publish(job.id).catch(err => app.error((err as Error).message));
         }
@@ -855,7 +887,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'error': {
         jobs?.onError(msg.id, msg.message, msg.cancelled);
         const job = jobs?.get(msg.id);
-        if (job && !msg.cancelled) notify(job, 'alert', `route failed: ${siText(msg.message)}`);
+        if (job && !msg.cancelled && !job.windowId) notify(job, 'alert', `route failed: ${siText(msg.message)}`);
         updateStatus();
         return;
       }
@@ -1046,6 +1078,16 @@ export = function plugin(app: SkApp): SignalKPlugin {
       void dispatchRoute(job);
       updateStatus();
     });
+    windows = new WindowManager(
+      jobs,
+      dataDir,
+      {
+        cancelRunning: cancelRunningJob,
+        forecastValidToMs: () => (forecastRun ? forecastRun.index.steps[forecastRun.index.steps.length - 1].validMs : null),
+        onFinished: notifyWindow,
+      },
+      BASE_PATH
+    );
     for (const role of ['data', 'route'] as MainRole[]) {
       pool.start(role);
       pool.post(role, { type: 'init', role, config, cacheDir: dataDir });
@@ -1067,6 +1109,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
     refreshTimer = failedRefreshTimer = null;
     pool.stopAll();
     pool.rejectPending('plugin stopped');
+    // The windows first: failing the running job must not start a window's next departure.
+    windows?.close();
+    windows = null;
     jobs?.failRunning('plugin stopped');
     waitingForForecast = null;
     routeAtWorker = null;
@@ -1111,6 +1156,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
       get jobs(): JobManager {
         if (!jobs) throw new NotStartedError(notStartedReason());
         return jobs;
+      },
+      get windows(): WindowManager {
+        if (!windows) throw new NotStartedError(notStartedReason());
+        return windows;
       },
       notReady: notStartedReason,
       forecastWait,
@@ -1194,6 +1243,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         meshes: meshes.status(),
         regional: regionalStatus(),
         jobs: jobs ? { running: jobs.runningId, queued: jobs.queueLength, total: jobs.list(500).length } : null,
+        windows: windows ? { running: windows.running } : null,
         // The name, draught and air draft are Signal K's (vessels.self.name, design.*), not plugin settings.
         vessel: config?.vessel ? { ...config.vessel, ...selfDesign(), name: selfName() } : undefined,
         polar: config?.polarFile,
@@ -1218,21 +1268,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         return out;
       },
       refreshForecast: force => requestRefresh(force),
-      cancelRunning: (id: string) => {
-        // Still waiting for the first forecast: nothing was sent to the worker.
-        if (waitingForForecast && waitingForForecast.id === id) {
-          waitingForForecast = null;
-          jobs?.onError(id, 'cancelled', true);
-          return;
-        }
-        // Running but not sent yet (dispatchRoute is reading the notes): dispatchRoute clears the flag before it
-        // posts the route, so the flag would be lost. Finished here; dispatchRoute sees it is no longer running and drops it.
-        if (routeAtWorker !== id) {
-          jobs?.onError(id, 'cancelled', true);
-          return;
-        }
-        Atomics.store(pool.cancelFlag, 0, 1);
-      },
+      cancelRunning: cancelRunningJob,
       publish,
       query,
       tiles: () => tiles,

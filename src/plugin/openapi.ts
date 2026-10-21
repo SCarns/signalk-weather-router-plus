@@ -572,7 +572,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           responses: {
             204: { description: 'Deleted' },
             404: { description: 'Not found' },
-            409: { description: 'Job is running' },
+            409: { description: "Job is running, or a departure window's (deleted with its window)" },
             503: { description: 'Plugin not started' },
           },
         },
@@ -645,6 +645,79 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             502: { description: 'Resources API error' },
             503: { description: 'Plugin not started' },
           },
+        },
+      },
+      '/api/windows': {
+        post: {
+          summary: 'Departure window: the route computed for a series of departures, one route job each, one at a time',
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['route', 'from', 'to'],
+                  properties: {
+                    route: {
+                      ...routeRequest,
+                      description: 'The route request, as POST /api/routes takes it; departure and publish are set per departure',
+                    },
+                    from: { type: 'string', format: 'date-time', description: 'Earliest departure' },
+                    to: { type: 'string', format: 'date-time', description: 'Latest departure (at most 16 days after from)' },
+                    step_s: {
+                      type: 'number',
+                      minimum: 3600,
+                      maximum: 86400,
+                      default: 21600,
+                      description: 'Seconds between departures (at most 48 departures)',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            202: { description: '{id, status: "running", departures, links}' },
+            400: { description: '{error}' },
+            413: { description: 'The request body is over 64 KB' },
+            429: { description: 'Two windows are being computed already' },
+            503: { description: 'Plugin not started' },
+          },
+        },
+        get: {
+          summary: 'The departure windows, newest first',
+          parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 12, default: 12 } }],
+          responses: { 200: { description: 'OK' }, 503: { description: 'Plugin not started' } },
+        },
+      },
+      '/api/windows/{id}': {
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        get: {
+          summary: 'A departure window: each departure with its status, route job and metrics',
+          responses: {
+            200: {
+              description:
+                '{id, status: "running" | "done" | "cancelled" | "failed", created_at, finished_at, error, request, progress, links, departures: [{departure, job_id, status: "pending" | "queued" | "running" | "done" | "failed" | "cancelled" | "skipped", error, metrics: {arrival, total_time_s, sailing_time_s, motoring_time_s, total_distance_m, max_wind_ms, max_swh_m, max_sea_index, upwind_time_s, beyond_forecast, warnings}}]}',
+            },
+            404: { description: 'Not found' },
+            503: { description: 'Plugin not started' },
+          },
+        },
+        delete: {
+          summary: 'Delete a finished window and its route jobs',
+          responses: {
+            204: { description: 'Deleted' },
+            404: { description: 'Not found' },
+            409: { description: 'Still running, or cancelled with a departure still stopping' },
+          },
+        },
+      },
+      '/api/windows/{id}/cancel': {
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        post: {
+          summary:
+            'Cancel the departures not computed yet, and ask the one computing to stop: it stops when the route worker next checks, so DELETE answers 409 until then',
+          responses: { 202: { description: '{id, status}' }, 404: { description: 'Not found' } },
         },
       },
       '/api/meshes': {

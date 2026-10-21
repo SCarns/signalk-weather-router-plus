@@ -29,6 +29,11 @@
  *   POST /api/routes/:id/cancel
  *   POST /api/routes/:id/publish    save to the Resources API
  *   DELETE /api/routes/:id
+ *   POST /api/windows               departure window: the route for a series of departures → 202 {id, status, links}
+ *   GET  /api/windows               list departure windows
+ *   GET  /api/windows/:id           a window: each departure's status and metrics
+ *   POST /api/windows/:id/cancel
+ *   DELETE /api/windows/:id         a finished window and its route jobs
  *   GET  /api/openapi.json
  *
  * Reads are opened to readonly users and writes to readwrite users when
@@ -45,6 +50,7 @@ import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import type { IRouter, Request, Response } from 'express';
 import { type JobManager, type Job } from './jobs';
+import { validateWindowRequest, WINDOW_LIMITS, type WindowManager, type WindowRequest } from './windows';
 import type { QueryArgs, QueryKind, RouteRequest } from './protocol';
 import { openApiDocument } from './openapi';
 import { buildLegends } from './legends';
@@ -66,6 +72,8 @@ export interface ApiDeps {
   pluginId: string;
   basePath: string;
   jobs: JobManager;
+  /** Departure windows (throws, like `jobs`, when the plugin is not started). */
+  windows: WindowManager;
   status: () => Record<string, unknown>;
   forecastInfo: (lat?: number, lon?: number) => Promise<Record<string, unknown>>;
   refreshForecast: (force: boolean) => void;
@@ -158,11 +166,23 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       return null;
     }
   };
-  /** The job named in the URL, after the 503 / 404 answers; the handler runs only when it exists. */
+  /** The departure windows, or null after answering 503 when the plugin is not started. */
+  const windowsOr503 = (res: Response): WindowManager | null => {
+    try {
+      return deps.windows;
+    } catch (err) {
+      json(res, 503, { error: (err as Error).message });
+      return null;
+    }
+  };
+  /**
+   * The job named in the URL, with its route results (a departure window's are read from disk: JobManager.full),
+   * after the 503 / 404 answers; the handler runs only when it exists.
+   */
   const withJob = (req: Request, res: Response, fn: (jobs: JobManager, job: Job) => void | Promise<void>): void => {
     const jobs = jobsOr503(res);
     if (!jobs) return;
-    const job = jobs.get(String(req.params.id));
+    const job = jobs.full(String(req.params.id));
     if (!job) {
       json(res, 404, { error: 'job not found' });
       return;
@@ -613,6 +633,28 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     }
   });
 
+  // The request is kept with its job (a window's with each of its departures) and sent back in every job list;
+  // unknown fields pass the validation. Answered 413 when it is too large.
+  const tooLarge = (res: Response, body: unknown): boolean => {
+    // No body: JSON.stringify gives undefined; not too large, the request's own check refuses it.
+    const text = JSON.stringify(body) as string | undefined;
+    if (text === undefined || Buffer.byteLength(text, 'utf8') <= MAX_ROUTE_REQUEST_BYTES) return false;
+    json(res, 413, { error: `route request too large (over ${MAX_ROUTE_REQUEST_BYTES / 1024} KB)` });
+    return true;
+  };
+  // The polar is checked here, so a token not in the library is refused before a job is queued, not when it runs.
+  const badPolar = (res: Response, polar: string | undefined, field: string): boolean => {
+    if (!polar) return false;
+    try {
+      resolvePolarPath(polarLib(), polar);
+      return false;
+    } catch (e) {
+      if (e instanceof NotStartedError) json(res, 503, { error: e.message });
+      else json(res, 400, { error: `${field}: ${(e as Error).message}: ${polar} (a token from /api/polars)` });
+      return true;
+    }
+  };
+
   rw.post('/api/routes', (req: Request, res: Response) => {
     const jobs = jobsOr503(res);
     if (!jobs) return;
@@ -621,29 +663,13 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       json(res, 400, { error: 'JSON body required: {start:{lat,lon}, end:{lat,lon}, ...}' });
       return;
     }
-    // The request is kept with its job and sent back in every job list; unknown fields pass the validation.
-    if (Buffer.byteLength(JSON.stringify(body), 'utf8') > MAX_ROUTE_REQUEST_BYTES) {
-      json(res, 413, { error: `route request too large (over ${MAX_ROUTE_REQUEST_BYTES / 1024} KB)` });
-      return;
-    }
+    if (tooLarge(res, body)) return;
     const err = validateRouteRequest(body);
     if (err) {
       json(res, 400, { error: err });
       return;
     }
-    // The polar is checked here, so a token not in the library is refused before the job is queued, not when it runs.
-    if (body.vessel?.polar) {
-      try {
-        resolvePolarPath(polarLib(), body.vessel.polar);
-      } catch (e) {
-        if (e instanceof NotStartedError) {
-          json(res, 503, { error: e.message });
-          return;
-        }
-        json(res, 400, { error: `vessel.polar: ${(e as Error).message}: ${body.vessel.polar} (a token from /api/polars)` });
-        return;
-      }
-    }
+    if (badPolar(res, body.vessel?.polar, 'vessel.polar')) return;
     if (jobs.queueLength >= 16) {
       json(res, 429, { error: 'job queue is full' });
       return;
@@ -786,7 +812,78 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
         json(res, 409, { error: 'cancel the running job before deleting it' });
         return;
       }
+      // Its window waits for it, and shows its route (PR #51 review): it goes with the window.
+      if (job.windowId) {
+        json(res, 409, { error: `a departure window's route: delete the window (DELETE ${deps.basePath}/api/windows/${job.windowId})` });
+        return;
+      }
       jobs.delete(job.id);
+      res.status(204).end();
+    });
+  });
+
+  // ── Departure windows (windows.ts) ──
+  rw.post('/api/windows', (req: Request, res: Response) => {
+    const windows = windowsOr503(res);
+    if (!windows) return;
+    if (tooLarge(res, req.body)) return;
+    const err = validateWindowRequest(req.body);
+    if (err) {
+      json(res, 400, { error: err });
+      return;
+    }
+    if (badPolar(res, (req.body as WindowRequest).route.vessel?.polar, 'route: vessel.polar')) return;
+    if (windows.running >= WINDOW_LIMITS.maxRunning) {
+      json(res, 429, { error: `${windows.running} departure windows are being computed; wait for one to finish, or cancel it` });
+      return;
+    }
+    const w = windows.create(req.body as WindowRequest);
+    res.setHeader('Location', windows.links(w.id).self);
+    json(res, 202, { id: w.id, status: w.status, departures: w.departures.length, links: windows.links(w.id) });
+  });
+
+  ro.get('/api/windows', (req: Request, res: Response) => {
+    const windows = windowsOr503(res);
+    if (!windows) return;
+    const limit = Math.min(WINDOW_LIMITS.keep + WINDOW_LIMITS.maxRunning, Math.max(1, Number(req.query.limit ?? 20) || 20));
+    json(
+      res,
+      200,
+      windows.list(limit).map(w => windows.toPublic(w))
+    );
+  });
+
+  const withWindow = (req: Request, res: Response, fn: (windows: WindowManager, id: string) => void): void => {
+    const windows = windowsOr503(res);
+    if (!windows) return;
+    const id = String(req.params.id);
+    if (!windows.get(id)) {
+      json(res, 404, { error: 'window not found' });
+      return;
+    }
+    fn(windows, id);
+  };
+
+  ro.get('/api/windows/:id', (req: Request, res: Response) => {
+    withWindow(req, res, (windows, id) => json(res, 200, windows.toPublic(windows.get(id)!)));
+  });
+
+  rw.post('/api/windows/:id/cancel', (req: Request, res: Response) => {
+    withWindow(req, res, (windows, id) => {
+      windows.cancel(id);
+      json(res, 202, { id, status: windows.get(id)!.status });
+    });
+  });
+
+  rw.delete('/api/windows/:id', (req: Request, res: Response) => {
+    withWindow(req, res, (windows, id) => {
+      if (!windows.delete(id)) {
+        const running = windows.get(id)!.status === 'running';
+        json(res, 409, {
+          error: running ? 'cancel the window before deleting it' : 'a cancelled departure is still stopping; try again in a moment',
+        });
+        return;
+      }
       res.status(204).end();
     });
   });

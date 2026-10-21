@@ -27,6 +27,21 @@ uses [Semantic Versioning](https://semver.org/).
 - Chart `time` blocks carry `forecast: true` and, for the layers drawn from
   the forecast alone, `issued` (the run's time), as proposed in
   SignalK/freeboard-sk#1075. Hosts ignore fields they do not know.
+- **Best departure** (Route tab): the route computed for a series of
+  departures across the forecast, compared in a table (passage time, the
+  strongest wind and highest waves met, motoring, time close-hauled) with
+  the best by the chosen measure starred and each row opening its route.
+  `POST /api/windows` and `GET`, cancel, `DELETE /api/windows/{id}`
+  (`windows.ts`): one ordinary route job per departure, submitted one at a
+  time so other routes wait behind one job; the jobs carry `window_id`,
+  are left out of the job list and `routing.keepJobs`, never published,
+  and notify once for the window (its fastest picked as the table ranks:
+  of the passages that end within the forecast). Departures after the
+  forecast, and those after a passage that already arrives past it, are
+  skipped. A done
+  departure's route is kept only in its job file (`JobManager.release`)
+  and read from there when it is opened; in memory the window holds its
+  metrics.
 
 ## [0.2.0-beta.3] - 2026-10-19
 

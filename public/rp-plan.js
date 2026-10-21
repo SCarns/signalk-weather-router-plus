@@ -26,6 +26,7 @@ let _settingPrecisionFromRoute = false;  // true while a loaded route sets the p
 let routeActive = false;      // a route is displayed for the current markers
 let _routeStale = false;      // markers changed since that route was computed
 let _routeComputing = false;  // a route job is running
+let _routeReady = false;      // start, end (power mode: the boat) set; Find Route on unless computing
 // The displayed route's points in route order, [{ lonLat, via, time (ms) }], for Live
 // mode. routeSource.getFeatures() is not in route order (spatial index).
 let _routePoints = [];
@@ -437,9 +438,10 @@ function _fitRouteInView() {
   });
 }
 
-function _loadRouteJob(id) {
+// `given`: the job when it is not in the list (a departure window's route, GET /api/routes/:id).
+function _loadRouteJob(id, given) {
   if (!id) return;
-  const job = routeHistoryItems.find(j => j.id === id);
+  const job = given || routeHistoryItems.find(j => j.id === id);
   if (job && (job.status === 'running' || job.status === 'queued')) {
     // Re-attach to a job in progress: same SSE ladder as Find Route.
     attachToJob(id, job);
@@ -629,8 +631,10 @@ function refreshFindRouteEnabled() {
   } else if (status) {
     status.textContent = '';
   }
+  _routeReady = !blocked; // Compare departures needs the same, but may start while a route computes
   if (_routeComputing) blocked = true;
   btn.disabled = blocked;
+  _winRefresh();
 }
 function applyVesselType(vt) {
   const panel = document.getElementById('panel');
@@ -3361,6 +3365,223 @@ popup.on('change:position', () => {
   const [mx, my] = g.getCoordinates();
   if (!pos || pos[0] !== mx || pos[1] !== my) condMarkerFeature.setGeometry(null);
 });
+
+// ─────────── Best departure (departure windows) ───────────
+// The route on the map computed for a series of departures (POST
+// /api/windows): from the Departure field to Latest departure, every
+// 3–24 h, one after the other on the server. The table compares them as
+// they finish (the window polled every 3 s) and marks the best by the
+// measure chosen; a row opens that departure's route. Departures whose
+// passage would end after the forecast are skipped by the server. The
+// newest window is shown again when the page opens.
+const _WIN_SORTS = {
+  fastest:  { label: 'shortest passage', key: m => m.total_time_s },
+  motoring: { label: 'least motoring', key: m => m.motoring_time_s },
+  wind:     { label: 'lightest strongest wind', key: m => (m.max_wind_ms == null ? Infinity : m.max_wind_ms) },
+  waves:    { label: 'smallest highest waves', key: m => (m.max_swh_m == null ? Infinity : m.max_swh_m) },
+  upwind:   { label: 'least time close-hauled', key: m => m.upwind_time_s },
+};
+const _WIN_STATUS_TEXT = { pending: 'waiting', queued: 'queued', running: 'computing…', failed: 'no route', cancelled: 'cancelled', skipped: 'skipped' };
+let _win = null;        // the window on screen (GET /api/windows/:id)
+let _winTimer = null;
+let _winOpenJob = null; // the departure's route opened from the table
+
+// The departures the inputs describe (ms), or null with the reason.
+function _winPlan() {
+  const from = fromClockInput(document.getElementById('departure').value) || new Date();
+  const to = fromClockInput(document.getElementById('windowTo').value);
+  const step = Number(document.getElementById('windowStep').value) * 1000;
+  if (!to) return { error: 'Set the latest departure.' };
+  if (to < from) return { error: 'The latest departure is before the Departure.' };
+  const n = Math.floor((to - from) / step + 1e-9) + 1;
+  if (n > 48) return { error: n + ' departures: at most 48 (a longer step, or an earlier latest departure).' };
+  return { from, to, n };
+}
+
+// The count line and the button; DOM only (also called from start-up code, before this section's state exists).
+function _winRefresh() {
+  const btn = document.getElementById('windowStart');
+  const count = document.getElementById('windowCount');
+  if (!btn || !count) return;
+  const p = _winPlan();
+  const findBtn = document.getElementById('findRoute');
+  const running = !document.getElementById('windowCancel').hidden;
+  const starting = 'starting' in btn.dataset; // _winStart: until the new window's first poll
+  count.textContent = p.error || (p.n + ' departure' + (p.n === 1 ? '' : 's') + ', from ' + fmtWhen(p.from.toISOString()) + ' to ' + fmtWhen(p.to.toISOString()));
+  // Not Find Route's own state: a route computing turns that off, and a start or end cleared meanwhile left
+  // Compare on, to throw in buildRoutePayload (PR #51 review).
+  btn.disabled = !!p.error || running || starting || !findBtn || !_routeReady;
+}
+
+function _winStart() {
+  const p = _winPlan();
+  if (p.error) return;
+  const route = buildRoutePayload({ departure: p.from.toISOString() });
+  delete route.publish;
+  const body = { route, from: p.from.toISOString(), to: p.to.toISOString(), step_s: Number(document.getElementById('windowStep').value) };
+  document.getElementById('windowStatus').textContent = 'Starting…';
+  // Off until the window's first poll shows Cancel: a second click would start a second window (PR #51 review).
+  // Marked on the button, which _winRefresh reads, so a refresh meanwhile keeps it off: 'post' while the
+  // request is out, then the window's id until its first poll (a poll of an older window does not count).
+  const btn = document.getElementById('windowStart');
+  btn.dataset.starting = 'post';
+  btn.disabled = true;
+  authFetch(API + '/windows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, null)
+    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+    .then(d => { btn.dataset.starting = d.id; appendLog('Departure window started: ' + d.departures + ' departures', 'done'); _winPoll(d.id); })
+    .catch(err => { delete btn.dataset.starting; document.getElementById('windowStatus').textContent = 'Could not start: ' + err.message; _winRefresh(); });
+}
+
+function _winPoll(id) {
+  clearTimeout(_winTimer);
+  const started = () => {
+    const btn = document.getElementById('windowStart');
+    if (btn.dataset.starting === id) delete btn.dataset.starting;
+  };
+  authFetch(API + '/windows/' + encodeURIComponent(id), { cache: 'no-store' }, 'window')
+    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(Object.assign(new Error(t), { status: r.status }))))
+    .then(w => {
+      started();
+      _win = w;
+      _winRender();
+      // After a cancel the departure computing ends a moment later: followed until it has.
+      if (w.status === 'running' || w.departures.some(d => d.status === 'running' || d.status === 'queued'))
+        _winTimer = setTimeout(() => _winPoll(id), 3000);
+    })
+    .catch(err => {
+      if (err.name === 'AbortError') return;
+      // A poll that failed (the server busy, the link down) is tried again; a window that is gone is not:
+      // deleted (another tab) or past the ones kept, it leaves the screen, so its last state (running,
+      // Cancel shown, Compare off) does not stay until a reload.
+      if (err.status === 404) {
+        started();
+        if (!_win || _win.id === id) { _win = null; _winRender(); }
+      } else {
+        _winTimer = setTimeout(() => _winPoll(id), 10000);
+      }
+      document.getElementById('windowStatus').textContent = 'Window unavailable: ' + err.message;
+    });
+}
+
+// A duration for the table: to the minute for the passage (departures a few
+// minutes apart must compare), "4d 5h 47m"; to the hour otherwise, "2d 17h",
+// minutes only under an hour.
+function _winDuration(s, toMinute) {
+  if (s == null) return '—';
+  const m = Math.round(s / 60), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mi = m % 60;
+  if (!toMinute && m >= 60) { const hr = Math.round(m / 60); return (hr >= 24 ? Math.floor(hr / 24) + 'd ' : '') + (hr % 24) + 'h'; }
+  return (d ? d + 'd ' : '') + (d || h ? h + 'h ' : '') + mi + 'm';
+}
+// A departure in the table: weekday, day and time in ship's time ("Wed 21, 16:00").
+function _winWhen(iso) {
+  return fmtClock(iso, { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function _winSortId() {
+  let s = null;
+  try { s = localStorage.getItem('rp:windowSort'); } catch (_) { /* default */ }
+  return _WIN_SORTS[s] ? s : 'fastest';
+}
+
+// The best departure by the chosen measure: of those computed whose passage ends within the forecast.
+function _winBest(w, sortId) {
+  const key = _WIN_SORTS[sortId].key;
+  let best = -1;
+  w.departures.forEach((d, i) => {
+    if (d.status !== 'done' || !d.metrics || d.metrics.beyond_forecast) return;
+    if (best < 0 || key(d.metrics) < key(w.departures[best].metrics)) best = i;
+  });
+  return best;
+}
+
+function _winRender() {
+  const w = _win;
+  const status = document.getElementById('windowStatus');
+  const out = document.getElementById('windowResults');
+  const running = !!w && w.status === 'running';
+  document.getElementById('windowCancel').hidden = !running;
+  _winRefresh();
+  if (!w) { status.textContent = ''; out.innerHTML = ''; return; }
+  const done = w.departures.filter(d => d.status === 'done').length;
+  const left = w.departures.filter(d => d.status === 'pending' || d.status === 'queued' || d.status === 'running').length;
+  const name = w.request && w.request.route && w.request.route.name ? w.request.route.name + ': ' : '';
+  status.textContent = name + done + ' of ' + w.departures.length + ' departures computed'
+    + (running ? ', ' + left + ' to go' + (w.progress ? ' · ' + unitText(w.progress) : '') : w.status === 'done' ? '' : ' · ' + w.status + (w.error ? ' (' + w.error + ')' : ''));
+  const sortId = _winSortId();
+  const best = _winBest(w, sortId);
+  const t = _winDuration;
+  // Numbers in the cells, the unit in the header (the panel is narrow).
+  const speedU = unitDesc('speed'), waveU = unitDesc('wave_height');
+  const num = (v, ud) => (v == null || ud.missing ? '—' : ud.fn(v).toFixed(ud.p));
+  let html = '<div class="win-sort"><label for="windowSort" style="margin:0;">Best by</label><select id="windowSort" aria-label="Rank the departures by">'
+    + Object.entries(_WIN_SORTS).map(([id, s]) => '<option value="' + id + '"' + (id === sortId ? ' selected' : '') + '>' + s.label + '</option>').join('')
+    + '</select></div>';
+  html += '<div class="win-scroll"><table><thead><tr><th>Leave</th><th title="Passage time (the arrival is in the row’s tooltip)">Passage</th><th title="Strongest wind on any leg">Wind<br>' + escapeHtml(speedU.u) + '</th><th title="Highest significant waves on any leg">Waves<br>' + escapeHtml(waveU.u) + '</th><th title="Time motoring">Motor</th><th title="Time sailing close-hauled (true wind under 60°)">Upwind</th></tr></thead><tbody>';
+  w.departures.forEach((d, i) => {
+    const m = d.metrics;
+    const cls = [m ? 'win-row' : 'win-off', i === best ? 'win-best' : '', d.job_id && d.job_id === _winOpenJob ? 'win-open' : ''].filter(Boolean).join(' ');
+    const lead = (i === best ? '★ ' : '') + '<span title="' + escapeHtml(fmtWhen(d.departure)) + '">' + escapeHtml(_winWhen(d.departure)) + '</span>';
+    if (!m) {
+      html += '<tr class="' + cls + '" title="' + escapeHtml(d.error || '') + '"><td>' + lead + '</td><td colspan="5" style="text-align:left;">' + escapeHtml(_WIN_STATUS_TEXT[d.status] || d.status) + (d.error && d.status !== 'cancelled' ? ': ' + escapeHtml(unitText(d.error)) : '') + '</td></tr>';
+      return;
+    }
+    html += '<tr class="' + cls + '" data-job="' + escapeHtml(d.job_id) + '" title="Arrives ' + escapeHtml(fmtWhen(m.arrival)) + '. Click to open this departure’s route' + (m.beyond_forecast ? ' (arrives after the forecast ends: its last legs ran on conditions held at the last step)' : '') + '">'
+      + '<td>' + lead + '</td><td>' + t(m.total_time_s, true) + (m.beyond_forecast ? ' *' : '') + '</td>'
+      + '<td>' + num(m.max_wind_ms, speedU) + '</td><td>' + num(m.max_swh_m, waveU) + '</td><td>' + t(m.motoring_time_s) + '</td><td>' + t(m.upwind_time_s) + '</td></tr>';
+  });
+  html += '</tbody></table></div>';
+  if (w.departures.some(d => d.metrics && d.metrics.beyond_forecast)) html += '<div class="ctl-hint">* arrives after the forecast ends; not ranked.</div>';
+  html += '<div class="ctl-hint">The forecast grows less certain with every day ahead: compare the late departures again on a newer run.</div>';
+  out.innerHTML = html;
+  out.querySelector('#windowSort').onchange = e => {
+    try { localStorage.setItem('rp:windowSort', e.target.value); } catch (_) { /* not remembered */ }
+    _winRender();
+  };
+  out.querySelectorAll('tr.win-row[data-job]').forEach(tr => { tr.onclick = () => _winOpen(tr.dataset.job); });
+}
+
+// Open one departure's route (a window job is not in the Saved list: its record is fetched first).
+function _winOpen(jobId) {
+  authFetch(API + '/routes/' + encodeURIComponent(jobId), { cache: 'no-store' }, 'window-route')
+    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+    .then(job => {
+      _winOpenJob = jobId;
+      _loadRouteJob(jobId, job);
+      _winRender();
+    })
+    .catch(err => appendLog('Could not open the departure: ' + err.message, 'error'));
+}
+
+(function() {
+  const toEl = document.getElementById('windowTo');
+  if (!toEl) return;
+  // Latest departure: two days after the Departure until set.
+  const depEl = document.getElementById('departure');
+  const defaultTo = () => {
+    if (toEl.value) return;
+    const from = fromClockInput(depEl.value) || new Date();
+    toEl.value = toClockInput(new Date(from.getTime() + 48 * 3600 * 1000));
+  };
+  document.getElementById('windowSection').addEventListener('toggle', e => { if (e.target.open) { defaultTo(); _winRefresh(); } });
+  for (const el of [toEl, depEl, document.getElementById('windowStep')]) {
+    el.addEventListener('change', _winRefresh);
+    el.addEventListener('input', _winRefresh);
+  }
+  document.getElementById('windowStart').addEventListener('click', _winStart);
+  document.getElementById('windowCancel').addEventListener('click', () => {
+    if (!_win) return;
+    authFetch(API + '/windows/' + encodeURIComponent(_win.id) + '/cancel', { method: 'POST' }, null)
+      .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+      .then(() => _winPoll(_win.id))
+      .catch(err => appendLog('Cancel failed: ' + err.message, 'error'));
+  });
+  window.addEventListener('rp:units', () => { if (_win) _winRender(); });
+  // The newest window, if any: shown again (and followed while it runs).
+  authFetch(API + '/windows?limit=1', { cache: 'no-store' }, null)
+    .then(r => (r.ok ? r.json() : []))
+    .then(list => { if (Array.isArray(list) && list.length) _winPoll(list[0].id); })
+    .catch(() => { /* none: nothing to show */ });
+})();
 
 // ─────────── Own vessel (Signal K) + Live mode ───────────
 // The vessel marker is drawn from Signal K's own-vessel position every

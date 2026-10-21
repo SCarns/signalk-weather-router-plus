@@ -33,6 +33,8 @@ export interface Job {
   fronts?: unknown[] | null;
   /** Resources API id when published. */
   resourceId?: string;
+  /** The departure window this job is one departure of (windows.ts); such jobs are listed and trimmed with their window. */
+  windowId?: string;
   publishError?: string;
   events: JobEvent[];
   nextEventId: number;
@@ -50,13 +52,19 @@ export interface JobPublic {
   error?: string;
   resource_id?: string;
   publish_error?: string;
+  window_id?: string;
   links: Record<string, string>;
 }
+
+/** What a finished departure-window job keeps only in its file (see release). */
+const RESULT_KEYS = ['geojson', 'skRoute', 'skeleton', 'fronts', 'events', 'progress'] as const;
 
 export class JobManager extends EventEmitter {
   private jobs = new Map<string, Job>();
   private queue: string[] = [];
   private running: string | null = null;
+  /** Jobs whose route results are only on disk (release): full() reads them back. */
+  private released = new Set<string>();
   private readonly dir: string;
 
   constructor(
@@ -87,6 +95,7 @@ export class JobManager extends EventEmitter {
         j.events = j.events ?? [];
         j.nextEventId = j.nextEventId ?? j.events.length + 1;
         this.jobs.set(j.id, j);
+        if (j.windowId) this.release(j);
       } catch {
         // ignore corrupt file
       }
@@ -96,10 +105,47 @@ export class JobManager extends EventEmitter {
 
   private persist(job: Job): void {
     if (job.status === 'queued' || job.status === 'running') return;
+    // A released job's results are only in its file: written back with it, not lost.
+    const full = this.full(job.id) ?? job;
     const tmp = path.join(this.dir, `${job.id}.json.tmp`);
     // Frontier events are display-only and large: streamed live, not kept.
-    fs.writeFileSync(tmp, JSON.stringify({ ...job, events: job.events.filter(e => e.event !== 'frontier') }));
+    fs.writeFileSync(tmp, JSON.stringify({ ...full, events: full.events.filter(e => e.event !== 'frontier') }));
     fs.renameSync(tmp, path.join(this.dir, `${job.id}.json`));
+  }
+
+  /**
+   * Drop a finished departure-window job's route results from memory; they
+   * stay in its file. A window keeps up to WINDOW_LIMITS.maxDepartures jobs
+   * and WINDOW_LIMITS.keep windows, all exempt from the keepJobs trim, and
+   * once a departure is done the window needs only its metrics (windows.ts),
+   * taken from the 'done' event before this runs. Ordinary jobs keep theirs.
+   */
+  private release(job: Job): void {
+    delete job.geojson;
+    delete job.skRoute;
+    delete job.skeleton;
+    delete job.fronts;
+    job.events = [];
+    job.progress = [];
+    this.released.add(job.id);
+  }
+
+  /**
+   * The job with its route results: a released one's are read from its file,
+   * for this answer only (without them if the file cannot be read).
+   */
+  full(id: string): Job | undefined {
+    const job = this.jobs.get(id);
+    if (!job || !this.released.has(id)) return job;
+    let stored: Partial<Job>;
+    try {
+      stored = JSON.parse(fs.readFileSync(path.join(this.dir, `${id}.json`), 'utf8')) as Partial<Job>;
+    } catch {
+      return job;
+    }
+    const out = { ...job } as Record<string, unknown>;
+    for (const k of RESULT_KEYS) if (stored[k] !== undefined) out[k] = stored[k];
+    return out as unknown as Job;
   }
 
   /** Change how many finished jobs are kept (settings) and trim now. */
@@ -110,7 +156,7 @@ export class JobManager extends EventEmitter {
 
   private trim(): void {
     const finished = [...this.jobs.values()]
-      .filter(j => j.status !== 'queued' && j.status !== 'running')
+      .filter(j => j.status !== 'queued' && j.status !== 'running' && !j.windowId)
       .sort((a, b) => (b.finishedAt ?? b.createdAt).localeCompare(a.finishedAt ?? a.createdAt));
     for (const j of finished.slice(this.keepJobs)) this.delete(j.id);
   }
@@ -156,6 +202,7 @@ export class JobManager extends EventEmitter {
       error: job.error,
       resource_id: job.resourceId,
       publish_error: job.publishError,
+      window_id: job.windowId,
       links: this.links(job.id),
     };
   }
@@ -164,8 +211,12 @@ export class JobManager extends EventEmitter {
     return this.jobs.get(id);
   }
 
-  list(limit = 50): Job[] {
-    return [...this.jobs.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit);
+  /** The newest jobs; a departure window's jobs only with `withWindows`. */
+  list(limit = 50, withWindows = false): Job[] {
+    return [...this.jobs.values()]
+      .filter(j => withWindows || !j.windowId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, limit);
   }
 
   get queueLength(): number {
@@ -176,7 +227,7 @@ export class JobManager extends EventEmitter {
     return this.running;
   }
 
-  submit(request: RouteRequest): Job {
+  submit(request: RouteRequest, windowId?: string): Job {
     const job: Job = {
       id: randomUUID(),
       status: 'queued',
@@ -186,6 +237,7 @@ export class JobManager extends EventEmitter {
       events: [],
       nextEventId: 1,
     };
+    if (windowId) job.windowId = windowId;
     this.jobs.set(job.id, job);
     this.queue.push(job.id);
     this.emitEvent(job, 'status', { status: 'queued', position: this.queue.length });
@@ -269,6 +321,7 @@ export class JobManager extends EventEmitter {
   private finish(job: Job): void {
     if (this.running === job.id) this.running = null;
     this.persist(job);
+    if (job.windowId) this.release(job);
     this.trim();
     this.pump();
   }
@@ -292,6 +345,7 @@ export class JobManager extends EventEmitter {
     if (job.status === 'running') return false;
     this.queue = this.queue.filter(q => q !== id);
     this.jobs.delete(id);
+    this.released.delete(id);
     try {
       fs.unlinkSync(path.join(this.dir, `${id}.json`));
     } catch {
