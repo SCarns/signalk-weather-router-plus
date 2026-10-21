@@ -449,6 +449,13 @@ function _fitRouteInView() {
 }
 
 // `given`: the job when it is not in the list (a departure window's route, GET /api/routes/:id).
+// The map time picked on a route (a leg in the itinerary, a click in the meteogram) belongs to that route: when the
+// route goes, or another is shown in its place, the overlays go back to the departure time, as Reset does (PR #50
+// review: a new route kept the old one's hour).
+function _clearRouteTime() {
+  if (timeOverride()) { setTimeOverride(null); _reloadTimedOverlays(); }
+}
+
 function _loadRouteJob(id, given) {
   if (!id) return;
   const job = given || routeHistoryItems.find(j => j.id === id);
@@ -464,6 +471,7 @@ function _loadRouteJob(id, given) {
     .then(geojson => {
       // Another route opened while this body was still being read (the channel cancels only the request): dropped.
       if (_currentRouteJobId !== id) return;
+      if (_displayedJobId !== id) _clearRouteTime();
       displayRoute(geojson);
       _displayedJobId = id;   // a Publish of this saved route writes its itinerary too
       _meteoRouteChanged();
@@ -517,9 +525,10 @@ function _clearDisplayedRoute() {
   if (modalItin) modalItin.innerHTML = '';
   const nameInput = document.getElementById('routeNameInput');
   if (nameInput) nameInput.value = '';
-  // The deleted job's itinerary and meteogram go with it (PR #50 review).
+  // The deleted job's itinerary and meteogram go with it (PR #50 review), and the map time picked on it.
   _displayedJobId = null;
   closeMeteogram();
+  _clearRouteTime();
 }
 
 function _deleteRouteJob(id, labelForConfirm) {
@@ -1384,8 +1393,11 @@ function _clearRoute() {
   _currentRouteJobId = null;
   _currentRouteName = '';
   _lastRouteProps = null;
+  // No route is shown: the Meteogram button finds none to open (PR #50 review: it opened the cleared one).
+  _displayedJobId = null;
+  _itineraryFeatures = [];
   closeMeteogram();
-  if (timeOverride()) { setTimeOverride(null); _reloadTimedOverlays(); }
+  _clearRouteTime();
   updateButton();
 }
 
@@ -1724,6 +1736,7 @@ function showModal() {
   _currentRouteName = '';
   // The meteogram described the route that is gone (PR #50 review); the new one opens it again from the itinerary.
   closeMeteogram();
+  _clearRouteTime();
   const nameInput = document.getElementById('routeNameInput');
   if (nameInput) nameInput.value = '';
   renderResultStrip(null);
