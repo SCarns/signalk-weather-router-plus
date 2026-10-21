@@ -31,7 +31,7 @@ import { mergeSettings, reloadsFor, settingsSchema, SettingsStore, SettingsValid
 import { checkDecodeResources } from './plugin/memguard';
 import { siText } from './plugin/unittext';
 import { JobManager, type Job } from './plugin/jobs';
-import { WindowManager, type DepartureWindow } from './plugin/windows';
+import { windowNotification, WindowManager, type DepartureWindow } from './plugin/windows';
 import { registerApi } from './plugin/api';
 import { NotStartedError } from './plugin/errors';
 import { TileService, TileStore, tileGroup, type TileGroup } from './plugin/tiles';
@@ -680,18 +680,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
 
   /** A departure window finished: one notification for it (its departures' routes send none). */
   function notifyWindow(w: DepartureWindow): void {
-    const done = w.departures.filter(d => d.metrics);
-    if (!done.length) {
-      notifyAt(w.id, 'warn', `departure window finished: no route for any of its ${w.departures.length} departures`);
-      return;
-    }
-    const fastest = done.reduce((a, b) => (b.metrics!.total_time_s < a.metrics!.total_time_s ? b : a));
-    // SI: the client converts to its user's units.
-    notifyAt(
-      w.id,
-      'normal',
-      `departure window ready: ${done.length} of ${w.departures.length} departures computed; the fastest leaves ${fastest.departure} and takes ${Math.round(fastest.metrics!.total_time_s)} s`
-    );
+    const { state, message } = windowNotification(w);
+    notifyAt(w.id, state, message);
   }
 
   function notifyAt(id: string, state: 'normal' | 'alert' | 'warn', message: string): void {

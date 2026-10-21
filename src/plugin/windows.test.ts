@@ -10,6 +10,7 @@ import type { RouteRequest, RouteSummary } from './protocol';
 import {
   departureMetrics,
   validateWindowRequest,
+  windowNotification,
   WINDOW_LIMITS,
   windowDepartures,
   WindowManager,
@@ -391,4 +392,49 @@ test('a departure that fails as it is submitted is recorded, and the window goes
   assert.equal(finished.length, 1);
   assert.equal(jobs.runningId, null);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('windowNotification: the fastest of the passages that end within the forecast, as the Route tab ranks them', () => {
+  const metrics = (hours: number, beyond: boolean) => ({
+    arrival: new Date(T0 + hours * H).toISOString(),
+    total_time_s: hours * 3600,
+    sailing_time_s: hours * 3600,
+    motoring_time_s: 0,
+    total_distance_m: 900_000,
+    max_wind_ms: 10,
+    max_swh_m: 2,
+    max_sea_index: 1,
+    upwind_time_s: 0,
+    beyond_forecast: beyond,
+    warnings: 0,
+  });
+  const dep = (h: number, m?: ReturnType<typeof metrics>) => ({
+    departure: new Date(T0 + h * H).toISOString(),
+    job_id: m ? `j${h}` : null,
+    status: m ? ('done' as const) : ('skipped' as const),
+    ...(m ? { metrics: m } : {}),
+  });
+  const win = (departures: ReturnType<typeof dep>[]): DepartureWindow => ({
+    id: 'w',
+    status: 'done',
+    created_at: new Date(T0).toISOString(),
+    request: { route: ROUTE, from: departures[0].departure, to: departures[departures.length - 1].departure, step_s: 6 * 3600 },
+    departures,
+  });
+
+  // The shortest passage runs past the forecast: not the fastest, as the table does not star it.
+  assert.deepEqual(windowNotification(win([dep(0, metrics(80, false)), dep(6, metrics(70, false)), dep(12, metrics(50, true)), dep(18)])), {
+    state: 'normal',
+    message: `departure window ready: 3 of 4 departures computed; the fastest leaves ${new Date(T0 + 6 * H).toISOString()} and takes 252000 s`,
+  });
+  // Every passage computed runs past it: the count, and no fastest.
+  assert.deepEqual(windowNotification(win([dep(0, metrics(90, true)), dep(6)])), {
+    state: 'normal',
+    message: 'departure window ready: 1 of 2 departures computed; every passage computed arrives after the forecast ends',
+  });
+  // None computed.
+  assert.deepEqual(windowNotification(win([dep(0), dep(6)])), {
+    state: 'warn',
+    message: 'departure window finished: no route for any of its 2 departures',
+  });
 });

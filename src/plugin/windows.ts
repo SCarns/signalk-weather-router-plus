@@ -179,6 +179,25 @@ export function departureMetrics(job: Job): DepartureMetrics {
   };
 }
 
+/**
+ * The notification a finished window sends (its departures' routes send none). The fastest is picked as the Route
+ * tab's table ranks (rp-plan.js `_winBest`): of the passages that end within the forecast, since one that runs past
+ * it sailed its last legs on conditions held at the last step. SI: the client converts to its user's units.
+ */
+export function windowNotification(w: DepartureWindow): { state: 'normal' | 'warn'; message: string } {
+  const done = w.departures.filter(d => d.metrics);
+  if (!done.length)
+    return { state: 'warn', message: `departure window finished: no route for any of its ${w.departures.length} departures` };
+  const head = `departure window ready: ${done.length} of ${w.departures.length} departures computed`;
+  const ranked = done.filter(d => !d.metrics!.beyond_forecast);
+  if (!ranked.length) return { state: 'normal', message: `${head}; every passage computed arrives after the forecast ends` };
+  const fastest = ranked.reduce((a, b) => (b.metrics!.total_time_s < a.metrics!.total_time_s ? b : a));
+  return {
+    state: 'normal',
+    message: `${head}; the fastest leaves ${fastest.departure} and takes ${Math.round(fastest.metrics!.total_time_s)} s`,
+  };
+}
+
 export interface WindowDeps {
   /** Stop the route worker's running job (a queued one the job manager cancels itself). */
   cancelRunning: (jobId: string) => void;

@@ -2828,9 +2828,14 @@ sends a delta for the own vessel on the path
 |---|---|---|
 | route done | `normal` | `route ready: <nm> nm, <h> h` |
 | route failed | `alert` | `route failed: <error>` |
+| departure window done | `normal` | `departure window ready: <n> of <m> departures computed; the fastest leaves <departure> and takes <s> s`: the fastest of the passages that end within the forecast, as the Best departure table ranks them; when every passage computed ends after it, `; every passage computed arrives after the forecast ends` instead |
+| departure window, no route | `warn` | `departure window finished: no route for any of its <m> departures` |
 
+A window's notification is on `notifications.weatherRouterPlus.<windowId>`;
+its departures' route jobs send none ([Departure windows](#departure-windows)).
 The value is `{state, method: [], message, timestamp}`. Cancelled jobs
-send no notification. The plugin emits no other deltas.
+send no notification, nor does a window that ends other than done
+(cancelled, or failed by a restart). The plugin emits no other deltas.
 
 #### OpenAPI
 
