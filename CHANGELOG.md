@@ -39,7 +39,10 @@ uses [Semantic Versioning](https://semver.org/).
   the server's value wins. localStorage is not split by user, so the
   browser records whose choices it holds (`rp:prefsUser`, from
   `/skServer/loginStatus`): a choice only it has is sent up for that user
-  and dropped when another user logs in there. Choices from before this
+  and dropped when another user logs in there; one made while the page
+  cannot confirm that user (the read failed, or nobody or someone else is
+  logged in) leaves the browser without an owner, so the choices wait for
+  the answer below. Choices from before this
   change have no owner: they stay in use in that browser and go up only
   when the user keeps them (a banner asks: Keep, or Discard and reload
   with the defaults). The knots they held for the min sail speed and the

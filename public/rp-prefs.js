@@ -82,6 +82,7 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
   const legacy = new Map();   // ownerless choices from before this module, waiting for the user's answer
   let reading = false;        // load() is waiting for the server
   const setWhileReading = new Set(); // choices made meanwhile: they win over the server's
+  let owned = false;          // load() found the logged-in user to be the one this browser records (OWNER_KEY)
 
   const local = {
     get(key) { try { return storage ? storage.getItem(key) : null; } catch (_) { return null; } },
@@ -118,6 +119,16 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       local.set('routeVar:pb_cruise:si', String(cruiseKn * KT_MS));
     delete pb.cruise_kts;
     local.set('powerBoat', JSON.stringify(pb));
+  }
+
+  // A choice is the recorded owner's only when load() found that user logged
+  // in. One made otherwise (the read failed, or the user is unknown or
+  // another one) cannot be told apart from the owner's, so the browser's
+  // choices are left without an owner: the next load() offers those the
+  // user's record lacks with Keep / Discard instead of sending them up as
+  // the recorded owner's.
+  function disown() {
+    if (!owned) local.remove(OWNER_KEY);
   }
 
   function schedule(ms) {
@@ -195,6 +206,7 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       if (!isUserPref(key)) return;
       legacy.delete(key);     // set now: the user's own choice
       if (reading) setWhileReading.add(key);
+      else disown();
       if (values.get(key) === value) return;
       values.set(key, value);
       if (!remote) return;
@@ -233,6 +245,7 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       }
       legacy.clear();
       local.set(OWNER_KEY, user);
+      owned = true;
       send();
     },
     /** The user does not want them: dropped from this browser. */
@@ -241,6 +254,7 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       for (const key of legacy.keys()) local.remove(key);
       legacy.clear();
       local.set(OWNER_KEY, user);
+      owned = true;
     },
     /**
      * Read the user's choices from the server into this browser. Resolves
@@ -250,19 +264,18 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
      */
     async load() {
       migrateLocal();
-      let data = null;
-      let login = null;
+      let data;
+      let login;
       const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
       const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
       const signal = ctrl ? ctrl.signal : undefined;
       reading = true;
       try {
+        // Each on its own: the login status is known even when the read fails. No answer (in time): null.
         [data, login] = await Promise.all([
-          getJson(url, signal),
+          getJson(url, signal).catch(() => null),
           getJson(loginUrl, signal).catch(() => null),
         ]);
-      } catch (_) {
-        /* no answer in time: this browser only */
       } finally {
         if (t !== null) clearTimeout(t);
         reading = false;
@@ -271,7 +284,13 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       // than the server's value, so it is kept and sent up.
       const mine = new Set(setWhileReading);
       setWhileReading.clear();
-      if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+      const loggedIn = login && login.status === 'loggedIn' && typeof login.username === 'string' ? login.username : null;
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        // This browser only. The choices stay the recorded owner's only while that user is the one logged in.
+        owned = loggedIn !== null && local.get(OWNER_KEY) === loggedIn;
+        if (mine.size) disown();
+        return false;
+      }
       remote = true;
       for (const [key, value] of Object.entries(data)) {
         if (!isUserPref(key) || typeof value !== 'string' || mine.has(key)) continue;
@@ -279,8 +298,12 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
         local.set(key, value);
       }
       for (const key of mine) pending.set(key, values.get(key));
-      user = login && login.status === 'loggedIn' && typeof login.username === 'string' ? login.username : null;
-      if (user === null) { send(); return true; }   // the owner of this browser's choices is unknown: leave them be
+      user = loggedIn;
+      if (user === null) {   // the user is unknown: the browser's choices are left as they are, until one is made here
+        if (mine.size) disown();
+        send();
+        return true;
+      }
       const owner = local.get(OWNER_KEY);
       for (const key of local.keys()) {
         if (!isUserPref(key) || values.has(key)) continue;
@@ -297,6 +320,7 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       }
       // With older choices waiting for an answer the browser has no owner yet.
       if (owner !== null || legacy.size === 0) local.set(OWNER_KEY, user);
+      owned = local.get(OWNER_KEY) === user;
       send();
       return true;
     },

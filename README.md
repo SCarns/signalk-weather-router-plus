@@ -395,7 +395,11 @@ computed with what that request says, not with the user's saved Setup.
   server that has not answered within 3 s leaves it with what this
   browser remembers. The browser notes whose choices it holds: a
   choice only it has is sent up for that user, while another user's are
-  dropped when someone else logs in there. Choices a browser held before
+  dropped when someone else logs in there. A choice made while the page
+  cannot confirm that the logged-in user is that one (the read failed, or
+  nobody or someone else is logged in) leaves the browser's choices
+  without an owner: like those from before this change (next), they wait
+  for the user's Keep or Discard. Choices a browser held before
   this change have no owner: they stay in use there, and a banner asks
   the logged-in user whether to keep them as theirs (sent up) or discard
   them (the page reloads with the defaults). Opening the page stores

@@ -368,6 +368,77 @@ test('the user unknown (no login status): the browser’s choices are left as th
   assert.equal(storage.getItem(OWNER_KEY), null);
 });
 
+test('a choice made while the browser cannot tell its user is the recorded owner leaves its choices without an owner', async () => {
+  // Alice's browser: her mode is in her record too.
+  const alices = () => {
+    const storage = new MemStorage();
+    storage.setItem(OWNER_KEY, 'alice');
+    storage.setItem('routeVar:mode', 'fastest');
+    return storage;
+  };
+  // Alice opens the page again, the read working: the other choice is not sent up as hers, it waits for her answer.
+  const aliceLoads = async (storage: MemStorage, why: string) => {
+    const srv = fakeServer({ 'routeVar:mode': 'fastest' }, { user: 'alice' });
+    const prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+    assert.equal(await prefs.load(), true);
+    await prefs.flush();
+    assert.equal(srv.postCalls().length, 0, why + ': not sent as Alice’s');
+    assert.deepEqual(prefs.legacyChoices(), [['polarPath', 'b.pol']], why + ': offered with Keep / Discard');
+  };
+  const failingRead = (srv: ReturnType<typeof fakeServer>) => async (u: string, init?: { method?: string }) => {
+    if (u === PREFS_URL && (init?.method ?? 'GET') === 'GET') throw new TypeError('network down');
+    return srv.fetchFn(u, init);
+  };
+
+  // The read fails (an error status, or no answer) while Bob is logged in, or nobody is: Bob's choice is not Alice's.
+  for (const [why, fetchFn] of [
+    ['500, Bob', fakeServer({}, { getStatus: 500, user: 'bob' }).fetchFn],
+    ['no answer, Bob', failingRead(fakeServer({}, { user: 'bob' }))],
+    ['401, no login', fakeServer({}, { getStatus: 401, user: null }).fetchFn],
+  ] as const) {
+    const storage = alices();
+    const prefs = createPrefs({ storage, fetchFn, log: quiet });
+    assert.equal(await prefs.load(), false, why);
+    assert.equal(storage.getItem(OWNER_KEY), 'alice', why + ': nothing chosen yet: still Alice’s');
+    prefs.set('polarPath', 'b.pol');
+    assert.equal(storage.getItem(OWNER_KEY), null, why + ': no owner after the choice');
+    await aliceLoads(storage, why);
+  }
+
+  // The read works but the user is unknown: a choice there is not Alice's either.
+  let storage = alices();
+  let prefs = createPrefs({ storage, fetchFn: fakeServer({}, { user: null }).fetchFn, log: quiet });
+  assert.equal(await prefs.load(), true);
+  prefs.set('polarPath', 'b.pol');
+  assert.equal(storage.getItem(OWNER_KEY), null, 'unknown user');
+  await aliceLoads(storage, 'unknown user');
+
+  // A choice made while the failing read is still waiting (the Freeboard panel), with Bob logged in.
+  storage = alices();
+  const held = fakeServer({}, { getStatus: 500, user: 'bob', holdGet: true });
+  prefs = createPrefs({ storage, fetchFn: held.fetchFn, log: quiet });
+  const loading = prefs.load();
+  await wait(5);
+  prefs.set('polarPath', 'b.pol');
+  held.releaseGet();
+  assert.equal(await loading, false);
+  assert.equal(storage.getItem(OWNER_KEY), null, 'chosen while reading');
+  await aliceLoads(storage, 'chosen while reading');
+
+  // Alice herself while the read fails: still hers, and sent up for her at the next load as before.
+  storage = alices();
+  prefs = createPrefs({ storage, fetchFn: fakeServer({}, { getStatus: 500, user: 'alice' }).fetchFn, log: quiet });
+  assert.equal(await prefs.load(), false);
+  prefs.set('polarPath', 'b.pol');
+  assert.equal(storage.getItem(OWNER_KEY), 'alice');
+  const srv = fakeServer({ 'routeVar:mode': 'fastest' }, { user: 'alice' });
+  prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+  await prefs.load();
+  await prefs.flush();
+  assert.deepEqual(srv.postCalls()[0].body, [{ op: 'add', path: '/polarPath', value: 'b.pol' }]);
+  assert.deepEqual(prefs.legacyChoices(), []);
+});
+
 test('start-up does not wait for the upload of this browser’s choices', async () => {
   const storage = new MemStorage();
   storage.setItem(OWNER_KEY, 'dirk');
