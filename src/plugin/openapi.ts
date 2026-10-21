@@ -623,6 +623,30 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           },
         },
       },
+      '/api/routes/{id}/meteogram': {
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        get: {
+          summary: "Conditions where the boat is at each step of a finished route's passage (meteogram)",
+          parameters: [
+            {
+              name: 'step_s',
+              in: 'query',
+              schema: { type: 'number', minimum: 600, maximum: 21600, default: 3600 },
+              description: 'Seconds between rows; raised when the passage would need more than 1000 rows',
+            },
+          ],
+          responses: {
+            200: {
+              description:
+                '{departure, arrival, step_s, step_raised, forecast_cycle, forecast_valid_to, regional_wind: [{name, cycle}], regional_wind_missing: [name], route_forecast_cycle, complete, rows: [{time, lon, lat, leg, mode, sog_ms, cog_deg, twa_deg, tack, beyond_forecast, wind_source, …the /api/conditions row fields}]}. The wind is layered from the regional models the route was computed with, as the router layers them; wind_source names the model that answered each row (ECMWF elsewhere). complete is false when the data changed while the rows were read (not kept; ask again for the newest).',
+            },
+            400: { description: 'Bad step_s, or a route without two timed points' },
+            404: { description: 'Not found' },
+            409: { description: 'Not finished' },
+            503: { description: 'Plugin not started, or the first forecast still loading' },
+          },
+        },
+      },
       '/api/routes/{id}/cancel': {
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         post: {

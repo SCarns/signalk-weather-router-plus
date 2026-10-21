@@ -26,6 +26,7 @@
  *   GET  /api/routes/:id/result     GeoJSON FeatureCollection
  *   GET  /api/routes/:id/skeleton   coarse A* skeleton GeoJSON
  *   GET  /api/routes/:id/signalk    Signal K Route resource body
+ *   GET  /api/routes/:id/meteogram?step_s=   conditions where the boat is at each step of the passage
  *   POST /api/routes/:id/cancel
  *   POST /api/routes/:id/publish    save to the Resources API
  *   DELETE /api/routes/:id
@@ -51,7 +52,8 @@ import * as zlib from 'node:zlib';
 import type { IRouter, Request, Response } from 'express';
 import { type JobManager, type Job } from './jobs';
 import { validateWindowRequest, WINDOW_LIMITS, type WindowManager, type WindowRequest } from './windows';
-import type { QueryArgs, QueryKind, RouteRequest } from './protocol';
+import type { QueryArgs, QueryKind, RouteRequest, TrackConditions } from './protocol';
+import { meteogramRows, METEOGRAM_STEP_S, routePoints, sampleStep, trackSamples, type Meteogram } from './meteogram';
 import { openApiDocument } from './openapi';
 import { buildLegends } from './legends';
 import type { ChartGroup } from './charts';
@@ -82,6 +84,8 @@ export interface ApiDeps {
   query: <K extends QueryKind>(kind: K, args: QueryArgs[K], signal?: AbortSignal) => Promise<unknown>;
   /** Map overlay tiles (null before the plugin has started). */
   tiles: () => TileService | null;
+  /** The regional wind runs the data worker last reported decoded, per source (yyyymmddHH, null: none). */
+  regionalRuns: () => { name: string; cycle: string | null }[];
   /** The chart-layer presets a chartplotter panel offers (empty before the forecast is there). */
   chartGroups: () => ChartGroup[];
   /** The freshness rows each of those charts is drawn from, by chart id. */
@@ -735,6 +739,54 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
         return;
       }
       json(res, 200, job.skRoute);
+    });
+  });
+
+  // The meteogram: the boat's position at each step of the passage and the
+  // conditions there and then, from the forecast loaded now (which may be a
+  // newer run than the one the route was computed with: both cycles are given),
+  // with the regional wind models the route used layered over it.
+  ro.get('/api/routes/:id/meteogram', (req: Request, res: Response) => {
+    withJob(req, res, async (_jobs, job) => {
+      if (job.status !== 'done' || !job.geojson) {
+        json(res, 409, { error: `job is ${job.status}`, status: job.status });
+        return;
+      }
+      try {
+        const asked = num(req.query.step_s, METEOGRAM_STEP_S.default, METEOGRAM_STEP_S.min, METEOGRAM_STEP_S.max, 'step_s');
+        const points = routePoints(job.geojson);
+        const durationS = (points[points.length - 1].tMs - points[0].tMs) / 1000;
+        const { stepS, raised } = sampleStep(durationS, asked);
+        const samples = trackSamples(points, stepS);
+        const service = tilesOr503(res);
+        if (!service) return;
+        // The regional wind models the route was computed with: the meteogram's wind is layered the same way. Each is
+        // named with its newest decoded run, so the saved answer is keyed by the runs too: a new run, a fresh answer.
+        const decoded = new Map(deps.regionalRuns().map(r => [r.name, r.cycle]));
+        const regional = (job.summary?.regional_wind ?? []).map(r => ({ name: r.name, cycle: decoded.get(r.name) ?? null }));
+        const answer = await service.pointWithStatus(
+          'track_conditions',
+          { points: samples.map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs })), regional },
+          clientGone(res)
+        );
+        const tc = answer.result as TrackConditions;
+        const body: Meteogram & { route_forecast_cycle: string | null } = {
+          departure: samples[0].time,
+          arrival: samples[samples.length - 1].time,
+          step_s: stepS,
+          step_raised: raised,
+          forecast_cycle: tc.cycle,
+          forecast_valid_to: tc.validTo,
+          regional_wind: tc.regional,
+          regional_wind_missing: tc.regionalMissing,
+          route_forecast_cycle: job.summary?.forecast_cycle ?? null,
+          rows: meteogramRows(samples, tc.rows, Date.parse(tc.validTo)),
+          complete: answer.complete,
+        };
+        json(res, 200, body);
+      } catch (err) {
+        fail(res, err);
+      }
     });
   });
 

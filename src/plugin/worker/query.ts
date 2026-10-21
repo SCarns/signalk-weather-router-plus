@@ -10,7 +10,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ForecastStore } from '../../data/forecast';
 import { LAYER_PARAMS } from '../layers';
-import { type BBox } from '../../geo/geodesy';
+import { bboxFromLonLat, type BBox } from '../../geo/geodesy';
+import { type WindowOptions } from '../../data/decoded';
+import { REGIONAL_DIR } from '../../data/regionaldecode';
+import { LayeredWind, type RegionalWind } from '../../engine/layeredwind';
 import {
   conditionsSeries,
   currentPoints,
@@ -19,13 +22,15 @@ import {
   landMaskImage,
   type OverlaySources,
   pressureFeatures,
+  sampleConditions,
   windPoints,
   seaPoints,
 } from '../overlays';
 import { POINT_FORECAST_PARAMS, pointForecasts } from '../weather';
-import { type DataStatus, type QueryArgs } from '../protocol';
+import { type DataStatus, type QueryArgs, type TrackConditions, type TrackConditionsRow } from '../protocol';
 import { encodeTile, tileQuery, type TileId } from '../tiles';
 import { readWindow, releaseWindow } from './forecast';
+import { regionalRunsFor, type RegionalRun } from './regionalwind';
 import { currentsStatus, prepareSmocForQuery } from './currents';
 import { conditionsTide, prepareTidesForQuery, tideSeriesQuery } from './tides';
 import type { WorkerState } from './state';
@@ -163,8 +168,131 @@ export async function buildTile(st: WorkerState, id: number, tile: TileId, tmp: 
   }
 }
 
+/** Track samples read together: their box and the steps around their times are small (a few hours of sailing). */
+const TRACK_CHUNK = 12;
+
+/**
+ * Conditions along a route's track (its meteogram): each sample at its own
+ * place and time. The samples are read a chunk at a time, the box around a
+ * chunk's positions at the steps bracketing its times, so a long passage
+ * never holds more than a few cells of a few steps, not the box of the whole
+ * route. Currents are those already loaded (no on-demand SMOC area for a track).
+ *
+ * The wind is the one the route was computed with: the regional models it
+ * used (`regional`) are layered over ECMWF as the router layers them
+ * (LayeredWind, blended at their borders and over their last hours), and each
+ * row names the model that answered it. Gusts, waves, pressure and the rest
+ * are ECMWF's: a regional run holds 10 m wind only.
+ *
+ * Every chunk is read from the runs taken at the start, so the rows never mix
+ * two runs. A run replaced while the query reads leaves the answer incomplete
+ * (answered, not kept); one already pruned is read again from the start, on
+ * the runs current then.
+ */
+export async function trackConditions(
+  st: WorkerState,
+  a: QueryArgs['track_conditions']
+): Promise<{ result: TrackConditions; complete: boolean }> {
+  try {
+    return await trackConditionsOnce(st, a);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    return trackConditionsOnce(st, a);
+  }
+}
+
+async function trackConditionsOnce(
+  st: WorkerState,
+  a: QueryArgs['track_conditions']
+): Promise<{ result: TrackConditions; complete: boolean }> {
+  const run = st.run;
+  if (!run) throw new Error('no forecast loaded yet');
+  const pts = a.points;
+  const named = new Map((a.regional ?? []).map(r => [r.name, r.cycle]));
+  const wanted = [...named.keys()];
+  // The newest decoded run of each regional model the route used, as the router picks them (regionalwind.ts).
+  const regionalNow = (): RegionalRun[] =>
+    wanted.length && pts.length
+      ? regionalRunsFor(
+          path.join(st.cacheRoot, REGIONAL_DIR),
+          bboxFromLonLat(
+            pts.map(p => p.lon),
+            pts.map(p => p.lat)
+          ),
+          pts[0].tMs,
+          run.index.grid.dLon
+        ).filter(r => wanted.includes(r.name))
+      : [];
+  const regional = regionalNow();
+  const smoc0 = st.smoc;
+  const tides0 = st.tides;
+  const evictions = (): number => (st.smoc?.evictions ?? 0) + (st.tides?.evictions ?? 0);
+  const evicted0 = evictions();
+  const out: TrackConditionsRow[] = [];
+  for (let i = 0; i < pts.length; i += TRACK_CHUNK) {
+    const chunk = pts.slice(i, i + TRACK_CHUNK);
+    const bbox = bboxFromLonLat(
+      chunk.map(p => p.lon),
+      chunk.map(p => p.lat)
+    );
+    const held: ForecastStore[] = [];
+    try {
+      const steps = [...new Set(chunk.flatMap(p => run.bracket(p.tMs)))].sort((x, y) => x - y);
+      const win = await readWindow(st, 'route meteogram', { bbox, params: CONDITIONS_PARAMS, steps, marginCells: 2 }, run);
+      held.push(win);
+      const layers: RegionalWind[] = [];
+      for (const r of regional) {
+        if (chunk[chunk.length - 1].tMs < r.firstMs || chunk[0].tMs > r.lastMs) continue;
+        const opts: WindowOptions = {
+          bbox,
+          params: ['10u', '10v'],
+          steps: [...new Set(chunk.flatMap(p => r.run.bracket(p.tMs)))].sort((x, y) => x - y),
+          marginCells: 1,
+        };
+        if (r.run.windowBytes(opts) <= 0) continue; // no cells of its grid near this chunk
+        const store = await readWindow(st, 'route meteogram regional wind', opts, r.run);
+        held.push(store);
+        layers.push({ name: r.name, wind: store, grid: r.grid, firstMs: r.firstMs, lastMs: r.lastMs });
+      }
+      const src = overlaySources(st, win);
+      const wind = layers.length
+        ? new LayeredWind(win, layers).atManyAtWithSource(
+            Float64Array.from(chunk, p => p.lon),
+            Float64Array.from(chunk, p => p.lat),
+            Float64Array.from(chunk, p => p.tMs)
+          )
+        : null;
+      chunk.forEach((p, k) => {
+        const windAt: [number, number] | undefined = wind ? [wind.speed[k], wind.dir[k]] : undefined;
+        const row = sampleConditions(src, p.lon, p.lat, new Date(p.tMs), windAt);
+        out.push({ ...row, wind_source: wind?.source[k] ?? 'ECMWF' });
+      });
+    } finally {
+      for (const s of held) releaseWindow(st, s);
+    }
+  }
+  const same = (x: RegionalRun[], y: RegionalRun[]): boolean =>
+    x.length === y.length && x.every(r => y.some(q => q.name === r.name && q.run.index.cycle === r.run.index.cycle));
+  // Replaced meanwhile (a newer run, SMOC or tide source, an evicted area): consistent, but not the answer to keep.
+  // Nor is one read from another regional run than the query names (decoded since the main thread was told).
+  const asNamed = regional.every(r => named.get(r.name) === r.run.index.cycle);
+  const complete =
+    st.run === run && st.smoc === smoc0 && st.tides === tides0 && evictions() === evicted0 && same(regional, regionalNow()) && asNamed;
+  return {
+    result: {
+      cycle: run.cycleTime.toISOString(),
+      validTo: run.validRange[1].toISOString(),
+      regional: regional.map(r => ({ name: r.name, cycle: r.run.cycleTime.toISOString() })),
+      regionalMissing: wanted.filter(n => !regional.some(r => r.name === n)),
+      rows: out,
+    },
+    complete,
+  };
+}
+
 /** A query's answer, and whether it is complete (false: an on-demand current or tide load was late or failed, or was evicted meanwhile). */
 async function answer(st: WorkerState, kind: string, args: QueryArgs[keyof QueryArgs]): Promise<{ result: unknown; complete: boolean }> {
+  if (kind === 'track_conditions') return trackConditions(st, args as QueryArgs['track_conditions']);
   let win: ForecastStore | null = null;
   try {
     // The refresh runs beside the queries (worker.ts): a new SMOC or tide source can replace the one this query

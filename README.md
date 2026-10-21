@@ -476,6 +476,22 @@ computed with what that request says, not with the user's saved Setup.
   wind, smallest waves, least upwind) is starred; a passage that arrives
   after the forecast ends is marked and not ranked. A row opens that
   departure's route. The newest window shows again when the page opens.
+- **Meteogram** (Itinerary → Meteogram): the weather along the route on
+  the map, as TimeZero shows it. Charts stacked on one time axis from
+  departure to arrival: wind and gust with its direction, the boat (speed
+  over ground and the true wind angle, motoring stretches shaded), waves,
+  pressure and precipitation, each where the boat is at that hour
+  (`GET /api/routes/{id}/meteogram`, every 30 min, 1 h or 3 h). Hovering
+  a chart reads out the values there and puts a marker on the route where
+  the boat is then; a click sets the map's overlays to that hour. From the
+  keyboard each chart is a slider: Tab to it, the arrow keys (Home, End)
+  step through the passage, Enter sets the hour. The
+  route is fitted into the map above the meteogram when it opens. The
+  conditions come from the forecast loaded now; the wind is the route's:
+  where it was computed with a regional model (AROME, ICON-EU, …) that
+  model is layered over ECMWF as the router layers it, and the note names
+  the model for each stretch. The stretch after the forecast's last step
+  is shaded.
 - **Points of sail** in the itinerary come from the route's polar at each
   leg's wind speed: in irons tighter than the polar's no-go angle (the
   tightest angle it gives any speed, with the tightest sailable angle
@@ -1775,6 +1791,7 @@ the SSE endpoint replays.
 | GET | `/api/routes/{id}/skeleton` | readonly | coarse corridor skeleton as GeoJSON |
 | GET | `/api/routes/{id}/fronts` | readonly | every search stage's front and best path, compact (display only) |
 | GET | `/api/routes/{id}/signalk` | readonly | Signal K Resources API route record |
+| GET | `/api/routes/{id}/meteogram` | readonly | conditions where the boat is at each step of the passage |
 | POST | `/api/routes/{id}/cancel` | readwrite | cancel a queued or running job |
 | POST | `/api/routes/{id}/publish` | readwrite | save the route to the Resources API |
 | DELETE | `/api/routes/{id}` | readwrite | delete a job |
@@ -2080,6 +2097,71 @@ The route record the plugin saves to the Resources API (format under
 [Resources API publishing](#resources-api-publishing)). Access:
 readonly. `200` the record; `404 {error: "job not found"}`; `409
 {error: "job is <status>"}` when not `done`.
+
+#### GET /api/routes/{id}/meteogram
+
+The route's meteogram: where the boat is at each step of the passage and
+the conditions there and then, as the web app's Meteogram draws them.
+Access: readonly.
+
+| Query | Type | Unit | Default | Limits |
+|---|---|---|---|---|
+| `step_s` | number | s | 3600 | 600..21600; raised (whole minutes) when the passage would need more than 1000 rows |
+
+The boat's track comes from the route's points: between two points it
+sails the great circle at the leg's even pace, so a row a fraction of the
+way through a leg's time is that fraction of the way along it. The rows
+run from the departure to the arrival (both included). The conditions are
+sampled from the forecast loaded now, which may be a newer run than the
+route was computed with; both cycles are given. The wind is sampled from
+the same models as the route's: the regional wind models in its summary
+(`regional_wind`) are layered over ECMWF as the router layers them (each
+inside its grid and hours, blended at its border and over its last 3 h),
+from the newest decoded run of each; `wind_source` names the model that
+answered each row. Gusts, waves, pressure and the rest are ECMWF's: a
+regional run holds 10 m wind only. Every row comes from the same runs: a
+run replaced while the rows are read gives an answer that is not kept
+for the next request. A kept answer is saved with the point answers under
+its query, which names each of the route's regional models with the run
+the data worker last reported decoded for it: a new regional run is a
+new query and a fresh answer, and the other saved point answers
+(conditions, Weather API) stay. Rows read from a run decoded since that
+report are answered but not kept. Currents are those already loaded (the on-demand
+Copernicus SMOC areas are not fetched for a track).
+
+`200`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `departure`, `arrival` | string | the first and last row's time |
+| `step_s` | number | the step used |
+| `step_raised` | boolean | the step was raised above the one asked for |
+| `forecast_cycle`, `forecast_valid_to` | string | the ECMWF run the rows were sampled from, and its last valid time |
+| `regional_wind` | array | `{name, cycle}` of each regional wind run layered over it |
+| `regional_wind_missing` | array | regional models the route used that have no decoded run now (ECMWF answers there) |
+| `route_forecast_cycle` | string or null | the run the route was computed with |
+| `complete` | boolean | false when the forecast, a regional run, the currents or the tides changed while the rows were read, or a regional run was decoded since the data worker last reported one: the answer is not kept, and a subsequent request reads the newest runs. The forecast fields are still those of the runs named here; the currents and tides may be from two sources, or missing. The web app then says to reopen the meteogram |
+| `rows` | array | one per step (below) |
+
+Row fields: every [`/api/conditions`](#get-apiconditions) row field
+(wind, gust, waves, current, pressure, temperatures, precipitation,
+cloud, indices) plus:
+
+| Field | Unit | Notes |
+|---|---|---|
+| `lon`, `lat` | degrees | the boat's position at `time` |
+| `leg` | index | the leg the boat is on (0 = from the start) |
+| `mode` | string | `sailing` or `motoring`, as the route planned the leg |
+| `sog_ms` | m/s | the leg's speed over ground |
+| `cog_deg` | degrees true | the course at the position (the great circle's bearing) |
+| `twa_deg` | degrees | true wind angle 0..180 (0 = head to wind), from the sampled wind and the course |
+| `tack` | string or null | `port` or `starboard`: the side the wind comes from (null head to wind or dead downwind) |
+| `beyond_forecast` | boolean | after the forecast's last step: the values are those held at that step |
+| `wind_source` | string | the model that answered the wind: a regional model's name where it weighs more than half, else `ECMWF` |
+
+`400 {error}` for a bad `step_s`; `404 {error: "job not found"}`; `409
+{error: "job is <status>"}` when not `done`; `503` before the first
+forecast is loaded.
 
 #### POST /api/routes/{id}/cancel
 

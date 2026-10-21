@@ -307,17 +307,19 @@ export function keepCycles(current: Cycle, n: number): Cycle[] {
 /**
  * Read a window of the decoded run, noting the memory it holds while in
  * use. A run replaced (and pruned) between choosing it and reading it is
- * retried once with the run now current.
+ * retried once with the run now current. With `pinned`, that run is read
+ * and no other (a query reading several windows must not mix two runs): a
+ * pruned one is an ENOENT for the caller.
  */
-export async function readWindow(st: WorkerState, what: string, opts: WindowOptions): Promise<ForecastStore> {
-  const r = st.run;
+export async function readWindow(st: WorkerState, what: string, opts: WindowOptions, pinned?: DecodedRun): Promise<ForecastStore> {
+  const r = pinned ?? st.run;
   if (!r) throw new Error('no forecast loaded');
   const t = Date.now();
   let store: ForecastStore;
   try {
     store = await r.window(opts);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT' && st.run && st.run !== r) store = await st.run.window(opts);
+    if (!pinned && (err as NodeJS.ErrnoException).code === 'ENOENT' && st.run && st.run !== r) store = await st.run.window(opts);
     else throw err;
   }
   const bytes = store.bytes();

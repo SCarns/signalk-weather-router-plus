@@ -4,10 +4,10 @@
 // result strip, itinerary, route library, waypoint and conditions popups,
 // Live mode with the Signal K vessel.
 
-import { oneOpenAtATime, _apiErrorText, _fmt, _polarAngles, fetchPolarAngles, fmtClock, clockParts, toClockInput, fromClockInput, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
+import { oneOpenAtATime, _apiErrorText, _fmt, _shortUtc, _polarAngles, fetchPolarAngles, fmtClock, clockParts, toClockInput, fromClockInput, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
 import { createLiveTriggers, createPassageTracker, createRouteSimulator, createTrackRecorder, haversineM, VESSEL_STALE_MS } from './rp-live.js';
 import { prefs } from './rp-prefs.js';
-import { _overlayTimeIso, centreOnVesselOnce, seaBand, notesLayer, loadNotes, avoidRing, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
+import { _overlayTimeIso, centreOnVesselOnce, seaBand, notesLayer, loadNotes, avoidRing, condMarkerFeature, meteoMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
 // The limit inputs and the quantity of each (used by _limitSI, below). Declared
@@ -67,6 +67,15 @@ function _mapFitPadding() {
   const r = panel.getBoundingClientRect(), w = window.innerWidth, h = window.innerHeight;
   if (r.width >= w * 0.9 && r.top > h * 0.3) pad[2] = Math.round(h - r.top) + 20;
   else if (r.left > w * 0.3) pad[1] = Math.round(w - r.left) + 20;
+  // The meteogram across the bottom (the top on a phone) covers the map too. Which edge it is on is told by its
+  // centre: at its 62vh cap its top edge is at 0.38 h less the attribution's height, above 0.3 h in a short
+  // window (PR #50 review).
+  const mg = document.getElementById('meteogram');
+  if (mg && !mg.hidden) {
+    const m = mg.getBoundingClientRect();
+    if (m.top + m.bottom > h) pad[2] = Math.max(pad[2], Math.round(h - m.top) + 20);
+    else pad[0] = Math.max(pad[0], Math.round(m.bottom) + 20);
+  }
   return pad;
 }
 
@@ -440,6 +449,13 @@ function _fitRouteInView() {
 }
 
 // `given`: the job when it is not in the list (a departure window's route, GET /api/routes/:id).
+// The map time picked on a route (a leg in the itinerary, a click in the meteogram) belongs to that route: when the
+// route goes, or another is shown in its place, the overlays go back to the departure time, as Reset does (PR #50
+// review: a new route kept the old one's hour).
+function _clearRouteTime() {
+  if (timeOverride()) { setTimeOverride(null); _reloadTimedOverlays(); }
+}
+
 function _loadRouteJob(id, given) {
   if (!id) return;
   const job = given || routeHistoryItems.find(j => j.id === id);
@@ -455,8 +471,10 @@ function _loadRouteJob(id, given) {
     .then(geojson => {
       // Another route opened while this body was still being read (the channel cancels only the request): dropped.
       if (_currentRouteJobId !== id) return;
+      if (_displayedJobId !== id) _clearRouteTime();
       displayRoute(geojson);
       _displayedJobId = id;   // a Publish of this saved route writes its itinerary too
+      _meteoRouteChanged();
       _useRouteAngles(id);
       // The job's own request is the exact record of what was asked: its
       // waypoints (with their circles) and precision replace whatever the
@@ -507,6 +525,10 @@ function _clearDisplayedRoute() {
   if (modalItin) modalItin.innerHTML = '';
   const nameInput = document.getElementById('routeNameInput');
   if (nameInput) nameInput.value = '';
+  // The deleted job's itinerary and meteogram go with it (PR #50 review), and the map time picked on it.
+  _displayedJobId = null;
+  closeMeteogram();
+  _clearRouteTime();
 }
 
 function _deleteRouteJob(id, labelForConfirm) {
@@ -1371,7 +1393,11 @@ function _clearRoute() {
   _currentRouteJobId = null;
   _currentRouteName = '';
   _lastRouteProps = null;
-  if (timeOverride()) { setTimeOverride(null); _reloadTimedOverlays(); }
+  // No route is shown: the Meteogram button finds none to open (PR #50 review: it opened the cleared one).
+  _displayedJobId = null;
+  _itineraryFeatures = [];
+  closeMeteogram();
+  _clearRouteTime();
   updateButton();
 }
 
@@ -1708,6 +1734,9 @@ function showModal() {
   frontSource.clear();
   _currentRouteJobId = null;
   _currentRouteName = '';
+  // The meteogram described the route that is gone (PR #50 review); the new one opens it again from the itinerary.
+  closeMeteogram();
+  _clearRouteTime();
   const nameInput = document.getElementById('routeNameInput');
   if (nameInput) nameInput.value = '';
   renderResultStrip(null);
@@ -2413,6 +2442,7 @@ function _jobOnDone(job, d) {
       if (_currentRouteJobId !== id) return;
       displayRoute(geojson);
       _displayedJobId = id;
+      _meteoRouteChanged();
       // The itinerary written into the saved route is labelled with this route's polar too.
       _useRouteAngles(id).then(() => { _annotateIfPending(id); _awaitPublished(id); });
       _loadFronts(id);
@@ -2827,7 +2857,8 @@ function _condSetHour(iso) {
 // ── Chart ──
 const _CH = { w: 500, h: 230, left: 46, right: 10, top: 30, bottom: 28 };
 // Right margin: room for a second value axis when a line uses axis:'right'.
-function _chRight(tab) { return tab && tab.lines && tab.lines.some(l => l.axis === 'right') ? 46 : _CH.right; }
+// `d`: the chart's size and margins (the popup's _CH, or a meteogram panel's).
+function _chRight(tab, d = _CH) { return tab && tab.lines && tab.lines.some(l => l.axis === 'right') ? 46 : d.right; }
 
 function _drawArrow(ctx, x, y, deg, color) {
   // Canvas y is down; 0° = up (north), clockwise.
@@ -2843,33 +2874,33 @@ function _drawArrow(ctx, x, y, deg, color) {
 // The conditions chart: frame and time axis, value scales (left and
 // right axes), grid and axes, the series, then the markers (direction
 // arrows, reference level, tide marks, the map hour, the hover). `g`
-// carries what the steps share.
-function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx) {
-  const g = _chartFrame(canvas, tab, series);
+// carries what the steps share; `dims` the size and margins (default the popup's).
+function _drawConditionsChart(canvas, tab, series, hourIso, instant, hoverIdx, dims = _CH) {
+  const g = _chartFrame(canvas, tab, series, dims);
   if (!g) return;
   if (!_chartScales(g, tab, series, instant)) return;
   _chartAxes(g, tab);
   _chartSeries(g, tab, series);
   _chartMarkers(g, tab, series, hourIso, instant, hoverIdx);
-  return { xOf: g.xOf, t0: g.t0, tN: g.tN };
+  return { ctx: g.ctx, xOf: g.xOf, t0: g.t0, tN: g.tN, x0: g.x0, x1: g.x1, y0: g.y0, y1: g.y1 };
 }
 
 // Canvas at device resolution, the plot frame and the time → x mapping;
 // null (after writing "No series") when there is nothing to plot.
-function _chartFrame(canvas, tab, series) {
+function _chartFrame(canvas, tab, series, d = _CH) {
   const dpr = window.devicePixelRatio || 1;
-  canvas.width = _CH.w * dpr; canvas.height = _CH.h * dpr;
-  canvas.style.width = _CH.w + 'px'; canvas.style.height = _CH.h + 'px';
+  canvas.width = d.w * dpr; canvas.height = d.h * dpr;
+  canvas.style.width = d.w + 'px'; canvas.style.height = d.h + 'px';
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, _CH.w, _CH.h);
+  ctx.clearRect(0, 0, d.w, d.h);
   ctx.font = '10px sans-serif';
-  const x0 = _CH.left, x1 = _CH.w - _chRight(tab), y0 = _CH.top, y1 = _CH.h - _CH.bottom;
+  const x0 = d.left, x1 = d.w - _chRight(tab, d), y0 = d.top, y1 = d.h - d.bottom;
   const n = series.length;
   if (n < 2) { ctx.fillStyle = '#666'; ctx.fillText('No series', x0, (y0 + y1) / 2); return null; }
   const t0 = new Date(series[0].time).getTime(), tN = new Date(series[n - 1].time).getTime();
   const xOf = t => x0 + (t - t0) / (tN - t0) * (x1 - x0);
-  return { ctx, x0, x1, y0, y1, n, t0, tN, xOf };
+  return { ctx, x0, x1, y0, y1, n, t0, tN, xOf, dims: d };
 }
 
 // Value ranges in display units (padded; a fixed `tab.range` wins), the
@@ -2927,7 +2958,7 @@ function _chartAxes(g, tab) {
       const v = rmin + (rmax - rmin) * i / yTicks;
       ctx.fillText(v.toFixed(Math.max(1, ru.p)), x1 + 4, yOfR(v));
     }
-    ctx.textAlign = 'right'; ctx.fillText(ru.u, _CH.w - 2, y0 - 18);
+    ctx.textAlign = 'right'; ctx.fillText(ru.u, g.dims.w - 2, y0 - 18);
     ctx.fillStyle = '#555';
   }
 
@@ -3070,10 +3101,10 @@ function _chartMarkers(g, tab, series, hourIso, instant, hoverIdx) {
   }
 }
 
-function _condIdxAtX(series, px, tab) {
+function _condIdxAtX(series, px, tab, d = _CH) {
   const n = series.length; if (n < 2) return null;
   const t0 = new Date(series[0].time).getTime(), tN = new Date(series[n - 1].time).getTime();
-  const frac = Math.max(0, Math.min(1, (px - _CH.left) / (_CH.w - _CH.left - _chRight(tab))));
+  const frac = Math.max(0, Math.min(1, (px - d.left) / (d.w - d.left - _chRight(tab, d))));
   const t = t0 + frac * (tN - t0);
   let best = 0, bd = Infinity;
   series.forEach((r, i) => { const d = Math.abs(new Date(r.time).getTime() - t); if (d < bd) { bd = d; best = i; } });
@@ -3578,6 +3609,275 @@ function _winOpen(jobId) {
     .then(r => (r.ok ? r.json() : []))
     .then(list => { if (Array.isArray(list) && list.length) _winPoll(list[0].id); })
     .catch(() => { /* none: nothing to show */ });
+})();
+
+// ─────────── Meteogram (weather along the route) ───────────
+// As TimeZero's: the conditions where the boat is at each step of the
+// passage (GET /api/routes/:id/meteogram), as charts stacked on one time
+// axis and drawn by the conditions popup's chart renderer: wind and gust,
+// the boat (speed over ground, the true wind angle, motoring shaded),
+// waves, pressure and precipitation. Hovering a chart puts a marker on the
+// route where the boat is then and reads out the values there; a click
+// sets the map overlays to that hour. The rows come from the forecast loaded
+// now, the wind with the regional models the route used layered over it; the
+// stretch after its last step is shaded (values held at that step).
+// `right` is a right axis's margin (_chRight) on every chart, with one or not, so the same x is the same time on
+// each (PR #50 review: the Boat and Precip charts, which have one, ended 36 px before the others).
+const _METEO_DIMS = { h: 118, left: 46, right: 46, top: 22, bottom: 18 };
+// True wind angle in the user's angle unit (the rows carry degrees).
+function _meteoAngleUnit() {
+  const u = unitDesc('angle');
+  return { fn: v => u.fn(v * Math.PI / 180), u: u.u, p: u.p, missing: u.missing };
+}
+const _METEO_PANELS = [
+  _COND_TABS.find(t => t.id === 'wind'),
+  { id: 'boat', label: 'Boat',
+    lines: [{ key: 'sog_ms', unit: () => unitDesc('speed'), color: '#2e7d32', name: 'speed over ground', width: 2 },
+            { key: 'twa_deg', unit: _meteoAngleUnit, color: '#6a1b9a', name: 'true wind angle', axis: 'right', dash: [4, 3] }],
+    hover: r => (r.mode ? ' · ' + r.mode : '') + (r.tack ? ' · wind on the ' + r.tack + ' side' : '') },
+  _COND_TABS.find(t => t.id === 'waves'),
+  _COND_TABS.find(t => t.id === 'pressure'),
+  _COND_TABS.find(t => t.id === 'precip'),
+].filter(Boolean);
+let _meteo = null;   // { jobId, data, hoverIdx, keyIdx, panels } while the meteogram is open
+
+function _meteoEl(id) { return document.getElementById(id); }
+function _meteoDims() {
+  const body = _meteoEl('meteoBody');
+  return Object.assign({ w: Math.max(280, Math.floor(body.clientWidth)) }, _METEO_DIMS);
+}
+
+/** Open the meteogram for the route on the map (or load it again with the chosen step). */
+function openMeteogram() {
+  const jobId = _displayedJobId;
+  const box = _meteoEl('meteogram');
+  if (!jobId || !_itineraryFeatures.length) { appendLog('Meteogram: no computed route on the map', 'error'); return; }
+  box.hidden = false;
+  const step = _meteoEl('meteoStep').value || '3600';
+  const fit = !(_meteo && _meteo.jobId === jobId);   // a new route, not another step for this one
+  _meteo = { jobId, data: null, hoverIdx: null, keyIdx: null, panels: [] };
+  // The marker was for the rows being replaced (another route's, or another step's), and the charts it was hovered on
+  // go: it would stay through the load, and for good if the load fails (PR #50 review). A hover sets it again.
+  meteoMarkerFeature.setGeometry(null);
+  const mine = _meteo;
+  _meteoEl('meteoTitle').textContent = _currentRouteName || '';
+  _meteoEl('meteoBody').innerHTML = '<div class="mg-note">Loading the conditions along the route…</div>';
+  _meteoEl('meteoReadout').textContent = '';
+  _meteoEl('meteoNote').textContent = '';
+  authFetch(API + '/routes/' + encodeURIComponent(jobId) + '/meteogram?step_s=' + encodeURIComponent(step), { cache: 'no-store' }, 'meteogram')
+    .then(r => r.ok ? r.json() : _apiErrorText(r).then(t => Promise.reject(new Error(t))))
+    .then(d => {
+      if (_meteo !== mine) return;   // closed, or another route opened meanwhile
+      mine.data = d;
+      _renderMeteogram();
+      // The whole route above the meteogram, so the boat's marker shows wherever the cursor is.
+      if (fit) _fitRouteInView();
+    })
+    .catch(err => {
+      if (_meteo !== mine || err.name === 'AbortError') return;
+      _meteoEl('meteoBody').innerHTML = '<div class="mg-note" style="color:var(--danger);">Meteogram unavailable: ' + escapeHtml(err.message) + '</div>';
+    });
+}
+
+function closeMeteogram() {
+  _meteo = null;
+  _meteoEl('meteogram').hidden = true;
+  _meteoEl('meteoBody').innerHTML = '';
+  meteoMarkerFeature.setGeometry(null);
+}
+
+// The panels with data, each a labelled canvas and its legend; the notes.
+function _renderMeteogram() {
+  const m = _meteo;
+  if (!m || !m.data) return;
+  const d = m.data, rows = d.rows || [];
+  m.panels = _METEO_PANELS.filter(p => _tabHasData(p, rows));
+  _meteoEl('meteoTitle').textContent = (_currentRouteName ? _currentRouteName + ' · ' : '')
+    + fmtWhen(d.departure) + ' → ' + fmtWhen(d.arrival);
+  _meteoEl('meteoBody').innerHTML = m.panels.map((p, i) =>
+    '<div class="mg-panel"><div class="mg-label">' + escapeHtml(p.label)
+    + ' <span class="mg-legend">' + _condLegend(p, rows) + (p.id === 'boat' ? _meteoMotorLegend(rows) : '') + '</span></div>'
+    + '<canvas data-panel="' + i + '" tabindex="0" role="slider" aria-label="' + escapeHtml(p.label + ' along the route')
+    + '" aria-valuemin="0" aria-valuemax="' + Math.max(0, rows.length - 1) + '" aria-valuenow="0" style="display:block;cursor:crosshair;touch-action:pan-y;"></canvas></div>').join('');
+  const notes = [];
+  const cyc = c => _shortUtc(c);
+  // The data changed while the rows were read (PR #50 review): the currents or tides may mix two sources.
+  if (d.complete === false) notes.push('These conditions were read while the forecast, the currents or the tides changed: close and open the meteogram again for the newest.');
+  const stepOpt = [..._meteoEl('meteoStep').options].find(o => Number(o.value) === d.step_s);
+  notes.push('Conditions from the ECMWF run of ' + cyc(d.forecast_cycle) + ', every ' + (stepOpt ? stepOpt.textContent : _fmt(d.step_s, 'time'))
+    + (d.step_raised ? ' (raised to keep the row count down)' : '') + '.');
+  const windNote = _meteoWindNote(d, rows);
+  if (windNote) notes.push(windNote);
+  if (d.route_forecast_cycle && d.route_forecast_cycle !== d.forecast_cycle)
+    notes.push('The route was computed with the run of ' + cyc(d.route_forecast_cycle) + '; recompute it for a route on this run.');
+  if (rows.some(r => r.beyond_forecast)) notes.push('Shaded at the end: after the forecast’s last step (' + fmtWhen(d.forecast_valid_to) + '), the values are held at that step.');
+  notes.push('Hover to see where the boat is; click to set the map to that hour.');
+  _meteoEl('meteoNote').textContent = notes.join(' ');
+  _meteoBindCanvases();
+  _meteoDraw();
+  _meteoReadout(m.hoverIdx);
+}
+
+// Which model the wind came from, stretch by stretch: the regional models the route was computed with, layered
+// over ECMWF as the router layers them (PR #50 review). Null when ECMWF answered it all and the route used no other.
+function _meteoWindNote(d, rows) {
+  const regional = d.regional_wind || [];
+  const missing = d.regional_wind_missing || [];
+  const notes = [];
+  if (rows.some(r => r.wind_source && r.wind_source !== 'ECMWF')) {
+    const stretches = [];
+    for (let i = 0; i < rows.length; i++) {
+      const src = rows[i].wind_source || 'ECMWF';
+      let j = i;
+      while (j + 1 < rows.length && (rows[j + 1].wind_source || 'ECMWF') === src) j++;
+      stretches.push(src + ' ' + fmtWhen(rows[i].time) + (j > i ? '–' + fmtWhen(rows[j].time) : ''));
+      i = j;
+    }
+    const shown = stretches.length > 8 ? stretches.slice(0, 8).concat('…') : stretches;
+    const runs = regional.map(r => r.name + ' run of ' + _shortUtc(r.cycle)).join(', ');
+    notes.push('Wind as the route was computed with it: ' + shown.join(', ') + ' (' + runs + '); gusts, waves and the rest from ECMWF.');
+  } else if (regional.length) {
+    notes.push('Wind from ECMWF all along: ' + regional.map(r => r.name).join(', ') + ' (used by the route) does not cover this passage’s times and places.');
+  }
+  if (missing.length) notes.push(missing.join(', ') + ', used by the route, has no run here now: ECMWF instead.');
+  return notes.length ? notes.join(' ') : null;
+}
+
+function _meteoMotorLegend(rows) {
+  if (!rows.some(r => r.mode === 'motoring')) return '';
+  return '<span style="display:inline-flex;align-items:center;margin-right:10px;"><span style="display:inline-block;width:18px;height:9px;background:rgba(255,152,0,0.22);margin-right:4px;"></span>motoring</span>';
+}
+
+// Every panel, with the cursor at `hoverIdx` (null: none), then the shading.
+function _meteoDraw() {
+  const m = _meteo;
+  if (!m || !m.data) return;
+  const rows = m.data.rows || [];
+  const dims = _meteoDims();
+  const hourIso = _overlayTimeIso();
+  _meteoEl('meteoBody').querySelectorAll('canvas[data-panel]').forEach(cv => {
+    const p = m.panels[Number(cv.dataset.panel)];
+    const g = _drawConditionsChart(cv, p, rows, hourIso, null, m.hoverIdx, dims);
+    if (!g) return;
+    const { ctx, xOf, x1, y0, y1 } = g;
+    const shade = (ta, tb, fill) => {
+      const xa = Math.max(g.x0, xOf(ta)), xb = Math.min(x1, xOf(tb));
+      if (xb > xa) { ctx.fillStyle = fill; ctx.fillRect(xa, y0, xb - xa, y1 - y0); }
+    };
+    if (p.id === 'boat') {
+      // Motoring stretches: from the first motoring row to the next sailing one.
+      for (let i = 0; i < rows.length; i++) {
+        if (rows[i].mode !== 'motoring') continue;
+        let j = i;
+        while (j + 1 < rows.length && rows[j + 1].mode === 'motoring') j++;
+        shade(Date.parse(rows[i].time), Date.parse(rows[Math.min(j + 1, rows.length - 1)].time), 'rgba(255,152,0,0.22)');
+        i = j;
+      }
+    }
+    const validTo = Date.parse(m.data.forecast_valid_to);
+    if (Number.isFinite(validTo) && validTo < g.tN) shade(validTo, g.tN, 'rgba(120,120,120,0.18)');
+  });
+}
+
+// The pointer, and the keyboard (PR #50 review): each chart is a slider over the passage's steps, so a
+// keyboard or screen reader user gets the readout and the marker too. Arrows step, Home and End go to
+// the first and last step, Enter or Space sets the map to that hour as a click does. The step is kept
+// from chart to chart (Tab), and a key continues from where the pointer is.
+function _meteoBindCanvases() {
+  const m = _meteo;
+  const rows = m.data.rows || [];
+  const clamp = i => Math.max(0, Math.min(rows.length - 1, i));
+  const show = (cv, i) => {
+    m.hoverIdx = i;
+    m.keyIdx = i;
+    _meteoDraw();
+    _meteoReadout(i);
+    cv.setAttribute('aria-valuenow', String(i));
+    cv.setAttribute('aria-valuetext', _meteoEl('meteoReadout').textContent);
+  };
+  const setHour = i => {
+    setTimeOverride(new Date(rows[i].time).toISOString());
+    _reloadTimedOverlays();
+  };
+  _meteoEl('meteoBody').querySelectorAll('canvas[data-panel]').forEach(cv => {
+    const p = m.panels[Number(cv.dataset.panel)];
+    const idxAt = ev => _condIdxAtX(rows, ev.offsetX, p, _meteoDims());
+    cv.onpointermove = ev => { const i = idxAt(ev); if (i == null || i === m.hoverIdx) return; m.hoverIdx = i; _meteoDraw(); _meteoReadout(i); };
+    cv.onpointerleave = () => { m.hoverIdx = null; _meteoDraw(); _meteoReadout(null); };
+    cv.onclick = ev => {
+      const i = idxAt(ev);
+      if (i == null) return;
+      setHour(i);
+      show(cv, i);
+    };
+    // A click focuses the chart too: the step under the pointer is kept, not replaced by the keyboard's.
+    cv.onfocus = () => { if (rows.length) show(cv, clamp(m.hoverIdx != null ? m.hoverIdx : m.keyIdx != null ? m.keyIdx : 0)); };
+    // To another chart (Tab, a click): its focus shows the step, nothing to clear.
+    cv.onblur = ev => {
+      if (ev.relatedTarget && ev.relatedTarget.closest && ev.relatedTarget.closest('#meteoBody canvas[data-panel]')) return;
+      m.hoverIdx = null;
+      _meteoDraw();
+      _meteoReadout(null);
+    };
+    cv.onkeydown = ev => {
+      if (!rows.length) return;
+      const cur = clamp(m.hoverIdx != null ? m.hoverIdx : m.keyIdx != null ? m.keyIdx : 0);
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        setHour(cur);
+        show(cv, cur);
+        return;
+      }
+      const next = { ArrowRight: cur + 1, ArrowUp: cur + 1, ArrowLeft: cur - 1, ArrowDown: cur - 1, Home: 0, End: rows.length - 1 }[ev.key];
+      if (next === undefined) return;
+      ev.preventDefault();
+      show(cv, clamp(next));
+    };
+  });
+}
+
+// The values at the cursor, and the boat's marker on the route there.
+function _meteoReadout(i) {
+  const m = _meteo;
+  const el = _meteoEl('meteoReadout');
+  const r = m && m.data && i != null ? m.data.rows[i] : null;
+  if (!r) { el.textContent = 'Hover over a chart, or Tab to one and use the arrow keys'; meteoMarkerFeature.setGeometry(null); return; }
+  const parts = [fmtWhen(r.time)];
+  if (r.wind_ms != null) parts.push('wind ' + fmtSpeed(r.wind_ms) + (r.gust_ms != null ? ' (gust ' + fmtSpeed(r.gust_ms) + ')' : '')
+    + (r.wind_dir_deg != null ? ' from ' + degToCardinal(r.wind_dir_deg) : '')
+    + (r.wind_source && r.wind_source !== 'ECMWF' ? ', ' + r.wind_source : ''));
+  if (r.twa_deg != null) parts.push('TWA ' + fmtAngleDeg(r.twa_deg) + (r.tack ? ' ' + r.tack : ''));
+  if (r.sog_ms != null) parts.push((r.mode || 'SOG') + ' ' + fmtSpeed(r.sog_ms));
+  if (r.swh_m != null) parts.push('waves ' + fmtSwh(r.swh_m) + (r.mwp_s != null ? ' / ' + fmtWavePeriod(r.mwp_s) : ''));
+  if (r.msl_pa != null) parts.push(fmtPressure(r.msl_pa));
+  // Rain from 0.05 mm/h (1.4e-8 m/s): a trace that would read "0.0" is left out.
+  if (r.precip_rate_ms != null && r.precip_rate_ms >= 1.4e-8) parts.push('rain ' + fmtPrecip(r.precip_rate_ms));
+  if (r.beyond_forecast) parts.push('after the forecast');
+  el.textContent = parts.join(' · ');
+  meteoMarkerFeature.setGeometry(new ol.geom.Point(ol.proj.fromLonLat([r.lon, r.lat])));
+  meteoMarkerFeature.set('rotation_rad', r.cog_deg != null ? r.cog_deg * Math.PI / 180 : 0);
+}
+
+// A new route on the map reloads an open meteogram; a cleared one closes it.
+function _meteoRouteChanged() {
+  if (!_meteo) return;
+  if (!_displayedJobId || !_itineraryFeatures.length) closeMeteogram();
+  else if (_meteo.jobId !== _displayedJobId) openMeteogram();
+}
+
+(function() {
+  const btn = document.getElementById('routeMeteogram');
+  if (btn) btn.addEventListener('click', () => (_meteo && _meteo.jobId === _displayedJobId ? closeMeteogram() : openMeteogram()));
+  const close = document.getElementById('meteoClose');
+  if (close) close.addEventListener('click', closeMeteogram);
+  const step = document.getElementById('meteoStep');
+  if (step) step.addEventListener('change', () => { if (_meteo) openMeteogram(); });
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { if (_meteo && _meteo.data) _meteoDraw(); }, 150);
+  });
+  window.addEventListener('rp:units', () => { if (_meteo && _meteo.data) _renderMeteogram(); });
 })();
 
 // ─────────── Own vessel (Signal K) + Live mode ───────────

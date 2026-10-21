@@ -91,3 +91,17 @@ test('layered wind: a grid that goes all the way round has no border at its seam
   // Near the poles the latitude border still applies.
   assert.ok(lw.at(10, 89.9, t)[0] < 10);
 });
+
+test('layered wind: the source of each sample, the finest regional one where it weighs more than half, else the base', () => {
+  const lw = new LayeredWind(uniform(5, 270), [regional(12, 270, 0.025, 'fine'), regional(8, 270, 0.1, 'coarse')]);
+  const t = T0 + 6 * 3600_000;
+  // Well inside, outside, on the grids' border (weight 0), 0.02° in (fine 0.16, coarse 0.04), after the end.
+  const lons = Float64Array.of(5, 20, 0, 0.02, 5);
+  const lats = Float64Array.of(45, 45, 45, 45, 45);
+  const times = Float64Array.of(t, t, t, t, T0 + 49 * 3600_000);
+  const r = lw.atManyAtWithSource(lons, lats, times);
+  assert.deepEqual(r.source, ['fine', null, null, null, null]);
+  const plain = lw.atManyAt(lons, lats, times);
+  assert.deepEqual([...r.speed], [...plain.speed], 'the same wind as atManyAt');
+  assert.deepEqual([...r.dir], [...plain.dir]);
+});

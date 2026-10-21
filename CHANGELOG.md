@@ -42,6 +42,28 @@ uses [Semantic Versioning](https://semver.org/).
   departure's route is kept only in its job file (`JobManager.release`)
   and read from there when it is opened; in memory the window holds its
   metrics.
+- **Meteogram** (Itinerary → Meteogram): the weather along the route,
+  as TimeZero's. Wind and gust, the boat (speed over ground, true wind
+  angle, motoring shaded), waves, pressure and precipitation where the
+  boat is at each step of the passage, stacked on one time axis and drawn
+  by the conditions popup's chart renderer (now sized per chart). Hover
+  reads out the values and marks the boat's place on the route; a click
+  sets the map's overlays to that hour. Served by
+  `GET /api/routes/{id}/meteogram?step_s=` (`meteogram.ts`): the boat's
+  position along each leg's great circle at the leg's pace, and the
+  conditions there from the data worker's new `track_conditions` query,
+  which reads a dozen samples at a time (their box, the steps around their
+  times) rather than the box of the whole route. The wind is the route's:
+  the regional models it was computed with are layered over ECMWF as the
+  router layers them (`LayeredWind.atManyAtWithSource`), each row naming
+  the model that answered. Every chunk is read from the runs taken at the
+  start; a run replaced meanwhile leaves the answer incomplete (not kept),
+  one pruned meanwhile is read again on the new run. The saved answer is
+  keyed by its query, which names each of the route's regional models
+  with its newest decoded run: a new run is a fresh answer, and the other
+  saved point answers stay (the regional runs are not part of their
+  generation). One read from a run decoded since the data worker's last
+  report is answered but not kept.
 
 ### Changed
 

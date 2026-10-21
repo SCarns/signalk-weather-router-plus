@@ -692,7 +692,8 @@ function tileKey(t: TileId): string {
  * (if it has not started) when every requester has gone.
  */
 export class TileService {
-  private readonly inflight = new Map<string, { p: Promise<Buffer>; waiters: number; ctrl: AbortController }>();
+  /** `complete`: a point answer's status once its query has answered (pointWithStatus). */
+  private readonly inflight = new Map<string, { p: Promise<Buffer>; waiters: number; ctrl: AbortController; complete?: boolean }>();
 
   constructor(
     readonly store: TileStore,
@@ -752,10 +753,23 @@ export class TileService {
    * and saved when complete. Keyed by the exact query.
    */
   async point(kind: QueryKind, args: QueryArgs[QueryKind], signal?: AbortSignal): Promise<unknown> {
+    return (await this.pointWithStatus(kind, args, signal)).result;
+  }
+
+  /**
+   * A point answer, and whether it is complete: false when the data it was
+   * read from changed meanwhile (a new run, current or tide source, an
+   * evicted area), so it is not kept. A saved answer is complete.
+   */
+  async pointWithStatus(
+    kind: QueryKind,
+    args: QueryArgs[QueryKind],
+    signal?: AbortSignal
+  ): Promise<{ result: unknown; complete: boolean }> {
     const json = JSON.stringify(args);
     const k: StoreKey = { group: 'pt', rel: path.join(kind, `${hash(json)}.gz`) };
     const saved = await this.store.read(k);
-    if (saved) return fromJson((await gunzip(saved)).toString());
+    if (saved) return { result: fromJson((await gunzip(saved)).toString()), complete: true };
     if (signal?.aborted) throw new Error('cancelled');
     const key = `pt/${kind}/${json}`;
     let f = this.inflight.get(key);
@@ -767,6 +781,7 @@ export class TileService {
           const gz = await gzip(Buffer.from(toJson(result)));
           if (complete) await this.store.write(k, gz, generation);
           else this.store.noteNotKept();
+          if (f) f.complete = complete;
           return gz;
         })
         .finally(() => {
@@ -784,7 +799,8 @@ export class TileService {
     };
     signal?.addEventListener('abort', onAbort, { once: true });
     try {
-      return fromJson((await gunzip(await entry.p)).toString());
+      const result = fromJson((await gunzip(await entry.p)).toString());
+      return { result, complete: entry.complete !== false };
     } finally {
       if (!signal?.aborted) entry.waiters--;
       signal?.removeEventListener('abort', onAbort);

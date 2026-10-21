@@ -186,6 +186,7 @@ export class JobManager extends EventEmitter {
       fronts: `${b}/fronts`,
       cancel: `${b}/cancel`,
       publish: `${b}/publish`,
+      meteogram: `${b}/meteogram`,
     };
   }
 

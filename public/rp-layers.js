@@ -377,6 +377,31 @@ const condMarkerLayer = new ol.layer.Vector({
   zIndex: 21,
 });
 
+// --- Meteogram marker ---
+// The boat where the route puts it at the time under the meteogram's
+// cursor (rp-plan.js, Meteogram), pointing along its course.
+export const meteoMarkerFeature = new ol.Feature();
+const meteoMarkerLayer = new ol.layer.Vector({
+  source: new ol.source.Vector({ features: [meteoMarkerFeature] }),
+  style: function(feature) {
+    if (!feature.getGeometry()) return null;
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="30" viewBox="0 0 22 30">' +
+      '<path d="M11,1 L20,27 L11,22 L2,27 Z" fill="#ff6d00" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>' +
+      '</svg>';
+    return new ol.style.Style({
+      image: new ol.style.Icon({
+        src: 'data:image/svg+xml;utf8,' + encodeURIComponent(svg),
+        anchor: [0.5, 0.5],
+        rotation: feature.get('rotation_rad') || 0,
+        rotateWithView: true,
+      }),
+      zIndex: 22,
+    });
+  },
+  zIndex: 22,
+});
+
 // OpenStreetMap — the base map. Tiles come from the internet (the
 // document's origin-only referrer meta keeps OSM happy behind Signal K's
 // no-referrer policy).
@@ -1842,7 +1867,7 @@ try {
 
 export const map = new ol.Map({
   target: 'map',
-  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, seasArrowsLayer, waveArrowsLayer, windLayer, frontLayer, skeletonLayer, pastRouteLayer, trackLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, notesLayer, seasRouteLayer, ringLayer, markerLayer, condMarkerLayer],
+  layers: [osmLayer, seamarkLayer, windHeatmapLayer, currentHeatmapLayer, roughnessLayer, waveHeatmapLayer, precipHeatmapLayer, temperatureLayer, sstLayer, tideLayer, pressureLayer, currentLayer, seasArrowsLayer, waveArrowsLayer, windLayer, frontLayer, skeletonLayer, pastRouteLayer, trackLayer, routeLayer, proposedRouteLayer, vesselMarkerLayer, notesLayer, seasRouteLayer, ringLayer, markerLayer, condMarkerLayer, meteoMarkerLayer],
   view: new ol.View({
     // Last view this browser had (saved on every move), else Block
     // Island Sound at zoom 11. On a first visit the first Signal K

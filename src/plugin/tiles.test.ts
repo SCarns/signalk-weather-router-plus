@@ -80,6 +80,28 @@ test('tile service: an incomplete answer is served but not saved', async () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('tile service: a point answer says whether it is complete; only a complete one is saved (PR #50 review)', async () => {
+  const root = tmp();
+  const store = new TileStore({ root, capBytes: 1e9 });
+  store.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
+  let complete = false;
+  let calls = 0;
+  const svc = new TileService(store, async () => {
+    calls++;
+    return { result: { rows: [calls] }, complete };
+  });
+  const args = { lon: 1, lat: 2, fromMs: 0, hours: 6, stepH: 1 };
+  // The data changed while it was read: served, marked, not kept.
+  assert.deepEqual(await svc.pointWithStatus('conditions', args), { result: { rows: [1] }, complete: false });
+  assert.deepEqual(await svc.point('conditions', args), { rows: [2] }, 'point(): the answer alone');
+  complete = true;
+  assert.deepEqual(await svc.pointWithStatus('conditions', args), { result: { rows: [3] }, complete: true });
+  // Saved: read back from the store, complete.
+  assert.deepEqual(await svc.pointWithStatus('conditions', args), { result: { rows: [3] }, complete: true });
+  assert.equal(calls, 3);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('tile service: the query is cancelled when every requester has gone', async () => {
   const root = tmp();
   const store = new TileStore({ root, capBytes: 1e9 });
