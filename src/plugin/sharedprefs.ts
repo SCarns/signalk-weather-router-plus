@@ -47,7 +47,10 @@ export type SharedPrefs = Record<string, string>;
 function memberOf(pointer: unknown): string {
   if (typeof pointer !== 'string' || !pointer.startsWith('/') || pointer.indexOf('/', 1) !== -1)
     throw new SharedPrefsError('each path must name one member, "/<name>"', 400);
-  const key = pointer.slice(1).replace(/~1/g, '/').replace(/~0/g, '~');
+  const raw = pointer.slice(1);
+  // RFC 6901 allows "~" only as "~0" (a "~") or "~1" (a "/"); rp-prefs.js writes no other.
+  if (/~(?![01])/.test(raw)) throw new SharedPrefsError(`invalid escape in "${pointer}": "~" must be "~0" or "~1"`, 400);
+  const key = raw.replace(/~1/g, '/').replace(/~0/g, '~');
   if (!key || UNSAFE_KEYS.has(key)) throw new SharedPrefsError(`invalid member name "${key}"`, 400);
   return key;
 }

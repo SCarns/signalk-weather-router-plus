@@ -59,6 +59,10 @@ test('refused, nothing written: not a patch, other operations, nested or unsafe 
     refused([{ op: 'add', path: '/', value: 'x' }], 400);
     refused([{ op: 'add', path: '/__proto__', value: 'x' }], 400);
     refused([{ op: 'add', path: '/constructor', value: 'x' }], 400);
+    // RFC 6901: a "~" only as "~0" or "~1" (PR #60 review).
+    refused([{ op: 'add', path: '/a~2b', value: 'x' }], 400);
+    refused([{ op: 'add', path: '/a~', value: 'x' }], 400);
+    refused([{ op: 'add', path: '/~', value: 'x' }], 400);
     refused([{ op: 'add', path: '/polarPath', value: 3 }], 400);
     // A later bad operation leaves the earlier ones unapplied too.
     refused(
