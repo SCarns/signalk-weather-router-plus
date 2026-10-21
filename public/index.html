@@ -323,6 +323,9 @@
       max-height: 65vh;
       padding-bottom: max(var(--s-3), env(safe-area-inset-bottom));
     }
+    /* The meteogram open at the top: the sheet takes less, so the route shows between them (at 390×844 the two
+       left about 15 px of map at the sheet's 65vh). */
+    body.meteogram-open #panel { max-height: 35vh; }
     #panel::before {
       content: "";
       display: block; margin: 0 auto var(--s-2);

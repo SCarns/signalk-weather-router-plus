@@ -504,7 +504,10 @@ computed with what that request says, not with the user's saved Setup.
   the boat is then; a click sets the map's overlays to that hour. From the
   keyboard each chart is a slider: Tab to it, the arrow keys (Home, End)
   step through the passage, Enter sets the hour. The
-  route is fitted into the map above the meteogram when it opens. The
+  route is fitted into the map above the meteogram when it opens. On a
+  phone the meteogram is at the top and the bottom sheet takes at most
+  35 % of the height while it is open (65 % otherwise), so the route is
+  fitted between them. The
   conditions come from the forecast loaded now; the wind is the route's:
   where it was computed with a regional model (AROME, ICON-EU, …) that
   model is layered over ECMWF as the router layers it, and the note names
