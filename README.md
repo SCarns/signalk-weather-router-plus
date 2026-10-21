@@ -359,8 +359,11 @@ user now and for whatever is kept per user later:
   keeps no application data (its `applicationData.js` answers 405), so the
   plugin keeps the choices itself, one set that every browser reads and
   writes: `prefs.json` in its data directory (`GET`/`POST /api/prefs`,
-  JSON Patch as for application data; 405 with security on). It is not a
-  cache: it sits beside `settings.json`, outside the directories tagged
+  JSON Patch as for application data; 405 with security on). The page
+  sends `add` only. When it opens, it sends up the choices this browser
+  holds that the record lacks, as for a user's application data, so a
+  member removed through the API comes back from a browser that still
+  holds it. It is not a cache: it sits beside `settings.json`, outside the directories tagged
   `CACHEDIR.TAG`, so backups keep it. A write to it reads no login status
   first (there is no session that could name someone else); once security
   is on, its 405 stops the page's writes. Routes are shared.

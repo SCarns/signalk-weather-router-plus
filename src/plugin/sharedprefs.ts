@@ -10,8 +10,11 @@
  * tagged CACHEDIR.TAG (cachedir.ts), so a backup keeps it.
  *
  * A write is what rp-prefs.js sends to Signal K's application data, so the
- * page talks to both the same way: a JSON Patch of `add` (and `remove`)
- * operations, one top-level member each, string values. Reads and writes
+ * page talks to both the same way: a JSON Patch of `add` operations, one
+ * top-level member each, string values. `remove` is taken too, as Signal K
+ * takes it; the page never sends one, and a browser that still holds a
+ * removed member sends it up again when the page next opens (rp-prefs.js
+ * load(), as for a user's application data). Reads and writes
  * are synchronous, so two requests never interleave; the file is replaced
  * with a rename, so a crash leaves the old one or the new one.
  */

@@ -161,7 +161,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         },
         post: {
           summary:
-            'Change some of them, as the web app writes Signal K\'s application data: a JSON Patch of add / remove operations, one top-level member each ("/<name>", RFC 6901 escapes), string values. All-or-nothing; saved to prefs.json in the plugin\'s data directory (kept by backups, not a cache).',
+            "Change some of them: a JSON Patch of add / remove operations, as Signal K's application data takes, one top-level member each (\"/<name>\", RFC 6901 escapes), string values. All-or-nothing; saved to prefs.json in the plugin's data directory (kept by backups, not a cache). The web app and the Freeboard panel send add only, and send up the choices a browser holds that the record lacks when the page opens: a member removed here comes back from a browser that still holds it, as from a user's application data.",
           requestBody: {
             required: true,
             content: {
