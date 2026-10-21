@@ -110,6 +110,16 @@ uses [Semantic Versioning](https://semver.org/).
   (`req.skPrincipal.identifier`, as `loginStatus` reports it), nothing is
   per user without a login, and a read-only user owns nothing.
 
+### Fixed
+
+- **Deleting the route on the map leaves nothing of it in use**
+  (`_clearDisplayedRoute()` in `public/rp-plan.js`). Itinerary → Delete
+  cleared the map and the result strip but kept the route's state, as
+  Reset does not. GPX then still exported the deleted route. The plan
+  hint still said to click the route. The next marker change brought
+  back the deleted route's result strip, marked stale, with "Markers
+  changed — press Find Route to recompute".
+
 ## [0.2.0-beta.3] - 2026-10-19
 
 ### Added

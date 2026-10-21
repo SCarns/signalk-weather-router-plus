@@ -529,6 +529,14 @@ function _clearDisplayedRoute() {
   _displayedJobId = null;
   closeMeteogram();
   _clearRouteTime();
+  // No route is shown now, as after Reset: GPX finds none to export, a marker change has no result strip to bring
+  // back as stale (markRouteStale), and the hint no longer says to click the route.
+  _itineraryFeatures = [];
+  routeActive = false;
+  _routeStale = false;
+  _lastRouteProps = null;
+  _lastNavWarns = null;
+  updatePlanHint();
 }
 
 function _deleteRouteJob(id, labelForConfirm) {
