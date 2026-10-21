@@ -3656,6 +3656,9 @@ function openMeteogram() {
   const step = _meteoEl('meteoStep').value || '3600';
   const fit = !(_meteo && _meteo.jobId === jobId);   // a new route, not another step for this one
   _meteo = { jobId, data: null, hoverIdx: null, keyIdx: null, panels: [] };
+  // The marker was for the rows being replaced (another route's, or another step's), and the charts it was hovered on
+  // go: it would stay through the load, and for good if the load fails (PR #50 review). A hover sets it again.
+  meteoMarkerFeature.setGeometry(null);
   const mine = _meteo;
   _meteoEl('meteoTitle').textContent = _currentRouteName || '';
   _meteoEl('meteoBody').innerHTML = '<div class="mg-note">Loading the conditions along the route…</div>';
