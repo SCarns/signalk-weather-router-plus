@@ -758,10 +758,32 @@ function tileKey(t: TileId): string {
   return `${t.layer}/${t.z}/${t.x}/${t.y}/${t.layer === 'land' ? 0 : t.hourMs}`;
 }
 
-/** An answer whose stamp names data the plugin no longer holds; the caller asks again. */
-class StaleAnswer extends Error {}
-function staleAnswer(group: TileGroup): Error {
-  return new StaleAnswer(`the ${group} data changed while answering; ask again`);
+/**
+ * An answer whose stamp names data the plugin no longer holds; the caller
+ * asks again — once the data the plugin holds has moved past what the
+ * check saw (`held`): until then the worker answers from the same data
+ * and the same mismatch would come back.
+ */
+class StaleAnswer extends Error {
+  constructor(
+    readonly group: TileGroup,
+    readonly held: DataStamp
+  ) {
+    super(`the ${group} data changed while answering; ask again`);
+  }
+}
+function staleAnswer(group: TileGroup, held: DataStamp): Error {
+  return new StaleAnswer(group, held);
+}
+
+/** Whether two stamps name the same data: the retry waits only while the held data is what the check saw. */
+const sameStamp = (a: DataStamp, b: DataStamp): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/** A one-shot promise that dataChanged resolves: the next change of the data the plugin holds. */
+function deferred(): { p: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const p = new Promise<void>(r => (resolve = r));
+  return { p, resolve };
 }
 
 /**
@@ -801,6 +823,8 @@ export function stampMatches(group: TileGroup, expected: DataStamp, stamp: DataS
 export class TileService {
   /** `complete`: a point answer's status once its query has answered (pointWithStatus). */
   private readonly inflight = new Map<string, { p: Promise<Buffer>; waiters: number; ctrl: AbortController; complete?: boolean }>();
+  /** Resolved by dataChanged: answers waiting out a stamp mismatch sleep on this. */
+  private change = deferred();
 
   constructor(
     readonly store: TileStore,
@@ -808,6 +832,34 @@ export class TileService {
     /** The data the plugin holds now, to check an answer's stamp against. */
     private readonly dataStamp: () => DataStamp
   ) {}
+
+  /**
+   * The data the plugin holds changed: wakes requests waiting out a stamp
+   * mismatch. index.ts calls this wherever an input of dataStamp() changes
+   * (a worker run message, applySettings) — either end of a mismatch: the
+   * worker ahead (handling its message moves dataStamp) or behind (its
+   * reload ends in a message that does).
+   */
+  dataChanged(): void {
+    const c = this.change;
+    this.change = deferred();
+    c.resolve();
+  }
+
+  /** The next data change, or a rejection when the requester goes. */
+  private nextChange(signal?: AbortSignal): Promise<void> {
+    const p = this.change.p;
+    if (!signal) return p;
+    if (signal.aborted) return Promise.reject(new Error('cancelled'));
+    return new Promise((resolve, reject) => {
+      const onAbort = (): void => reject(new Error('cancelled'));
+      signal.addEventListener('abort', onAbort, { once: true });
+      void p.then(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      });
+    });
+  }
 
   async get(t: TileId, signal?: AbortSignal): Promise<{ gz: Buffer; cached: boolean }> {
     const group = tileGroup(t.layer);
@@ -835,10 +887,13 @@ export class TileService {
         const p = this.query(kind, args, ctrl.signal)
           .then(async ({ result, complete, stamp }) => {
             const gz = await encodeTile(t, result);
-            if (!stampMatches(group, this.dataStamp(), stamp)) {
+            const held = this.dataStamp();
+            if (!stampMatches(group, held, stamp)) {
               // The answer was computed from data the plugin has replaced
-              // meanwhile (or no longer holds): never served or saved.
-              throw staleAnswer(group);
+              // meanwhile (or no longer holds): never served or saved. The
+              // stamp the check saw rides along: the retry asks again only
+              // once the data held has moved past it.
+              throw staleAnswer(group, held);
             }
             // Filed under the generation the attempt started under: the
             // stamp vouches for the runs, not for the generation's other
@@ -868,8 +923,16 @@ export class TileService {
         return { gz: await entry.p, cached: false };
       } catch (err) {
         // The answer named replaced data (checked once for every requester
-        // of the query): nothing was saved; ask again under the data held.
-        if (err instanceof StaleAnswer) continue;
+        // of the query): nothing was saved. Ask again under the data held —
+        // but only once it has moved: while it is still what the check saw,
+        // the worker answers from the same data and the same mismatch comes
+        // back (a settings change reloads the worker behind any query in
+        // flight, which can take minutes). A change landing between the
+        // check and here is seen by the stamp compare and skips the wait.
+        if (err instanceof StaleAnswer) {
+          if (sameStamp(err.held, this.dataStamp())) await this.nextChange(signal);
+          continue;
+        }
         throw err;
       } finally {
         if (!signal?.aborted) entry.waiters--;
@@ -930,10 +993,13 @@ export class TileService {
         const p = this.query(kind, args, ctrl.signal)
           .then(async ({ result, complete, stamp }) => {
             const gz = await gzip(Buffer.from(toJson(result)));
-            if (!stampMatches('pt', this.dataStamp(), stamp)) {
+            const held = this.dataStamp();
+            if (!stampMatches('pt', held, stamp)) {
               // The answer was computed from data the plugin has replaced
-              // meanwhile (or no longer holds): never served or saved.
-              throw staleAnswer('pt');
+              // meanwhile (or no longer holds): never served or saved. The
+              // stamp the check saw rides along: the retry asks again only
+              // once the data held has moved past it.
+              throw staleAnswer('pt', held);
             }
             if (complete) await this.store.write(k, gz, generation);
             else this.store.noteNotKept();
@@ -959,8 +1025,17 @@ export class TileService {
         return { result, complete: entry.complete !== false };
       } catch (err) {
         // The answer named replaced data (checked once for every requester
-        // of the query): nothing was saved; ask again under the data held.
-        if (err instanceof StaleAnswer) continue;
+        // of the query): nothing was saved. Ask again under the data held —
+        // but only once it has moved: while it is still what the check saw,
+        // the worker answers from the same data and the same mismatch comes
+        // back. A Weather API point passes no abort signal, so without the
+        // wait the loop would send identical queries for as long as the
+        // worker takes to catch up. A change landing between the check and
+        // here is seen by the stamp compare and skips the wait.
+        if (err instanceof StaleAnswer) {
+          if (sameStamp(err.held, this.dataStamp())) await this.nextChange(signal);
+          continue;
+        }
         throw err;
       } finally {
         if (!signal?.aborted) entry.waiters--;

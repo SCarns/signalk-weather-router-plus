@@ -148,6 +148,11 @@ test('point answers: one computed from replaced data is never served; the reques
   h.store.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'run-12z' });
   h.held.stamp = STAMP_B;
   h.answer({ run: '06z' }, STAMP_A);
+  // While the data the plugin holds is what the check saw, asking again
+  // would only get the same answer: no query goes out.
+  await wait(20);
+  assert.equal(h.calls.n, 1, 'no second query while the data held is unchanged');
+  h.svc.dataChanged(); // the worker's reload lands: the held data moved
   for (let i = 0; i < 500 && h.calls.n < 2; i++) await wait();
   h.answer({ run: '12z' }, STAMP_B);
   assert.deepEqual(await p, { run: '12z' });
@@ -184,7 +189,9 @@ test('point answers: a requester of the newer data never joins a query of the ol
   const p2 = h.svc.point('weather_point', args as never);
   for (let i = 0; i < 500 && h.svc.inflightCount < 2; i++) await wait();
   assert.equal(h.calls.n, 2, 'the newer data started its own query');
-  h.answer({ run: '06z' }, STAMP_A); // resolves the first query: its answer names replaced data, its requester asks again
+  h.answer({ run: '06z' }, STAMP_A); // resolves the first query: its answer names replaced data, its requester waits out the change
+  await wait(20);
+  h.svc.dataChanged(); // the held data moves: the first requester asks again
   for (let i = 0; i < 500 && h.calls.n < 3; i++) await wait();
   h.answer({ run: '12z' }, STAMP_B); // resolves the newer data's query
   h.answer({ run: '12z' }, STAMP_B); // resolves the first requester's retry
@@ -250,16 +257,22 @@ test('point answers: the request keeps asking until an answer names the data hel
   h.store.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'run-12z' });
   h.held.stamp = STAMP_B;
   h.answer({ n: 1 }, STAMP_A);
+  await wait(20);
+  h.svc.dataChanged(); // the worker's reload lands: the held data moved
   for (let i = 0; i < 500 && h.calls.n < 2; i++) await wait();
   const STAMP_C: DataStamp = { ...STAMP_B, forecast: { cycleMs: Date.UTC(2026, 8, 29, 18), params: ['10u', '10v'] } };
   h.store.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'run-18z' });
   h.held.stamp = STAMP_C;
   h.answer({ n: 2 }, STAMP_B);
+  await wait(20);
+  h.svc.dataChanged();
   for (let i = 0; i < 500 && h.calls.n < 3; i++) await wait();
   const STAMP_D: DataStamp = { ...STAMP_C, forecast: { cycleMs: Date.UTC(2026, 8, 30, 0), params: ['10u', '10v'] } };
   h.store.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'run-00z' });
   h.held.stamp = STAMP_D;
   h.answer({ n: 3 }, STAMP_C);
+  await wait(20);
+  h.svc.dataChanged();
   for (let i = 0; i < 500 && h.calls.n < 4; i++) await wait();
   h.answer({ n: 4 }, STAMP_D);
   assert.deepEqual(await p, { n: 4 });
@@ -275,6 +288,11 @@ test('tile service: a tile computed from replaced data is discarded and asked ag
   h.store.setGenerations({ wx: 'gen-12z', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
   h.held.stamp = STAMP_B;
   h.answer([1, 2, 3], STAMP_A);
+  // While the data the plugin holds is what the check saw, asking again
+  // would only get the same answer: no query goes out.
+  await wait(20);
+  assert.equal(h.calls.n, 1, 'no second query while the data held is unchanged');
+  h.svc.dataChanged(); // the worker's reload lands: the held data moved
   for (let i = 0; i < 500 && h.calls.n < 2; i++) await wait();
   h.answer([4, 5, 6], STAMP_B);
   const { gz } = await p;
@@ -304,7 +322,11 @@ test('stamp: a group is matched against the sources it is computed from, and onl
     'a settledness flip is a different run'
   );
   assert.equal(stampMatches('cur', STAMP_A, { ...STAMP_A, smoc: null }), false, 'no SMOC where the plugin has one: the answer lacked it');
-  assert.equal(stampMatches('cur', STAMP_A, { ...STAMP_A, rtofs: [{ product: 'west_atl', runMs: 1 }] }), false, 'another RTOFS run: mismatch');
+  assert.equal(
+    stampMatches('cur', STAMP_A, { ...STAMP_A, rtofs: [{ product: 'west_atl', runMs: 1 }] }),
+    false,
+    'another RTOFS run: mismatch'
+  );
   // The tide group: only the tide part.
   assert.ok(stampMatches('tide', STAMP_A, { ...off, tide: STAMP_A.tide }), 'same tide run: match');
   assert.equal(stampMatches('tide', STAMP_A, off), false, 'no tide run where the plugin has one: mismatch');
