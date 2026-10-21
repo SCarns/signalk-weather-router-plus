@@ -2121,7 +2121,12 @@ from the newest decoded run of each; `wind_source` names the model that
 answered each row. Gusts, waves, pressure and the rest are ECMWF's: a
 regional run holds 10 m wind only. Every row comes from the same runs: a
 run replaced while the rows are read gives an answer that is not kept
-for the next request. Currents are those already loaded (the on-demand
+for the next request. A kept answer is saved with the point answers under
+its query, which names each of the route's regional models with the run
+the data worker last reported decoded for it: a new regional run is a
+new query and a fresh answer, and the other saved point answers
+(conditions, Weather API) stay. Rows read from a run decoded since that
+report are answered but not kept. Currents are those already loaded (the on-demand
 Copernicus SMOC areas are not fetched for a track).
 
 `200`:
@@ -2135,7 +2140,7 @@ Copernicus SMOC areas are not fetched for a track).
 | `regional_wind` | array | `{name, cycle}` of each regional wind run layered over it |
 | `regional_wind_missing` | array | regional models the route used that have no decoded run now (ECMWF answers there) |
 | `route_forecast_cycle` | string or null | the run the route was computed with |
-| `complete` | boolean | false when the forecast, a regional run, the currents or the tides changed while the rows were read: the answer is not kept, and a subsequent request reads the newest runs. The forecast fields are still those of the runs named here; the currents and tides may be from two sources, or missing. The web app then says to reopen the meteogram |
+| `complete` | boolean | false when the forecast, a regional run, the currents or the tides changed while the rows were read, or a regional run was decoded since the data worker last reported one: the answer is not kept, and a subsequent request reads the newest runs. The forecast fields are still those of the runs named here; the currents and tides may be from two sources, or missing. The web app then says to reopen the meteogram |
 | `rows` | array | one per step (below) |
 
 Row fields: every [`/api/conditions`](#get-apiconditions) row field

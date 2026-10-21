@@ -84,6 +84,8 @@ export interface ApiDeps {
   query: <K extends QueryKind>(kind: K, args: QueryArgs[K], signal?: AbortSignal) => Promise<unknown>;
   /** Map overlay tiles (null before the plugin has started). */
   tiles: () => TileService | null;
+  /** The regional wind runs the data worker last reported decoded, per source (yyyymmddHH, null: none). */
+  regionalRuns: () => { name: string; cycle: string | null }[];
   /** The chart-layer presets a chartplotter panel offers (empty before the forecast is there). */
   chartGroups: () => ChartGroup[];
   /** The freshness rows each of those charts is drawn from, by chart id. */
@@ -758,8 +760,10 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
         const samples = trackSamples(points, stepS);
         const service = tilesOr503(res);
         if (!service) return;
-        // The regional wind models the route was computed with: the meteogram's wind is layered the same way.
-        const regional = (job.summary?.regional_wind ?? []).map(r => r.name);
+        // The regional wind models the route was computed with: the meteogram's wind is layered the same way. Each is
+        // named with its newest decoded run, so the saved answer is keyed by the runs too: a new run, a fresh answer.
+        const decoded = new Map(deps.regionalRuns().map(r => [r.name, r.cycle]));
+        const regional = (job.summary?.regional_wind ?? []).map(r => ({ name: r.name, cycle: decoded.get(r.name) ?? null }));
         const answer = await service.pointWithStatus(
           'track_conditions',
           { points: samples.map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs })), regional },

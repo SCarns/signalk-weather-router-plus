@@ -208,7 +208,8 @@ async function trackConditionsOnce(
   const run = st.run;
   if (!run) throw new Error('no forecast loaded yet');
   const pts = a.points;
-  const wanted = [...new Set(a.regional ?? [])];
+  const named = new Map((a.regional ?? []).map(r => [r.name, r.cycle]));
+  const wanted = [...named.keys()];
   // The newest decoded run of each regional model the route used, as the router picks them (regionalwind.ts).
   const regionalNow = (): RegionalRun[] =>
     wanted.length && pts.length
@@ -273,7 +274,10 @@ async function trackConditionsOnce(
   const same = (x: RegionalRun[], y: RegionalRun[]): boolean =>
     x.length === y.length && x.every(r => y.some(q => q.name === r.name && q.run.index.cycle === r.run.index.cycle));
   // Replaced meanwhile (a newer run, SMOC or tide source, an evicted area): consistent, but not the answer to keep.
-  const complete = st.run === run && st.smoc === smoc0 && st.tides === tides0 && evictions() === evicted0 && same(regional, regionalNow());
+  // Nor is one read from another regional run than the query names (decoded since the main thread was told).
+  const asNamed = regional.every(r => named.get(r.name) === r.run.index.cycle);
+  const complete =
+    st.run === run && st.smoc === smoc0 && st.tides === tides0 && evictions() === evicted0 && same(regional, regionalNow()) && asNamed;
   return {
     result: {
       cycle: run.cycleTime.toISOString(),

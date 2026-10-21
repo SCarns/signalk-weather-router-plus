@@ -307,7 +307,11 @@ test('track_conditions: the regional models the route used are layered over ECMW
     const st = workerState(run, root);
     const samples = trackSamples(routePoints(routeGeoJSON(REGIONAL_TRACK)), 3600);
     const points = samples.map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs }));
-    const { result: tc, complete } = await trackConditions(st, { points, regional: ['AROME', 'ICON-EU'] });
+    const regional = [
+      { name: 'AROME', cycle: '2026110206' },
+      { name: 'ICON-EU', cycle: null },
+    ];
+    const { result: tc, complete } = await trackConditions(st, { points, regional });
     assert.equal(complete, true);
     assert.deepEqual(tc.regional, [{ name: 'AROME', cycle: new Date(T0).toISOString() }]);
     assert.deepEqual(tc.regionalMissing, ['ICON-EU'], 'used by the route, not on disk now');
@@ -342,6 +346,27 @@ test('track_conditions: the regional models the route used are layered over ECMW
     const plain = (await trackConditions(st, { points })).result;
     assert.ok(plain.rows.every(r => r.wind_source === 'ECMWF'));
     assert.deepEqual(plain.rows[0], asRow(sampleConditions(whole, points[0].lon, points[0].lat, new Date(points[0].tMs))));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('track_conditions: read from another regional run than the query names, the answer is not kept (PR #50 review)', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meteogram-'));
+  try {
+    const run = decodedRun(path.join(root, 'decoded'), '2026110206', T0, syntheticStore());
+    decodedRun(path.join(root, 'regional', 'AROME'), '2026110206', T0, regionalStore(20));
+    const st = workerState(run, root);
+    const points = trackSamples(routePoints(routeGeoJSON(REGIONAL_TRACK)), 3600).map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs }));
+    const ask = (cycle: string | null) => trackConditions(st, { points, regional: [{ name: 'AROME', cycle }] });
+    const named = await ask('2026110206');
+    assert.equal(named.complete, true, 'the run the query names');
+    // A run decoded since the main thread was told (it names an older one, or none yet): the newest is read, not kept.
+    for (const cycle of ['2026110200', null]) {
+      const other = await ask(cycle);
+      assert.equal(other.complete, false, `named ${cycle}`);
+      assert.deepEqual(other.result, named.result, 'the same rows, from the run on disk');
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

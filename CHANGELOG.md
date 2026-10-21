@@ -58,8 +58,12 @@ uses [Semantic Versioning](https://semver.org/).
   router layers them (`LayeredWind.atManyAtWithSource`), each row naming
   the model that answered. Every chunk is read from the runs taken at the
   start; a run replaced meanwhile leaves the answer incomplete (not kept),
-  one pruned meanwhile is read again on the new run. Saved point answers
-  follow the regional runs too.
+  one pruned meanwhile is read again on the new run. The saved answer is
+  keyed by its query, which names each of the route's regional models
+  with its newest decoded run: a new run is a fresh answer, and the other
+  saved point answers stay (the regional runs are not part of their
+  generation). One read from a run decoded since the data worker's last
+  report is answered but not kept.
 
 ### Changed
 

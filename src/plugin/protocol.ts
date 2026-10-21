@@ -194,9 +194,11 @@ export interface QueryArgs {
   /**
    * Conditions at each (position, time) of a route's track, for its meteogram (result TrackConditions).
    * `regional`: the regional wind models the route was computed with (its summary's regional_wind), layered over
-   * ECMWF as the router layers them.
+   * ECMWF as the router layers them, each with the run (yyyymmddHH) the data worker last reported decoded for it
+   * (null: none). The query is the saved answer's key (tiles.ts), so a newer run is a new query and a fresh answer;
+   * an answer read from another run than the one named is not kept.
    */
-  track_conditions: { points: { lon: number; lat: number; tMs: number }[]; regional?: string[] };
+  track_conditions: { points: { lon: number; lat: number; tMs: number }[]; regional?: { name: string; cycle: string | null }[] };
 }
 
 /** A track row: the conditions, and the wind model that answered its wind (a regional model's name, or ECMWF). */
