@@ -50,7 +50,13 @@ uses [Semantic Versioning](https://semver.org/).
   values wait for that answer too; start-up itself stores nothing (sail
   or power is stored when clicked). Changes are sent as
   JSON Patch, one request at a time and batched (a slider drag is one
-  request); a change the server did not take is sent again later. The
+  request); a change the server did not take is sent again later. Each
+  request, a retry too, first reads `/skServer/loginStatus` again: another
+  user or nobody logged in by then (another tab, a logout), no answer, or
+  no user known when the page opened stops the writes as a 401 does, and
+  the queue is dropped; the choices stay in the browser. Not covered: a
+  login changing between that check and the request, and the closing
+  page's keepalive request, which cannot wait for one. The
   upload at start-up is not waited for. The map view, tabs, layer
   toggles and the plan stay per browser. Module start-up waits for the one
   read (3 s at most); the legend box and the position poll, which waited

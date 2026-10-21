@@ -51,7 +51,7 @@ interface ServerOpts {
 function fakeServer(stored: Record<string, unknown> | null, opts: ServerOpts = {}) {
   const calls: Call[] = [];
   const doc: Record<string, unknown> = { ...(stored ?? {}) };
-  const user = opts.user === undefined ? 'dirk' : opts.user;
+  let user = opts.user === undefined ? 'dirk' : opts.user;
   const held: (() => void)[] = [];
   const heldGets: (() => void)[] = [];
   let posts = 0;
@@ -86,7 +86,11 @@ function fakeServer(stored: Record<string, unknown> | null, opts: ServerOpts = {
   const releaseGet = () => {
     for (const r of heldGets.splice(0)) r();
   };
-  return { calls, doc, fetchFn, postCalls, release, releaseGet };
+  /** Another login (or a logout) in the same browser: the session's user from now on. */
+  const setUser = (u: string | null) => {
+    user = u;
+  };
+  return { calls, doc, fetchFn, postCalls, release, releaseGet, setUser };
 }
 
 const quiet = { warn: () => {} };
@@ -539,7 +543,8 @@ test('start-up does not wait for the upload of this browser’s choices', async 
   const prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
   const done = await Promise.race([prefs.load().then(() => 'loaded'), wait(200).then(() => 'stalled')]);
   assert.equal(done, 'loaded', 'a POST that does not answer does not hold the page');
-  assert.equal(srv.postCalls().length, 1);
+  await wait(20); // after the login check
+  assert.equal(srv.postCalls().length, 1, 'the upload is out, not answered yet');
   srv.release();
   await prefs.flush();
   assert.equal(srv.doc.polarPath, 'Lagoon_560.pol');
@@ -709,6 +714,108 @@ test('a write the server refuses (read-only user, security off) stops further wr
     assert.equal(srv.postCalls().length, 1, String(postStatus));
     assert.equal(warnings.length, 1);
   }
+});
+
+test('each request reads the login status first and goes only while it names the user load() found', async () => {
+  const srv = fakeServer({});
+  const prefs = createPrefs({ storage: new MemStorage(), fetchFn: srv.fetchFn, delayMs: 5, log: quiet });
+  await prefs.load();
+  for (const v of ['a.pol', 'b.pol']) {
+    prefs.set('polarPath', v);
+    await prefs.flush();
+  }
+  const i = srv.calls.map((c, n) => (c.method === 'POST' ? n : -1)).filter(n => n >= 0);
+  assert.equal(i.length, 2);
+  for (const n of i) assert.equal(srv.calls[n - 1].url, LOGIN_STATUS_URL, 'the call before each POST');
+  assert.equal(srv.doc.polarPath, 'b.pol');
+});
+
+test('another user or nobody logged in since load(): the queue is dropped, the choices stay here, nothing more is sent', async () => {
+  // Another login in another tab (the session cookie is the browser's), or a logout.
+  for (const [why, now] of [
+    ['user changed', 'bob'],
+    ['no user', null],
+  ] as const) {
+    const storage = new MemStorage();
+    const srv = fakeServer({});
+    const warnings: string[] = [];
+    const prefs = createPrefs({ storage, fetchFn: srv.fetchFn, delayMs: 5, log: { warn: (m: string) => warnings.push(m) } });
+    await prefs.load();
+    srv.setUser(now);
+    prefs.set('polarPath', 'a.pol');
+    await prefs.flush();
+    assert.equal(prefs.remote, false, why);
+    assert.equal(srv.postCalls().length, 0, why + ': not sent to the session’s user');
+    prefs.set('vesselType', 'power');
+    await prefs.flush();
+    await wait(20);
+    assert.equal(srv.postCalls().length, 0, why + ': nor later');
+    assert.equal(storage.getItem('polarPath'), 'a.pol', why + ': kept in this browser');
+    assert.equal(prefs.get('vesselType'), 'power', why);
+    assert.equal(storage.getItem(OWNER_KEY), 'dirk', why + ': still recorded as the user load() found');
+    assert.equal(warnings.length, 1, why);
+    await prefs.flush(true);
+    assert.equal(srv.postCalls().length, 0, why + ': the closing page sends nothing either');
+  }
+});
+
+test('a check that fails (an error status, a network error, no answer) stops the writes too', async () => {
+  const hang = (init: { signal?: AbortSignal }) =>
+    new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+    });
+  for (const [why, answer] of [
+    ['HTTP 500', async () => new Response('no', { status: 500 })],
+    [
+      'network error',
+      async () => {
+        throw new TypeError('network down');
+      },
+    ],
+    ['no answer', hang],
+  ] as const) {
+    const storage = new MemStorage();
+    const srv = fakeServer({});
+    let failing = false;
+    const fetchFn = async (u: string, init: { method?: string; body?: string; signal?: AbortSignal } = {}) =>
+      failing && u === LOGIN_STATUS_URL ? answer(init) : srv.fetchFn(u, init);
+    const prefs = createPrefs({ storage, fetchFn, delayMs: 5, timeoutMs: 30, log: quiet });
+    await prefs.load();
+    failing = true;
+    prefs.set('polarPath', 'a.pol');
+    await prefs.flush();
+    assert.equal(prefs.remote, false, why);
+    assert.equal(srv.postCalls().length, 0, why);
+    assert.equal(storage.getItem('polarPath'), 'a.pol', why + ': kept in this browser');
+  }
+});
+
+test('a retry reads the login status again: after another login it is not sent', async () => {
+  const srv = fakeServer({}, { postStatus: [500, 200] });
+  const prefs = createPrefs({ storage: new MemStorage(), fetchFn: srv.fetchFn, retryMs: 10, log: quiet });
+  await prefs.load();
+  prefs.set('polarPath', 'a.pol');
+  await prefs.flush();
+  assert.equal(srv.postCalls().length, 1, 'HTTP 500: kept for a retry');
+  assert.equal(prefs.remote, true);
+  srv.setUser('bob');
+  await wait(60);
+  assert.equal(srv.postCalls().length, 1, 'the retry is not sent as Bob’s');
+  assert.equal(prefs.remote, false);
+  assert.equal(srv.doc.polarPath, undefined);
+});
+
+test('the user unknown at load(): a choice made later is not sent to whoever the session is', async () => {
+  const storage = new MemStorage();
+  const srv = fakeServer({}, { user: null });
+  const prefs = createPrefs({ storage, fetchFn: srv.fetchFn, delayMs: 5, log: quiet });
+  assert.equal(await prefs.load(), true);
+  srv.setUser('dirk');
+  prefs.set('polarPath', 'a.pol');
+  await prefs.flush();
+  assert.equal(srv.postCalls().length, 0);
+  assert.equal(prefs.remote, false);
+  assert.equal(storage.getItem('polarPath'), 'a.pol');
 });
 
 test('a server that does not answer delays start-up by the timeout and no more', async () => {

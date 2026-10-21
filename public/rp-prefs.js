@@ -21,7 +21,9 @@
 // dropped (discardLegacy).
 // A change is written to localStorage at once and to the server shortly
 // after, one request at a time (a slider drag sends one request); a
-// change the server did not take is kept and sent again later.
+// change the server did not take is kept and sent again later. Each
+// request goes only while the login status still names the user load()
+// found (send()).
 // Without a login, with security off (the server keeps no application
 // data) or for a read-only user, the choices stay in this browser, as
 // before. Values are the strings localStorage holds.
@@ -72,6 +74,8 @@ function _pointer(key) {
  * browser blocks it), `fetchFn` the fetch to the Signal K server.
  * A change the server refused with another status than 401/403/405 (or
  * that did not reach it) is sent again after `retryMs`, doubling to 5 min.
+ * Before each request `loginUrl` is read again (`timeoutMs`): another user
+ * or none stops the writes as a 401 does.
  * @param {{ storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'key' | 'length'> | null,
  *   fetchFn: (url: string, init?: object) => Promise<Response>,
  *   url?: string, loginUrl?: string, delayMs?: number, timeoutMs?: number, retryMs?: number,
@@ -153,6 +157,24 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
     timer = setTimeout(() => { timer = null; send(); }, ms);
   }
 
+  // The user a loginStatus answer names, or null (nobody logged in, or not an answer).
+  function loggedInName(login) {
+    return login && login.status === 'loggedIn' && typeof login.username === 'string' ? login.username : null;
+  }
+
+  // Who is logged in now: null when nobody is, or the login status does not answer (in timeoutMs).
+  async function currentUser() {
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const t = ctrl ? setTimeout(() => ctrl.abort(), timeoutMs) : null;
+    try {
+      return loggedInName(await getJson(loginUrl, ctrl ? ctrl.signal : undefined));
+    } catch (_) {
+      return null;
+    } finally {
+      if (t !== null) clearTimeout(t);
+    }
+  }
+
   function post(batch, keepalive) {
     // JSON Patch `add` sets the member whether or not it exists, so
     // changes from two browsers to different choices both land.
@@ -177,8 +199,20 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
     inflightDone = (async () => {
       let taken = false;
       try {
-        const r = await post(batch, false);
-        if (r.status === 401 || r.status === 403 || r.status === 405) {
+        // The application data goes to whoever the request's session is, so the login status is read again before
+        // each request, a retry's too: the session may no longer be the user load() found (a logout, or another
+        // user's login in another tab). Another user, nobody, no answer, or no user known at load(): no more
+        // writes, as for a 401, and the queue is dropped; the choices stay in this browser, under the owner it
+        // records, and the next load() sorts them out. Not covered: the login changing between this check and
+        // the POST, and the closing page's keepalive request (flush(true)), which cannot wait for a check.
+        const now = await currentUser();
+        const r = user !== null && now === user ? await post(batch, false) : null;
+        if (r === null) {
+          remote = false;
+          log.warn('[prefs] ' + (now === null ? 'cannot tell who is logged in'
+            : user === null ? 'the user was not known when the page opened' : now + ' is logged in now, not ' + user)
+            + '; the choices stay in this browser');
+        } else if (r.status === 401 || r.status === 403 || r.status === 405) {
           // Not logged in, read-only, or security off: this browser only.
           remote = false;
           log.warn('[prefs] the server does not keep this user\'s choices (HTTP ' + r.status + '); they stay in this browser');
@@ -301,7 +335,7 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       // than the server's value, so it is kept and sent up.
       const mine = new Set(setWhileReading);
       setWhileReading.clear();
-      const loggedIn = login && login.status === 'loggedIn' && typeof login.username === 'string' ? login.username : null;
+      const loggedIn = loggedInName(login);
       if (!data || typeof data !== 'object' || Array.isArray(data)) {
         // This browser only. Another user's choices are dropped as when the read works (below), so the page
         // neither shows them nor keeps them under that user's name; the logged-in user's own, made meanwhile, stay.

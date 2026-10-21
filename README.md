@@ -399,7 +399,12 @@ computed with what that request says, not with the user's saved Setup.
   choice made while the page cannot tell who is logged in (nobody is, or
   the login status did not answer) leaves the browser's choices
   without an owner: like those from before this change (next), they wait
-  for the user's Keep or Discard. Choices a browser held before
+  for the user's Keep or Discard. Before each write the page reads the
+  login status again; if another user or nobody is logged in by then (a
+  login in another tab, a logout), or it cannot tell, it writes nothing more and the choices
+  stay in the browser. Two gaps remain: the login changing between that
+  check and the write, and the last write of a page being closed, which
+  goes without a check. Choices a browser held before
   this change have no owner: they stay in use there, and a banner asks
   the logged-in user whether to keep them as theirs (sent up) or discard
   them (the page reloads with the defaults). Opening the page stores
