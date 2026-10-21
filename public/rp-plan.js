@@ -3608,7 +3608,9 @@ function _winOpen(jobId) {
 // sets the map overlays to that hour. The rows come from the forecast loaded
 // now, the wind with the regional models the route used layered over it; the
 // stretch after its last step is shaded (values held at that step).
-const _METEO_DIMS = { h: 118, left: 46, right: 10, top: 22, bottom: 18 };
+// `right` is a right axis's margin (_chRight) on every chart, with one or not, so the same x is the same time on
+// each (PR #50 review: the Boat and Precip charts, which have one, ended 36 px before the others).
+const _METEO_DIMS = { h: 118, left: 46, right: 46, top: 22, bottom: 18 };
 // True wind angle in the user's angle unit (the rows carry degrees).
 function _meteoAngleUnit() {
   const u = unitDesc('angle');
