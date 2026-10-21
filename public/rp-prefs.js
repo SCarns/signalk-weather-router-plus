@@ -45,6 +45,14 @@ export const OWNER_KEY = 'rp:prefsUser';
 // The sail-speed slider's key until 2026-10 (knots); load() moves it to
 // routeVar:sailThreshMs in this browser, so it is never sent up.
 const LEGACY_KEYS = new Set(['routeVar:sailThresh']);
+// The Freeboard panel's own keys until its choices joined these (2026-10),
+// and the keys they hold now (the same units: m/s, m).
+const PANEL_KEYS = [
+  ['wrp-plotterext-polar', 'polarPath'],
+  ['wrp-plotterext-sail-thresh-ms', 'routeVar:sailThreshMs'],
+  ['wrp-plotterext-maxWind-ms', 'routeVar:maxWind:si'],
+  ['wrp-plotterext-maxSwh-ms', 'routeVar:maxSwh:si'],
+];
 const KT_MS = 1852 / 3600;   // as rp-core.js, which imports this module
 
 /** True for the keys that are the user's choices (kept on the server too). */
@@ -96,12 +104,21 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
   };
 
   // Until 2026-10 the sail-speed slider held knots (it holds m/s now under
-  // a new key), and powerBoat held the cruise speed in knots (it is
-  // routeVar:pb_cruise:si now, in m/s with the other limits). Converted in
-  // this browser before load() decides whose choices the browser holds, so
-  // the converted values follow the same rules as every other choice (sent
-  // up only when they are this user's).
+  // a new key), powerBoat held the cruise speed in knots (it is
+  // routeVar:pb_cruise:si now, in m/s with the other limits), and the
+  // Freeboard panel kept its choices under its own keys (PANEL_KEYS; a key
+  // this browser already has wins, as the panel read its own only then).
+  // Converted in this browser before load() decides whose choices the
+  // browser holds, so the converted values follow the same rules as every
+  // other choice (sent up only when they are this user's, dropped when they
+  // are another's).
   function migrateLocal() {
+    for (const [panelKey, key] of PANEL_KEYS) {
+      const v = local.get(panelKey);
+      if (v === null) continue;
+      if (local.get(key) === null) local.set(key, v);
+      local.remove(panelKey);
+    }
     const old = local.get('routeVar:sailThresh');
     if (old !== null) {
       const kn = parseFloat(old);

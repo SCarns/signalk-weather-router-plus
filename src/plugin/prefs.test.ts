@@ -368,6 +368,77 @@ test('the user unknown (no login status): the browser’s choices are left as th
   assert.equal(storage.getItem(OWNER_KEY), null);
 });
 
+test('the Freeboard panel’s own keys from before are moved to the store’s and then follow the owner rules', async () => {
+  const PANEL = {
+    'wrp-plotterext-polar': 'p.pol',
+    'wrp-plotterext-sail-thresh-ms': '2.5',
+    'wrp-plotterext-maxWind-ms': '10',
+    'wrp-plotterext-maxSwh-ms': '',
+  };
+  const browser = (owner: string | null, extra: Record<string, string> = {}) => {
+    const storage = new MemStorage();
+    if (owner !== null) storage.setItem(OWNER_KEY, owner);
+    for (const [k, v] of Object.entries({ ...PANEL, ...extra })) storage.setItem(k, v);
+    return storage;
+  };
+  const gone = (storage: MemStorage) => Object.keys(PANEL).every(k => storage.getItem(k) === null);
+  const byKey = (pairs: [string, string][]) => [...pairs].sort(([a], [b]) => a.localeCompare(b));
+
+  // No owner: in use here under the store's keys, not sent, offered with Keep / Discard. A store key this browser
+  // already has wins over the panel's (the panel read its own only without one).
+  let storage = browser(null, { polarPath: 'web.pol' });
+  let srv = fakeServer({});
+  let prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+  await prefs.load();
+  await prefs.flush();
+  assert.ok(gone(storage), 'the panel’s keys are gone');
+  assert.equal(srv.postCalls().length, 0, 'not sent before the user claims them');
+  assert.deepEqual(
+    byKey(prefs.legacyChoices()),
+    byKey([
+      ['polarPath', 'web.pol'],
+      ['routeVar:maxSwh:si', ''],
+      ['routeVar:maxWind:si', '10'],
+      ['routeVar:sailThreshMs', '2.5'],
+    ])
+  );
+
+  // Another user's browser: dropped, neither shown nor sent; the record's value wins over the panel's.
+  storage = browser('skipper');
+  srv = fakeServer({ 'routeVar:maxWind:si': '12' }, { user: 'crew' });
+  prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+  await prefs.load();
+  await prefs.flush();
+  assert.ok(gone(storage));
+  assert.equal(srv.postCalls().length, 0);
+  assert.equal(prefs.get('polarPath'), null, 'another user’s panel polar not shown');
+  assert.equal(prefs.get('routeVar:sailThreshMs'), null);
+  assert.equal(prefs.get('routeVar:maxWind:si'), '12');
+
+  // This user's browser: sent up like any choice the record lacks.
+  storage = browser('dirk');
+  srv = fakeServer({});
+  prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+  await prefs.load();
+  await prefs.flush();
+  assert.deepEqual(
+    byKey((srv.postCalls()[0].body as { path: string; value: string }[]).map(o => [o.path, o.value])),
+    byKey([
+      ['/polarPath', 'p.pol'],
+      ['/routeVar:maxSwh:si', ''],
+      ['/routeVar:maxWind:si', '10'],
+      ['/routeVar:sailThreshMs', '2.5'],
+    ])
+  );
+
+  // No server: moved all the same.
+  storage = browser(null);
+  prefs = createPrefs({ storage, fetchFn: fakeServer({}, { getStatus: 404 }).fetchFn, log: quiet });
+  assert.equal(await prefs.load(), false);
+  assert.ok(gone(storage));
+  assert.equal(prefs.get('polarPath'), 'p.pol');
+});
+
 test('a failed read: another user’s choices are dropped as when it works; a choice nobody can be named for has no owner', async () => {
   // Alice's browser: her mode is in her record too.
   const alices = () => {

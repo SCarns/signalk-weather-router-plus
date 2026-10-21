@@ -649,7 +649,8 @@ and the panel runs in a sandboxed iframe served from
   the route, saying "set Min sail speed above 0". The polar, mode, min
   sail speed and limits are the web app's Setup choices: the panel reads
   and writes them in the same store, so the same Signal K user has the
-  same polar and limits in both ([Users](#users)). Progress is shown;
+  same polar and limits in both ([Users](#users)); what it kept under its
+  own keys before is moved into that store under the same rules. Progress is shown;
   Cancel stops the job. The map
   is fitted to the result; the panel shows distance and time in
   Freeboard's unit preferences, the sailing/motoring split, the arrival

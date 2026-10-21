@@ -58,8 +58,10 @@ uses [Semantic Versioning](https://semver.org/).
   Without a login with write access the choices stay in the browser.
   The Freeboard panel keeps its polar, mode, min sail speed and limits
   (max wind and wave height, the web app's `routeVar:maxWind:si` and
-  `routeVar:maxSwh:si`) in the same store (its own `wrp-plotterext-*` keys
-  from before are read only while the store has none). Its controls work
+  `routeVar:maxSwh:si`) in the same store. Its own `wrp-plotterext-*`
+  keys from before are moved to the store's keys (where the browser has
+  none of those) when the store loads, so another user's are dropped and
+  ownerless ones wait for Keep / Discard like the web app's. Its controls work
   before the store has read the server: a choice made meanwhile is kept
   over the stored one and sent up. README, Users: the user is the Signal K login name
   (`req.skPrincipal.identifier`, as `loginStatus` reports it), nothing is
