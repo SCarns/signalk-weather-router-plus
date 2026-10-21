@@ -42,7 +42,8 @@ async function meteogram(complete: boolean): Promise<{ status: number; body: Rec
       pluginId: 'x',
       basePath: '/x',
       publicDir: '/nonexistent',
-      jobs: { get: (id: string) => (id === 'j1' ? JOB : undefined) },
+      // As JobManager: the API looks a job up with full(), which reads a departure window's results back from disk.
+      jobs: { full: (id: string) => (id === 'j1' ? JOB : undefined) },
       tiles: () => service,
       notReady: () => 'starting',
     } as unknown as ApiDeps
