@@ -42,7 +42,10 @@ uses [Semantic Versioning](https://semver.org/).
   and dropped when another user logs in there. Choices from before this
   change have no owner: they stay in use in that browser and go up only
   when the user keeps them (a banner asks: Keep, or Discard and reload
-  with the defaults). Changes are sent as
+  with the defaults). The knots they held for the min sail speed and the
+  power boat's cruise speed are converted to m/s first, so the converted
+  values wait for that answer too; start-up itself stores nothing (sail
+  or power is stored when clicked). Changes are sent as
   JSON Patch, one request at a time and batched (a slider drag is one
   request); a change the server did not take is sent again later. The
   upload at start-up is not waited for. The map view, tabs, layer

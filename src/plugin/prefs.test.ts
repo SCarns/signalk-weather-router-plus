@@ -288,6 +288,74 @@ test('the knots sail speed from before 2026-10 is converted here first and then 
   assert.equal(storage.getItem('routeVar:sailThresh'), null);
 });
 
+test('the knots cruise speed in powerBoat from before 2026-10 is converted here first and then follows the owner rules', async () => {
+  const KT_MS = 1852 / 3600;
+  const ms = String(7 * KT_MS);
+  const browser = (owner: string | null, boat: string, extra: Record<string, string> = {}) => {
+    const storage = new MemStorage();
+    if (owner !== null) storage.setItem(OWNER_KEY, owner);
+    storage.setItem('powerBoat', boat);
+    for (const [k, v] of Object.entries(extra)) storage.setItem(k, v);
+    return storage;
+  };
+  const old = JSON.stringify({ name: 'Testboat', cruise_kts: 7 });
+  const byKey = (pairs: [string, string][]) => [...pairs].sort(([a], [b]) => a.localeCompare(b));
+
+  // No owner: both in use here, not sent, offered with the other older choices; Discard drops both.
+  let storage = browser(null, old);
+  let srv = fakeServer({});
+  let prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+  await prefs.load();
+  await prefs.flush();
+  assert.equal(storage.getItem('powerBoat'), '{"name":"Testboat"}', 'the knots are gone from powerBoat');
+  assert.equal(prefs.get('routeVar:pb_cruise:si'), ms);
+  assert.equal(srv.postCalls().length, 0, 'not sent before the user claims it');
+  assert.deepEqual(byKey(prefs.legacyChoices()), [
+    ['powerBoat', '{"name":"Testboat"}'],
+    ['routeVar:pb_cruise:si', ms],
+  ]);
+  prefs.discardLegacy();
+  assert.equal(storage.getItem('powerBoat'), null);
+  assert.equal(storage.getItem('routeVar:pb_cruise:si'), null);
+
+  // This user's browser: sent up like any choice the record lacks.
+  storage = browser('dirk', old);
+  srv = fakeServer({});
+  prefs = createPrefs({ storage, fetchFn: srv.fetchFn, log: quiet });
+  await prefs.load();
+  await prefs.flush();
+  assert.deepEqual(byKey((srv.postCalls()[0].body as { path: string; value: string }[]).map(o => [o.path, o.value])), [
+    ['/powerBoat', '{"name":"Testboat"}'],
+    ['/routeVar:pb_cruise:si', ms],
+  ]);
+
+  // A cruise speed in m/s already here is kept; the knots are dropped all the same.
+  storage = browser('dirk', old, { 'routeVar:pb_cruise:si': '2.5' });
+  prefs = createPrefs({ storage, fetchFn: fakeServer({}).fetchFn, log: quiet });
+  await prefs.load();
+  assert.equal(prefs.get('routeVar:pb_cruise:si'), '2.5');
+  assert.equal(storage.getItem('powerBoat'), '{"name":"Testboat"}');
+
+  // No server: converted all the same.
+  storage = browser(null, old);
+  prefs = createPrefs({ storage, fetchFn: fakeServer({}, { getStatus: 404 }).fetchFn, log: quiet });
+  assert.equal(await prefs.load(), false);
+  assert.equal(prefs.get('routeVar:pb_cruise:si'), ms);
+
+  // Not a number: dropped without a converted value. Not JSON, or no knots: left as it is.
+  for (const [boat, after] of [
+    [JSON.stringify({ name: 'B', cruise_kts: 'fast' }), '{"name":"B"}'],
+    ['{not json', '{not json'],
+    ['{"name":"C"}', '{"name":"C"}'],
+  ]) {
+    storage = browser('dirk', boat);
+    prefs = createPrefs({ storage, fetchFn: fakeServer({}).fetchFn, log: quiet });
+    await prefs.load();
+    assert.equal(storage.getItem('powerBoat'), after, boat);
+    assert.equal(prefs.get('routeVar:pb_cruise:si'), null, boat);
+  }
+});
+
 test('the user unknown (no login status): the browser’s choices are left as they are', async () => {
   const storage = new MemStorage();
   storage.setItem('polarPath', 'Lagoon_560.pol');

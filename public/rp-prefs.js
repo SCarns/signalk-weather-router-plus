@@ -94,17 +94,30 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
     },
   };
 
-  // The sail-speed slider held knots until 2026-10; it holds m/s now under
-  // a new key. Converted in this browser before load() decides whose
-  // choices the browser holds, so the converted value follows the same
-  // rules as every other choice (sent up only when it is this user's).
+  // Until 2026-10 the sail-speed slider held knots (it holds m/s now under
+  // a new key), and powerBoat held the cruise speed in knots (it is
+  // routeVar:pb_cruise:si now, in m/s with the other limits). Converted in
+  // this browser before load() decides whose choices the browser holds, so
+  // the converted values follow the same rules as every other choice (sent
+  // up only when they are this user's).
   function migrateLocal() {
     const old = local.get('routeVar:sailThresh');
-    if (old === null) return;
-    const kn = parseFloat(old);
-    if (Number.isFinite(kn) && local.get('routeVar:sailThreshMs') === null)
-      local.set('routeVar:sailThreshMs', String(Math.round(kn * KT_MS * 10) / 10));
-    local.remove('routeVar:sailThresh');
+    if (old !== null) {
+      const kn = parseFloat(old);
+      if (Number.isFinite(kn) && local.get('routeVar:sailThreshMs') === null)
+        local.set('routeVar:sailThreshMs', String(Math.round(kn * KT_MS * 10) / 10));
+      local.remove('routeVar:sailThresh');
+    }
+    const boat = local.get('powerBoat');
+    if (boat === null) return;
+    let pb;
+    try { pb = JSON.parse(boat); } catch (_) { return; }   // not JSON: left as it is
+    if (!pb || typeof pb !== 'object' || pb.cruise_kts == null) return;
+    const cruiseKn = parseFloat(pb.cruise_kts);
+    if (Number.isFinite(cruiseKn) && local.get('routeVar:pb_cruise:si') === null)
+      local.set('routeVar:pb_cruise:si', String(cruiseKn * KT_MS));
+    delete pb.cruise_kts;
+    local.set('powerBoat', JSON.stringify(pb));
   }
 
   function schedule(ms) {

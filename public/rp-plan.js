@@ -4,7 +4,7 @@
 // result strip, itinerary, route library, waypoint and conditions popups,
 // Live mode with the Signal K vessel.
 
-import { oneOpenAtATime, _apiErrorText, _fmt, _polarAngles, fetchPolarAngles, fmtClock, clockParts, toClockInput, fromClockInput, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
+import { oneOpenAtATime, _apiErrorText, _fmt, _polarAngles, fetchPolarAngles, fmtClock, clockParts, toClockInput, fromClockInput, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
 import { createLiveTriggers, createPassageTracker, createRouteSimulator, createTrackRecorder, haversineM, VESSEL_STALE_MS } from './rp-live.js';
 import { prefs } from './rp-prefs.js';
 import { _overlayTimeIso, centreOnVesselOnce, seaBand, notesLayer, loadNotes, avoidRing, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
@@ -604,9 +604,7 @@ function loadPowerBoat() {
     if (!j) return;
     const pb = JSON.parse(j);
     if (pb.name != null) document.getElementById('pb_name').value = pb.name;
-    // Until 2026-10 the cruise speed was stored here in knots; it lives in SI with the other limits now.
-    if (pb.cruise_kts != null && prefs.get('routeVar:pb_cruise:si') === null)
-      prefs.set('routeVar:pb_cruise:si', String(pb.cruise_kts * KT_MS));
+    // The cruise speed this held in knots until 2026-10 was moved to routeVar:pb_cruise:si by prefs.load().
   } catch (_) {}
 }
 function refreshFindRouteEnabled() {
@@ -640,11 +638,12 @@ function applyVesselType(vt) {
     b.classList.toggle('vt-active', active);
     b.setAttribute('aria-pressed', String(active));
   });
-  prefs.set('vesselType', vt);
   refreshFindRouteEnabled();
 }
+// Stored on a click only: start-up shows the stored type (or the default) without storing it, so neither a default
+// nobody chose nor a choice from before waiting for Keep / Discard reaches the user's record.
 document.querySelectorAll('#vesselTypeToggle .vt-btn').forEach(b => {
-  b.addEventListener('click', () => applyVesselType(b.dataset.val));
+  b.addEventListener('click', () => { prefs.set('vesselType', b.dataset.val); applyVesselType(b.dataset.val); });
 });
 ['pb_name', 'pb_cruise'].forEach(id => {
   const el = document.getElementById(id);
