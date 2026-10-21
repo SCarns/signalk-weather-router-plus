@@ -122,11 +122,11 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
   }
 
   // A choice is the recorded owner's only when load() found that user logged
-  // in. One made otherwise (the read failed, or the user is unknown or
-  // another one) cannot be told apart from the owner's, so the browser's
-  // choices are left without an owner: the next load() offers those the
-  // user's record lacks with Keep / Discard instead of sending them up as
-  // the recorded owner's.
+  // in. One made when nobody is logged in or the login status did not answer
+  // cannot be told apart from the owner's, so the browser's choices are left
+  // without an owner: the next load() offers those the user's record lacks
+  // with Keep / Discard instead of sending them up as the recorded owner's.
+  // (Another user logged in takes the browser over in load().)
   function disown() {
     if (!owned) local.remove(OWNER_KEY);
   }
@@ -286,7 +286,13 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
       setWhileReading.clear();
       const loggedIn = login && login.status === 'loggedIn' && typeof login.username === 'string' ? login.username : null;
       if (!data || typeof data !== 'object' || Array.isArray(data)) {
-        // This browser only. The choices stay the recorded owner's only while that user is the one logged in.
+        // This browser only. Another user's choices are dropped as when the read works (below), so the page
+        // neither shows them nor keeps them under that user's name; the logged-in user's own, made meanwhile, stay.
+        const owner = local.get(OWNER_KEY);
+        if (loggedIn !== null && owner !== null && owner !== loggedIn) {
+          for (const key of local.keys()) if (isUserPref(key) && !mine.has(key)) local.remove(key);
+          local.set(OWNER_KEY, loggedIn);
+        }
         owned = loggedIn !== null && local.get(OWNER_KEY) === loggedIn;
         if (mine.size) disown();
         return false;
