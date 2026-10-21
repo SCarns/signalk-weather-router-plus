@@ -4,7 +4,48 @@
 // picker and diagram, the plugin status line. rp-layers.js, rp-plan.js
 // and rp-settings.js import what they use from here.
 
+import { prefs } from './rp-prefs.js';
 import { CATEGORY_PATH, DURATION_FORMATS, fetchDisplayUnits, fetchPresetUnits, unitFromDisplayUnits } from './rp-units.js';
+
+// The user's Setup choices come from the server before anything reads
+// them (rp-prefs.js): this await holds back the rest of this module and
+// every module that imports it, for one request (3 s at most).
+await prefs.load();
+
+// Setup choices this browser held before they were kept per user have no
+// owner: they stay in use here, and go to the user's record only when the
+// user says they are theirs. Discard drops them and reloads with the defaults.
+(function legacyChoicesBanner() {
+  const choices = prefs.legacyChoices();
+  const head = document.getElementById('panelHead');
+  const tabs = document.getElementById('tabBar');
+  if (!choices.length || !prefs.user || !prefs.remote || !head || !tabs) return;
+  const polar = choices.find(([k]) => k === 'polarPath');
+  const polarText = polar ? 'the polar ' + polar[1].replace(/\.[^.]+$/, '').replace(/_/g, ' ') : null;
+  const rest = choices.length - (polar ? 1 : 0);
+  const what = [polarText, rest ? rest + (polar ? ' more' : ' route option' + (rest === 1 ? '' : 's')) : null].filter(Boolean).join(' and ');
+  const bar = document.createElement('div');
+  bar.id = 'legacyChoicesBanner';
+  bar.className = 'recompute-banner';
+  bar.setAttribute('role', 'status');
+  const text = document.createElement('span');
+  text.textContent = 'This browser has Setup choices from before they were kept per Signal K user (' + what + '). Keep them as ' + prefs.user + '’s?';
+  const actions = document.createElement('span');
+  actions.className = 'recompute-actions';
+  const keep = document.createElement('button');
+  keep.type = 'button';
+  keep.textContent = 'Keep';
+  keep.title = 'Save them for ' + prefs.user + ': every browser this user opens starts with them';
+  const drop = document.createElement('button');
+  drop.type = 'button';
+  drop.textContent = 'Discard';
+  drop.title = 'Drop them from this browser and start from the defaults (the page reloads)';
+  keep.addEventListener('click', () => { prefs.keepLegacy(); bar.remove(); });
+  drop.addEventListener('click', () => { prefs.discardLegacy(); window.location.reload(); });
+  actions.append(keep, drop);
+  bar.append(text, actions);
+  head.insertBefore(bar, tabs);
+})();
 
 // ─── Slider label wiring / display units ─────────────────────────────
 // Display units come from the Signal K user's unit preferences, never
@@ -476,7 +517,7 @@ function _renderPolarOptions(filterText) {
 
 function loadPolarList() {
   const sel = document.getElementById('polarSelect');
-  const stored = (() => { try { return localStorage.getItem('polarPath') || ''; } catch (_) { return ''; } })();
+  const stored = prefs.get('polarPath') || '';
   return authFetch(API + '/polars', {}, null)
     .then(r => r.json())
     .then(items => {
@@ -655,59 +696,50 @@ function _polarSpeedAt(T, twa, k) {
 }
 
 document.getElementById('polarSelect').addEventListener('change', function() {
-  try { localStorage.setItem('polarPath', this.value); } catch (_) {}
+  prefs.set('polarPath', this.value);
   loadPolarAngles(this.value);
   loadPolarTable(this.value);
 });
 
 // ─────────── Persist route-variable controls across reloads ───────────
 // All route params except `departure` (which should default to "now"
-// each session) are saved to localStorage on change and restored on
-// load. Ranges fire an 'input' event after restore so the paired
-// labels update to match.
+// each session) are saved on change (rp-prefs.js: this browser and the
+// Signal K user) and restored on load. Ranges fire an 'input' event
+// after restore so the paired labels update to match.
 (function() {
   const PERSIST_IDS = [
     'mode', 'sailThresh', 'arrivalRadiusM', 'precision',
     'publishSel', 'smootherSel', 'proximityRadiusM', 'xteThresholdM', 'xteSustainSec',
   ];
   const CHECK_IDS = ['noCurrents', 'noForecast', 'regionalWind', 'avoidAreas'];
-  // The sail-speed slider held knots until 2026-10; it holds m/s now under a new key.
-  try {
-    const old = localStorage.getItem('routeVar:sailThresh');
-    if (old !== null) {
-      if (old !== '' && localStorage.getItem('routeVar:sailThreshMs') === null)
-        localStorage.setItem('routeVar:sailThreshMs', String(Math.round(parseFloat(old) * KT_MS * 10) / 10));
-      localStorage.removeItem('routeVar:sailThresh');
-    }
-  } catch (_) {}
+  // The sail-speed slider holds m/s under routeVar:sailThreshMs; prefs.load()
+  // converted the knots it held before 2026-10.
   const KEY = (id) => 'routeVar:' + (id === 'sailThresh' ? 'sailThreshMs' : id);
   for (const id of PERSIST_IDS) {
     const el = document.getElementById(id);
     if (!el) continue;
-    let saved = null;
-    try { saved = localStorage.getItem(KEY(id)); } catch (_) {}
+    const saved = prefs.get(KEY(id));
     if (saved != null && saved !== '') {
       el.value = saved;
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
     el.addEventListener('change', function() {
-      try { localStorage.setItem(KEY(id), el.value); } catch (_) {}
+      prefs.set(KEY(id), el.value);
     });
     if (el.type === 'range') {
       el.addEventListener('input', function() {
-        try { localStorage.setItem(KEY(id), el.value); } catch (_) {}
+        prefs.set(KEY(id), el.value);
       });
     }
   }
   for (const id of CHECK_IDS) {
     const el = document.getElementById(id);
     if (!el) continue;
-    let saved = null;
-    try { saved = localStorage.getItem(KEY(id)); } catch (_) {}
+    const saved = prefs.get(KEY(id));
     if (saved === 'true' || saved === 'false') el.checked = saved === 'true';
     el.addEventListener('change', function() {
-      try { localStorage.setItem(KEY(id), el.checked ? 'true' : 'false'); } catch (_) {}
+      prefs.set(KEY(id), el.checked ? 'true' : 'false');
     });
   }
 })();
@@ -863,7 +895,7 @@ loadPolarList();
       // Refresh the polar dropdown so the new entry appears, and select it.
       // Stored first: loadPolarList() restores the stored path and loads
       // its angles and diagram. The filter is cleared so the entry shows.
-      try { localStorage.setItem('polarPath', data.path); } catch (_) {}
+      prefs.set('polarPath', data.path);
       const filt = document.getElementById('polarFilter');
       if (filt) filt.value = '';
       await loadPolarList();

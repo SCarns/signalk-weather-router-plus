@@ -4,8 +4,9 @@
 // result strip, itinerary, route library, waypoint and conditions popups,
 // Live mode with the Signal K vessel.
 
-import { oneOpenAtATime, _apiErrorText, _fmt, _polarAngles, fetchPolarAngles, fmtClock, clockParts, toClockInput, fromClockInput, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, KT_MS, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
+import { oneOpenAtATime, _apiErrorText, _fmt, _polarAngles, fetchPolarAngles, fmtClock, clockParts, toClockInput, fromClockInput, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
 import { createLiveTriggers, createPassageTracker, createRouteSimulator, createTrackRecorder, haversineM, VESSEL_STALE_MS } from './rp-live.js';
+import { prefs } from './rp-prefs.js';
 import { _overlayTimeIso, centreOnVesselOnce, seaBand, notesLayer, loadNotes, avoidRing, condMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
@@ -577,10 +578,9 @@ document.getElementById('routeHistoryRefresh').addEventListener('click', () => l
 // sail sliders, mode dropdown) and a motoring run. Power mode forces
 // `mode=motor` on the POST /api/routes payload and sends the boat's name
 // and cruise speed as a vessel override. Selection and the power-boat
-// fields persist in localStorage.
+// fields persist per browser and Signal K user (rp-prefs.js).
 function getVesselType() {
-  try { return localStorage.getItem('vesselType') === 'power' ? 'power' : 'sail'; }
-  catch (_) { return 'sail'; }
+  return prefs.get('vesselType') === 'power' ? 'power' : 'sail';
 }
 // The cruise speed is a display-unit input like the wind and wave limits
 // (rp-plan.js `_LIMITS`): typed in the user's unit, kept in SI.
@@ -598,19 +598,15 @@ function validatePowerBoat() {
   return missing;
 }
 function savePowerBoat() {
-  try {
-    localStorage.setItem('powerBoat', JSON.stringify({ name: readPowerBoat().name }));
-  } catch (_) {}
+  prefs.set('powerBoat', JSON.stringify({ name: readPowerBoat().name }));
 }
 function loadPowerBoat() {
   try {
-    const j = localStorage.getItem('powerBoat');
+    const j = prefs.get('powerBoat');
     if (!j) return;
     const pb = JSON.parse(j);
     if (pb.name != null) document.getElementById('pb_name').value = pb.name;
-    // Until 2026-10 the cruise speed was stored here in knots; it lives in SI with the other limits now.
-    if (pb.cruise_kts != null && localStorage.getItem('routeVar:pb_cruise:si') === null)
-      localStorage.setItem('routeVar:pb_cruise:si', String(pb.cruise_kts * KT_MS));
+    // The cruise speed this held in knots until 2026-10 was moved to routeVar:pb_cruise:si by prefs.load().
   } catch (_) {}
 }
 function refreshFindRouteEnabled() {
@@ -646,11 +642,12 @@ function applyVesselType(vt) {
     b.classList.toggle('vt-active', active);
     b.setAttribute('aria-pressed', String(active));
   });
-  try { localStorage.setItem('vesselType', vt); } catch (_) {}
   refreshFindRouteEnabled();
 }
+// Stored on a click only: start-up shows the stored type (or the default) without storing it, so neither a default
+// nobody chose nor a choice from before waiting for Keep / Discard reaches the user's record.
 document.querySelectorAll('#vesselTypeToggle .vt-btn').forEach(b => {
-  b.addEventListener('click', () => applyVesselType(b.dataset.val));
+  b.addEventListener('click', () => { prefs.set('vesselType', b.dataset.val); applyVesselType(b.dataset.val); });
 });
 ['pb_name', 'pb_cruise'].forEach(id => {
   const el = document.getElementById(id);
@@ -1294,19 +1291,19 @@ function _savePlan() {
   try { localStorage.setItem('rp:plan', JSON.stringify(plan)); } catch (_) {}
 }
 
-// --- Search accuracy and router selects (Route tab): remembered per browser;
-// the router's first value is the plugin's routing.router setting (status).
+// --- Search accuracy and router selects (Route tab): remembered per browser
+// and Signal K user (rp-prefs.js); the router's first value is the
+// plugin's routing.router setting (status).
 function _initRouteChoices() {
   // Values an earlier panel saved under the old names.
   const renamed = { search: { wide: 'moderate', finer: 'maximum' }, router: { experimental: 'refined' } };
   for (const [id, key] of [['search', 'rp:search'], ['router', 'rp:router']]) {
     const el = document.getElementById(id);
     if (!el) continue;
-    let saved = null;
-    try { saved = localStorage.getItem(key); } catch (_) {}
+    let saved = prefs.get(key);
     if (saved && renamed[id] && renamed[id][saved]) saved = renamed[id][saved];
     if (saved && [...el.options].some(o => o.value === saved)) el.value = saved;
-    el.addEventListener('change', () => { try { localStorage.setItem(key, el.value); } catch (_) {} });
+    el.addEventListener('change', () => { prefs.set(key, el.value); });
   }
 }
 // Smoothing applies to both routers (the owner's decision, 2026-10-08): a
@@ -1320,8 +1317,7 @@ document.getElementById('router')?.addEventListener('change', _syncSmoothing);
 window.addEventListener('rp:status', e => {
   const el = document.getElementById('router');
   const st = e.detail;
-  let saved = null;
-  try { saved = localStorage.getItem('rp:router'); } catch (_) {}
+  const saved = prefs.get('rp:router');
   if (el && !saved && st && st.router && [...el.options].some(o => o.value === st.router)) el.value = st.router;
   _syncSmoothing();
 });
@@ -2224,7 +2220,7 @@ function buildRoutePayload(overrides) {
 }
 
 // ── Wind and wave limits ─────────────────────────────────────────────
-// Typed in the user's units, kept in SI in localStorage so a change of
+// Typed in the user's units, kept in SI (rp-prefs.js) so a change of
 // unit preference keeps the meaning; no unit → the field is disabled.
 // (_LIMITS is declared at the top of the file: start-up code reads it through _limitSI.)
 function _limitSI(id) {
@@ -2242,13 +2238,14 @@ function _initLimitInputs() {
     el.disabled = !c;
     if (c && !el.dataset.touched) {
       let si = null;
-      try { const s = localStorage.getItem('routeVar:' + id + ':si'); if (s !== null && s !== '') si = +s; } catch (_) {}
+      const s = prefs.get('routeVar:' + id + ':si');
+      if (s !== null && s !== '') si = +s;
       el.value = si !== null && Number.isFinite(si) ? String(+c.fn(si).toFixed(c.precision)) : '';
     }
     el.onchange = () => {
       el.dataset.touched = '1';
       const v = _limitSI(id);
-      try { localStorage.setItem('routeVar:' + id + ':si', v === null ? '' : String(v)); } catch (_) {}
+      prefs.set('routeVar:' + id + ':si', v === null ? '' : String(v));
     };
   }
 }
@@ -4301,7 +4298,9 @@ function _winOpen(jobId) {
     if (!((vesselToggle && vesselToggle.checked) || liveMode)) vesselMarkerSource.clear();
   }
   if (vesselToggle) vesselToggle.addEventListener('change', syncPolling);
-  window.addEventListener('load', syncPolling);
+  // The page may have loaded already: rp-core.js holds module start-up for the user's choices.
+  if (document.readyState === 'complete') syncPolling();
+  else window.addEventListener('load', syncPolling);
 
   // "Go to the boat" button, under the zoom buttons (same control group, so
   // it looks and lines up like them): centres the map on the Signal K

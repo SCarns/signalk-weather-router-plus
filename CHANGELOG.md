@@ -43,6 +43,51 @@ uses [Semantic Versioning](https://semver.org/).
   and read from there when it is opened; in memory the window holds its
   metrics.
 
+### Changed
+
+- **Setup choices are kept per Signal K user** (`public/rp-prefs.js`).
+  The polar, sail or power, the power boat, the Route → Options settings
+  and the search and router choices were kept in the browser's
+  localStorage only, so another browser or device, the kiosk, or a private
+  window started again from the default polar. They are now also stored
+  in the user's Signal K application data and read when the page opens:
+  the server's value wins. localStorage is not split by user, so the
+  browser records whose choices it holds (`rp:prefsUser`, from
+  `/skServer/loginStatus`): a choice only it has is sent up for that user
+  and dropped when another user logs in there (also when the read fails);
+  one made while the page cannot tell who is logged in (nobody is, or the
+  login status did not answer) leaves the browser without an owner, so the
+  choices wait for the answer below. Choices from before this
+  change have no owner: they stay in use in that browser and go up only
+  when the user keeps them (a banner asks: Keep, or Discard and reload
+  with the defaults). The knots they held for the min sail speed and the
+  power boat's cruise speed are converted to m/s first, so the converted
+  values wait for that answer too; start-up itself stores nothing (sail
+  or power is stored when clicked). Changes are sent as
+  JSON Patch, one request at a time and batched (a slider drag is one
+  request); a change the server did not take is sent again later. Each
+  request, a retry too, first reads `/skServer/loginStatus` again: another
+  user or nobody logged in by then (another tab, a logout), no answer, or
+  no user known when the page opened stops the writes as a 401 does, and
+  the queue is dropped; the choices stay in the browser. Not covered: a
+  login changing between that check and the request, and the closing
+  page's keepalive request, which cannot wait for one. The
+  upload at start-up is not waited for. The map view, tabs, layer
+  toggles and the plan stay per browser. Module start-up waits for the one
+  read (3 s at most); the legend box and the position poll, which waited
+  for the page's `load` event, start at once when it has already fired.
+  Without a login with write access the choices stay in the browser.
+  The Freeboard panel keeps its polar, mode, min sail speed and limits
+  (max wind and wave height, the web app's `routeVar:maxWind:si` and
+  `routeVar:maxSwh:si`) in the same store. Its own `wrp-plotterext-*`
+  keys from before are moved to the store's keys (where the browser has
+  none of those) when the store loads, so another user's are dropped and
+  ownerless ones wait for Keep / Discard like the web app's. Its controls work
+  before the store has read the server: a choice made meanwhile is kept
+  over the stored one and sent up. README, Users: the user is the Signal K login name
+  (`req.skPrincipal.identifier`, as `loginStatus` reports it), nothing is
+  per user without a login, and a read-only user owns nothing.
+
 ## [0.2.0-beta.3] - 2026-10-19
 
 ### Added

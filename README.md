@@ -339,6 +339,34 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   https://doi.org/10.48670/moi-00016* (shown in the map attribution while
   the tide layer is on, and under the Tide chart).
 
+## Users
+
+What "the user" means throughout the plugin, for the choices kept per
+user now and for whatever is kept per user later:
+
+- **The user is the Signal K login name.** In the browser it is
+  `username` from `/skServer/loginStatus`; on the server it is the
+  identifier Signal K attaches to an authenticated request
+  (`req.skPrincipal.identifier`). They are the same value: Signal K's
+  `loginStatus` answers with `skPrincipal.identifier` as `username`, sets
+  `skPrincipal` the same way for requests to a plugin's routes
+  (`/plugins/…`, from the same token or cookie), and files a user's
+  application data under it (signalk-server 2.34: `src/tokensecurity.ts`
+  `getLoginStatus`, `http_authorize`; `src/interfaces/applicationData.js`).
+  A device with its own access token is its own principal, under its
+  client id.
+- **No login, or security off: nothing is per user.** The choices stay in
+  the browser, and routes are shared.
+- **A read-only user owns nothing.** Signal K takes no application data
+  from them, so their choices stay in the browser.
+
+Where things live: the choices (below) in the user's Signal K application
+data, the standard store, since they are small; routes in the plugin's
+own job store, since they are large. The route computation never reads
+the saved choices: a route request carries everything it is computed
+with, so a route sent by another client (the Freeboard panel, the API) is
+computed with what that request says, not with the user's saved Setup.
+
 ## Using the webapp
 
 - **Planning.** Click the map for the menu: set or move the start, set or
@@ -356,6 +384,37 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   destination, waypoints with their radii, departure) is kept in the
   browser and restored on reload; a departure that has passed is set to
   now, and the status line says so.
+- **Your choices follow the Signal K user.** The vessel (polar, sail or
+  power, the power boat's name and cruise speed), the Route → Options
+  settings and the Route tab's search and router choices are kept in the
+  user's Signal K application data
+  (`/signalk/v1/applicationData/user/signalk-weather-router-plus/1.0.0`)
+  as well as in the browser, so a polar picked in one browser is the one
+  the next browser the same user opens starts with (another device, a
+  kiosk, a private window). The page reads them once when it opens; a
+  server that has not answered within 3 s leaves it with what this
+  browser remembers. The browser notes whose choices it holds: a
+  choice only it has is sent up for that user, while another user's are
+  dropped when someone else logs in there, also when the read fails. A
+  choice made while the page cannot tell who is logged in (nobody is, or
+  the login status did not answer) leaves the browser's choices
+  without an owner: like those from before this change (next), they wait
+  for the user's Keep or Discard. Before each write the page reads the
+  login status again; if another user or nobody is logged in by then (a
+  login in another tab, a logout), or it cannot tell, it writes nothing more and the choices
+  stay in the browser. Two gaps remain: the login changing between that
+  check and the write, and the last write of a page being closed, which
+  goes without a check. Choices a browser held before
+  this change have no owner: they stay in use there, and a banner asks
+  the logged-in user whether to keep them as theirs (sent up) or discard
+  them (the page reloads with the defaults). Opening the page stores
+  nothing by itself: a default such as Sailboat is sent up only once it
+  is clicked. The
+  map view, open tabs, layer toggles and the plan stay per browser.
+  Without a login with write access, or with security off (Signal K then
+  keeps no application data), the choices are kept in the browser only,
+  as before ([Users](#users)). The Freeboard panel keeps its polar, mode,
+  min sail speed and limits in the same store ([In Freeboard-SK](#in-freeboard-sk)).
 - **Header.** The data sources, with how fresh each one is. Collapsed (the
   default): one line, `wind ●● | waves ● | currents ●● | tides ●`, a dot
   per source in its colour, with **Show** on the right. Expanded (**Hide**
@@ -602,7 +661,11 @@ and the panel runs in a sandboxed iframe served from
   maximum wind speed and wave height that no leg may exceed (empty = no
   limit; the routing settings' values by default). With a min sail speed
   of 0 (never motor) a stretch the boat cannot sail or tack out of fails
-  the route, saying "set Min sail speed above 0". Progress is shown;
+  the route, saying "set Min sail speed above 0". The polar, mode, min
+  sail speed and limits are the web app's Setup choices: the panel reads
+  and writes them in the same store, so the same Signal K user has the
+  same polar and limits in both ([Users](#users)); what it kept under its
+  own keys before is moved into that store under the same rules. Progress is shown;
   Cancel stops the job. The map
   is fitted to the result; the panel shows distance and time in
   Freeboard's unit preferences, the sailing/motoring split, the arrival
