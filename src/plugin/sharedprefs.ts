@@ -65,20 +65,32 @@ export class SharedPrefsStore {
   /**
    * The stored choices; {} while there are none. An unreadable file is kept aside and counts as none, and so is one
    * over MAX_SHARED_PREFS_BYTES (only written outside this store): read, it would be served whole and refuse every
-   * write (413), as a patch is checked against the size of the result.
+   * write (413), as a patch is checked against the size of the result. At most one byte over the cap is read, from
+   * one descriptor, so a file replaced or growing meanwhile (a restore) is never read whole either.
    */
   read(): SharedPrefs {
-    let text: string;
+    const buf = Buffer.alloc(MAX_SHARED_PREFS_BYTES + 1);
+    let bytes = 0;
     try {
-      if (fs.statSync(this.file).size > MAX_SHARED_PREFS_BYTES) {
-        fs.renameSync(this.file, `${this.file}.corrupt-${Date.now()}`);
-        return {};
+      const fd = fs.openSync(this.file, 'r');
+      try {
+        let n: number;
+        do {
+          n = fs.readSync(fd, buf, bytes, buf.length - bytes, null);
+          bytes += n;
+        } while (n > 0 && bytes < buf.length);
+      } finally {
+        fs.closeSync(fd);
       }
-      text = fs.readFileSync(this.file, 'utf8');
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
       throw err;
     }
+    if (bytes > MAX_SHARED_PREFS_BYTES) {
+      fs.renameSync(this.file, `${this.file}.corrupt-${Date.now()}`);
+      return {};
+    }
+    const text = buf.toString('utf8', 0, bytes);
     let parsed: unknown;
     try {
       parsed = JSON.parse(text);

@@ -99,6 +99,28 @@ test('an unreadable file is kept aside and counts as no choices; members that ar
   }
 });
 
+test('the cap is exact: a file of MAX_SHARED_PREFS_BYTES is read, one byte more is kept aside (PR #60 review)', () => {
+  const dir = tmp();
+  try {
+    const store = new SharedPrefsStore(dir);
+    const sized = (bytes: number) => {
+      const head = '{"polarPath":"a.pol","pad":"';
+      return head + 'x'.repeat(bytes - head.length - 2) + '"}';
+    };
+    fs.writeFileSync(store.file, sized(MAX_SHARED_PREFS_BYTES));
+    assert.equal(fs.statSync(store.file).size, MAX_SHARED_PREFS_BYTES);
+    assert.equal(store.read().polarPath, 'a.pol');
+    fs.writeFileSync(store.file, sized(MAX_SHARED_PREFS_BYTES + 1));
+    assert.deepEqual(store.read(), {});
+    assert.ok(
+      fs.readdirSync(dir).some(f => f.startsWith(`${SHARED_PREFS_FILE}.corrupt-`)),
+      'kept aside'
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('a file over the size cap (written outside the store) is kept aside, so writes work again (PR #60 review)', () => {
   const dir = tmp();
   try {
