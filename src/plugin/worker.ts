@@ -41,6 +41,7 @@ import { RtofsCurrentSource, rtofsSetForConfig } from '../currents/rtofs';
 import { SmocCurrentSource } from '../currents/smoc';
 import { TideSource } from '../tides/sealevel';
 import { type MainToWorker, type WorkerRole, type WorkerToMain } from './protocol';
+import { rtofsLoadSame, smocLoadSame } from './config';
 import { setNetworkObserver } from '../data/http';
 import { noteNetwork, requireInit } from './worker/state';
 import { refreshForecast } from './worker/forecast';
@@ -232,19 +233,30 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       const prev = requireInit(st).config;
       st.config = msg.config;
       if (msg.reload.currents) {
-        st.rtofsClients = new Map();
-        st.rtofs = [];
-        st.smocClient = makeSmocClient(st, st.config);
-        st.smoc = null;
+        // Only what the change concerns is loaded again: SMOC when a SMOC setting changed, every RTOFS product when
+        // the RTOFS horizon or step changed or it was turned on or off; extra products are added or dropped alone.
+        const smocSame = smocLoadSame(prev, st.config);
+        const rtofsSame = rtofsLoadSame(prev, st.config);
+        if (!rtofsSame) {
+          st.rtofsClients = new Map();
+          st.rtofs = [];
+        }
+        if (!smocSame) {
+          st.smocClient = makeSmocClient(st, st.config);
+          st.smoc = null;
+        }
         rebuildStack(st);
         if (msg.position !== undefined) st.vesselPos = msg.position;
         // Route worker: SMOC comes back from the data worker (relayed 'smoc').
-        if (st.role === 'data') {
+        if (st.role === 'data' && !smocSame) {
           sendSmoc(st);
           await refreshSmoc(st);
         }
-        await refreshRtofs(st, st.role === 'data');
-        sendRtofs(st); // off, other products or the same runs again: the other workers follow the data worker
+        const relayed = await refreshRtofs(st, st.role === 'data');
+        // The products may be the same under new extra products: the other workers check a set against the setting
+        // it was loaded under, so it is relayed again (once).
+        const extraSame = prev.currents.rtofsExtra.join(',') === st.config.currents.rtofsExtra.join(',');
+        if (!relayed && (!rtofsSame || !extraSame)) sendRtofs(st);
         sendCurrents(st);
         st.log(
           'info',

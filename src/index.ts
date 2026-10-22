@@ -20,6 +20,8 @@ import type { IRouter } from 'express';
 import {
   CONFIG_SCHEMA,
   resolveConfig,
+  rtofsLoadSame,
+  smocLoadSame,
   type LegacyPluginConfig,
   type PluginConfig,
   type ResolvedConfig,
@@ -974,10 +976,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
     };
     if (stopped || !settings || changed.length === 0)
       return { forecast: false, currents: false, tides: false, refresh_timer: false, jobs: false };
+    const prevConfig = config;
     config = resolve(pluginOptions, settings.values);
-    if (out.currents) {
-      smocShared = null;
-      rtofsShared = null;
+    // What the data worker reloads (worker.ts 'config'), and relays again when it has.
+    if (out.currents && prevConfig) {
+      if (!smocLoadSame(prevConfig, config)) smocShared = null;
+      if (!rtofsLoadSame(prevConfig, config)) rtofsShared = null;
     }
     if (out.forecast || out.currents || out.tides) {
       dataSettingsRev++;

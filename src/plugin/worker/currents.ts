@@ -329,11 +329,12 @@ function rtofsClientFor(st: WorkerState, product: string): RtofsClient {
  * extra products from the settings. Each one's newest run comes from the
  * network, else the disk cache; a product no longer wanted is dropped. The
  * route and tiles workers do not load RTOFS themselves: they adopt the
- * data worker's products ('rtofs' message).
+ * data worker's products ('rtofs' message). True when the products in use
+ * changed (and were relayed).
  */
-export async function refreshRtofs(st: WorkerState, networkAllowed: boolean, offline: string | null = null): Promise<void> {
+export async function refreshRtofs(st: WorkerState, networkAllowed: boolean, offline: string | null = null): Promise<boolean> {
   const { config: cfg } = requireInit(st);
-  if (st.role !== 'data') return;
+  if (st.role !== 'data') return false;
   const dropChecks = (keep: ReadonlySet<string>): void => {
     for (const k of Object.keys(st.checks) as CheckedSource[]) if (k.startsWith('rtofs:') && !keep.has(k.slice(6))) delete st.checks[k];
   };
@@ -344,8 +345,9 @@ export async function refreshRtofs(st: WorkerState, networkAllowed: boolean, off
       st.rtofs = [];
       rebuildStack(st);
       sendRtofs(st);
+      return true;
     }
-    return;
+    return false;
   }
   const cacheDir = rtofsCacheDir(st);
   let off = offline;
@@ -375,13 +377,15 @@ export async function refreshRtofs(st: WorkerState, networkAllowed: boolean, off
     newRun ||= r.newRun;
   }
   dropChecks(new Set(wanted));
-  if (loaded.length !== st.rtofs.length || loaded.some((s, i) => s !== st.rtofs[i])) {
+  const changed = loaded.length !== st.rtofs.length || loaded.some((s, i) => s !== st.rtofs[i]);
+  if (changed) {
     st.rtofs = loaded;
     rebuildStack(st);
     sendRtofs(st);
   }
   // One prune for every product: the cache is kept by run date, a date directory holding each product's files.
   if (newRun) rtofsClientFor(st, wanted[0]).pruneCache(keep);
+  return changed;
 }
 
 /**

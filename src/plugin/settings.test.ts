@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { KTS_TO_MS } from '../geo/geodesy';
-import { resolveConfig, routeVessel, selfDesignValue, type LegacyPluginConfig } from './config';
+import { resolveConfig, routeVessel, rtofsLoadSame, selfDesignValue, smocLoadSame, type LegacyPluginConfig } from './config';
 import {
   defaultSettings,
   mergeSettings,
@@ -427,6 +427,23 @@ test("RTOFS extra products: a list in the products' order, each once; the old pr
   // The plugin config of the oldest versions: the same rule.
   assert.deepEqual(migrateLegacy({ currents: { rtofsRegion: 'honolulu' } }).values.currents.rtofsExtra, ['honolulu']);
   assert.deepEqual(migrateLegacy({ currents: { rtofsRegion: 'west_atl' } }).values.currents.rtofsExtra, []);
+});
+
+test('a currents settings change reloads only the source it concerns', () => {
+  const d = defaultSettings();
+  const cfg = (patch: unknown): ReturnType<typeof resolveConfig> => resolveConfig({}, mergeSettings(d, patch).values);
+  const base = resolveConfig({}, d);
+  // An extra RTOFS product: SMOC and the products loaded are kept (the refresh adds the new one).
+  const extra = cfg({ currents: { rtofsExtra: ['samoa'] } });
+  assert.ok(smocLoadSame(base, extra) && rtofsLoadSame(base, extra));
+  // The RTOFS horizon or step: every RTOFS product again, SMOC kept.
+  const horizon = cfg({ currents: { rtofsHorizon: 120 * 3600 } });
+  assert.ok(smocLoadSame(base, horizon) && !rtofsLoadSame(base, horizon));
+  assert.ok(!rtofsLoadSame(base, cfg({ currents: { rtofsStep: 3600 } })));
+  assert.ok(!rtofsLoadSame(base, cfg({ currents: { rtofsEnabled: false } })), 'turned off');
+  // A SMOC setting: SMOC again, RTOFS kept.
+  const smoc = cfg({ currents: { smocHalfWidth: 10 } });
+  assert.ok(!smocLoadSame(base, smoc) && rtofsLoadSame(base, smoc));
 });
 
 test('allow canals: routing setting, off by default, applies to the next route', () => {

@@ -484,6 +484,29 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
   };
 }
 
+/** Do two configs load the same CMEMS SMOC (on, step, horizon, area)? A currents reload then keeps it. */
+export function smocLoadSame(a: ResolvedConfig, b: ResolvedConfig): boolean {
+  const x = a.currents;
+  const y = b.currents;
+  return (
+    x.smocEnabled === y.smocEnabled &&
+    x.smocStepS === y.smocStepS &&
+    x.smocHorizonS === y.smocHorizonS &&
+    x.smocHalfWidthDeg === y.smocHalfWidthDeg
+  );
+}
+
+/**
+ * Do two configs load each RTOFS product the same way (on in both, same
+ * horizon and step)? A currents reload then keeps the products loaded; the
+ * refresh adds or drops products only.
+ */
+export function rtofsLoadSame(a: ResolvedConfig, b: ResolvedConfig): boolean {
+  const x = a.currents;
+  const y = b.currents;
+  return x.rtofsEnabled && y.rtofsEnabled && x.rtofsHorizonS === y.rtofsHorizonS && x.rtofsStepS === y.rtofsStepS;
+}
+
 /** Draught and air draft as Signal K's vessel base data has them (design.draft.maximum, design.airHeight), null when unset. */
 export interface SelfDesign {
   draughtM: number | null;

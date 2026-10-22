@@ -105,6 +105,15 @@ uses [Semantic Versioning](https://semver.org/).
   had no resident area and RTOFS no product until then. The position is now
   looked at every 30 s between rounds; a first fix, or a move into another
   RTOFS product, refreshes at once.
+- **A currents settings change reloads only what it concerns**
+  (`worker.ts` `config`, `config.ts` `smocLoadSame` / `rtofsLoadSame`).
+  Every currents setting emptied SMOC and RTOFS and loaded both again: ticking
+  an extra RTOFS product on brain (2026-10-22) also decoded the product
+  already loaded and reloaded SMOC's resident area, and Signal K's RSS went
+  from 1,040,720 kB to 2,239,440 kB before it settled at 1,160,704 kB three
+  minutes later. Now SMOC is loaded again only for a SMOC setting, the RTOFS
+  products only for the RTOFS horizon, step or switch; an extra product is
+  added or dropped alone.
 - **Extra RTOFS products** (`currents.rtofsExtra`, Settings → Currents →
   *Also load RTOFS products*): products loaded wherever the vessel is, for a
   passage planned elsewhere, each with its area, daily download (measured on
