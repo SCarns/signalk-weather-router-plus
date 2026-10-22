@@ -422,18 +422,20 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
     currents: {
       harmonicDir: harmonicDir && harmonicDir.trim() ? harmonicDir.trim() : null,
       smocEnabled: cu.smocEnabled,
-      smocHorizonS: cu.smocHorizon,
+      // One horizon for every source (the owner's decision, 2026-10-22): each reaches the forecast's, or the end of
+      // its own data when that comes first (SMOC's run, RTOFS's last file, the tide run).
+      smocHorizonS: f.horizon,
       smocStepS: cu.smocStep,
       smocHalfWidthDeg: cu.smocHalfWidth,
       rtofsEnabled: cu.rtofsEnabled,
       rtofsExtra: [...cu.rtofsExtra],
-      rtofsHorizonS: cu.rtofsHorizon,
+      rtofsHorizonS: f.horizon,
       rtofsStepS: cu.rtofsStep,
     },
     tides: {
       enabled: settings.tides.enabled,
       halfWidthDeg: settings.tides.halfWidth,
-      horizonS: settings.tides.horizon,
+      horizonS: f.horizon,
     },
     routing: {
       stages: r.stages,

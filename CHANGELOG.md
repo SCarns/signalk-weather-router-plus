@@ -85,6 +85,18 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **One horizon for every source** (the owner's decision, 2026-10-22;
+  `config.ts`, `settings.ts`). The forecast horizon is now SMOC's, RTOFS's and
+  the tide map's too, each to the end of its own data when that comes first
+  (SMOC's run, about 10 days; RTOFS's last file, 144 h; the tide run), and the
+  map's tide tiles and tide chart stop there too instead of at the end of the
+  tide run. The SMOC horizon, RTOFS horizon and tide map horizon settings are
+  gone (a stored value is ignored). A horizon change reloads currents and
+  tides as well as the forecast. On brain the three had drifted apart (72 h,
+  115 h and 24 h against a 72 h forecast): RTOFS waited each day for its
+  `f144` file, about 15:40Z, and the tide tiles ran 7.5 days hourly. The tide
+  map now holds the forecast's horizon (72 h by default, 24 h before), about
+  three times the memory at the default.
 - **RTOFS follows the vessel** (issue #61; `currents/rtofs.ts`,
   `plugin/worker/currents.ts`). The RTOFS regional product loaded is the one
   that contains the vessel, the finest grid where two overlap (`samoa`, not

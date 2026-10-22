@@ -1028,10 +1028,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
           return m;
         },
         vesselPosition,
+        // Every layer to the forecast horizon (the owner's decision, 2026-10-22: one horizon); tides also no further
+        // than their run.
         lastHourMs: layer => {
-          if (layer === 'tide') return tidesRun ? runLastMs(tidesRun) : null;
           if (!forecastRun) return null;
-          return forecastRun.index.steps[forecastRun.index.steps.length - 1].validMs;
+          const end = forecastRun.index.steps[forecastRun.index.steps.length - 1].validMs;
+          if (layer === 'tide') return tidesRun ? Math.min(runLastMs(tidesRun), end) : null;
+          return end;
         },
         // Each layer at its data's steps (prebuild.ts hasStep); the map draws the hours between on demand.
         atStep: (layer, hourMs) =>

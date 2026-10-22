@@ -46,21 +46,17 @@ export interface AppSettings {
   };
   currents: {
     smocEnabled: boolean;
-    smocHorizon: number;
     smocStep: number;
     smocHalfWidth: number;
     rtofsEnabled: boolean;
     /** RTOFS products loaded wherever the vessel is, besides the one that contains it. */
     rtofsExtra: string[];
-    rtofsHorizon: number;
     rtofsStep: number;
   };
   tides: {
     enabled: boolean;
     /** Half-width of the resident tide-height map area around the vessel, degrees. */
     halfWidth: number;
-    /** How far ahead the resident tide-height map area reaches, s. */
-    horizon: number;
   };
   routing: {
     stages: number;
@@ -164,6 +160,8 @@ export interface SettingSpec {
    */
   help: string;
   reload: ReloadKind;
+  /** What else a change re-does (the forecast horizon is every source's horizon). */
+  alsoReload?: readonly ReloadKind[];
 }
 
 export const SETTINGS_GROUPS: { id: SettingsGroup; label: string; help: string }[] = [
@@ -278,8 +276,9 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     step: HOUR_S,
     multipleOf: HOUR_S,
     default: 72 * HOUR_S,
-    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to {time:1296000}, 06z/18z runs to {time:518400}, so above {time:518400} only 00z/12z runs are used). Changing it decodes the forecast again; the decoded run on disk grows with it (about {dataSize:1.35e9} for {time:259200} and {dataSize:4.6e9} for {time:1296000} with the extra fields), memory does not.',
+    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to {time:1296000}, 06z/18z runs to {time:518400}, so above {time:518400} only 00z/12z runs are used), and with it every other source: SMOC and RTOFS currents and the tide map, each to the end of its own data when that comes first (SMOC about {time:864000}, RTOFS {time:518400}). Changing it decodes the forecast again and reloads currents and tides; the decoded run on disk grows with it (about {dataSize:1.35e9} for {time:259200} and {dataSize:4.6e9} for {time:1296000} with the extra fields), and so do the SMOC and tide areas held around the vessel.',
     reload: 'forecast',
+    alsoReload: ['currents', 'tides'],
   },
   {
     key: 'forecast.refreshInterval',
@@ -362,21 +361,6 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     reload: 'currents',
   },
   {
-    key: 'currents.smocHorizon',
-    group: 'currents',
-    label: 'SMOC horizon',
-    type: 'number',
-    unit: 's',
-    quantity: 'hours',
-    min: 6 * HOUR_S,
-    max: 240 * HOUR_S,
-    step: HOUR_S,
-    multipleOf: HOUR_S,
-    default: 72 * HOUR_S,
-    help: 'How far ahead SMOC is held (the product reaches about 10 days).',
-    reload: 'currents',
-  },
-  {
     key: 'currents.smocStep',
     group: 'currents',
     label: 'SMOC time step kept',
@@ -427,21 +411,6 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     reload: 'currents',
   },
   {
-    key: 'currents.rtofsHorizon',
-    group: 'currents',
-    label: 'RTOFS horizon',
-    type: 'number',
-    unit: 's',
-    quantity: 'hours',
-    min: 24 * HOUR_S,
-    max: 144 * HOUR_S,
-    step: HOUR_S,
-    multipleOf: HOUR_S,
-    default: 72 * HOUR_S,
-    help: 'How far ahead RTOFS is loaded.',
-    reload: 'currents',
-  },
-  {
     key: 'currents.rtofsStep',
     group: 'currents',
     label: 'RTOFS time step kept',
@@ -477,22 +446,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     max: 30,
     step: 1,
     default: 15,
-    help: 'Half-width of the tide-height map area kept in memory around the vessel position (hourly steps; about {dataSize:17e6} at {angle:0.261799} over {time:86400}, growing with the square of the half-width and with the horizon). Map views elsewhere load their own hour on demand.',
-    reload: 'tides',
-  },
-  {
-    key: 'tides.horizon',
-    group: 'tides',
-    label: 'Tide map horizon',
-    type: 'number',
-    unit: 's',
-    quantity: 'hours',
-    min: 6 * HOUR_S,
-    max: 240 * HOUR_S,
-    step: HOUR_S,
-    multipleOf: HOUR_S,
-    default: 24 * HOUR_S,
-    help: 'How far ahead the resident tide-height map area reaches (hourly steps; each hour of a {angle:0.523599} area downloads about {dataSize:1e6} to {dataSize:3e6} per new daily run). Map times beyond it load on demand. The conditions popup and Weather API are not limited by this.',
+    help: 'Half-width of the tide-height map area kept in memory around the vessel position (hourly steps; about {dataSize:17e6} at {angle:0.261799} over {time:86400}, growing with the square of the half-width and with the forecast horizon, which the tide map follows). Map views elsewhere load their own hour on demand.',
     reload: 'tides',
   },
 
@@ -1031,7 +985,6 @@ export function migrateLegacy(legacy: LegacyPluginConfig | undefined): { values:
   const oldRaw = typeof c.rtofsRegion === 'string' ? c.rtofsRegion.trim() : c.rtofsRegion;
   const oldRegion = extraFromOldRegion(oldRaw);
   if (oldRegion) set(src.currents, 'rtofsExtra', [oldRegion]);
-  set(src.currents, 'rtofsHorizon', num(c.rtofsHorizonHours, HOUR_S));
   set(src.currents, 'rtofsStep', num(c.rtofsStepHours, HOUR_S));
   const r = l.routing ?? {};
   set(src.routing, 'stages', num(r.stages));
@@ -1172,7 +1125,9 @@ export function reloadsFor(changed: string[]): Set<ReloadKind> {
   const out = new Set<ReloadKind>();
   for (const k of changed) {
     const s = SPEC_BY_KEY.get(k);
-    if (s) out.add(s.reload);
+    if (!s) continue;
+    out.add(s.reload);
+    for (const r of s.alsoReload ?? []) out.add(r);
   }
   return out;
 }

@@ -192,7 +192,9 @@ export class ChartsProvider {
     if (this.deps.isStopped() || !forecastRun || !this.layerAvailable(layer)) return null;
     const spec = layer in PNG_LAYER_SPECS ? PNG_LAYER_SPECS[layer as PngLayer] : GLYPH_LAYER_SPECS[layer as GlyphLayer];
     const steps = forecastRun.index.steps;
-    const lastMs = layer === 'tide' ? (tidesRun ? runLastMs(tidesRun) : null) : steps[steps.length - 1].validMs;
+    // Every layer to the forecast horizon, tides also no further than their run (one horizon, 2026-10-22).
+    const end = steps[steps.length - 1].validMs;
+    const lastMs = layer === 'tide' ? (tidesRun ? Math.min(runLastMs(tidesRun), end) : null) : end;
     if (lastMs === null) return null;
     const fromMs = Math.max(steps[0].validMs, Math.floor(Date.now() / HOUR_MS) * HOUR_MS);
     const base = `${this.deps.basePath}/api/tile/${layer}/{z}/{x}/{y}.png`;

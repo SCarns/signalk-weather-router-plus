@@ -137,7 +137,7 @@ test('partial merge validates with the old ranges and enums, all-or-nothing', ()
 });
 
 test('reload kinds per changed key', () => {
-  assert.deepEqual([...reloadsFor(['forecast.horizon'])], ['forecast']);
+  assert.deepEqual([...reloadsFor(['forecast.horizon'])], ['forecast', 'currents', 'tides']);
   assert.deepEqual([...reloadsFor(['forecast.extraFields'])], ['forecast']);
   assert.deepEqual([...reloadsFor(['forecast.energyFields'])], ['forecast']);
   assert.deepEqual([...reloadsFor(['currents.rtofsExtra', 'currents.rtofsEnabled'])], ['currents']);
@@ -355,29 +355,27 @@ test('CMEMS SMOC settings: defaults in SI, 1 h or 3 h step only, changes reload 
   const d = defaultSettings();
   assert.equal(d.currents.smocEnabled, true);
   assert.equal(d.currents.smocStep, 3 * 3600);
-  assert.equal(d.currents.smocHorizon, 72 * 3600);
   assert.equal(d.currents.smocHalfWidth, 15);
   const c = resolveConfig({ landShapefiles: '/a.shp' }, d);
   assert.deepEqual(
     [c.currents.smocEnabled, c.currents.smocStepS, c.currents.smocHorizonS, c.currents.smocHalfWidthDeg],
     [true, 3 * HOUR_S, 72 * HOUR_S, 15]
   );
-  const ok = mergeSettings(d, { currents: { smocStep: 3600, smocHalfWidth: 20, smocHorizon: 120 * 3600 } });
-  assert.deepEqual(ok.changed.sort(), ['currents.smocHalfWidth', 'currents.smocHorizon', 'currents.smocStep']);
+  const ok = mergeSettings(d, { currents: { smocStep: 3600, smocHalfWidth: 20 } });
+  assert.deepEqual(ok.changed.sort(), ['currents.smocHalfWidth', 'currents.smocStep']);
   assert.deepEqual([...reloadsFor(ok.changed)], ['currents']);
   try {
-    mergeSettings(d, { currents: { smocStep: 7200, smocHalfWidth: 60, smocHorizon: 300 * 3600 } });
+    mergeSettings(d, { currents: { smocStep: 7200, smocHalfWidth: 60 } });
     assert.fail('should throw');
   } catch (err) {
     const e = (err as SettingsValidationError).errors;
     assert.match(e['currents.smocStep'], /one of \{time:3600\}, \{time:10800\}/);
     assert.match(e['currents.smocHalfWidth'], /\[\{angle:0\.03490658503988659\}, \{angle:0\.5235987755982988\}\]/);
-    assert.match(e['currents.smocHorizon'], /\[\{time:21600\}, \{time:864000\}\]/);
   }
   const specs = settingsSchema().settings.filter(s => s.key.startsWith('currents.smoc'));
   assert.deepEqual(
     specs.map(s => s.key),
-    ['currents.smocEnabled', 'currents.smocHorizon', 'currents.smocStep', 'currents.smocHalfWidth']
+    ['currents.smocEnabled', 'currents.smocStep', 'currents.smocHalfWidth']
   );
   assert.deepEqual(SETTINGS_SPEC.find(s => s.key === 'currents.smocStep')!.oneOf, [3600, 10800]);
 });
@@ -420,7 +418,7 @@ test("RTOFS extra products: a list in the products' order, each once; the old pr
   write({ rtofsRegion: 'guam' });
   st = new SettingsStore(dir);
   st.load(undefined);
-  st.update({ currents: { rtofsHorizon: 48 * 3600 } });
+  st.update({ currents: { rtofsStep: 3600 } });
   const saved = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')).values.currents;
   assert.deepEqual(saved.rtofsExtra, ['guam']);
   assert.ok(!('rtofsRegion' in saved));
@@ -436,10 +434,21 @@ test('a currents settings change reloads only the source it concerns', () => {
   // An extra RTOFS product: SMOC and the products loaded are kept (the refresh adds the new one).
   const extra = cfg({ currents: { rtofsExtra: ['samoa'] } });
   assert.ok(smocLoadSame(base, extra) && rtofsLoadSame(base, extra));
-  // The RTOFS horizon or step: every RTOFS product again, SMOC kept.
-  const horizon = cfg({ currents: { rtofsHorizon: 120 * 3600 } });
-  assert.ok(smocLoadSame(base, horizon) && !rtofsLoadSame(base, horizon));
+  // The RTOFS step: every RTOFS product again, SMOC kept.
   assert.ok(!rtofsLoadSame(base, cfg({ currents: { rtofsStep: 3600 } })));
+  assert.ok(smocLoadSame(base, cfg({ currents: { rtofsStep: 3600 } })));
+  // The forecast horizon is every source's: SMOC and RTOFS again, and the change reloads currents and tides too.
+  const horizon = cfg({ forecast: { horizon: 120 * 3600 } });
+  assert.ok(!smocLoadSame(base, horizon) && !rtofsLoadSame(base, horizon));
+  assert.deepEqual(
+    [horizon.currents.smocHorizonS, horizon.currents.rtofsHorizonS, horizon.tides.horizonS],
+    [120 * HOUR_S, 120 * HOUR_S, 120 * HOUR_S]
+  );
+  assert.deepEqual([...reloadsFor(['forecast.horizon'])].sort(), ['currents', 'forecast', 'tides']);
+  assert.ok(
+    !SETTINGS_SPEC.some(s => ['currents.smocHorizon', 'currents.rtofsHorizon', 'tides.horizon'].includes(s.key)),
+    'no horizon of their own'
+  );
   assert.ok(!rtofsLoadSame(base, cfg({ currents: { rtofsEnabled: false } })), 'turned off');
   // A SMOC setting: SMOC again, RTOFS kept.
   const smoc = cfg({ currents: { smocHalfWidth: 10 } });
@@ -461,16 +470,16 @@ test('allow canals: routing setting, off by default, applies to the next route',
 
 test('settings: Tides group reloads tides only', () => {
   const d = defaultSettings();
-  assert.deepEqual(d.tides, { enabled: true, halfWidth: 15, horizon: 24 * 3600 });
+  assert.deepEqual(d.tides, { enabled: true, halfWidth: 15 });
   const c = resolveConfig({}, d);
-  assert.deepEqual(c.tides, { enabled: true, halfWidthDeg: 15, horizonS: 24 * HOUR_S });
-  const r = mergeSettings(d, { tides: { enabled: false, halfWidth: 8, horizon: 48 * 3600 } });
-  assert.deepEqual(r.changed.sort(), ['tides.enabled', 'tides.halfWidth', 'tides.horizon']);
+  assert.deepEqual(c.tides, { enabled: true, halfWidthDeg: 15, horizonS: 72 * HOUR_S }, 'the forecast horizon');
+  const r = mergeSettings(d, { tides: { enabled: false, halfWidth: 8 } });
+  assert.deepEqual(r.changed.sort(), ['tides.enabled', 'tides.halfWidth']);
   assert.deepEqual([...reloadsFor(r.changed)], ['tides']);
   assert.throws(() => mergeSettings(d, { tides: { halfWidth: 40 } }), /\[\{angle:0\.017453292519943295\}, \{angle:0\.5235987755982988\}\]/);
   assert.deepEqual(
     SETTINGS_SPEC.filter(s => s.group === 'tides').map(s => s.key),
-    ['tides.enabled', 'tides.halfWidth', 'tides.horizon']
+    ['tides.enabled', 'tides.halfWidth']
   );
 });
 
