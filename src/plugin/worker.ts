@@ -59,6 +59,7 @@ import {
 import { makeSeaLevelClient, refreshTides, tideSettings } from './worker/tides';
 import { refreshRegional } from './worker/regional';
 import { route } from './worker/route';
+import { refreshQueue } from './worker/refreshqueue';
 import { buildTile, dataStatus, query } from './worker/query';
 import type { WorkerState } from './worker/state';
 
@@ -389,24 +390,17 @@ const logFailure = (msg: MainToWorker, err: unknown): void => {
  * asked for while one runs is done once after it.
  */
 let background: Promise<void> = Promise.resolve();
-let refreshQueued: { force: boolean } | null = null;
 function inBackground(msg: MainToWorker, fn: () => Promise<void>): void {
   background = background.then(fn).catch(err => logFailure(msg, err));
 }
-function queueRefresh(msg: Extract<MainToWorker, { type: 'refresh' }>): void {
-  if (msg.position !== undefined) st.vesselPos = msg.position;
-  if (refreshQueued) {
-    refreshQueued.force ||= msg.force ?? false;
-    return;
-  }
-  const queued = { force: msg.force ?? false };
-  refreshQueued = queued;
-  inBackground(msg, async () => {
-    refreshQueued = null;
-    await refresh(st, queued.force);
+const queueRefresh = refreshQueue({
+  inBackground: fn => inBackground({ type: 'refresh' }, fn),
+  setPosition: pos => (st.vesselPos = pos),
+  run: async force => {
+    await refresh(st, force);
     st.send({ type: 'data-status', status: dataStatus(st) });
-  });
-}
+  },
+});
 
 let chain: Promise<void> = Promise.resolve();
 port.on('message', (msg: MainToWorker) => {

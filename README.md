@@ -176,7 +176,7 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   |---|---|---|
   | 10 (from the file) | user-installed tidal harmonics `.npz`, e.g. NECOFS GoM3 | its grid |
   | 3 | **Copernicus Marine SMOC** (below) | worldwide, 80°S–90°N |
-  | 2 | NOAA Global RTOFS, depth-averaged `ubaro`/`vbaro`: the regional product that contains the vessel (the finest where two overlap), plus any extra products set; none where no product covers the vessel | each product's box, read from its file |
+  | 2 | NOAA Global RTOFS, depth-averaged `ubaro`/`vbaro`: the regional product that contains the vessel (the finest where two overlap), plus any extra products set; where no product covers the vessel, only the extra products | each product's box, read from its file |
   | 0 (from the file) | FES2014 harmonic extract `.npz` | its grid |
 
   **SMOC** is product `GLOBAL_ANALYSISFORECAST_PHY_001_024`, dataset

@@ -103,7 +103,8 @@ uses [Semantic Versioning](https://semver.org/).
   the 1° `trop_paci_lowres`, around Fiji), and it changes at the next
   refresh round when the vessel moves into another. Where no product covers
   the vessel (Europe, the Mediterranean, the Indian Ocean, the South
-  Atlantic, Australia) nothing is downloaded, and the header's currents row
+  Atlantic, Australia) nothing is downloaded for its position (extra
+  products still load), and the header's currents row
   says so with no pill. Before, one product, `west_atl` by default, was
   downloaded and decoded wherever the vessel was: a boat in Fiji fetched
   3 × 38,387,040 bytes of West Atlantic currents a day it could never use.
