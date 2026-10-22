@@ -64,11 +64,12 @@ uses [Semantic Versioning](https://semver.org/).
   saved point answers stay (the regional runs are not part of their
   generation). One read from a run decoded since the data worker's last
   report is answered but not kept. On a screen up to 768 px wide (a
-  phone held upright) the bottom sheet takes at
-  most 35 % of the height while the meteogram is open at the top (65 %
-  otherwise), so the route is fitted between the two; at 390×844 they
-  left about 15 px of map. The zoom and locate buttons, which sat on the
-  meteogram's title there, move to just below it while it is open.
+  phone held upright) the bottom sheet takes at most 35 % of the height
+  while the meteogram is open at the top (65 % otherwise), so the route
+  is fitted between the two: at 390×844 the map between them was about
+  15 px with the sheet at 65 % and is about 269 px now (measured in a
+  browser). The zoom and locate buttons, which sat on the meteogram's
+  title there, move to just below it while it is open.
 - **Setup choices with security off** (`src/plugin/sharedprefs.ts`,
   `GET`/`POST /api/prefs`). Signal K has no users and keeps no application
   data with security off, so the choices stayed in each browser. The
