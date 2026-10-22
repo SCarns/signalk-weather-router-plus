@@ -7,6 +7,7 @@
 // Numbers are sliders (the owner's decision, 2026-10-08): min, max and step
 // come from the schema in SI and are converted to the user's unit; the
 // value shows beside the label. A nullable number has a "no limit" box.
+// A list (type enumList) is one checkbox per value, its enumHelp beside it.
 // PUT  /api/settings with only the changed keys ({group: {key: SI}}) →
 //      {values, changed, reloaded} or 400 {error, errors: {key: msg}}.
 // Inputs show values in the Signal K user's unit preferences;
@@ -79,11 +80,13 @@ import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSI
   }
   function textFor(spec, si, conv) {
     if (spec.type === 'boolean') return si ? 'true' : 'false';
+    if (spec.type === 'enumList') return Array.isArray(si) ? si.join(',') : '';
     if (spec.type === 'string' || spec.type === 'enum') return si == null ? '' : String(si);
     return fmtNum(si == null ? null : conv.fn(si), conv.prec);
   }
   function currentText(r) {
     if (r.spec.type === 'boolean') return r.input.checked ? 'true' : 'false';
+    if (r.spec.type === 'enumList') return r.boxes.filter((b) => b.checked).map((b) => b.value).join(',');
     if (r.noneEl && r.noneEl.checked) return '';
     return r.input.value.trim();
   }
@@ -122,6 +125,7 @@ import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSI
     const s = r.spec, t = currentText(r);
     if (s.type === 'boolean') return t === 'true';
     if (s.type === 'enum') return t;
+    if (s.type === 'enumList') return t ? t.split(',') : [];
     if (s.type === 'string') {
       if (s.maxLength && t.length > s.maxLength) throw new Error('at most ' + s.maxLength + ' characters');
       return t;
@@ -169,6 +173,13 @@ import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSI
             + '<div class="ctl-hint">' + unitTextHtml(s.help) + '</div><div class="st-err"></div></div>';
           continue;
         }
+        if (s.type === 'enumList') {
+          html += '<div class="st-row st-list" data-key="' + esc(s.key) + '" role="group" aria-label="' + esc(s.label) + '"><div class="st-head"><span>' + esc(s.label) + '</span></div>'
+            + s.enum.map((v) => '<label class="st-opt"><input type="checkbox" value="' + esc(v) + '"><span>' + esc(v)
+              + (s.enumHelp && s.enumHelp[v] ? ' <span class="st-opt-help">' + unitTextHtml(s.enumHelp[v]) + '</span>' : '') + '</span></label>').join('')
+            + '<div class="ctl-hint">' + unitTextHtml(s.help) + '</div><div class="st-err"></div></div>';
+          continue;
+        }
         if (s.type === 'enum') {
           html += '<div class="st-row" data-key="' + esc(s.key) + '"><label for="' + id + '"><span>' + esc(s.label) + '</span><span class="st-unit"></span></label>';
           html += '<select id="' + id + '">' + s.enum.map((v) => '<option value="' + esc(v) + '">' + esc(v) + '</option>').join('') + '</select>';
@@ -189,11 +200,15 @@ import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSI
     form.innerHTML = html;
     rows = schema.settings.map((spec) => {
       const row = form.querySelector('.st-row[data-key="' + spec.key + '"]');
-      const input = row.classList.contains('st-bool') ? row.querySelector('input[type="checkbox"]') : row.querySelector('select, input[type="range"], input[type="text"]');
-      const r = { spec, row, input, errEl: row.querySelector('.st-err'), unitEl: row.querySelector('.st-unit'), valEl: row.querySelector('.st-val'), noneEl: row.querySelector('.st-none input'), conv: convFor(spec), initialText: '' };
+      const list = spec.type === 'enumList';
+      const boxes = list ? [...row.querySelectorAll('.st-opt input[type="checkbox"]')] : [];
+      const input = list ? null : row.classList.contains('st-bool') ? row.querySelector('input[type="checkbox"]') : row.querySelector('select, input[type="range"], input[type="text"]');
+      const r = { spec, row, input, boxes, errEl: row.querySelector('.st-err'), unitEl: row.querySelector('.st-unit'), valEl: row.querySelector('.st-val'), noneEl: row.querySelector('.st-none input'), conv: convFor(spec), initialText: '' };
       const onEdit = () => { if (r.valEl) showValue(r, currentText(r)); validateRow(r); refreshDirty(); };
-      input.addEventListener('input', onEdit);
-      input.addEventListener('change', onEdit);
+      for (const el of list ? boxes : [input]) {
+        el.addEventListener('input', onEdit);
+        el.addEventListener('change', onEdit);
+      }
       if (r.noneEl) r.noneEl.addEventListener('change', () => { r.input.disabled = r.noneEl.checked || r.conv.missing === true; onEdit(); });
       return r;
     });
@@ -206,7 +221,10 @@ import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSI
       r.conv = convFor(r.spec);
       r.initialText = textFor(r.spec, getVal(r.spec.key), r.conv);
       if (r.spec.type === 'boolean') r.input.checked = r.initialText === 'true';
-      else if (r.input.type === 'range') {
+      else if (r.spec.type === 'enumList') {
+        const on = r.initialText ? r.initialText.split(',') : [];
+        for (const b of r.boxes) b.checked = on.includes(b.value);
+      } else if (r.input.type === 'range') {
         if (r.noneEl) r.noneEl.checked = r.initialText === '';
         placeSlider(r);
         showValue(r, r.initialText);
@@ -254,7 +272,7 @@ import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSI
       r.conv = convFor(r.spec);
       r.initialText = textFor(r.spec, getVal(r.spec.key), r.conv);
       if (r.unitEl) r.unitEl.textContent = r.conv.unit || '';
-      if (r.spec.type === 'boolean' || r.spec.type === 'enum' || r.spec.type === 'string') continue;
+      if (r.spec.type === 'boolean' || r.spec.type === 'enum' || r.spec.type === 'enumList' || r.spec.type === 'string') continue;
       if (r.input.type === 'range') {
         // Rebuild the slider in the new unit at the saved value, then put
         // an edit back at its SI value. The unedited state is the thumb's

@@ -133,7 +133,8 @@ export interface ResolvedConfig {
     smocStepS: number;
     smocHalfWidthDeg: number;
     rtofsEnabled: boolean;
-    rtofsRegion: string;
+    /** Products loaded wherever the vessel is, besides the one that contains it (RTOFS_REGIONS order). */
+    rtofsExtra: string[];
     rtofsHorizonS: number;
     rtofsStepS: number;
   };
@@ -425,7 +426,7 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       smocStepS: cu.smocStep,
       smocHalfWidthDeg: cu.smocHalfWidth,
       rtofsEnabled: cu.rtofsEnabled,
-      rtofsRegion: cu.rtofsRegion,
+      rtofsExtra: [...cu.rtofsExtra],
       rtofsHorizonS: cu.rtofsHorizon,
       rtofsStepS: cu.rtofsStep,
     },

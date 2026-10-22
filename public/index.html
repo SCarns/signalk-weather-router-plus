@@ -448,6 +448,12 @@
   #srvSettingsForm .st-row .st-none input { width: auto; margin: 0 4px 0 0; vertical-align: middle; }
   #srvSettingsForm .st-row.st-invalid input, #srvSettingsForm .st-row.st-invalid select { border-color: var(--danger); }
   #srvSettingsForm .st-err { color: var(--danger); font-size: var(--f-xs); margin: 0 0 var(--s-1); }
+  /* A list setting (enumList): one checkbox per value, its note beside it; edited / invalid marked on the row. */
+  #srvSettingsForm .st-row.st-list label.st-opt { justify-content: flex-start; align-items: baseline; gap: var(--s-1); cursor: pointer; }
+  #srvSettingsForm .st-row.st-list .st-opt input { width: auto; margin: 0; }
+  #srvSettingsForm .st-row.st-list .st-opt-help { color: var(--text-muted); font-size: var(--f-xs); }
+  #srvSettingsForm .st-row.st-list.st-dirty { box-shadow: inset 3px 0 0 var(--go); padding-left: 6px; }
+  #srvSettingsForm .st-row.st-list.st-invalid { box-shadow: inset 3px 0 0 var(--danger); padding-left: 6px; }
   #srvSettingsForm .st-err:empty { display: none; }
   #srvSettingsActions { display: flex; gap: var(--s-2); align-items: center; margin-top: var(--s-2); position: sticky; bottom: 0; background: var(--surface); padding: var(--s-1) 0; }
   #srvSettingsActions button:disabled { opacity: 0.5; cursor: default; }

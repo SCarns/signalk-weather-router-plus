@@ -37,7 +37,7 @@ import { OnDemandLand } from '../geo/landcache';
 import { PolarDiagram } from '../vessel/polar';
 import { HarmonicCurrentSource } from '../currents/harmonic';
 import { CurrentStack } from '../currents/stack';
-import { RtofsClient, RtofsCurrentSource, rtofsForRegion } from '../currents/rtofs';
+import { RtofsCurrentSource, rtofsSetForConfig } from '../currents/rtofs';
 import { SmocCurrentSource } from '../currents/smoc';
 import { TideSource } from '../tides/sealevel';
 import { type MainToWorker, type WorkerRole, type WorkerToMain } from './protocol';
@@ -93,7 +93,7 @@ const st: WorkerState = {
   log: (level, message) => send({ type: 'log', level, message: `[${role}] ${message}` }),
   config: null,
   client: null,
-  rtofsClient: null,
+  rtofsClients: new Map(),
   run: null,
   runInfo: null,
   forecastMemory: { heldBytes: 0, last: null },
@@ -104,7 +104,8 @@ const st: WorkerState = {
   polar: null,
   landCache: null,
   harmonic: [],
-  rtofs: null,
+  rtofs: [],
+  rtofsChoice: null,
   smocClient: null,
   smoc: null,
   vesselPos: null,
@@ -167,13 +168,9 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
         cacheDir: path.join(msg.cacheDir, 'ecmwf'),
         log: m => st.log('debug', `ecmwf: ${m}`),
       });
-      st.rtofsClient = st.config.currents.rtofsEnabled
-        ? new RtofsClient({
-            cacheDir: path.join(msg.cacheDir, 'rtofs'),
-            region: st.config.currents.rtofsRegion,
-            log: m => st.log('debug', m),
-          })
-        : null;
+      st.rtofsClients = new Map();
+      st.rtofs = [];
+      st.rtofsChoice = null;
       st.polar = null;
       if (st.config.polarFile) {
         st.polar = PolarDiagram.load(st.config.polarFile);
@@ -235,14 +232,8 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       const prev = requireInit(st).config;
       st.config = msg.config;
       if (msg.reload.currents) {
-        st.rtofsClient = st.config.currents.rtofsEnabled
-          ? new RtofsClient({
-              cacheDir: st.rtofsClient?.cacheDir ?? path.join(st.cacheRoot, 'rtofs'),
-              region: st.config.currents.rtofsRegion,
-              log: m => st.log('debug', m),
-            })
-          : null;
-        st.rtofs = null;
+        st.rtofsClients = new Map();
+        st.rtofs = [];
         st.smocClient = makeSmocClient(st, st.config);
         st.smoc = null;
         rebuildStack(st);
@@ -253,11 +244,11 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
           await refreshSmoc(st);
         }
         await refreshRtofs(st, st.role === 'data');
-        sendRtofs(st); // off, another region or the same run again: the other workers follow the data worker
+        sendRtofs(st); // off, other products or the same runs again: the other workers follow the data worker
         sendCurrents(st);
         st.log(
           'info',
-          `currents reloaded for the new settings (SMOC ${st.config.currents.smocEnabled ? `${st.config.currents.smocStepS / HOUR_S} h steps, ${st.config.currents.smocHorizonS / HOUR_S} h, ±${st.config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${st.config.currents.rtofsEnabled ? st.config.currents.rtofsRegion : 'off'})`
+          `currents reloaded for the new settings (SMOC ${st.config.currents.smocEnabled ? `${st.config.currents.smocStepS / HOUR_S} h steps, ${st.config.currents.smocHorizonS / HOUR_S} h, ±${st.config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${st.config.currents.rtofsEnabled ? st.rtofs.map(r => r.product).join(', ') || 'no product' : 'off'})`
         );
       }
       if (msg.reload.tides && st.role === 'tiles') {
@@ -321,11 +312,11 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       return;
     }
     case 'rtofs': {
-      // Route / tiles worker: the data worker's RTOFS run (shared memory).
+      // Route / tiles worker: the data worker's RTOFS products (shared memory).
       if (st.role === 'data') return;
       const cur = requireInit(st).config.currents;
-      const run = rtofsForRegion(msg.rtofs, cur.rtofsEnabled, cur.rtofsRegion);
-      st.rtofs = run ? RtofsCurrentSource.fromSerialized(run) : null;
+      const set = rtofsSetForConfig(msg.rtofs, cur.rtofsEnabled, cur.rtofsExtra);
+      st.rtofs = set ? set.runs.map(r => RtofsCurrentSource.fromSerialized(r)) : [];
       rebuildStack(st);
       sendCurrents(st);
       return;

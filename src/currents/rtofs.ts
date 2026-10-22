@@ -8,10 +8,16 @@
  *       rtofs_glo.t00z.f072_<region>_std.grb2   hours 49..72
  *       rtofs_glo.t00z.f144_<region>_std.grb2   hours 75..144, 3-hourly
  *
- * Each file (~38 MB) is a regular lat/lon grid (west_atl: 0.08°, 100°W
- * to 54°W, 10°N to 44.8°N) with simple packing and a bit map over land.
+ * Each file is a regular lat/lon grid (west_atl: 0.08°, 100°W to 54°W,
+ * 10°N to 44.8°N, ~38 MB) with simple packing and a bit map over land.
  * Fields used: `ubaro` (discipline 10, category 1, number 194) and
  * `vbaro` (10, 1, 195), m/s, depth-averaged velocities.
+ *
+ * Which products are loaded: the one that contains the vessel (the finest
+ * where two overlap), plus any the user adds. Each product's extent is
+ * read from the grid definition in the first few kilobytes of its f024
+ * file (a range request), kept in extents.json in the cache directory,
+ * and updated whenever a decoded file's grid differs.
  *
  * Sampling: linear in time between bracketing steps with a ±1 h grace
  * beyond the ends, and (0, 0) for "no data". Spatially, bilinear on the
@@ -20,12 +26,13 @@
 
 import * as fs from 'node:fs';
 import { fetchWithRetry, sleep } from '../data/http';
+import { lonOffset, wrapLon } from '../geo/angles';
 import { HOUR_MS, HOUR_S } from '../geo/units';
 import * as path from 'node:path';
 import type { BBox } from '../geo/geodesy';
-import { iterateGrib2 } from '../grib/grib2';
+import { iterateGrib2, parseGrib2Grid, type Grib2Grid } from '../grib/grib2';
 import { cropField, type FieldGrid, sampleField, sharedFloat32 } from '../data/forecast';
-import { bboxContains, type CurrentSourceLike, type SourceBBox } from './types';
+import { type CurrentSourceLike, type SourceBBox } from './types';
 import { sampleFieldPairFilled } from './coastfill';
 
 export const RTOFS_REGIONS = [
@@ -44,6 +51,153 @@ export const RTOFS_REGIONS = [
 export type RtofsRegion = (typeof RTOFS_REGIONS)[number];
 
 export const RTOFS_BASE = 'https://nomads.ncep.noaa.gov/pub/data/nccf/com/rtofs/prod';
+
+/**
+ * A product's extent as its grid says: the latitudes, the first column's
+ * longitude (−180..180) and the last column's as that plus the grid's
+ * width (so above 180 for a product across the antimeridian), and the
+ * grid spacing.
+ */
+export interface RtofsExtent extends SourceBBox {
+  dLon: number;
+  dLat: number;
+}
+
+/**
+ * The extent of a product's grid, with the decoder's arithmetic (the first
+ * row and column plus the count of steps, as cropField and extentOfField
+ * place them), not the last point the header codes: west_atl codes 44.8°N
+ * for a last row that 435 rows of 0.08° put at 44.72°N.
+ */
+export function rtofsExtentOfGrid(g: Grib2Grid): RtofsExtent {
+  const west = wrapLon(g.lo1);
+  const span = (g.nj - 1) * g.dj;
+  const south = g.jScansPositively ? g.la1 : g.la1 - span;
+  return { south, north: south + span, west, east: west + (g.ni - 1) * g.di, dLon: g.di, dLat: g.dj };
+}
+
+/** The extent of a decoded (whole-product or cropped) field: west −180..180, east = west + its width. */
+export function extentOfField(g: FieldGrid): SourceBBox {
+  return { south: g.lat0, west: g.lon0, north: g.lat0 + (g.nLat - 1) * g.dLat, east: g.lon0 + (g.nLon - 1) * g.dLon };
+}
+
+/** Is (lon, lat) inside the extent? Longitudes are compared as offsets east of its west edge, across the antimeridian. */
+export function extentContains(b: SourceBBox, lon: number, lat: number): boolean {
+  return lat >= b.south && lat <= b.north && lonOffset(lon, b.west) <= b.east - b.west;
+}
+
+/** Does the extent meet the box (longitudes compared across the antimeridian)? */
+export function extentMeets(b: SourceBBox, box: SourceBBox): boolean {
+  if (box.north < b.south || box.south > b.north) return false;
+  const bw = b.east - b.west;
+  const aw = lonOffset(box.east, box.west);
+  return lonOffset(box.west, b.west) <= bw || lonOffset(b.west, box.west) <= aw;
+}
+
+/** The products whose extent is known, finest grid first (the order of RTOFS_REGIONS between equals). */
+export function finestFirst(products: readonly string[], extents: Readonly<Record<string, RtofsExtent>>): string[] {
+  const cell = (p: string): number => (extents[p] ? extents[p].dLon * extents[p].dLat : Infinity);
+  const rank = (p: string): number => (RTOFS_REGIONS as readonly string[]).indexOf(p);
+  return [...products].sort((a, b) => cell(a) - cell(b) || rank(a) - rank(b));
+}
+
+/**
+ * The product to load for the vessel: the finest whose extent contains its
+ * position. `product` null with the reason when there is no position, or
+ * no product (of those whose extent is known) contains it.
+ */
+export function chooseRtofsProduct(
+  extents: Readonly<Record<string, RtofsExtent>>,
+  pos: { lat: number; lon: number } | null
+): { product: string | null; reason: string | null } {
+  if (!pos) return { product: null, reason: 'no vessel position' };
+  const inside = RTOFS_REGIONS.filter(r => extents[r] && extentContains(extents[r], pos.lon, pos.lat));
+  if (inside.length) return { product: finestFirst(inside, extents)[0], reason: null };
+  const unknown = RTOFS_REGIONS.filter(r => !extents[r]);
+  const at = `${pos.lat.toFixed(2)}, ${pos.lon.toFixed(2)}`;
+  return {
+    product: null,
+    reason: unknown.length
+      ? `no RTOFS product known to cover the vessel at ${at} (the extent of ${unknown.join(', ')} is not known yet)`
+      : `no RTOFS product covers the vessel at ${at}`,
+  };
+}
+
+/** The extents kept in the cache directory (extents.json), by product. */
+export function readRtofsExtents(cacheDir: string): Record<string, RtofsExtent> {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(cacheDir, 'extents.json'), 'utf8')) as Record<string, RtofsExtent>;
+    const out: Record<string, RtofsExtent> = {};
+    for (const r of RTOFS_REGIONS) {
+      const e = raw[r];
+      if (e && [e.south, e.north, e.west, e.east, e.dLon, e.dLat].every(Number.isFinite)) out[r] = e;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Write the extents (atomic: the data worker writes, the other workers and the mesh process only read). */
+export function writeRtofsExtents(cacheDir: string, extents: Record<string, RtofsExtent>): void {
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const file = path.join(cacheDir, 'extents.json');
+  const tmp = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  fs.writeFileSync(tmp, JSON.stringify(extents, null, 2));
+  fs.renameSync(tmp, file);
+}
+
+const sameExtent = (a: RtofsExtent, b: RtofsExtent): boolean =>
+  (['south', 'north', 'west', 'east', 'dLon', 'dLat'] as const).every(k => Math.abs(a[k] - b[k]) < 1e-6);
+
+/**
+ * Every product's extent: those kept in extents.json, and (with the
+ * network) the missing ones read from the first bytes of the newest
+ * published f024 file. Returns the extents and the products still unknown.
+ * Throws OfflineError when there is no connection.
+ */
+export async function loadRtofsExtents(
+  cacheDir: string,
+  opts: {
+    network: boolean;
+    now?: Date;
+    maxDaysBack?: number;
+    log?: (m: string) => void;
+    fetchImpl?: typeof fetch;
+    sleepImpl?: (ms: number) => Promise<void>;
+  }
+): Promise<{ extents: Record<string, RtofsExtent>; unknown: string[] }> {
+  const extents = readRtofsExtents(cacheDir);
+  let changed = false;
+  if (opts.network) {
+    const now = opts.now ?? new Date();
+    for (const region of RTOFS_REGIONS) {
+      if (extents[region]) continue;
+      const client = new RtofsClient({ cacheDir, region, log: opts.log, fetchImpl: opts.fetchImpl, sleepImpl: opts.sleepImpl });
+      for (let d = 0; d <= (opts.maxDaysBack ?? 7); d++) {
+        const e = await client.fetchExtent(rtofsRunFor(new Date(now.getTime() - d * 86_400_000)));
+        if (!e) continue;
+        extents[region] = e;
+        changed = true;
+        opts.log?.(
+          `rtofs: ${region} covers ${e.south}..${e.north}°N, ${e.west}..${wrapLon(e.east)}°E (grid ${e.dLon.toFixed(3)}° × ${e.dLat.toFixed(3)}°)`
+        );
+        break;
+      }
+    }
+  }
+  if (changed) writeRtofsExtents(cacheDir, extents);
+  return { extents, unknown: RTOFS_REGIONS.filter(r => !extents[r]) };
+}
+
+/** Record the extent a decoded file showed, when it differs from the one kept (the product's grid changed). True when it did. */
+export function noteRtofsExtent(cacheDir: string, region: string, e: RtofsExtent): boolean {
+  const extents = readRtofsExtents(cacheDir);
+  if (extents[region] && sameExtent(extents[region], e)) return false;
+  extents[region] = e;
+  writeRtofsExtents(cacheDir, extents);
+  return true;
+}
 
 /** Daily files and the forecast hours they carry. */
 export const RTOFS_FILES: { name: string; hours: number[] }[] = [
@@ -125,6 +279,53 @@ export class RtofsClient {
     });
     return { status: r.status, body: r.body ?? new Uint8Array(0) };
   }
+
+  /**
+   * The product's extent from the grid definition at the start of the run's
+   * f024 file: its first HEAD_BYTES only (a range request; a server that
+   * sends the whole file is read no further). Null when the file is not
+   * published.
+   */
+  async fetchExtent(run: RtofsRun): Promise<RtofsExtent | null> {
+    const url = this.fileUrl(run, 'f024');
+    const r = await fetchWithRetry(
+      url,
+      { headers: { Range: `bytes=0-${RtofsClient.HEAD_BYTES - 1}` } },
+      {
+        timeoutMs: this.timeoutMs,
+        retries: this.retries,
+        fetchImpl: this.fetchImpl,
+        sleepImpl: this.sleepImpl,
+        log: this.log,
+        tag: 'rtofs',
+      }
+    );
+    if (r.status === 404 || r.status === 403) {
+      await r.response.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    if (r.status !== 206 && r.status !== 200) {
+      await r.response.body?.cancel().catch(() => undefined);
+      throw new Error(`unexpected HTTP ${r.status} reading the start of ${url}`);
+    }
+    const head = new Uint8Array(RtofsClient.HEAD_BYTES);
+    let n = 0;
+    const reader = r.response.body?.getReader();
+    if (reader) {
+      while (n < head.length) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const take = Math.min(value.length, head.length - n);
+        head.set(value.subarray(0, take), n);
+        n += take;
+      }
+      await reader.cancel().catch(() => undefined);
+    }
+    return rtofsExtentOfGrid(parseGrib2Grid(head.subarray(0, n)));
+  }
+
+  /** Bytes read from the start of a file for its grid definition (sections 0–3 are about 120 bytes). */
+  static readonly HEAD_BYTES = 4096;
 
   async filePublished(run: RtofsRun, file: string): Promise<boolean> {
     const res = await this.request(this.fileUrl(run, file), { method: 'HEAD' });
@@ -241,20 +442,30 @@ export function shareRtofsSteps(steps: RtofsStep[]): RtofsStep[] {
   return steps.map(s => ({ validMs: s.validMs, u: share(s.u), v: share(s.v) }));
 }
 
-/**
- * The relayed run when it is the configured product's, else null: a run
- * loaded before a currents settings change (another region) can still
- * arrive after it and must not be used.
- */
-export function rtofsForRegion(s: SerializedRtofs | null, enabled: boolean, region: string): SerializedRtofs | null {
-  return s && enabled && s.name === `RTOFS-${region}` ? s : null;
-}
-
 export interface SerializedRtofs {
-  name: string;
+  product: string;
   runMs: number;
   bbox: SourceBBox;
   steps: RtofsStep[];
+}
+
+/**
+ * The products the data worker loaded (finest first), with the extra
+ * products setting they were loaded under: relayed to the route and tiles
+ * workers as one message.
+ */
+export interface SerializedRtofsSet {
+  extra: string[];
+  runs: SerializedRtofs[];
+}
+
+/**
+ * The relayed set when it was loaded under the current settings, else
+ * null: a set loaded before a currents settings change can still arrive
+ * after it and must not be used.
+ */
+export function rtofsSetForConfig(s: SerializedRtofsSet | null, enabled: boolean, extra: readonly string[]): SerializedRtofsSet | null {
+  return s && enabled && s.extra.length === extra.length && s.extra.every((p, i) => p === extra[i]) ? s : null;
 }
 
 const UBARO = { discipline: 10, category: 1, number: 194 };
@@ -318,32 +529,36 @@ export async function loadRtofsSteps(
 }
 
 export class RtofsCurrentSource implements CurrentSourceLike {
+  /** The regional product (one of RTOFS_REGIONS); the source is named RTOFS-<product>. */
+  readonly product: string;
   readonly name: string;
   readonly priority = 2;
   readonly resolutionM = 9000;
+  /** The product's extent: east above 180 for a product across the antimeridian (extentContains). */
   readonly bbox: SourceBBox;
   readonly runMs: number;
   readonly steps: RtofsStep[];
   private static readonly GRACE_MS = HOUR_MS;
 
-  constructor(name: string, runMs: number, bbox: SourceBBox, steps: RtofsStep[]) {
+  constructor(product: string, runMs: number, bbox: SourceBBox, steps: RtofsStep[]) {
     if (steps.length === 0) throw new Error('RtofsCurrentSource needs at least one step');
-    this.name = name;
+    this.product = product;
+    this.name = `RTOFS-${product}`;
     this.runMs = runMs;
     this.bbox = bbox;
     this.steps = [...steps].sort((a, b) => a.validMs - b.validMs);
   }
 
   static fromSerialized(s: SerializedRtofs): RtofsCurrentSource {
-    return new RtofsCurrentSource(s.name, s.runMs, s.bbox, s.steps);
+    return new RtofsCurrentSource(s.product, s.runMs, s.bbox, s.steps);
   }
 
   serialize(): SerializedRtofs {
-    return { name: this.name, runMs: this.runMs, bbox: this.bbox, steps: this.steps };
+    return { product: this.product, runMs: this.runMs, bbox: this.bbox, steps: this.steps };
   }
 
   contains(lon: number, lat: number): boolean {
-    return bboxContains(this.bbox, lon, lat);
+    return extentContains(this.bbox, lon, lat);
   }
 
   get validRange(): [Date, Date] {

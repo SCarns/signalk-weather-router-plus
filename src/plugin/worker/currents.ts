@@ -12,7 +12,21 @@ import * as path from 'node:path';
 import { type BBox } from '../../geo/geodesy';
 import { HarmonicCurrentSource } from '../../currents/harmonic';
 import { CurrentStack } from '../../currents/stack';
-import { loadRtofsSteps, RtofsCurrentSource, type RtofsRun, rtofsRunFor, shareRtofsSteps } from '../../currents/rtofs';
+import {
+  chooseRtofsProduct,
+  extentOfField,
+  finestFirst,
+  loadRtofsExtents,
+  loadRtofsSteps,
+  noteRtofsExtent,
+  readRtofsExtents,
+  RTOFS_REGIONS,
+  RtofsClient,
+  RtofsCurrentSource,
+  type RtofsRun,
+  rtofsRunFor,
+  shareRtofsSteps,
+} from '../../currents/rtofs';
 import { type CurrentSourceLike } from '../../currents/types';
 import {
   alignedSteps,
@@ -36,7 +50,7 @@ const SMOC_QUERY_DEADLINE_MS = MINUTE_MS;
 export function rebuildStack(st: WorkerState): void {
   const sources: CurrentSourceLike[] = [...st.harmonic];
   if (st.smoc) sources.push(st.smoc);
-  if (st.rtofs) sources.push(st.rtofs);
+  sources.push(...st.rtofs);
   st.stack = new CurrentStack(sources);
 }
 
@@ -69,7 +83,7 @@ export function sendCurrents(st: WorkerState): void {
   st.send({
     type: 'currents',
     status: currentsStatus(st),
-    rtofsRun: st.rtofs ? new Date(st.rtofs.runMs).toISOString().slice(0, 10) : null,
+    rtofsRuns: st.rtofs.map(s => `${s.product} ${new Date(s.runMs).toISOString().slice(0, 10)}`),
   });
 }
 
@@ -284,72 +298,155 @@ export function loadHarmonic(st: WorkerState, dir: string | null): void {
   }
 }
 
-/** data worker → main → route and tiles workers: the RTOFS run (shared memory, no copy). */
+/** data worker → main → route and tiles workers: the RTOFS products (shared memory, no copy), with the setting they were loaded under. */
 export function sendRtofs(st: WorkerState): void {
-  if (st.role === 'data') st.send({ type: 'rtofs', rtofs: st.rtofs ? st.rtofs.serialize() : null });
+  if (st.role !== 'data') return;
+  const cfg = st.config;
+  st.send({
+    type: 'rtofs',
+    rtofs: cfg?.currents.rtofsEnabled ? { extra: [...cfg.currents.rtofsExtra], runs: st.rtofs.map(s => s.serialize()) } : null,
+  });
+}
+
+/** The RTOFS cache directory: every product, read by every worker and the mesh process. */
+export function rtofsCacheDir(st: WorkerState): string {
+  return path.join(st.cacheRoot, 'rtofs');
+}
+
+function rtofsClientFor(st: WorkerState, product: string): RtofsClient {
+  let c = st.rtofsClients.get(product);
+  if (!c) {
+    c = new RtofsClient({ cacheDir: rtofsCacheDir(st), region: product, log: m => st.log('debug', m) });
+    st.rtofsClients.set(product, c);
+  }
+  return c;
 }
 
 /**
- * Data worker: load the newest RTOFS run (network, else the disk cache) into
- * shared memory and relay it. The route and tiles workers do not load RTOFS
- * themselves: they adopt the data worker's run ('rtofs' message).
+ * Data worker: load the RTOFS products wanted now into shared memory and
+ * relay them. Wanted: the product that contains the vessel (the finest
+ * where two overlap; none without a position or where none does) and the
+ * extra products from the settings. Each one's newest run comes from the
+ * network, else the disk cache; a product no longer wanted is dropped. The
+ * route and tiles workers do not load RTOFS themselves: they adopt the
+ * data worker's products ('rtofs' message).
  */
 export async function refreshRtofs(st: WorkerState, networkAllowed: boolean, offline: string | null = null): Promise<void> {
   const { config: cfg } = requireInit(st);
   if (st.role !== 'data') return;
-  if (!cfg.currents.rtofsEnabled || !st.rtofsClient) {
-    delete st.checks.rtofs;
+  const dropChecks = (keep: ReadonlySet<string>): void => {
+    for (const k of Object.keys(st.checks) as CheckedSource[]) if (k.startsWith('rtofs:') && !keep.has(k.slice(6))) delete st.checks[k];
+  };
+  if (!cfg.currents.rtofsEnabled) {
+    dropChecks(new Set());
+    st.rtofsChoice = null;
+    if (st.rtofs.length) {
+      st.rtofs = [];
+      rebuildStack(st);
+      sendRtofs(st);
+    }
     return;
   }
+  const cacheDir = rtofsCacheDir(st);
+  let off = offline;
+  let extents = readRtofsExtents(cacheDir);
+  let unknown: string[] = RTOFS_REGIONS.filter(r => !extents[r]);
+  if (unknown.length) {
+    try {
+      if (off) throw new OfflineError(off);
+      ({ extents, unknown } = await loadRtofsExtents(cacheDir, { network: networkAllowed, log: m => st.log('info', m) }));
+    } catch (err) {
+      if (isOffline(err)) off = off ?? (err as Error).message;
+      else st.log('error', `rtofs: the products' extents could not be read: ${(err as Error).message}`);
+    }
+  }
+  const choice = chooseRtofsProduct(extents, st.vesselPos);
+  if (choice.product !== (st.rtofsChoice?.auto ?? null) || choice.reason !== (st.rtofsChoice?.autoReason ?? null))
+    st.log('info', choice.product ? `rtofs: the vessel is in product ${choice.product}` : `rtofs: ${choice.reason}`);
+  st.rtofsChoice = { auto: choice.product, autoReason: choice.reason, unknownExtents: unknown };
+  const wanted = finestFirst([...new Set([...(choice.product ? [choice.product] : []), ...cfg.currents.rtofsExtra])], extents);
+  const loaded: RtofsCurrentSource[] = [];
+  const keep: RtofsRun[] = [];
+  let newRun = false;
+  for (const product of wanted) {
+    const r = await refreshRtofsProduct(st, product, st.rtofs.find(s => s.product === product) ?? null, off);
+    if (r.src) loaded.push(r.src);
+    keep.push(...r.keep);
+    newRun ||= r.newRun;
+  }
+  dropChecks(new Set(wanted));
+  if (loaded.length !== st.rtofs.length || loaded.some((s, i) => s !== st.rtofs[i])) {
+    st.rtofs = loaded;
+    rebuildStack(st);
+    sendRtofs(st);
+  }
+  // One prune for every product: the cache is kept by run date, a date directory holding each product's files.
+  if (newRun) rtofsClientFor(st, wanted[0]).pruneCache(keep);
+}
+
+/**
+ * One product: its newest run (today's when fully cached, else the newest
+ * published, else the newest in the cache when NOMADS cannot be asked),
+ * loaded when it is not the one in use. Returns the source to use (the
+ * current one when nothing newer loads), the runs whose files are kept,
+ * and whether a new run was loaded.
+ */
+async function refreshRtofsProduct(
+  st: WorkerState,
+  product: string,
+  current: RtofsCurrentSource | null,
+  offline: string | null
+): Promise<{ src: RtofsCurrentSource | null; keep: RtofsRun[]; newRun: boolean }> {
+  const { config: cfg } = requireInit(st);
+  const client = rtofsClientFor(st, product);
+  const key: CheckedSource = `rtofs:${product}`;
   const horizon = cfg.currents.rtofsHorizonS;
   let run: RtofsRun | null;
   let checked: { outcome: CheckOutcome; reason: string | null } = { outcome: 'newest', reason: null };
-  const cachedRuns = st.rtofsClient.cachedRuns().filter(r => st.rtofsClient!.runFullyCached(r, horizon));
-  if (networkAllowed) {
-    // Fresh enough already? The daily run appears during the morning;
-    // if today's run is cached there is nothing to do.
-    const today = rtofsRunFor(new Date());
-    if (st.rtofsClient.runFullyCached(today, horizon)) run = today;
-    else {
-      try {
-        if (offline) throw new OfflineError(offline);
-        run = await st.rtofsClient.findLatestRun(horizon);
-      } catch (err) {
-        if (!offline) st.log('error', `rtofs: ${(err as Error).message}`);
-        run = cachedRuns[0] ?? null;
-        checked = { outcome: 'could-not-check', reason: (err as Error).message };
-      }
+  const cachedRuns = client.cachedRuns().filter(r => client.runFullyCached(r, horizon));
+  const inUse = current ? [rtofsRunFor(new Date(current.runMs))] : [];
+  // Fresh enough already? The daily run appears during the morning;
+  // if today's run is cached there is nothing to do.
+  const today = rtofsRunFor(new Date());
+  if (client.runFullyCached(today, horizon)) run = today;
+  else {
+    try {
+      if (offline) throw new OfflineError(offline);
+      run = await client.findLatestRun(horizon);
+    } catch (err) {
+      if (!offline) st.log('error', `rtofs ${product}: ${(err as Error).message}`);
+      run = cachedRuns[0] ?? null;
+      checked = { outcome: 'could-not-check', reason: (err as Error).message };
     }
-  } else {
-    run = cachedRuns[0] ?? null;
   }
   if (!run) {
-    if (st.rtofs) st.log('info', 'rtofs: keeping the resident run');
-    noteCheck(st, 'rtofs', checked.outcome, checked.reason);
-    return;
+    if (current) st.log('info', `rtofs ${product}: keeping the resident run`);
+    noteCheck(st, key, checked.outcome, checked.reason);
+    return { src: current, keep: inUse, newRun: false };
   }
-  if (st.rtofs && st.rtofs.runMs === run.time.getTime()) {
-    noteCheck(st, 'rtofs', checked.outcome, checked.reason);
-    return;
+  if (current && current.runMs === run.time.getTime()) {
+    noteCheck(st, key, checked.outcome, checked.reason);
+    return { src: current, keep: [run, ...cachedRuns.slice(0, 1)], newRun: false };
   }
   try {
     const t = Date.now();
-    // The whole configured RTOFS product (cfg.currents.rtofsRegion), uncropped.
-    const steps = await loadRtofsSteps(st.rtofsClient, run, null, horizon, cfg.currents.rtofsStepS, { log: m => st.log('debug', m) });
-    if (steps.length === 0) throw new Error(`run ${run.yyyymmdd} has no steps in product ${st.rtofsClient.region}`);
+    // The whole product, uncropped.
+    const steps = await loadRtofsSteps(client, run, null, horizon, cfg.currents.rtofsStepS, { log: m => st.log('debug', m) });
+    if (steps.length === 0) throw new Error(`run ${run.yyyymmdd} has no steps in product ${product}`);
     const g = steps[0].u;
-    const extent = { south: g.lat0, west: g.lon0, north: g.lat0 + (g.nLat - 1) * g.dLat, east: g.lon0 + (g.nLon - 1) * g.dLon };
-    st.rtofs = new RtofsCurrentSource(`RTOFS-${st.rtofsClient.region}`, run.time.getTime(), extent, shareRtofsSteps(steps));
-    rebuildStack(st);
-    sendRtofs(st);
+    const extent = extentOfField(g);
+    if (noteRtofsExtent(rtofsCacheDir(st), product, { ...extent, dLon: g.dLon, dLat: g.dLat }))
+      st.log('info', `rtofs: ${product}'s extent recorded from its run ${run.yyyymmdd}`);
+    const src = new RtofsCurrentSource(product, run.time.getTime(), extent, shareRtofsSteps(steps));
     st.log(
       'info',
-      `rtofs: run ${run.yyyymmdd}, ${steps.length} steps, ${(st.rtofs.bytes() / 1e6).toFixed(1)} MB resident, ${((Date.now() - t) / 1000).toFixed(1)} s`
+      `rtofs: ${product} run ${run.yyyymmdd}, ${steps.length} steps, ${(src.bytes() / 1e6).toFixed(1)} MB resident, ${((Date.now() - t) / 1000).toFixed(1)} s`
     );
-    if (networkAllowed) st.rtofsClient.pruneCache([run, ...cachedRuns.slice(0, 1)]);
-    noteCheck(st, 'rtofs', checked.outcome === 'newest' ? 'new-run' : checked.outcome, checked.reason ?? `run ${run.yyyymmdd}`);
+    noteCheck(st, key, checked.outcome === 'newest' ? 'new-run' : checked.outcome, checked.reason ?? `run ${run.yyyymmdd}`);
+    return { src, keep: [run, ...cachedRuns.slice(0, 1)], newRun: true };
   } catch (err) {
-    st.log('error', `rtofs: load failed: ${(err as Error).message}`);
-    noteCheck(st, 'rtofs', isOffline(err) ? 'could-not-check' : 'failed', `run ${run.yyyymmdd}: ${(err as Error).message}`);
+    st.log('error', `rtofs ${product}: load failed: ${(err as Error).message}`);
+    noteCheck(st, key, isOffline(err) ? 'could-not-check' : 'failed', `run ${run.yyyymmdd}: ${(err as Error).message}`);
+    return { src: current, keep: [...inUse, ...cachedRuns.slice(0, 1)], newRun: false };
   }
 }

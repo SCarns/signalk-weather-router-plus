@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **RTOFS currents for where you are.** The NOAA RTOFS currents now come from
+  the regional product your boat is in (for example Samoa around Fiji,
+  Honolulu around Hawaii), and change with it as you move. Where no RTOFS
+  product covers the boat nothing is downloaded. To plan somewhere else, tick
+  more products under Settings → Currents → *Also load RTOFS products*; each
+  shows its area, daily download and memory.
 - **Weather in Freeboard's panel.** The Weather Router Plus panel in Freeboard
   has a new Weather tab: one tap for Wind, Waves, Pressure, Sea state, Rain or
   the temperatures, with its colour scale; a time bar over the whole forecast

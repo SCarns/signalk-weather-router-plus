@@ -15,6 +15,8 @@ function settingValueSchema(s: SettingSpec): Record<string, unknown> {
       return { ...base, type: 'string', maxLength: s.maxLength, default: s.default };
     case 'enum':
       return { ...base, type: 'string', enum: [...(s.enum ?? [])], default: s.default };
+    case 'enumList':
+      return { ...base, type: 'array', items: { type: 'string', enum: [...(s.enum ?? [])] }, uniqueItems: true, default: s.default };
     default:
       return {
         ...base,
@@ -84,11 +86,11 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         get: {
           summary: 'Plugin, forecast (decoded run on disk, memory held), currents, overlay land cache and queue status',
           description:
-            'Top level: plugin, started, workers {data, route}, forecast, forecast_error, forecast_loading, currents, currents_route_worker, rtofs_run, overlay_land, overlay_tiles, overlay_prebuild, ' +
+            'Top level: plugin, started, workers {data, route}, forecast, forecast_error, forecast_loading, currents, currents_route_worker, rtofs, overlay_land, overlay_tiles, overlay_prebuild, ' +
             'weather_provider_registered, jobs, vessel, polar, land, harmonic_dir, extra_fields, tides, tides_enabled, tides_error, process_rss_bytes, ' +
             'meshes (the managed chart meshes, as GET /api/meshes), router (the open-water router the next route runs: "standard" | "refined"), checks, freshness, connectivity. ' +
             '`forecast_error` clears only on a check that reached ECMWF (the newest run in use, or a new one loaded). ' +
-            '`checks`: what the last check of each source found, {ecmwf, smoc, rtofs, tides}, each {outcome: "newest" | "could-not-check" (the server could not be asked: ' +
+            '`checks`: what the last check of each source found, {ecmwf, smoc, tides, "rtofs:<product>" per RTOFS product loaded}, each {outcome: "newest" | "could-not-check" (the server could not be asked: ' +
             'no connection, or it failed; the run in use stays) | "new-run" | "failed" (the server answered but the new run could not be loaded), at, reason}. ' +
             '`freshness`: per source in use [{source, rows: ["wind" | "waves" | "currents" | "tides"], run, published_at, next_due_at, state: "green" (more than 30 min ' +
             'before the next run is due) | "orange" (from then until 60 min after) | "red" (later, or nothing loaded), reason}]. ' +
@@ -104,6 +106,8 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             'resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, memory_bytes, ' +
             'shared_resident, last_download: {at, reason, bytes, chunks, downloaded, from_disk, seconds, decode_ms} | null, downloaded_bytes_total, disk_cache_bytes, layouts}. ' +
             '`currents_route_worker` is the same for the route worker (its own on-demand SMOC areas). ' +
+            '`rtofs` (null when RTOFS is off): {auto (the product that contains the vessel, the finest where two overlap) | null, auto_reason (why none: no vessel position, or no product covers it) | null, ' +
+            'extra (the extra products set), runs: [{product, run (yyyy-mm-dd)}] (the products loaded, each a current source RTOFS-<product>), unknown_extents (products whose extent is not known yet)}. ' +
             '`tides` (null when off or not loaded; `tides_enabled`, `tides_error`): the Copernicus Marine sea-level source {name, doi, datum, run, run_last_time, ' +
             'stac_updated, metadata_modified, settled, half_width_deg, horizon_hours, resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, ' +
             'point_cache: {entries, bytes, queries, hits}, memory_bytes, last_download, last_point_query: {at, lat, lon, bytes, chunks, downloaded, from_disk, seconds, cached} | null, ' +

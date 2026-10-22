@@ -852,8 +852,11 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   // own. The panel says it for the layers on the map, in the web page's words
   // (rp-core.js _freshPill, _lateLine, _checkLines, _netLine).
   var FRESH_RANK = { green: 0, orange: 1, red: 2 };
-  var CHECK_NAMES = { ecmwf: 'ECMWF', smoc: 'SMOC', rtofs: 'RTOFS', tides: 'sea level' };
-  var CHECK_ROWS = { ecmwf: ['wind', 'waves'], smoc: ['currents'], rtofs: ['currents'], tides: ['tides'] };
+  var CHECK_NAMES = { ecmwf: 'ECMWF', smoc: 'SMOC', tides: 'sea level' };
+  var CHECK_ROWS = { ecmwf: ['wind', 'waves'], smoc: ['currents'], tides: ['tides'] };
+  // RTOFS is checked per product (`rtofs:west_atl`), named as its current source, on the currents row.
+  function checkName(k) { return k.indexOf('rtofs:') === 0 ? 'RTOFS-' + k.slice(6) : (CHECK_NAMES[k] || k); }
+  function checkRows(k) { return k.indexOf('rtofs:') === 0 ? ['currents'] : (CHECK_ROWS[k] || []); }
   function clockText(iso) { return iso ? fmtClock(new Date(iso), { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }) : ''; }
   function ageText(ms) { return ms < HOUR_MS ? 'under 1 h' : dayHours(Math.floor(ms / HOUR_MS)); }
   function overlaps(a, b) { return a.some(function (r) { return b.indexOf(r) >= 0; }); }
@@ -936,9 +939,9 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var online = !(c && c.online === false);
     Object.keys(s.checks || {}).forEach(function (k) {
       var ck = s.checks[k];
-      if (!drawn(CHECK_ROWS[k] || [])) return;
+      if (!drawn(checkRows(k))) return;
       if (!(ck.outcome === 'failed' || (ck.outcome === 'could-not-check' && online))) return;
-      html += '<br>' + esc((CHECK_NAMES[k] || k) + (ck.outcome === 'failed' ? ' update failed' : ' check failed') + ' at ' + clockText(ck.at) + (ck.reason ? ': ' + tokenText(ck.reason) : ''));
+      html += '<br>' + esc(checkName(k) + (ck.outcome === 'failed' ? ' update failed' : ' check failed') + ' at ' + clockText(ck.at) + (ck.reason ? ': ' + tokenText(ck.reason) : ''));
     });
     var kind = worst === 'red' ? 'danger' : worst === 'orange' ? 'warn' : '';
     if (Date.now() > wx.endMs) {

@@ -1155,12 +1155,16 @@ function _netLine(c) {
     : '<span class="net-off" title="' + escapeHtml(c.reason || '') + '">● No internet connection since ' + escapeHtml(_clockText(c.since)) + '</span>';
 }
 // What a check could not do while online (a server that failed, a download that failed); offline says it on its own line.
-const _CHECK_NAMES = { ecmwf: 'ECMWF', smoc: 'SMOC', rtofs: 'RTOFS', tides: 'sea level' };
+const _CHECK_NAMES = { ecmwf: 'ECMWF', smoc: 'SMOC', tides: 'sea level' };
+// RTOFS is checked per product (`rtofs:west_atl`), named as its current source.
+function _checkName(k) {
+  return k.startsWith('rtofs:') ? 'RTOFS-' + escapeHtml(k.slice(6)) : (_CHECK_NAMES[k] || escapeHtml(k));
+}
 function _checkLines(s) {
   const online = s.connectivity && s.connectivity.online !== false;
   return Object.entries(s.checks || {})
     .filter(([, c]) => c.outcome === 'failed' || (c.outcome === 'could-not-check' && online))
-    .map(([k, c]) => '<br><span class="warn">' + (_CHECK_NAMES[k] || escapeHtml(k)) + (c.outcome === 'failed' ? ' update failed' : ' check failed')
+    .map(([k, c]) => '<br><span class="warn">' + _checkName(k) + (c.outcome === 'failed' ? ' update failed' : ' check failed')
       + ' at ' + escapeHtml(_clockText(c.at)) + (c.reason ? ': ' + unitTextHtml(c.reason) : '') + '</span>')
     .join('');
 }
@@ -1223,9 +1227,12 @@ function _statusLine(s) {
   // Each row's name on its own line, then one bulleted line per source.
   const row = (k, items) =>
     '<div class="statusKey">' + k + '</div><ul class="src-list">' + items.map(v => '<li>' + v + '</li>').join('') + '</ul>';
+  // RTOFS where no product covers the vessel: nothing is loaded for it, and that is not late (no pill).
+  const rtofsNone = s.rtofs && !s.rtofs.auto && s.rtofs.auto_reason ? ['RTOFS: ' + escapeHtml(s.rtofs.auto_reason)] : [];
   const currents = curList
     .map(c => escapeHtml(c.name) + _freshPill(c.name) + (applies(c) ? '' : _NOT_HERE))
-    .concat(missing.map(x => escapeHtml(x.source) + _freshPill(x.source)));
+    .concat(missing.map(x => escapeHtml(x.source) + _freshPill(x.source)))
+    .concat(rtofsNone);
   const toggle = '<button type="button" class="ds-toggle" aria-expanded="' + !_statusCollapsed + '" title="'
     + (_statusCollapsed ? 'Show the data sources in full' : 'Collapse the data sources to one line') + '">'
     + (_statusCollapsed ? 'Show ▾' : 'Hide ▴') + '</button>';
@@ -1343,7 +1350,7 @@ export function loadPluginStatus() {
             + (typeof f.decoded_bytes === 'number' ? ', ' + _fmt(f.decoded_bytes, 'data_size') + ' decoded on disk' : '')
             + (f.memory ? ', ' + _fmt(f.memory.data_worker_held_bytes + f.memory.route_worker_held_bytes, 'data_size') + ' in memory now' : '')
             + '<br>params: ' + escapeHtml((f.params || []).join(', ')) + (s.extra_fields ? '' : '<br><span style="color:var(--warn)">extra fields (temperature, precipitation, SST, humidity) are off in Settings</span>')
-            + (s.rtofs_run ? '<br>RTOFS run ' + escapeHtml(s.rtofs_run) : '')
+            + (s.rtofs && s.rtofs.runs.length ? '<br>RTOFS ' + s.rtofs.runs.map(r => escapeHtml(r.product) + ' run ' + escapeHtml(r.run)).join(', ') : '')
             + (s.vessel ? '<br>vessel ' + escapeHtml(s.vessel.name || '—') + ', motor ' + (fmtSpeed(s.vessel.motorSpeedMs) || '—') : '')
           : '<span style="color:var(--warn)">No forecast loaded' + (s.forecast_error ? ': ' + unitTextHtml(s.forecast_error) : '') + '</span>';
       }

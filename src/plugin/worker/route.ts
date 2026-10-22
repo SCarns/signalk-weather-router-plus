@@ -38,7 +38,7 @@ import { type RouteRequest, type RouteSummary } from '../protocol';
 import { requireInit } from './state';
 import { extraParams, readWindow, releaseWindow } from './forecast';
 import { landMaskFor } from './landgrid';
-import { rebuildStack } from './currents';
+import { rebuildStack, rtofsCacheDir } from './currents';
 import { GLOBAL_DLON_DEG } from './regional';
 import { avoidAt, type AvoidArea } from '../../geo/avoid';
 import type { WorkerState } from './state';
@@ -323,11 +323,10 @@ function meshLegRunner(
                     ? { cacheDir: path.join(st.cacheRoot, 'smoc'), run: st.smoc.run, settings: smocSettings(cfg), ...smocLeg()! }
                     : null,
                 rtofs:
-                  st.rtofs && cfg.currents.rtofsEnabled
+                  st.rtofs.length && cfg.currents.rtofsEnabled
                     ? {
-                        cacheDir: st.rtofsClient?.cacheDir ?? path.join(st.cacheRoot, 'rtofs'),
-                        region: cfg.currents.rtofsRegion,
-                        runMs: st.rtofs.runMs,
+                        cacheDir: rtofsCacheDir(st),
+                        runs: st.rtofs.map(r => ({ product: r.product, runMs: r.runMs, bbox: r.bbox })),
                         horizonS: cfg.currents.rtofsHorizonS,
                         stepS: cfg.currents.rtofsStepS,
                       }

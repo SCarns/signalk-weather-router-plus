@@ -30,7 +30,8 @@ export interface WorkerState {
   readonly log: (level: 'debug' | 'info' | 'error', message: string) => void;
   config: ResolvedConfig | null;
   client: EcmwfClient | null;
-  rtofsClient: RtofsClient | null;
+  /** RTOFS clients by product (data worker; created as products are wanted). */
+  rtofsClients: Map<string, RtofsClient>;
   /** The decoded run in use (on disk; only its index is in memory). */
   run: DecodedRun | null;
   /** How it became current (status). */
@@ -48,7 +49,10 @@ export interface WorkerState {
   polar: PolarDiagram | null;
   landCache: { key: string; mask: LandMask } | null;
   harmonic: HarmonicCurrentSource[];
-  rtofs: RtofsCurrentSource | null;
+  /** The RTOFS products loaded (data worker) or adopted (route, tiles), finest first. */
+  rtofs: RtofsCurrentSource[];
+  /** The data worker's last RTOFS choice (status): the product the vessel is in, or why none, and the extents not known. */
+  rtofsChoice: { auto: string | null; autoReason: string | null; unknownExtents: string[] } | null;
   smocClient: SmocClient | null;
   smoc: SmocCurrentSource | null;
   /** Last vessel position from the main thread (SMOC resident area centre). */
