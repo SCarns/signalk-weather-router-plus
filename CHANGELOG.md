@@ -114,6 +114,14 @@ uses [Semantic Versioning](https://semver.org/).
   minutes later. Now SMOC is loaded again only for a SMOC setting, the RTOFS
   products only for the RTOFS horizon, step or switch; an extra product is
   added or dropped alone.
+- **A settings change replaces only the map tiles made from what changed**
+  (`tiles.ts` `tileGenerationKeys`). Every tile group's key also carried a
+  counter bumped by any settings change that reloaded the forecast, currents
+  or tides: ticking an RTOFS product on brain (2026-10-22) built 30,800 wind
+  and wave tiles and 14,988 tide tiles again besides the 15,378 current
+  tiles. Each group's key is now only what its tiles are made from: the
+  forecast's cycle, fields and last hour; the current sources and runs and
+  the SMOC and RTOFS steps and RTOFS horizon; the tide run.
 - **Extra RTOFS products** (`currents.rtofsExtra`, Settings → Currents →
   *Also load RTOFS products*): products loaded wherever the vessel is, for a
   passage planned elsewhere, each with its area, daily download (measured on

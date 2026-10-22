@@ -37,7 +37,7 @@ import { JobManager, type Job } from './plugin/jobs';
 import { windowNotification, WindowManager, type DepartureWindow } from './plugin/windows';
 import { registerApi } from './plugin/api';
 import { NotStartedError } from './plugin/errors';
-import { TileService, TileStore, tileGroup, type TileGroup } from './plugin/tiles';
+import { TileService, TileStore, tileGenerationKeys, tileGroup } from './plugin/tiles';
 import { hasStep, TilePrebuilder } from './plugin/prebuild';
 import { runLastMs, type ArcoRun } from './data/arco';
 import { gshhgInstalled, gshhgInstalledAt, unreadableCoastlines } from './geo/gshhg';
@@ -176,8 +176,6 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let pendingRefresh: { force: boolean } | null = null;
   /** Map overlay tiles on disk (null before start). */
   let tiles: TileService | null = null;
-  /** Bumped by settings changes that reload forecast, currents or tides (tile generations). */
-  let dataSettingsRev = 0;
   /** Tiles built ahead of time (null before start or when off). */
   let prebuilder: TilePrebuilder | null = null;
   /** The data worker's tide run (relayed to the tiles workers). */
@@ -518,31 +516,31 @@ export = function plugin(app: SkApp): SignalKPlugin {
   function updateTileGenerations(): void {
     if (!tiles || !config) return;
     const cfg = config;
-    const coast = `${cfg.landShapefiles.join('|')}`;
-    const wx = forecastRun
-      ? `${coast}|${forecastRun.index.cycleTimeMs}|${forecastRun.index.request.params.join(',')}|${dataSettingsRev}`
-      : null;
-    const smoc = smocShared ? `${smocShared.run.key}|${smocShared.run.settled}` : 'off';
-    // SEA_STATE_REV: bumped when the sea-state index's formula changes (the
-    // `cur` group holds the sea_state and seas tiles), so tiles saved with
-    // the old index are not served (2: wave-period damping and SWELL_COEFF 10;
-    // 3: seas points carry wind and current).
-    const SEA_STATE_REV = 3;
-    const cur = wx && dataStatus ? `${wx}|${currentsKey}|${smoc}|${cfg.currents.harmonicDir ?? ''}|ss${SEA_STATE_REV}` : null;
-    const t = dataStatus?.tides;
-    const tide = !cfg.tides.enabled ? `${coast}|off` : t ? `${coast}|${t.run}|${t.settled}|${dataSettingsRev}` : null;
-    // Point answers (conditions, Weather API) read forecast, currents and tides.
-    // A route's meteogram also reads the regional wind runs: its query names them
-    // (api.ts, protocol.ts track_conditions), so a new run is a new query and the
-    // other answers are kept.
-    // POINT_ANSWER_REV: bumped when the answer's content changes for the same
-    // data (2: current_ms null where no current source has data; 3: the
-    // recalibrated sea-state index), so answers saved by an older version
-    // are not served.
-    const POINT_ANSWER_REV = 3;
-    const pt = cur && tide ? `${cur}|${tide}|rev${POINT_ANSWER_REV}` : null;
-    const g: Record<TileGroup, string | null> = { wx, cur, tide, land: coast, pt };
-    tiles.store.setGenerations(g);
+    const steps = forecastRun?.index.steps;
+    tiles.store.setGenerations(
+      tileGenerationKeys({
+        coast: cfg.landShapefiles.join('|'),
+        forecast:
+          forecastRun && steps
+            ? {
+                cycleTimeMs: forecastRun.index.cycleTimeMs,
+                params: forecastRun.index.request.params,
+                lastValidMs: steps[steps.length - 1].validMs,
+              }
+            : null,
+        currents: dataStatus
+          ? {
+              sources: currentsKey,
+              smoc: smocShared ? `${smocShared.run.key}|${smocShared.run.settled}` : 'off',
+              harmonicDir: cfg.currents.harmonicDir ?? '',
+              smocStepS: cfg.currents.smocStepS,
+              rtofsStepS: cfg.currents.rtofsStepS,
+              rtofsHorizonS: cfg.currents.rtofsHorizonS,
+            }
+          : null,
+        tides: !cfg.tides.enabled ? 'off' : dataStatus?.tides ? { run: dataStatus.tides.run, settled: dataStatus.tides.settled } : null,
+      })
+    );
   }
 
   /** Own-vessel position from Signal K (navigation.position), or null. */
@@ -983,10 +981,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       if (!smocLoadSame(prevConfig, config)) smocShared = null;
       if (!rtofsLoadSame(prevConfig, config)) rtofsShared = null;
     }
-    if (out.forecast || out.currents || out.tides) {
-      dataSettingsRev++;
-      updateTileGenerations();
-    }
+    if (out.forecast || out.currents || out.tides) updateTileGenerations();
     pool.post('data', {
       type: 'config',
       config,
