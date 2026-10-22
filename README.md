@@ -355,14 +355,31 @@ user now and for whatever is kept per user later:
   `getLoginStatus`, `http_authorize`; `src/interfaces/applicationData.js`).
   A device with its own access token is its own principal, under its
   client id.
-- **No login, or security off: nothing is per user.** The choices stay in
+- **Security off: one set for everyone.** Signal K then has no users and
+  keeps no application data (its `applicationData.js` answers 405), so the
+  plugin keeps the choices itself, one set that every browser reads and
+  writes: `prefs.json` in its data directory (`GET`/`POST /api/prefs`,
+  JSON Patch as for application data; 405 with security on). The page
+  sends `add` only. When it opens, it sends up the choices this browser
+  holds that the record lacks, as for a user's application data, so a
+  member removed through the API comes back from a browser that still
+  holds it. It is not a cache: it sits beside `settings.json`, outside the directories tagged
+  `CACHEDIR.TAG`, so backups keep it. A write to it reads no login status
+  first (there is no session that could name someone else); once security
+  is on, its 405 stops the page's writes. Routes are shared.
+- **Security on but no login: nothing is per user.** The choices stay in
   the browser, and routes are shared.
 - **A read-only user owns nothing.** Signal K takes no application data
   from them, so their choices stay in the browser.
+- **Switching security on or off:** a browser's choices from the other
+  side (everyone's, or one user's) are not dropped or sent: the banner
+  asks whether to keep them for the new owner, as for choices from before
+  they were kept on the server.
 
 Where things live: the choices (below) in the user's Signal K application
-data, the standard store, since they are small; routes in the plugin's
-own job store, since they are large. The route computation never reads
+data, the standard store, since they are small (with security off, in the
+plugin's `prefs.json`); routes in the plugin's own job store, since they
+are large. The route computation never reads
 the saved choices: a route request carries everything it is computed
 with, so a route sent by another client (the Freeboard panel, the API) is
 computed with what that request says, not with the user's saved Setup.
@@ -411,9 +428,10 @@ computed with what that request says, not with the user's saved Setup.
   nothing by itself: a default such as Sailboat is sent up only once it
   is clicked. The
   map view, open tabs, layer toggles and the plan stay per browser.
-  Without a login with write access, or with security off (Signal K then
-  keeps no application data), the choices are kept in the browser only,
-  as before ([Users](#users)). The Freeboard panel keeps its polar, mode,
+  With security off (Signal K then has no users and keeps no application
+  data) the plugin keeps one set of choices for every browser. With
+  security on but no login with write access, the choices are kept in
+  the browser only, as before ([Users](#users)). The Freeboard panel keeps its polar, mode,
   min sail speed and limits in the same store ([In Freeboard-SK](#in-freeboard-sk)).
 - **Header.** The data sources, with how fresh each one is. Collapsed (the
   default): one line, `wind ●● | waves ● | currents ●● | tides ●`, a dot

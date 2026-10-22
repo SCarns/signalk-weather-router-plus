@@ -22,11 +22,13 @@
 // A change is written to localStorage at once and to the server shortly
 // after, one request at a time (a slider drag sends one request); a
 // change the server did not take is kept and sent again later. Each
-// request goes only while the login status still names the user load()
-// found (send()).
-// Without a login, with security off (the server keeps no application
-// data) or for a read-only user, the choices stay in this browser, as
-// before. Values are the strings localStorage holds.
+// request to the user's application data goes only while the login status
+// still names the user load() found (send()).
+// With security off Signal K keeps no application data and has no users,
+// so the choices are one set for every browser, kept by the plugin
+// (SHARED_PREFS_URL, prefs.json in its data directory; plugin/sharedprefs.ts).
+// With security on but no login, or for a read-only user, the choices stay
+// in this browser, as before. Values are the strings localStorage holds.
 //
 // The user is the Signal K login name, the plugin's one rule for "user"
 // (README, Users): `username` from loginStatus here. Signal K answers it
@@ -41,6 +43,10 @@
 
 export const PREFS_URL = '/signalk/v1/applicationData/user/signalk-weather-router-plus/1.0.0';
 export const LOGIN_STATUS_URL = '/skServer/loginStatus';
+/** With security off: the plugin's own store, one set of choices for every browser. */
+export const SHARED_PREFS_URL = '/plugins/signalk-weather-router-plus/api/prefs';
+/** The owner a browser records for the choices every browser shares (security off). */
+export const SHARED_OWNER = '*';
 /** localStorage key: the Signal K user whose choices this browser holds. */
 export const OWNER_KEY = 'rp:prefsUser';
 
@@ -75,13 +81,14 @@ function _pointer(key) {
  * A change the server refused with another status than 401/403/405 (or
  * that did not reach it) is sent again after `retryMs`, doubling to 5 min.
  * Before each request `loginUrl` is read again (`timeoutMs`): another user
- * or none stops the writes as a 401 does.
+ * or none stops the writes as a 401 does. Not for the plugin's store
+ * (`sharedUrl`, security off), which is every browser's.
  * @param {{ storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem' | 'key' | 'length'> | null,
  *   fetchFn: (url: string, init?: object) => Promise<Response>,
- *   url?: string, loginUrl?: string, delayMs?: number, timeoutMs?: number, retryMs?: number,
+ *   url?: string, loginUrl?: string, sharedUrl?: string, delayMs?: number, timeoutMs?: number, retryMs?: number,
  *   log?: { warn: (...args: any[]) => void } }} opts
  */
-export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGIN_STATUS_URL, delayMs = 500, timeoutMs = 3000, retryMs = 30_000, log = console }) {
+export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGIN_STATUS_URL, sharedUrl = SHARED_PREFS_URL, delayMs = 500, timeoutMs = 3000, retryMs = 30_000, log = console }) {
   const RETRY_MAX_MS = 5 * 60_000;
   const values = new Map();   // the user's choices this page knows, read or set
   let pending = new Map();    // changes the server has not taken yet
@@ -90,7 +97,9 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
   let timer = null;
   let retryWait = retryMs;
   let remote = false;         // the server keeps this user's choices
-  let user = null;            // the logged-in user load() found
+  let user = null;            // the logged-in user load() found (SHARED_OWNER with security off)
+  let shared = false;         // security off: the choices are every browser's, in the plugin's store
+  let target = url;           // where the choices are written
   const legacy = new Map();   // ownerless choices from before this module, waiting for the user's answer
   let reading = false;        // load() is waiting for the server
   const setWhileReading = new Set(); // choices made meanwhile: they win over the server's
@@ -179,7 +188,7 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
     // JSON Patch `add` sets the member whether or not it exists, so
     // changes from two browsers to different choices both land.
     const ops = [...batch].map(([key, value]) => ({ op: 'add', path: _pointer(key), value }));
-    return fetchFn(url, {
+    return fetchFn(target, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
@@ -205,7 +214,9 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
         // writes, as for a 401, and the queue is dropped; the choices stay in this browser, under the owner it
         // records, and the next load() sorts them out. Not covered: the login changing between this check and
         // the POST, and the closing page's keepalive request (flush(true)), which cannot wait for a check.
-        const now = await currentUser();
+        // The plugin's store (security off) is every browser's and has no session to check; with security on it
+        // answers 405 (plugin/api.ts), which stops the writes below.
+        const now = shared ? SHARED_OWNER : await currentUser();
         const r = user !== null && now === user ? await post(batch, false) : null;
         if (r === null) {
           remote = false;
@@ -213,7 +224,7 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
             : user === null ? 'the user was not known when the page opened' : now + ' is logged in now, not ' + user)
             + '; the choices stay in this browser');
         } else if (r.status === 401 || r.status === 403 || r.status === 405) {
-          // Not logged in, read-only, or security off: this browser only.
+          // Not logged in, read-only, or security off (Signal K's store) or on (the plugin's): this browser only.
           remote = false;
           log.warn('[prefs] the server does not keep this user\'s choices (HTTP ' + r.status + '); they stay in this browser');
         } else if (!r.ok) {
@@ -283,8 +294,10 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
     },
     /** True once load() found the server keeping this user's choices. */
     get remote() { return remote; },
-    /** The logged-in user load() found (null: unknown). */
+    /** The logged-in user load() found (null: unknown; SHARED_OWNER with security off). */
     get user() { return user; },
+    /** True once load() found security off: one set of choices for every browser, kept by the plugin. */
+    get shared() { return shared; },
     /** Choices this browser held before they were kept per user, not yet claimed: [key, value] pairs. */
     legacyChoices() { return [...legacy]; },
     /** The user says the browser's older choices are theirs: they go to the user's record. */
@@ -327,6 +340,11 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
           getJson(url, signal).catch(() => null),
           getJson(loginUrl, signal).catch(() => null),
         ]);
+        // Security off: no application data and no users, so the plugin's store (one set for every browser).
+        if (login && login.authenticationRequired === false) {
+          data = await getJson(sharedUrl, signal).catch(() => null);
+          if (data && typeof data === 'object' && !Array.isArray(data)) { shared = true; target = sharedUrl; }
+        }
       } finally {
         if (t !== null) clearTimeout(t);
         reading = false;
@@ -355,13 +373,16 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
         local.set(key, value);
       }
       for (const key of mine) pending.set(key, values.get(key));
-      user = loggedIn;
+      user = shared ? SHARED_OWNER : loggedIn;
       if (user === null) {   // the user is unknown: the browser's choices are left as they are, until one is made here
         if (mine.size) disown();
         send();
         return true;
       }
       const owner = local.get(OWNER_KEY);
+      // Choices held for the other side of a security switch (every browser's, or one user's) are asked about, as
+      // those from before this module are.
+      const unclaimed = owner === null || (owner !== user && (owner === SHARED_OWNER || user === SHARED_OWNER));
       for (const key of local.keys()) {
         if (!isUserPref(key) || values.has(key)) continue;
         const value = local.get(key);
@@ -369,14 +390,14 @@ export function createPrefs({ storage, fetchFn, url = PREFS_URL, loginUrl = LOGI
         if (owner === user) {
           values.set(key, value);
           pending.set(key, value);
-        } else if (owner === null) {
+        } else if (unclaimed) {
           legacy.set(key, value);   // from before: in use here, sent up only when the user claims it
         } else {
           local.remove(key);        // another user's choice
         }
       }
       // With older choices waiting for an answer the browser has no owner yet.
-      if (owner !== null || legacy.size === 0) local.set(OWNER_KEY, user);
+      if (!unclaimed || legacy.size === 0) local.set(OWNER_KEY, user);
       owned = local.get(OWNER_KEY) === user;
       send();
       return true;

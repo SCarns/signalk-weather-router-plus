@@ -15,6 +15,7 @@ await prefs.load();
 // Setup choices this browser held before they were kept per user have no
 // owner: they stay in use here, and go to the user's record only when the
 // user says they are theirs. Discard drops them and reloads with the defaults.
+// With security off the record is every browser's (prefs.shared).
 (function legacyChoicesBanner() {
   const choices = prefs.legacyChoices();
   const head = document.getElementById('panelHead');
@@ -29,13 +30,17 @@ await prefs.load();
   bar.className = 'recompute-banner';
   bar.setAttribute('role', 'status');
   const text = document.createElement('span');
-  text.textContent = 'This browser has Setup choices from before they were kept per Signal K user (' + what + '). Keep them as ' + prefs.user + '’s?';
+  text.textContent = prefs.shared
+    ? 'This browser has Setup choices from before they were shared by every browser on this server (' + what + '). Keep them for everyone?'
+    : 'This browser has Setup choices from before they were kept per Signal K user (' + what + '). Keep them as ' + prefs.user + '’s?';
   const actions = document.createElement('span');
   actions.className = 'recompute-actions';
   const keep = document.createElement('button');
   keep.type = 'button';
   keep.textContent = 'Keep';
-  keep.title = 'Save them for ' + prefs.user + ': every browser this user opens starts with them';
+  keep.title = prefs.shared
+    ? 'Save them on the server: every browser starts with them'
+    : 'Save them for ' + prefs.user + ': every browser this user opens starts with them';
   const drop = document.createElement('button');
   drop.type = 'button';
   drop.textContent = 'Discard';

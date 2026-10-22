@@ -11,9 +11,10 @@ import { COARSE_DIR } from './meshcoarse';
  * rendered tiles. Together they are gigabytes, rewritten with every
  * forecast run, and stale by the time a backup of them is restored.
  *
- * Not here: settings.json, jobs and polars (the user's own), and the
- * coastline and downloaded meshes. Those change rarely, so a backup holds
- * them once, and a boat offshore cannot download them again.
+ * Not here: settings.json, prefs.json (the Setup choices with security
+ * off), jobs and polars (the user's own), and the coastline and
+ * downloaded meshes. Those change rarely, so a backup holds them once,
+ * and a boat offshore cannot download them again.
  */
 export const CACHE_DIRS = [
   DECODED_DIR,

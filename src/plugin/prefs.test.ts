@@ -3,7 +3,7 @@
 // localStorage, and sent back as JSON Patch on change.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createPrefs, isUserPref, LOGIN_STATUS_URL, OWNER_KEY, PREFS_URL } from '../../public/rp-prefs.js';
+import { createPrefs, isUserPref, LOGIN_STATUS_URL, OWNER_KEY, PREFS_URL, SHARED_OWNER, SHARED_PREFS_URL } from '../../public/rp-prefs.js';
 
 /** localStorage stand-in: getItem/setItem/removeItem/key/length over a Map. */
 class MemStorage {
@@ -42,6 +42,13 @@ interface ServerOpts {
   holdPosts?: boolean;
   /** Hold the read of the choices until releaseGet() is called. */
   holdGet?: boolean;
+  /**
+   * Security off: loginStatus says no authentication is required, Signal K's application data answers 404 / 405,
+   * and the plugin's store (SHARED_PREFS_URL) holds the record. Without it the plugin's store answers 405.
+   */
+  securityOff?: boolean;
+  /** The plugin store's answer with security off (default: the record). */
+  sharedStatus?: number;
 }
 
 /**
@@ -60,7 +67,12 @@ function fakeServer(stored: Record<string, unknown> | null, opts: ServerOpts = {
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ url, method, body, keepalive: !!init.keepalive });
     if (url === LOGIN_STATUS_URL) {
+      if (opts.securityOff) return Response.json({ status: 'notLoggedIn', readOnlyAccess: false, authenticationRequired: false });
       return Response.json(user ? { status: 'loggedIn', username: user } : { status: 'notLoggedIn' });
+    }
+    if (url === SHARED_PREFS_URL ? !opts.securityOff || opts.sharedStatus : opts.securityOff) {
+      const status = url === SHARED_PREFS_URL ? (opts.sharedStatus ?? 405) : method === 'GET' ? 404 : 405;
+      return new Response('no', { status });
     }
     if (method === 'GET') {
       if (opts.holdGet) await new Promise<void>(r => heldGets.push(r));
@@ -671,7 +683,7 @@ test('a closing page sends everything not yet taken, the request in flight inclu
   srv.release();
 });
 
-test('no login, security off, or no server: the choices stay in this browser and nothing is sent', async () => {
+test('no login, or no server: the choices stay in this browser and nothing is sent', async () => {
   for (const getStatus of [401, 404, 500]) {
     const storage = new MemStorage();
     const srv = fakeServer({}, { getStatus });
@@ -694,7 +706,7 @@ test('no login, security off, or no server: the choices stay in this browser and
   assert.equal(await notObject.load(), false, 'an array is not the stored object');
 });
 
-test('a write the server refuses (read-only user, security off) stops further writes', async () => {
+test('a write the server refuses (read-only user, no application data) stops further writes', async () => {
   for (const postStatus of [401, 403, 405]) {
     const srv = fakeServer({}, { postStatus: [postStatus] });
     const warnings: string[] = [];
@@ -866,4 +878,99 @@ test('a choice made while load() waits for the server wins over the stored one a
   assert.equal(prefs.get('polarPath'), 'a.pol', 'the other choices come from the server');
   await prefs.flush();
   assert.equal(srv.doc['routeVar:mode'], 'sail_max');
+});
+
+test("security off: one set of choices for every browser, read from and written to the plugin's store", async () => {
+  const srv = fakeServer({ vesselType: 'sail' }, { securityOff: true });
+  const s1 = new MemStorage();
+  const p1 = createPrefs({ storage: s1, fetchFn: srv.fetchFn, delayMs: 0, log: quiet });
+  assert.equal(await p1.load(), true);
+  assert.equal(p1.remote, true);
+  assert.equal(p1.shared, true);
+  assert.equal(p1.user, SHARED_OWNER);
+  assert.equal(p1.get('vesselType'), 'sail');
+  assert.equal(s1.getItem(OWNER_KEY), SHARED_OWNER);
+  p1.set('polarPath', 'b.pol');
+  await p1.flush();
+  assert.equal(srv.doc.polarPath, 'b.pol');
+  assert.ok(srv.postCalls().length > 0 && srv.postCalls().every(c => c.url === SHARED_PREFS_URL), 'written to the plugin, not to Signal K');
+  // Another browser, no login: the same choices.
+  const p2 = createPrefs({ storage: new MemStorage(), fetchFn: srv.fetchFn, log: quiet });
+  assert.equal(await p2.load(), true);
+  assert.equal(p2.get('polarPath'), 'b.pol');
+});
+
+test("security off: a write to the plugin's store reads no login status first; its 405 (security on since) stops the writes", async () => {
+  const srv = fakeServer({}, { securityOff: true, postStatus: [200, 405] });
+  const warnings: string[] = [];
+  const prefs = createPrefs({
+    storage: new MemStorage(),
+    fetchFn: srv.fetchFn,
+    delayMs: 0,
+    log: { warn: (m: string) => warnings.push(m) },
+  });
+  assert.equal(await prefs.load(), true);
+  const before = srv.calls.length;
+  prefs.set('polarPath', 'a.pol');
+  await prefs.flush();
+  assert.deepEqual(
+    srv.calls.slice(before).map(c => c.method + ' ' + c.url),
+    ['POST ' + SHARED_PREFS_URL],
+    'the write alone'
+  );
+  assert.equal(srv.doc.polarPath, 'a.pol');
+  prefs.set('polarPath', 'b.pol');
+  await prefs.flush();
+  assert.equal(prefs.remote, false);
+  assert.ok(
+    warnings.some(w => w.includes('HTTP 405')),
+    JSON.stringify(warnings)
+  );
+  prefs.set('polarPath', 'c.pol');
+  await wait(20);
+  assert.equal(srv.postCalls().length, 2, 'nothing after the 405');
+  assert.equal(srv.doc.polarPath, 'a.pol');
+});
+
+test("security off but the plugin's store refuses: the choices stay in this browser", async () => {
+  const srv = fakeServer({}, { securityOff: true, sharedStatus: 405 });
+  const prefs = createPrefs({ storage: new MemStorage(), fetchFn: srv.fetchFn, delayMs: 0, log: quiet });
+  assert.equal(await prefs.load(), false);
+  assert.equal(prefs.shared, false);
+  prefs.set('polarPath', 'a.pol');
+  await wait(20);
+  assert.equal(srv.postCalls().length, 0);
+});
+
+test('a security switch: the choices held for the other side are asked about, not dropped or sent', async () => {
+  // Security turned on: the browser held every browser's choices, a user logs in.
+  let storage = new MemStorage();
+  storage.setItem(OWNER_KEY, SHARED_OWNER);
+  storage.setItem('polarPath', 'boat.pol');
+  let srv = fakeServer({}, { user: 'dirk' });
+  let prefs = createPrefs({ storage, fetchFn: srv.fetchFn, delayMs: 0, log: quiet });
+  assert.equal(await prefs.load(), true);
+  assert.deepEqual(prefs.legacyChoices(), [['polarPath', 'boat.pol']]);
+  assert.equal(storage.getItem('polarPath'), 'boat.pol', 'still in use here');
+  assert.equal(storage.getItem(OWNER_KEY), SHARED_OWNER, 'no owner yet');
+  await prefs.flush();
+  assert.equal(srv.postCalls().length, 0);
+  prefs.keepLegacy();
+  await prefs.flush();
+  assert.equal(srv.doc.polarPath, 'boat.pol');
+  assert.ok(srv.postCalls().every(c => c.url === PREFS_URL));
+  assert.equal(storage.getItem(OWNER_KEY), 'dirk');
+  // Security turned off: the browser held a user's choices.
+  storage = new MemStorage();
+  storage.setItem(OWNER_KEY, 'dirk');
+  storage.setItem('polarPath', 'dirk.pol');
+  srv = fakeServer({}, { securityOff: true });
+  prefs = createPrefs({ storage, fetchFn: srv.fetchFn, delayMs: 0, log: quiet });
+  assert.equal(await prefs.load(), true);
+  assert.deepEqual(prefs.legacyChoices(), [['polarPath', 'dirk.pol']]);
+  await prefs.flush();
+  assert.equal(srv.postCalls().length, 0);
+  prefs.discardLegacy();
+  assert.equal(storage.getItem('polarPath'), null);
+  assert.equal(storage.getItem(OWNER_KEY), SHARED_OWNER);
 });
