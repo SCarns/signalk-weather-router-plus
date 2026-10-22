@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 import type { VesselPosition } from '../protocol';
 import { refreshQueue } from './refreshqueue';
 
-function harness(): {
+/** `runGate`: each refresh run waits on it (a run in progress). */
+function harness(runGate?: Promise<void>): {
   queue: ReturnType<typeof refreshQueue>;
   background: (fn: () => Promise<void>) => void;
   drain: () => Promise<void>;
@@ -27,6 +28,7 @@ function harness(): {
     setPosition: p => (vesselPos = p),
     run: async force => {
       runs.push({ force, pos: vesselPos });
+      await runGate;
     },
   });
   return { queue, background, drain: () => chain, pos: () => vesselPos, setPos: p => (vesselPos = p), runs };
@@ -57,8 +59,25 @@ test('requests made while one waits join it: force if either asked, the latest p
   release();
   await h.drain();
   assert.deepEqual(h.runs, [{ force: true, pos: NEW }]);
-  // One asked for after it started is done once more.
+  // One asked for after that refresh finished is a refresh of its own.
   h.queue({ position: OLD });
   await h.drain();
   assert.deepEqual(h.runs[1], { force: false, pos: OLD });
+});
+
+test('a request made while a refresh runs is done once more after it, with its own force and position', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(r => (release = r));
+  const h = harness(gate);
+  h.queue({ position: OLD });
+  // Let the first refresh start and wait on the gate.
+  await new Promise(r => setImmediate(r));
+  assert.equal(h.runs.length, 1, 'the first refresh is running');
+  h.queue({ force: true, position: NEW });
+  release();
+  await h.drain();
+  assert.deepEqual(h.runs, [
+    { force: false, pos: OLD },
+    { force: true, pos: NEW },
+  ]);
 });
