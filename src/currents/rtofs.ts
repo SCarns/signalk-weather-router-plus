@@ -25,7 +25,7 @@
  */
 
 import * as fs from 'node:fs';
-import { fetchWithRetry, sleep } from '../data/http';
+import { fetchWithRetry, isOffline, sleep } from '../data/http';
 import { lonOffset, wrapLon } from '../geo/angles';
 import { HOUR_MS, HOUR_S } from '../geo/units';
 import * as path from 'node:path';
@@ -169,24 +169,33 @@ export async function loadRtofsExtents(
 ): Promise<{ extents: Record<string, RtofsExtent>; unknown: string[] }> {
   const extents = readRtofsExtents(cacheDir);
   let changed = false;
-  if (opts.network) {
-    const now = opts.now ?? new Date();
-    for (const region of RTOFS_REGIONS) {
-      if (extents[region]) continue;
-      const client = new RtofsClient({ cacheDir, region, log: opts.log, fetchImpl: opts.fetchImpl, sleepImpl: opts.sleepImpl });
-      for (let d = 0; d <= (opts.maxDaysBack ?? 7); d++) {
-        const e = await client.fetchExtent(rtofsRunFor(new Date(now.getTime() - d * 86_400_000)));
-        if (!e) continue;
-        extents[region] = e;
-        changed = true;
-        opts.log?.(
-          `rtofs: ${region} covers ${e.south}..${e.north}°N, ${e.west}..${wrapLon(e.east)}°E (grid ${e.dLon.toFixed(3)}° × ${e.dLat.toFixed(3)}°)`
-        );
-        break;
+  try {
+    if (opts.network) {
+      const now = opts.now ?? new Date();
+      for (const region of RTOFS_REGIONS) {
+        if (extents[region]) continue;
+        const client = new RtofsClient({ cacheDir, region, log: opts.log, fetchImpl: opts.fetchImpl, sleepImpl: opts.sleepImpl });
+        try {
+          for (let d = 0; d <= (opts.maxDaysBack ?? 7); d++) {
+            const e = await client.fetchExtent(rtofsRunFor(new Date(now.getTime() - d * 86_400_000)));
+            if (!e) continue;
+            extents[region] = e;
+            changed = true;
+            opts.log?.(
+              `rtofs: ${region} covers ${e.south}..${e.north}°N, ${e.west}..${wrapLon(e.east)}°E (grid ${e.dLon.toFixed(3)}° × ${e.dLat.toFixed(3)}°)`
+            );
+            break;
+          }
+        } catch (err) {
+          // No connection fails the whole discovery; one product's failure leaves it unknown and goes on to the next.
+          if (isOffline(err)) throw err;
+          opts.log?.(`rtofs: could not read the extent of ${region}: ${(err as Error).message}`);
+        }
       }
     }
+  } finally {
+    if (changed) writeRtofsExtents(cacheDir, extents);
   }
-  if (changed) writeRtofsExtents(cacheDir, extents);
   return { extents, unknown: RTOFS_REGIONS.filter(r => !extents[r]) };
 }
 
