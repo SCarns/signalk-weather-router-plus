@@ -99,6 +99,24 @@ test('an unreadable file is kept aside and counts as no choices; members that ar
   }
 });
 
+test('a file over the size cap (written outside the store) is kept aside, so writes work again (PR #60 review)', () => {
+  const dir = tmp();
+  try {
+    const store = new SharedPrefsStore(dir);
+    const big = JSON.stringify({ polarPath: 'a.pol', pad: 'x'.repeat(MAX_SHARED_PREFS_BYTES) });
+    fs.writeFileSync(store.file, big);
+    assert.deepEqual(store.read(), {});
+    assert.ok(
+      fs.readdirSync(dir).some(f => f.startsWith(`${SHARED_PREFS_FILE}.corrupt-`)),
+      'kept aside'
+    );
+    assert.deepEqual(store.patch([{ op: 'add', path: '/polarPath', value: 'b.pol' }]), { polarPath: 'b.pol' });
+    assert.deepEqual(new SharedPrefsStore(dir).read(), { polarPath: 'b.pol' });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('backups keep the file: it is in the data directory itself, which tagCacheDirs never tags', () => {
   const dir = tmp();
   try {

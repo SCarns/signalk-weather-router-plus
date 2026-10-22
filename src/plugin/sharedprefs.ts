@@ -62,10 +62,18 @@ export class SharedPrefsStore {
     this.file = path.join(dataDir, SHARED_PREFS_FILE);
   }
 
-  /** The stored choices; {} while there are none. An unreadable file is kept aside and counts as none. */
+  /**
+   * The stored choices; {} while there are none. An unreadable file is kept aside and counts as none, and so is one
+   * over MAX_SHARED_PREFS_BYTES (only written outside this store): read, it would be served whole and refuse every
+   * write (413), as a patch is checked against the size of the result.
+   */
   read(): SharedPrefs {
     let text: string;
     try {
+      if (fs.statSync(this.file).size > MAX_SHARED_PREFS_BYTES) {
+        fs.renameSync(this.file, `${this.file}.corrupt-${Date.now()}`);
+        return {};
+      }
       text = fs.readFileSync(this.file, 'utf8');
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
