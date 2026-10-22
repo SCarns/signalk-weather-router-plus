@@ -448,16 +448,16 @@ computed with what that request says, not with the user's saved Setup.
   (the old run still in use) or when nothing is loaded; hover a pill for
   the run, when it was published and when the next is due. Sources and
   when their runs are due: ECMWF at its measured publication times (see
-  [Data](#data)); RTOFS daily, by the last file the horizon needs (a pill per
-product loaded; where no product covers the vessel, the currents row says
-so, with no pill); SMOC
-  and sea level a day after their store last updated; AROME by run hour
-  as measured, the other regional models as signalk-grib-downloader
-  schedules them; tidal harmonics are fixed tables, green when loaded. Under
-  the rows, whatever needs saying, collapsed or not: *Processing new
-  forecast data: 00Z, step 12 of 37* while a new run decodes behind the
-  one in use; a red *Late:* line naming each red source; a line for a
-  check that failed while online ("ECMWF check failed at …: HTTP 503").
+  [Data](#data)); RTOFS daily, by the last file the horizon needs (a pill
+  per product loaded; where no product covers the vessel, the currents row
+  says so, with no pill); SMOC and sea level a day after their store last
+  updated; AROME by run hour as measured, the other regional models as
+  signalk-grib-downloader schedules them; tidal harmonics are fixed tables,
+  green when loaded. Under the rows, whatever needs saying, collapsed or
+  not: *Processing new forecast data: 00Z, step 12 of 37* while a new run
+  decodes behind the one in use; a red *Late:* line naming each red source;
+  a line for a check that failed while online ("ECMWF check failed at …:
+  HTTP 503").
   Under the title, the connection: blue **online** when the plugin's last
   request reached a server, grey **No internet connection since …** when
   it found none (freshness and the connection are separate: the data can

@@ -321,14 +321,22 @@ export class RtofsClient {
     let n = 0;
     const reader = r.response.body?.getReader();
     if (reader) {
-      while (n < head.length) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const take = Math.min(value.length, head.length - n);
-        head.set(value.subarray(0, take), n);
-        n += take;
+      // fetchWithRetry's timeout ends with the headers (no readBody here: only the first bytes are wanted), so a
+      // stream that stalls after them is cancelled here: the read then ends, and the short head fails to parse. A
+      // stalled read would otherwise hold the data worker's refresh, and every refresh after it (PR #68 review).
+      const stall = setTimeout(() => void reader.cancel().catch(() => undefined), this.timeoutMs);
+      try {
+        while (n < head.length) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          const take = Math.min(value.length, head.length - n);
+          head.set(value.subarray(0, take), n);
+          n += take;
+        }
+      } finally {
+        clearTimeout(stall);
+        await reader.cancel().catch(() => undefined);
       }
-      await reader.cancel().catch(() => undefined);
     }
     return rtofsExtentOfGrid(parseGrib2Grid(head.subarray(0, n)));
   }

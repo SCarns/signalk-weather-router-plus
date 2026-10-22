@@ -341,3 +341,22 @@ test('harmonic: points at their own times (per-cell prediction) equal the full-g
   assert.ok(nonzero > 250 && nodata > 0, `${nonzero} with current, ${nodata} next to the no-data cell`);
   assert.equal(cells.cacheBytes(), 0, 'the per-cell path predicts no whole grid');
 });
+
+test('rtofs: a file whose body stalls after the headers is given up at the timeout, not waited for', async () => {
+  const { RtofsClient, rtofsRunFor } = await import('./rtofs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-rtofs-stall-'));
+  // Headers, a few bytes, then nothing: the stream never ends (a server that stalls mid-body).
+  const fetchImpl = (async () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new Uint8Array([0x47, 0x52, 0x49, 0x42]));
+        },
+      }),
+      { status: 206 }
+    )) as unknown as typeof fetch;
+  const client = new RtofsClient({ cacheDir: dir, region: 'west_atl', fetchImpl, timeoutMs: 200, retries: 1 });
+  const t0 = Date.now();
+  await assert.rejects(() => client.fetchExtent(rtofsRunFor(new Date())), /not a GRIB message|no grid definition|edition/);
+  assert.ok(Date.now() - t0 < 5000, `gave up after ${Date.now() - t0} ms`);
+});
