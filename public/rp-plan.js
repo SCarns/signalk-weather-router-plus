@@ -3661,6 +3661,7 @@ function openMeteogram() {
   const box = _meteoEl('meteogram');
   if (!jobId || !_itineraryFeatures.length) { appendLog('Meteogram: no computed route on the map', 'error'); return; }
   box.hidden = false;
+  document.body.classList.add('meteogram-open');   // a phone's bottom sheet makes room (index.html)
   const step = _meteoEl('meteoStep').value || '3600';
   const fit = !(_meteo && _meteo.jobId === jobId);   // a new route, not another step for this one
   _meteo = { jobId, data: null, hoverIdx: null, keyIdx: null, panels: [] };
@@ -3690,6 +3691,7 @@ function openMeteogram() {
 function closeMeteogram() {
   _meteo = null;
   _meteoEl('meteogram').hidden = true;
+  document.body.classList.remove('meteogram-open');
   _meteoEl('meteoBody').innerHTML = '';
   meteoMarkerFeature.setGeometry(null);
 }
