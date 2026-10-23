@@ -7,7 +7,7 @@
 import { oneOpenAtATime, _apiErrorText, _fmt, _shortUtc, _polarAngles, fetchPolarAngles, fmtClock, clockParts, toClockInput, fromClockInput, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
 import { createLiveTriggers, createPassageTracker, createRouteSimulator, createTrackRecorder, haversineM, VESSEL_STALE_MS } from './rp-live.js';
 import { prefs } from './rp-prefs.js';
-import { _overlayTimeIso, centreOnVesselOnce, seaBand, notesLayer, loadNotes, avoidRing, condMarkerFeature, meteoMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
+import { _overlayTimeIso, centreOnVesselOnce, clearSearchBoat, showSearchBoat, seaBand, notesLayer, loadNotes, avoidRing, condMarkerFeature, meteoMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
 // The limit inputs and the quantity of each (used by _limitSI, below). Declared
@@ -2305,6 +2305,7 @@ function _closeJobStream() {
 function _computeUiIdle() {
   _routeComputing = false;
   _activeJobId = null;
+  clearSearchBoat();
   const btn = document.getElementById('findRoute');
   btn.textContent = 'Find Route';
   cancelBtn.style.display = 'none';
@@ -2343,6 +2344,10 @@ function attachToJob(id, jobRow) {
   _currentRouteJobId = id;
   _currentRouteName = jobRow && jobRow.request ? (jobRow.request.name || '') : ((/** @type {HTMLInputElement} */ (document.getElementById('routeName')).value || '').trim());
   appendLog('job ' + id);
+  // The search's boat waits at the start until the first stage moves it (_jobOnFrontier).
+  const st = jobRow && jobRow.request && jobRow.request.start;
+  if (st && Number.isFinite(st.lon) && Number.isFinite(st.lat)) showSearchBoat([[st.lon, st.lat]], 'starting…');
+  else clearSearchBoat();
   if (jobRow && Array.isArray(jobRow.progress)) {
     // Backfill from the status row; the SSE replay adds the rest.
     for (const p of jobRow.progress) RouteProgress.feed(p);
@@ -2350,7 +2355,8 @@ function attachToJob(id, jobRow) {
   const es = _activeJobES = new EventSource(API + '/routes/' + encodeURIComponent(id) + '/events', { withCredentials: true });
   // What the handlers share: the stream (to tell a stale one from the
   // current), timing, the line count, and the last front seen.
-  const job = { id, es, statusEl, t0: Date.now(), lineCount: 0, lastFrontLeg: -1, lastFrontStage: 0 };
+  const wps = jobRow && jobRow.request && Array.isArray(jobRow.request.waypoints) ? jobRow.request.waypoints.length : 0;
+  const job = { id, es, statusEl, t0: Date.now(), lineCount: 0, lastFrontLeg: -1, lastFrontStage: 0, legs: wps + 1 };
   const mine = handler => ev => {
     if (_activeJobES !== es) return;
     let d = null; try { d = JSON.parse(ev.data); } catch (_) {}
@@ -2388,6 +2394,7 @@ function _jobOnStatus(job, d) {
 
 function _jobOnProgress(job, p) {
   job.lineCount++;
+  if (Number(p.total) > 0) job.plannedStages = Number(p.total);
   const msg = String(p.message || '');
   appendLog((p.total ? '[' + p.stage + '/' + p.total + '] ' : '') + msg, msg.startsWith('WARNING') ? 'warn' : undefined);
   RouteProgress.feed(p);
@@ -2405,6 +2412,11 @@ function _jobOnFrontier(job, fr) {
   job.lastFrontLeg = leg;
   job.lastFrontStage = fr.stage;
   drawFront(fr, { reset: first, resetLeg: rerun ? leg : undefined });
+  // The boat at the head of this stage's best path; with waypoints, which leg it is on. Stages counted as the progress
+  // line counts them (its `total` is the planned stages; a front's is the search's cap, half as many again).
+  const legs = job.legs || 1;
+  const total = job.plannedStages ? Math.max(job.plannedStages, fr.stage) : fr.total;
+  showSearchBoat(fr.best, (legs > 1 ? 'leg ' + (leg + 1) + ' · ' : '') + (total ? 'stage ' + fr.stage + '/' + total : ''));
 }
 
 // The job finished: log the summary, fetch the route (and the skeleton),
