@@ -37,10 +37,11 @@ import { OnDemandLand } from '../geo/landcache';
 import { PolarDiagram } from '../vessel/polar';
 import { HarmonicCurrentSource } from '../currents/harmonic';
 import { CurrentStack } from '../currents/stack';
-import { RtofsClient, RtofsCurrentSource, rtofsForRegion } from '../currents/rtofs';
+import { RtofsCurrentSource, rtofsSetForConfig } from '../currents/rtofs';
 import { SmocCurrentSource } from '../currents/smoc';
 import { TideSource } from '../tides/sealevel';
 import { type MainToWorker, type WorkerRole, type WorkerToMain } from './protocol';
+import { rtofsLoadSame, smocLoadSame } from './config';
 import { setNetworkObserver } from '../data/http';
 import { noteNetwork, requireInit } from './worker/state';
 import { refreshForecast } from './worker/forecast';
@@ -58,6 +59,7 @@ import {
 import { makeSeaLevelClient, refreshTides, tideSettings } from './worker/tides';
 import { refreshRegional } from './worker/regional';
 import { route } from './worker/route';
+import { refreshQueue } from './worker/refreshqueue';
 import { buildTile, dataStatus, query } from './worker/query';
 import type { WorkerState } from './worker/state';
 
@@ -93,7 +95,7 @@ const st: WorkerState = {
   log: (level, message) => send({ type: 'log', level, message: `[${role}] ${message}` }),
   config: null,
   client: null,
-  rtofsClient: null,
+  rtofsClients: new Map(),
   run: null,
   runInfo: null,
   forecastMemory: { heldBytes: 0, last: null },
@@ -104,7 +106,8 @@ const st: WorkerState = {
   polar: null,
   landCache: null,
   harmonic: [],
-  rtofs: null,
+  rtofs: [],
+  rtofsChoice: null,
   smocClient: null,
   smoc: null,
   vesselPos: null,
@@ -167,13 +170,9 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
         cacheDir: path.join(msg.cacheDir, 'ecmwf'),
         log: m => st.log('debug', `ecmwf: ${m}`),
       });
-      st.rtofsClient = st.config.currents.rtofsEnabled
-        ? new RtofsClient({
-            cacheDir: path.join(msg.cacheDir, 'rtofs'),
-            region: st.config.currents.rtofsRegion,
-            log: m => st.log('debug', m),
-          })
-        : null;
+      st.rtofsClients = new Map();
+      st.rtofs = [];
+      st.rtofsChoice = null;
       st.polar = null;
       if (st.config.polarFile) {
         st.polar = PolarDiagram.load(st.config.polarFile);
@@ -235,29 +234,34 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       const prev = requireInit(st).config;
       st.config = msg.config;
       if (msg.reload.currents) {
-        st.rtofsClient = st.config.currents.rtofsEnabled
-          ? new RtofsClient({
-              cacheDir: st.rtofsClient?.cacheDir ?? path.join(st.cacheRoot, 'rtofs'),
-              region: st.config.currents.rtofsRegion,
-              log: m => st.log('debug', m),
-            })
-          : null;
-        st.rtofs = null;
-        st.smocClient = makeSmocClient(st, st.config);
-        st.smoc = null;
+        // Only what the change concerns is loaded again: SMOC when a SMOC setting changed, every RTOFS product when
+        // the RTOFS horizon or step changed or it was turned on or off; extra products are added or dropped alone.
+        const smocSame = smocLoadSame(prev, st.config);
+        const rtofsSame = rtofsLoadSame(prev, st.config);
+        if (!rtofsSame) {
+          st.rtofsClients = new Map();
+          st.rtofs = [];
+        }
+        if (!smocSame) {
+          st.smocClient = makeSmocClient(st, st.config);
+          st.smoc = null;
+        }
         rebuildStack(st);
         if (msg.position !== undefined) st.vesselPos = msg.position;
         // Route worker: SMOC comes back from the data worker (relayed 'smoc').
-        if (st.role === 'data') {
+        if (st.role === 'data' && !smocSame) {
           sendSmoc(st);
           await refreshSmoc(st);
         }
-        await refreshRtofs(st, st.role === 'data');
-        sendRtofs(st); // off, another region or the same run again: the other workers follow the data worker
+        const relayed = await refreshRtofs(st, st.role === 'data');
+        // The products may be the same under new extra products: the other workers check a set against the setting
+        // it was loaded under, so it is relayed again (once).
+        const extraSame = prev.currents.rtofsExtra.join(',') === st.config.currents.rtofsExtra.join(',');
+        if (!relayed && (!rtofsSame || !extraSame)) sendRtofs(st);
         sendCurrents(st);
         st.log(
           'info',
-          `currents reloaded for the new settings (SMOC ${st.config.currents.smocEnabled ? `${st.config.currents.smocStepS / HOUR_S} h steps, ${st.config.currents.smocHorizonS / HOUR_S} h, ±${st.config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${st.config.currents.rtofsEnabled ? st.config.currents.rtofsRegion : 'off'})`
+          `currents reloaded for the new settings (SMOC ${st.config.currents.smocEnabled ? `${st.config.currents.smocStepS / HOUR_S} h steps, ${st.config.currents.smocHorizonS / HOUR_S} h, ±${st.config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${st.config.currents.rtofsEnabled ? st.rtofs.map(r => r.product).join(', ') || 'no product' : 'off'})`
         );
       }
       if (msg.reload.tides && st.role === 'tiles') {
@@ -321,11 +325,11 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       return;
     }
     case 'rtofs': {
-      // Route / tiles worker: the data worker's RTOFS run (shared memory).
+      // Route / tiles worker: the data worker's RTOFS products (shared memory).
       if (st.role === 'data') return;
       const cur = requireInit(st).config.currents;
-      const run = rtofsForRegion(msg.rtofs, cur.rtofsEnabled, cur.rtofsRegion);
-      st.rtofs = run ? RtofsCurrentSource.fromSerialized(run) : null;
+      const set = rtofsSetForConfig(msg.rtofs, cur.rtofsEnabled, cur.rtofsExtra);
+      st.rtofs = set ? set.runs.map(r => RtofsCurrentSource.fromSerialized(r)) : [];
       rebuildStack(st);
       sendCurrents(st);
       return;
@@ -386,24 +390,17 @@ const logFailure = (msg: MainToWorker, err: unknown): void => {
  * asked for while one runs is done once after it.
  */
 let background: Promise<void> = Promise.resolve();
-let refreshQueued: { force: boolean } | null = null;
 function inBackground(msg: MainToWorker, fn: () => Promise<void>): void {
   background = background.then(fn).catch(err => logFailure(msg, err));
 }
-function queueRefresh(msg: Extract<MainToWorker, { type: 'refresh' }>): void {
-  if (msg.position !== undefined) st.vesselPos = msg.position;
-  if (refreshQueued) {
-    refreshQueued.force ||= msg.force ?? false;
-    return;
-  }
-  const queued = { force: msg.force ?? false };
-  refreshQueued = queued;
-  inBackground(msg, async () => {
-    refreshQueued = null;
-    await refresh(st, queued.force);
+const queueRefresh = refreshQueue({
+  inBackground: fn => inBackground({ type: 'refresh' }, fn),
+  setPosition: pos => (st.vesselPos = pos),
+  run: async force => {
+    await refresh(st, force);
     st.send({ type: 'data-status', status: dataStatus(st) });
-  });
-}
+  },
+});
 
 let chain: Promise<void> = Promise.resolve();
 port.on('message', (msg: MainToWorker) => {

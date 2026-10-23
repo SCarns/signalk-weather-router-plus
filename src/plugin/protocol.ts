@@ -24,7 +24,7 @@ import type { SearchPreset } from '../engine/search/presets';
 import type { BBox } from '../geo/geodesy';
 import type { DecodedIndex } from '../data/decoded';
 import type { SerializedSmoc, SmocStatus } from '../currents/smoc';
-import type { SerializedRtofs } from '../currents/rtofs';
+import type { SerializedRtofsSet } from '../currents/rtofs';
 import type { SerializedHarmonic } from '../currents/harmonic';
 import type { TideStatus } from '../tides/sealevel';
 import type { ArcoRun } from '../data/arco';
@@ -300,8 +300,22 @@ export interface SourceCheck {
   reason: string | null;
 }
 
-/** The data worker's sources, by the key their check is kept under. */
-export type CheckedSource = 'ecmwf' | 'smoc' | 'rtofs' | 'tides';
+/** The data worker's sources, by the key their check is kept under: RTOFS per product (`rtofs:west_atl`). */
+export type CheckedSource = 'ecmwf' | 'smoc' | 'tides' | `rtofs:${string}`;
+
+/**
+ * RTOFS as the data worker chose it: the product that contains the vessel
+ * (null, with the reason, when there is no position or none does), the
+ * extra products from the settings, each loaded product's run (yyyy-mm-dd),
+ * and the products whose extent is not known yet.
+ */
+export interface RtofsStatus {
+  auto: string | null;
+  autoReason: string | null;
+  extra: string[];
+  runs: { product: string; run: string }[];
+  unknownExtents: string[];
+}
 
 /** What the data worker's own requests found about the connection (http.ts setNetworkObserver). */
 export interface Connectivity {
@@ -350,7 +364,8 @@ export interface DataStatus {
     /** CMEMS SMOC only: run, resident / on-demand areas, memory, downloads. */
     smoc?: SmocStatus;
   }[];
-  rtofsRun: string | null;
+  /** null when RTOFS is off. */
+  rtofs: RtofsStatus | null;
   /** On-demand overlay land rasters (LRU). */
   land: LandCacheStatus | null;
   /** Copernicus Marine sea level (tides): run, resident / on-demand map areas, point cache, downloads; null when off or not loaded. */
@@ -390,8 +405,8 @@ export type MainToWorker =
   | { type: 'refresh'; force?: boolean; position?: VesselPosition | null }
   /** route worker: adopt the data worker's SMOC run and resident area (shared memory, relayed by the main thread). */
   | { type: 'smoc'; smoc: SerializedSmoc | null }
-  /** The data worker's RTOFS run (SharedArrayBuffer views: relaying shares, not copies). */
-  | { type: 'rtofs'; rtofs: SerializedRtofs | null }
+  /** The data worker's RTOFS products (SharedArrayBuffer views: relaying shares, not copies). */
+  | { type: 'rtofs'; rtofs: SerializedRtofsSet | null }
   /** route worker: adopt the data worker's tidal-harmonic sources (shared constituent blocks, relayed by the main thread). */
   | { type: 'harmonic'; sources: SerializedHarmonic[] }
   /** route worker: the decoded run to read route areas from (null: none yet). */
@@ -429,12 +444,13 @@ export type WorkerToMain =
   | { type: 'refresh-error'; message: string }
   /** data worker: forecast loading progress (null when it stops, done or failed). */
   | { type: 'forecast-loading'; loading: ForecastLoading | null }
-  | { type: 'currents'; status: DataStatus['currents']; rtofsRun: string | null }
+  /** `rtofsRuns`: each loaded RTOFS product and its run ("west_atl 2026-10-22"). */
+  | { type: 'currents'; status: DataStatus['currents']; rtofsRuns: string[] }
   | { type: 'data-status'; status: DataStatus }
   /** data worker: SMOC run / resident area changed (SharedArrayBuffer views: relaying shares, not copies). */
   | { type: 'smoc'; smoc: SerializedSmoc | null }
-  /** data worker: the RTOFS run loaded (SharedArrayBuffer views, relayed to the route and tiles workers). */
-  | { type: 'rtofs'; rtofs: SerializedRtofs | null }
+  /** data worker: the RTOFS products loaded (SharedArrayBuffer views, relayed to the route and tiles workers). */
+  | { type: 'rtofs'; rtofs: SerializedRtofsSet | null }
   /** data worker: the tide run in use (relayed to tiles workers, which open it themselves). */
   | { type: 'tides-run'; run: ArcoRun | null }
   /** data worker: tidal-harmonic sources loaded (shared constituent blocks). */

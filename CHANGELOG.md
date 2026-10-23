@@ -85,6 +85,71 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **One horizon for every source** (the owner's decision, 2026-10-22;
+  `config.ts`, `settings.ts`). The forecast horizon is now SMOC's, RTOFS's and
+  the tide map's too, each to the end of its own data when that comes first
+  (SMOC's run, about 10 days; RTOFS's last file, 144 h; the tide run), and the
+  map's tide tiles and tide chart stop there too instead of at the end of the
+  tide run. The SMOC horizon, RTOFS horizon and tide map horizon settings are
+  gone (a stored value is ignored). A horizon change reloads currents and
+  tides as well as the forecast. On brain the three had drifted apart (72 h,
+  115 h and 24 h against a 72 h forecast): RTOFS waited each day for its
+  `f144` file, about 15:40Z, and the tide tiles ran 7.5 days hourly. The tide
+  map now holds the forecast's horizon (72 h by default, 24 h before), about
+  three times the memory at the default.
+- **RTOFS follows the vessel** (issue #61; `currents/rtofs.ts`,
+  `plugin/worker/currents.ts`). The RTOFS regional product loaded is the one
+  that contains the vessel, the finest grid where two overlap (`samoa`, not
+  the 1° `trop_paci_lowres`, around Fiji), and it changes at the next
+  refresh round when the vessel moves into another. Where no product covers
+  the vessel (Europe, the Mediterranean, the Indian Ocean, the South
+  Atlantic, Australia) nothing is downloaded for its position (extra
+  products still load), and the header's currents row
+  says so with no pill. Before, one product, `west_atl` by default, was
+  downloaded and decoded wherever the vessel was: a boat in Fiji fetched
+  3 × 38,387,040 bytes of West Atlantic currents a day it could never use.
+  Each product's extent is read from the grid definition at the start of
+  its `f024` file (a 4 KB range request, once; kept in the cache's
+  `extents.json`).
+- **A refresh as soon as the vessel's position is known** (`index.ts`
+  `checkPosition`). The refresh round at start often ran before Signal K had
+  the first fix (brain, 2026-10-22: the round 12 s after the start), and the
+  position was read again only at the next round, up to 15 min later: SMOC
+  had no resident area and RTOFS no product until then. The position is now
+  looked at every 30 s between rounds; a first fix, or a move into another
+  RTOFS product, refreshes at once.
+- **A currents settings change reloads only what it concerns**
+  (`worker.ts` `config`, `config.ts` `smocLoadSame` / `rtofsLoadSame`).
+  Every currents setting emptied SMOC and RTOFS and loaded both again: ticking
+  an extra RTOFS product on brain (2026-10-22) also decoded the product
+  already loaded and reloaded SMOC's resident area, and Signal K's RSS went
+  from 1,040,720 kB to 2,239,440 kB before it settled at 1,160,704 kB three
+  minutes later. Now SMOC is loaded again only for a SMOC setting, the RTOFS
+  products only for the RTOFS horizon, step or switch; an extra product is
+  added or dropped alone.
+- **A settings change replaces only the map tiles made from what changed**
+  (`tiles.ts` `tileGenerationKeys`). Every tile group's key also carried a
+  counter bumped by any settings change that reloaded the forecast, currents
+  or tides: ticking an RTOFS product on brain (2026-10-22) built 30,800 wind
+  and wave tiles and 14,988 tide tiles again besides the 15,378 current
+  tiles. Each group's key is now only what its tiles are made from: the
+  forecast's cycle, fields and last hour; the current sources and runs and
+  the SMOC and RTOFS steps and RTOFS horizon; the tide run.
+- **Extra RTOFS products** (`currents.rtofsExtra`, Settings → Currents →
+  *Also load RTOFS products*): products loaded wherever the vessel is, for a
+  passage planned elsewhere, each with its area, daily download (measured on
+  the 2026-10-21 run) and memory beside it. It replaces `currents.rtofsRegion`:
+  a settings.json or old plugin config that chose a product other than
+  `west_atl` (the old default, which a stored file cannot tell from a choice)
+  gets it as an extra product. Settings have a new type for it, `enumList`
+  (a list of `enum` values, checkboxes on the Settings tab; `enumHelp` for
+  the text beside each).
+- **Each RTOFS product is its own current source** (`RTOFS-<product>`,
+  priority 2, finest first), with its own freshness pill and its own check
+  (`/api/status` `checks` `rtofs:<product>`). `/api/status` `rtofs_run` is
+  replaced by `rtofs`: `{auto, auto_reason, extra, runs: [{product, run}],
+  unknown_extents}`. The route and tiles workers and the chart-mesh process
+  use every product loaded; a mesh leg reads only the products its box meets.
 - **Setup choices are kept per Signal K user** (`public/rp-prefs.js`).
   The polar, sail or power, the power boat, the Route → Options settings
   and the search and router choices were kept in the browser's
@@ -131,6 +196,11 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **RTOFS products across the antimeridian answered on one side only**
+  (`RtofsCurrentSource.contains`). The product's box was tested with plain
+  longitudes, so `alaska`, `arctic`, `bering`, `samoa` and `trop_paci_lowres`
+  (east edge past 180°) had no current east of the antimeridian. It is now
+  tested as an offset east of the box's west edge.
 - **Deleting the route on the map leaves nothing of it in use**
   (`_clearDisplayedRoute()` in `public/rp-plan.js`). Itinerary → Delete
   cleared the map and the result strip but kept the route's state, as

@@ -10,11 +10,11 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { HarmonicCurrentSource } from '../currents/harmonic';
-import { loadRtofsSteps, RtofsClient, RtofsCurrentSource, rtofsRunFor } from '../currents/rtofs';
+import { extentMeets, extentOfField, loadRtofsSteps, RtofsClient, RtofsCurrentSource, rtofsRunFor } from '../currents/rtofs';
 import { SmocClient, SmocCurrentSource, type SmocRun, type SmocSettings } from '../currents/smoc';
 import type { ArcoLayout, ArcoResolution } from '../data/arco';
 import { CurrentStack } from '../currents/stack';
-import type { CurrentSourceLike } from '../currents/types';
+import type { CurrentSourceLike, SourceBBox } from '../currents/types';
 import { openDecodedRun } from '../data/decoded';
 import type { CurrentSource } from '../engine/environment';
 import { NoCurrent } from '../engine/environment';
@@ -82,7 +82,8 @@ export interface MeshLegTask {
       /** The resolution and layout that answered the area in the worker (SmocCurrentSource.answering): the chunks on disk. */
       as: { res: ArcoResolution; layout: ArcoLayout } | null;
     } | null;
-    rtofs: { cacheDir: string; region: string; runMs: number; horizonS: number; stepS: number } | null;
+    /** The RTOFS products the worker holds (finest first), each read from the cache for the leg's box. */
+    rtofs: { cacheDir: string; runs: { product: string; runMs: number; bbox: SourceBBox }[]; horizonS: number; stepS: number } | null;
     harmonicDir: string | null;
   } | null;
 }
@@ -229,24 +230,24 @@ async function loadCurrents(t: MeshLegTask, box: BBox, progress: MeshLegArgs['pr
       );
     }
   }
-  if (t.currents.rtofs) {
-    const c = t.currents.rtofs;
+  const rtofs = t.currents.rtofs;
+  for (const r of rtofs?.runs ?? []) {
+    // A product the leg's box is outside has nothing for it.
+    if (!extentMeets(r.bbox, area)) continue;
     try {
       const client = new RtofsClient({
-        cacheDir: c.cacheDir,
-        region: c.region,
+        cacheDir: rtofs!.cacheDir,
+        region: r.product,
         fetchImpl: () => Promise.reject(new Error('the mesh process never uses the network')),
       });
-      const steps = await loadRtofsSteps(client, rtofsRunFor(new Date(c.runMs)), area, c.horizonS, c.stepS);
+      const steps = await loadRtofsSteps(client, rtofsRunFor(new Date(r.runMs)), area, rtofs!.horizonS, rtofs!.stepS);
       if (steps.length) {
-        const g = steps[0].u;
-        const extent = { south: g.lat0, west: g.lon0, north: g.lat0 + (g.nLat - 1) * g.dLat, east: g.lon0 + (g.nLon - 1) * g.dLon };
-        const src = new RtofsCurrentSource(`RTOFS-${c.region}`, c.runMs, extent, steps);
+        const src = new RtofsCurrentSource(r.product, r.runMs, extentOfField(steps[0].u), steps);
         sources.push(src);
-        progress(0, 0, `${t.tag}chart mesh: RTOFS read from the cache: {dataSize:${src.bytes()}}`);
+        progress(0, 0, `${t.tag}chart mesh: RTOFS ${r.product} read from the cache: {dataSize:${src.bytes()}}`);
       }
     } catch (err) {
-      progress(0, 0, `WARNING: ${t.tag}chart mesh: RTOFS not read from the cache (${(err as Error).message})`);
+      progress(0, 0, `WARNING: ${t.tag}chart mesh: RTOFS ${r.product} not read from the cache (${(err as Error).message})`);
     }
   }
   return sources.length ? new CurrentStack(sources) : new NoCurrent();

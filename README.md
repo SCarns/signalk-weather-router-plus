@@ -176,7 +176,7 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   |---|---|---|
   | 10 (from the file) | user-installed tidal harmonics `.npz`, e.g. NECOFS GoM3 | its grid |
   | 3 | **Copernicus Marine SMOC** (below) | worldwide, 80°S–90°N |
-  | 2 | NOAA Global RTOFS, depth-averaged `ubaro`/`vbaro`, one regional product | the product's box |
+  | 2 | NOAA Global RTOFS, depth-averaged `ubaro`/`vbaro`: the regional product that contains the vessel (the finest where two overlap), plus any extra products set; where no product covers the vessel, only the extra products | each product's box, read from its file |
   | 0 (from the file) | FES2014 harmonic extract `.npz` | its grid |
 
   **SMOC** is product `GLOBAL_ANALYSISFORECAST_PHY_001_024`, dataset
@@ -448,14 +448,16 @@ computed with what that request says, not with the user's saved Setup.
   (the old run still in use) or when nothing is loaded; hover a pill for
   the run, when it was published and when the next is due. Sources and
   when their runs are due: ECMWF at its measured publication times (see
-  [Data](#data)); RTOFS daily, by the last file the horizon needs; SMOC
-  and sea level a day after their store last updated; AROME by run hour
-  as measured, the other regional models as signalk-grib-downloader
-  schedules them; tidal harmonics are fixed tables, green when loaded. Under
-  the rows, whatever needs saying, collapsed or not: *Processing new
-  forecast data: 00Z, step 12 of 37* while a new run decodes behind the
-  one in use; a red *Late:* line naming each red source; a line for a
-  check that failed while online ("ECMWF check failed at …: HTTP 503").
+  [Data](#data)); RTOFS daily, by the last file the horizon needs (a pill
+  per product loaded; where no product covers the vessel, the currents row
+  says so, with no pill); SMOC and sea level a day after their store last
+  updated; AROME by run hour as measured, the other regional models as
+  signalk-grib-downloader schedules them; tidal harmonics are fixed tables,
+  green when loaded. Under the rows, whatever needs saying, collapsed or
+  not: *Processing new forecast data: 00Z, step 12 of 37* while a new run
+  decodes behind the one in use; a red *Late:* line naming each red source;
+  a line for a check that failed while online ("ECMWF check failed at …:
+  HTTP 503").
   Under the title, the connection: blue **online** when the plugin's last
   request reached a server, grey **No internet connection since …** when
   it found none (freshness and the connection are separate: the data can
@@ -1516,7 +1518,7 @@ while its data changed is deleted). They are
 started when the walk has a tile to build and exit when it is complete,
 so the memory they used goes back to the system (a thread's memory stays
 with Signal K until it restarts). While they run, each holds its own copy
-of the current, tide and RTOFS data. Folders of tiles made obsolete by a
+of the current, tide and RTOFS data (every RTOFS product loaded). Folders of tiles made obsolete by a
 new forecast, currents run or tide run are normally deleted by a
 short-lived child process; if that process cannot run, the deletion
 falls back to Signal K's own process. The boat's last position is kept in `last-position.json` in
@@ -1532,9 +1534,9 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 | Group | Settings (default) | A change… |
 |---|---|---|
 | `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2), under-keel clearance (0.5 m, 0–3 m), overhead clearance (2 m, 0–10 m) | applies to the next route |
-| `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (15 min = 900 s; every source is checked at it: ECMWF, SMOC, RTOFS, sea level; an existing settings.json keeps its value), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
-| `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
-| `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
+| `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify; every source's horizon: SMOC, RTOFS and the tide map follow it, each to the end of its own data), check interval (15 min = 900 s; every source is checked at it: ECMWF, SMOC, RTOFS, sea level; an existing settings.json keeps its value), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast (the horizon also currents and tides); the interval restarts the timer |
+| `currents` | SMOC on, SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on (the product that contains the vessel is loaded, and changes as the vessel moves), also load RTOFS products (none; a list of products loaded wherever the vessel is), RTOFS step (3 h) | reloads currents |
+| `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°) | reloads tides only |
 | `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), tacking penalty (30 s, charged per tack or gybe by both routers), buffer from land (0 m: the route keeps at least this far from the coastline; a start or end closer is moved out to it, a passage narrower than twice it closes), buffer from unusable water (0 m: on a mesh leg the route keeps at least this far from every triangle the boat cannot use), drawbridges (ask: plan as open and report the ones crossed; open; avoid), wait at a drawbridge (0 s), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (off), comfort weight (1, 0 = off), shortcut may be slower by (0.05 = 5%), finished routes kept (50), max wind (none), max wave height (none) | applies to the next route |
 | `publish` | save to the Resources API (on), route name prefix (`WRP`), notifications (on) | applies to the next route |
 
@@ -2442,13 +2444,13 @@ Plugin, forecast, currents, tides and queue status. Access: readonly.
 | `forecast` | null until a decoded run is ready; see below |
 | `process_rss_bytes` | resident memory of the Signal K process, bytes |
 | `forecast_error` | last forecast refresh error, or null; cleared only by a check that reached ECMWF (the newest run in use, or a new one loaded) |
-| `checks` | what the last check of each source found: `{ecmwf, smoc, rtofs, tides}`, each `{outcome, at, reason}`; `outcome`: `newest`, `could-not-check` (the server could not be asked: no connection, or it failed; the run in use stays), `new-run` or `failed` (the server answered but the new run could not be loaded) |
+| `checks` | what the last check of each source found: `{ecmwf, smoc, tides}` and `rtofs:<product>` per RTOFS product loaded, each `{outcome, at, reason}`; `outcome`: `newest`, `could-not-check` (the server could not be asked: no connection, or it failed; the run in use stays), `new-run` or `failed` (the server answered but the new run could not be loaded) |
 | `freshness` | per source in use: `{source, rows, run, published_at, next_due_at, state, reason}`; `rows`: the header rows it colours (`wind`, `waves`, `currents`, `tides`); `state`: `green` (more than 30 min before the next run is due), `orange` (from then until 60 min after), `red` (later, or nothing loaded; `reason` then says why when the times do not) |
 | `connectivity` | `{online, since, lastOkAt, reason}`: whether the data worker's last request reached a server (`online` null before the first), since when, and why not; separate from freshness |
 | `forecast_loading` | while the data worker gets a forecast: `{phase, why, cycle, done, total, started_at, text}`. `phase`: `checking` (finding the newest ECMWF cycle) or `decoding` (step `done` of `total`, downloading what the GRIB cache lacks); `why`: `first` (no decoded run on disk yet), `redecode` (the runs on disk do not fit the forecast settings or are incomplete) or `update` (a newer cycle while the run in use keeps serving); `text`: the same as one line, e.g. `"loading the forecast: decoding the 06Z cycle, step 12 of 37 (first start)"`. Null when not loading |
 | `currents` | the data worker's current sources in priority order: `{name, priority, resolutionM, bbox, validFrom, validTo}`; the CMEMS SMOC entry adds `smoc` (run, resident and on-demand areas, memory, downloads) |
 | `currents_route_worker` | the same for the route worker |
-| `rtofs_run` | RTOFS run in use, or null |
+| `rtofs` | null when RTOFS is off, else `{auto, auto_reason, extra, runs, unknown_extents}`: the product that contains the vessel (null, with `auto_reason`, when there is no position or no product covers it), the extra products set, each product loaded as `{product, run}` (its current source is `RTOFS-<product>`), and the products whose extent is not known yet |
 | `tides` | Copernicus Marine sea-level source status (run, resident and on-demand areas, point cache, memory, downloads), or null when off or not loaded |
 | `tides_enabled` | the tides setting, or null before start |
 | `tides_error` | last tide source error, or null |
@@ -2864,7 +2866,7 @@ Sent with `Cache-Control: no-store`. `200`: `{values, schema}`.
 | `key` | `group.key`, e.g. `vessel.motorSpeed` |
 | `group` | group id |
 | `label`, `help` | text for display |
-| `type` | `number`, `integer`, `boolean`, `string` or `enum` |
+| `type` | `number`, `integer`, `boolean`, `string`, `enum` or `enumList` (a list of `enum` values, each at most once, in the `enum`'s order) |
 | `unit` | SI unit of the value (`m`, `m/s`, `s`, `deg`); absent for dimensionless values |
 | `quantity` | display quantity for unit conversion: `speed`, `depth`, `wave_height`, `short_distance`, `ratio`, `megabytes`, `hours`, `minutes`, `seconds`, `angle` or `count` |
 | `min`, `max` | range |
@@ -2873,6 +2875,7 @@ Sent with `Cache-Control: no-store`. `200`: `{values, schema}`.
 | `default` | default value |
 | `nullable` | null is allowed (e.g. no maximum wave height) |
 | `enum` | allowed strings |
+| `enumHelp` | text shown beside each `enum` value (unit tokens as in `help`) |
 | `maxLength` | for strings |
 | `reload` | what a change re-does: `forecast`, `currents`, `tides`, `refresh_timer`, `jobs`, `next_job` (nothing now; the next route uses it) or `cache` (used at the next cache prune) |
 

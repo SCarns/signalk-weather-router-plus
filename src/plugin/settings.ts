@@ -46,20 +46,17 @@ export interface AppSettings {
   };
   currents: {
     smocEnabled: boolean;
-    smocHorizon: number;
     smocStep: number;
     smocHalfWidth: number;
     rtofsEnabled: boolean;
-    rtofsRegion: string;
-    rtofsHorizon: number;
+    /** RTOFS products loaded wherever the vessel is, besides the one that contains it. */
+    rtofsExtra: string[];
     rtofsStep: number;
   };
   tides: {
     enabled: boolean;
     /** Half-width of the resident tide-height map area around the vessel, degrees. */
     halfWidth: number;
-    /** How far ahead the resident tide-height map area reaches, s. */
-    horizon: number;
   };
   routing: {
     stages: number;
@@ -132,7 +129,8 @@ export interface SettingSpec {
   key: string;
   group: SettingsGroup;
   label: string;
-  type: 'number' | 'integer' | 'boolean' | 'string' | 'enum';
+  /** enumList: a list of `enum` values (checkboxes), each at most once, kept in the enum's order. */
+  type: 'number' | 'integer' | 'boolean' | 'string' | 'enum' | 'enumList';
   /** SI unit of the stored value ('m', 'm/s', 's', 'deg'), absent for dimensionless values. */
   unit?: string;
   quantity?: Quantity;
@@ -149,9 +147,11 @@ export interface SettingSpec {
    * the Defaults tab are sliders, not text boxes).
    */
   step?: number;
-  default: number | boolean | string | null;
+  default: number | boolean | string | readonly string[] | null;
   nullable?: boolean;
   enum?: readonly string[];
+  /** enum / enumList: text shown beside each value (unit tokens as in `help`). */
+  enumHelp?: Readonly<Record<string, string>>;
   maxLength?: number;
   /**
    * Shown under the setting. Quantities in it are tokens {<Signal K unit
@@ -160,6 +160,8 @@ export interface SettingSpec {
    */
   help: string;
   reload: ReloadKind;
+  /** What else a change re-does (the forecast horizon is every source's horizon). */
+  alsoReload?: readonly ReloadKind[];
 }
 
 export const SETTINGS_GROUPS: { id: SettingsGroup; label: string; help: string }[] = [
@@ -168,7 +170,7 @@ export const SETTINGS_GROUPS: { id: SettingsGroup; label: string; help: string }
   {
     id: 'currents',
     label: 'Currents',
-    help: 'Copernicus Marine SMOC (worldwide surface currents on a {angle:0.00145444} grid, including tides and Stokes drift; primary) and NOAA Global RTOFS (regional; backup). Tidal harmonics come from the directory set in the Signal K plugin config and take precedence where they cover.',
+    help: 'Copernicus Marine SMOC (worldwide surface currents on a {angle:0.00145444} grid, including tides and Stokes drift; primary) and NOAA Global RTOFS (regional products; backup where SMOC has no data). Tidal harmonics come from the directory set in the Signal K plugin config and take precedence where they cover.',
   },
   {
     id: 'tides',
@@ -182,6 +184,28 @@ export const SETTINGS_GROUPS: { id: SettingsGroup; label: string; help: string }
   },
   { id: 'publish', label: 'Publishing', help: 'What happens with a finished route.' },
 ];
+
+/**
+ * Each RTOFS product's area (its grid as the decoder places it, from the
+ * 2026-10-21 run's f024 headers: rtofsExtentOfGrid), its daily download (f024 + f048 + f072, the files a 72 h
+ * horizon needs, measured on that run) and the memory its steps hold at
+ * the default 72 h and 3 h step (columns × rows × u, v × 4 bytes × 24
+ * steps: worked out, not measured; west_atl's 46 MB was measured on brain
+ * in 0.1.2-beta.1).
+ */
+const RTOFS_PRODUCT_HELP: Readonly<Record<string, string>> = {
+  west_atl: '10–44.72°N, 100–54.08°W; {dataSize:115.2e6} a day, {dataSize:48.0e6} in memory',
+  west_conus: '10–59.92°N, 150–100.08°W; {dataSize:165.5e6} a day, {dataSize:75.0e6} in memory',
+  alaska: '40–84.7°N, 140°E–115.3°W; {dataSize:32.0e6} a day, {dataSize:10.1e6} in memory',
+  arctic: '60–79.92°N, 160°E–124.08°W; {dataSize:123.7e6} a day, {dataSize:45.6e6} in memory',
+  bering: '40–67.12°N, 155°E–149.08°W; {dataSize:140.6e6} a day, {dataSize:45.7e6} in memory',
+  guam: '0–29.92°N, 130–179.92°E; {dataSize:134.3e6} a day, {dataSize:45.0e6} in memory',
+  gulf_alaska: '40–62°N, 165–123.5°W; {dataSize:1.8e6} a day, {dataSize:0.7e6} in memory',
+  honolulu: '0–39.92°N, 180–130.08°W; {dataSize:175.8e6} a day, {dataSize:60.0e6} in memory',
+  hudson_baffin: '40–77.75°N, 109–27.25°W; {dataSize:16.1e6} a day, {dataSize:9.6e6} in memory',
+  samoa: '30–0.08°S, 170°E–145.28°W; {dataSize:119.2e6} a day, {dataSize:40.3e6} in memory',
+  trop_paci_lowres: '40°S–39°N, 130°E–111°W (1° grid); {dataSize:5.6e6} a day, {dataSize:1.8e6} in memory',
+};
 
 export const SETTINGS_SPEC: readonly SettingSpec[] = [
   {
@@ -252,8 +276,9 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     step: HOUR_S,
     multipleOf: HOUR_S,
     default: 72 * HOUR_S,
-    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to {time:1296000}, 06z/18z runs to {time:518400}, so above {time:518400} only 00z/12z runs are used). Changing it decodes the forecast again; the decoded run on disk grows with it (about {dataSize:1.35e9} for {time:259200} and {dataSize:4.6e9} for {time:1296000} with the extra fields), memory does not.',
+    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to {time:1296000}, 06z/18z runs to {time:518400}, so above {time:518400} only 00z/12z runs are used), and with it every other source: SMOC and RTOFS currents and the tide map, each to the end of its own data when that comes first (SMOC about {time:864000}, RTOFS {time:518400}). Changing it decodes the forecast again and reloads currents and tides; the decoded run on disk grows with it (about {dataSize:1.35e9} for {time:259200} and {dataSize:4.6e9} for {time:1296000} with the extra fields), and so do the SMOC and tide areas held around the vessel.',
     reload: 'forecast',
+    alsoReload: ['currents', 'tides'],
   },
   {
     key: 'forecast.refreshInterval',
@@ -336,21 +361,6 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     reload: 'currents',
   },
   {
-    key: 'currents.smocHorizon',
-    group: 'currents',
-    label: 'SMOC horizon',
-    type: 'number',
-    unit: 's',
-    quantity: 'hours',
-    min: 6 * HOUR_S,
-    max: 240 * HOUR_S,
-    step: HOUR_S,
-    multipleOf: HOUR_S,
-    default: 72 * HOUR_S,
-    help: 'How far ahead SMOC is held (the product reaches about 10 days).',
-    reload: 'currents',
-  },
-  {
     key: 'currents.smocStep',
     group: 'currents',
     label: 'SMOC time step kept',
@@ -386,32 +396,18 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     label: 'Use RTOFS ocean currents',
     type: 'boolean',
     default: true,
-    help: 'Download NOAA Global RTOFS from NOMADS (used where SMOC has no data).',
+    help: 'Download NOAA Global RTOFS from NOMADS (used where SMOC has no data). The regional product that contains the vessel is loaded, the finest where two overlap, and changes when the vessel moves into another; where none does (Europe, the Mediterranean, the Indian Ocean, the South Atlantic, Australia) nothing is downloaded. Without a vessel position only the products below are loaded.',
     reload: 'currents',
   },
   {
-    key: 'currents.rtofsRegion',
+    key: 'currents.rtofsExtra',
     group: 'currents',
-    label: 'RTOFS regional product',
-    type: 'enum',
+    label: 'Also load RTOFS products',
+    type: 'enumList',
     enum: RTOFS_REGIONS,
-    default: 'west_atl',
-    help: 'Which regional RTOFS product to download.',
-    reload: 'currents',
-  },
-  {
-    key: 'currents.rtofsHorizon',
-    group: 'currents',
-    label: 'RTOFS horizon',
-    type: 'number',
-    unit: 's',
-    quantity: 'hours',
-    min: 24 * HOUR_S,
-    max: 144 * HOUR_S,
-    step: HOUR_S,
-    multipleOf: HOUR_S,
-    default: 72 * HOUR_S,
-    help: 'How far ahead RTOFS is loaded.',
+    enumHelp: RTOFS_PRODUCT_HELP,
+    default: [],
+    help: 'Products loaded wherever the vessel is, for a passage planned elsewhere. Each is its own daily download and stays in memory (also in each map tile builder while it runs). Sizes for the default 72 h horizon and 3 h step: the download measured on the 2026-10-21 run, the memory worked out from the grid.',
     reload: 'currents',
   },
   {
@@ -450,22 +446,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     max: 30,
     step: 1,
     default: 15,
-    help: 'Half-width of the tide-height map area kept in memory around the vessel position (hourly steps; about {dataSize:17e6} at {angle:0.261799} over {time:86400}, growing with the square of the half-width and with the horizon). Map views elsewhere load their own hour on demand.',
-    reload: 'tides',
-  },
-  {
-    key: 'tides.horizon',
-    group: 'tides',
-    label: 'Tide map horizon',
-    type: 'number',
-    unit: 's',
-    quantity: 'hours',
-    min: 6 * HOUR_S,
-    max: 240 * HOUR_S,
-    step: HOUR_S,
-    multipleOf: HOUR_S,
-    default: 24 * HOUR_S,
-    help: 'How far ahead the resident tide-height map area reaches (hourly steps; each hour of a {angle:0.523599} area downloads about {dataSize:1e6} to {dataSize:3e6} per new daily run). Map times beyond it load on demand. The conditions popup and Weather API are not limited by this.',
+    help: 'Half-width of the tide-height map area kept in memory around the vessel position (hourly steps; about {dataSize:17e6} at {angle:0.261799} over {time:86400}, growing with the square of the half-width and with the forecast horizon, which the tide map follows). Map views elsewhere load their own hour on demand.',
     reload: 'tides',
   },
 
@@ -784,6 +765,23 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
 
 const SPEC_BY_KEY = new Map(SETTINGS_SPEC.map(s => [s.key, s]));
 
+/** Two setting values are the same (lists element by element). */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((x, i) => x === b[i]);
+  return a === b;
+}
+
+/**
+ * The RTOFS product the old `currents.rtofsRegion` setting named, when it
+ * was a choice: any product but west_atl, the old default, which a stored
+ * file cannot tell from a choice (settings.json holds every value). That
+ * product is loaded as an extra product; west_atl is loaded whenever the
+ * vessel is inside it.
+ */
+function extraFromOldRegion(region: unknown): string | null {
+  return typeof region === 'string' && region !== 'west_atl' && (RTOFS_REGIONS as readonly string[]).includes(region) ? region : null;
+}
+
 export class SettingsValidationError extends Error {
   readonly errors: Record<string, string>;
   constructor(errors: Record<string, string>) {
@@ -837,7 +835,7 @@ function quantityToken(spec: SettingSpec, v: number | undefined): string {
 }
 
 /** Check one value against its spec; returns the normalised value or throws with a message. */
-export function validateValue(spec: SettingSpec, raw: unknown): number | boolean | string | null {
+export function validateValue(spec: SettingSpec, raw: unknown): number | boolean | string | string[] | null {
   switch (spec.type) {
     case 'boolean':
       if (typeof raw !== 'boolean') throw new Error('must be true or false');
@@ -852,6 +850,12 @@ export function validateValue(spec: SettingSpec, raw: unknown): number | boolean
     case 'enum': {
       if (typeof raw !== 'string' || !spec.enum!.includes(raw)) throw new Error(`must be one of ${spec.enum!.join(', ')}`);
       return raw;
+    }
+    case 'enumList': {
+      if (!Array.isArray(raw)) throw new Error(`must be a list of ${spec.enum!.join(', ')}`);
+      for (const x of raw)
+        if (typeof x !== 'string' || !spec.enum!.includes(x)) throw new Error(`must be a list of ${spec.enum!.join(', ')}`);
+      return spec.enum!.filter(x => raw.includes(x));
     }
     case 'number':
     case 'integer': {
@@ -909,7 +913,7 @@ export function mergeSettings(base: AppSettings, partial: unknown): { values: Ap
       try {
         const v = validateValue(spec, raw);
         const grp = (out as unknown as Record<string, Record<string, unknown>>)[g];
-        if (grp[k] !== v) {
+        if (!sameValue(grp[k], v)) {
           grp[k] = v;
           changed.push(key);
         }
@@ -922,10 +926,15 @@ export function mergeSettings(base: AppSettings, partial: unknown): { values: Ap
   return { values: out, changed };
 }
 
-/** Settings from a stored object, key by key; invalid or missing keys fall back to defaults and are reported. */
-export function settingsFromStored(stored: unknown): { values: AppSettings; problems: string[] } {
+/**
+ * Settings from a stored object, key by key; invalid or missing keys fall
+ * back to defaults and are reported. `notes`: settings carried over from
+ * one that no longer exists (the old RTOFS product).
+ */
+export function settingsFromStored(stored: unknown): { values: AppSettings; problems: string[]; notes: string[] } {
   const values = defaultSettings();
   const problems: string[] = [];
+  const notes: string[] = [];
   const obj = stored && typeof stored === 'object' ? (stored as Record<string, Record<string, unknown>>) : {};
   for (const spec of SETTINGS_SPEC) {
     const [g, k] = spec.key.split('.');
@@ -937,7 +946,14 @@ export function settingsFromStored(stored: unknown): { values: AppSettings; prob
       problems.push(`${spec.key}: ${(err as Error).message} (using the default)`);
     }
   }
-  return { values, problems };
+  // A settings.json from before the extra products: its one RTOFS product, when it was a choice, is loaded as one.
+  const cur = obj.currents;
+  const old = cur && typeof cur === 'object' && !('rtofsExtra' in cur) ? extraFromOldRegion(cur.rtofsRegion) : null;
+  if (old) {
+    values.currents.rtofsExtra = [old];
+    notes.push(`currents.rtofsRegion ${old} is now an extra RTOFS product (currents.rtofsExtra)`);
+  }
+  return { values, problems, notes };
 }
 
 /**
@@ -965,8 +981,10 @@ export function migrateLegacy(legacy: LegacyPluginConfig | undefined): { values:
   set(src.forecast, 'energyFields', f.energyFields);
   const c = l.currents ?? {};
   set(src.currents, 'rtofsEnabled', c.rtofsEnabled);
-  set(src.currents, 'rtofsRegion', typeof c.rtofsRegion === 'string' ? c.rtofsRegion.trim() : c.rtofsRegion);
-  set(src.currents, 'rtofsHorizon', num(c.rtofsHorizonHours, HOUR_S));
+  // The one RTOFS product of earlier versions: a choice (any but west_atl, the default) is loaded as an extra product.
+  const oldRaw = typeof c.rtofsRegion === 'string' ? c.rtofsRegion.trim() : c.rtofsRegion;
+  const oldRegion = extraFromOldRegion(oldRaw);
+  if (oldRegion) set(src.currents, 'rtofsExtra', [oldRegion]);
   set(src.currents, 'rtofsStep', num(c.rtofsStepHours, HOUR_S));
   const r = l.routing ?? {};
   set(src.routing, 'stages', num(r.stages));
@@ -985,6 +1003,8 @@ export function migrateLegacy(legacy: LegacyPluginConfig | undefined): { values:
   const values = defaultSettings();
   const migrated: string[] = [];
   const skipped: string[] = [];
+  if (oldRaw !== undefined && oldRaw !== null && oldRaw !== '' && !(RTOFS_REGIONS as readonly unknown[]).includes(oldRaw))
+    skipped.push(`currents.rtofsRegion: ${String(oldRaw)} is not an RTOFS product`);
   for (const [g, grp] of Object.entries(src)) {
     for (const [k, raw] of Object.entries(grp)) {
       const key = `${g}.${k}`;
@@ -1022,7 +1042,7 @@ export class SettingsStore {
    * plugin config) when it does not exist yet. The Signal K config file
    * is never modified. Returns what happened, for the log.
    */
-  load(legacy: LegacyPluginConfig | undefined): { created: boolean; migrated: string[]; problems: string[] } {
+  load(legacy: LegacyPluginConfig | undefined): { created: boolean; migrated: string[]; problems: string[]; notes: string[] } {
     let text: string | null = null;
     try {
       text = fs.readFileSync(this.file, 'utf8');
@@ -1037,9 +1057,9 @@ export class SettingsStore {
         parsed = null;
       }
       if (parsed && typeof parsed === 'object') {
-        const { values, problems } = settingsFromStored(parsed.values);
+        const { values, problems, notes } = settingsFromStored(parsed.values);
         this.current = values;
-        return { created: false, migrated: [], problems };
+        return { created: false, migrated: [], problems, notes };
       }
       // Unreadable: keep it aside and start again from the legacy config.
       const aside = `${this.file}.corrupt-${Date.now()}`;
@@ -1051,12 +1071,13 @@ export class SettingsStore {
         created: true,
         migrated: m.migrated,
         problems: [`settings.json was not valid JSON; moved to ${path.basename(aside)}`, ...m.skipped],
+        notes: [],
       };
     }
     const m = migrateLegacy(legacy);
     this.current = m.values;
     this.write('plugin-config');
-    return { created: true, migrated: m.migrated, problems: m.skipped };
+    return { created: true, migrated: m.migrated, problems: m.skipped, notes: [] };
   }
 
   get values(): AppSettings {
@@ -1104,7 +1125,9 @@ export function reloadsFor(changed: string[]): Set<ReloadKind> {
   const out = new Set<ReloadKind>();
   for (const k of changed) {
     const s = SPEC_BY_KEY.get(k);
-    if (s) out.add(s.reload);
+    if (!s) continue;
+    out.add(s.reload);
+    for (const r of s.alsoReload ?? []) out.add(r);
   }
   return out;
 }

@@ -452,7 +452,7 @@ test('coastal fill: generic grid helper and RTOFS atDisplay', () => {
   const mk = (vals: Float32Array): FieldGrid => ({ lat0: 40, lon0: -70, dLat: 0.1, dLon: 0.1, nLat: nR, nLon: nC, values: vals });
   const fu = mk(u);
   const fv = mk(v);
-  const rt = new RtofsCurrentSource('RTOFS-test', 0, { south: 40, west: -70, north: 40.6, east: -69.4 }, [{ validMs: 0, u: fu, v: fv }]);
+  const rt = new RtofsCurrentSource('test', 0, { south: 40, west: -70, north: 40.6, east: -69.4 }, [{ validMs: 0, u: fu, v: fv }]);
   const t = new Date(0);
   assert.deepEqual(rt.at(-69.9, 40.3, t), [0, 0], 'raw: a corner is on land');
   const d = rt.atDisplay(-69.9, 40.3, t);

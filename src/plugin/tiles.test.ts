@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
-import { roundHour, tileAt, tileBBox, tileQuery, TileService, TileStore, trimPoints, type TileId } from './tiles';
+import { roundHour, tileAt, tileBBox, tileGenerationKeys, tileQuery, TileService, TileStore, trimPoints, type TileId } from './tiles';
 
 test('tile boxes: web-map tile edges and the tile holding a point', () => {
   const b = tileBBox(1, 0, 0);
@@ -260,4 +260,45 @@ test('tile store: a root without saved totals is counted in the background', asy
   for (let i = 0; i < 100 && b.stats().files !== 3; i++) await new Promise(r => setTimeout(r, 10));
   assert.deepEqual([b.stats().files, b.stats().bytes], [3, 300]);
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('tile generations: each group changes only with what its tiles are made from', () => {
+  const base = {
+    coast: '/gshhg/L1.shp',
+    forecast: { cycleTimeMs: Date.UTC(2026, 9, 22, 6), params: ['10u', '10v', 'msl'], lastValidMs: Date.UTC(2026, 9, 26, 16) },
+    currents: {
+      sources: 'CMEMS-SMOC+RTOFS-west_atl|west_atl 2026-10-21',
+      smoc: '2026103123|true',
+      harmonicDir: '',
+      smocStepS: 10800,
+      rtofsStepS: 10800,
+      rtofsHorizonS: 414000,
+    },
+    tides: { run: '2026102823', settled: true },
+  };
+  const g0 = tileGenerationKeys(base);
+  const changed = (d: typeof base): string[] =>
+    (Object.keys(g0) as (keyof typeof g0)[]).filter(k => tileGenerationKeys(d)[k] !== g0[k]).sort();
+  // An extra RTOFS product (another source in the stack): the current tiles and point answers only.
+  assert.deepEqual(
+    changed({
+      ...base,
+      currents: { ...base.currents, sources: 'CMEMS-SMOC+RTOFS-west_atl+RTOFS-samoa|west_atl 2026-10-21,samoa 2026-10-21' },
+    }),
+    ['cur', 'pt']
+  );
+  // A step or the RTOFS horizon changes the values at some hours: the same.
+  assert.deepEqual(changed({ ...base, currents: { ...base.currents, smocStepS: 3600 } }), ['cur', 'pt']);
+  assert.deepEqual(changed({ ...base, currents: { ...base.currents, rtofsHorizonS: 259200 } }), ['cur', 'pt']);
+  // A new tide run: tides and point answers.
+  assert.deepEqual(changed({ ...base, tides: { run: '2026102923', settled: true } }), ['pt', 'tide']);
+  // A new forecast cycle, other fields, or another horizon (the run's last hour): everything drawn from the forecast.
+  assert.deepEqual(changed({ ...base, forecast: { ...base.forecast, cycleTimeMs: Date.UTC(2026, 9, 22, 12) } }), ['cur', 'pt', 'wx']);
+  assert.deepEqual(changed({ ...base, forecast: { ...base.forecast, lastValidMs: Date.UTC(2026, 9, 25, 6) } }), ['cur', 'pt', 'wx']);
+  // Another coastline: every group.
+  assert.deepEqual(changed({ ...base, coast: '/other.shp' }), ['cur', 'land', 'pt', 'tide', 'wx']);
+  // Nothing loaded yet: no generation (nothing is saved for it).
+  assert.equal(tileGenerationKeys({ ...base, forecast: null }).wx, null);
+  assert.equal(tileGenerationKeys({ ...base, currents: null }).cur, null);
+  assert.equal(tileGenerationKeys({ ...base, tides: 'off' }).tide, '/gshhg/L1.shp|off');
 });

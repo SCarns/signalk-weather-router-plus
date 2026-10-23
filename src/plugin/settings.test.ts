@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { KTS_TO_MS } from '../geo/geodesy';
-import { resolveConfig, routeVessel, selfDesignValue, type LegacyPluginConfig } from './config';
+import { resolveConfig, routeVessel, rtofsLoadSame, selfDesignValue, smocLoadSame, type LegacyPluginConfig } from './config';
 import {
   defaultSettings,
   mergeSettings,
@@ -66,7 +66,7 @@ test('defaults resolve to the same engine config the plugin config gave before',
   assert.equal(c.forecast.extraFields, true);
   assert.equal(c.forecast.energyFields, false, 'the solar and radiation fields are opt-in (they about double the download)');
   assert.equal(c.forecast.mirror, 'ecmwf');
-  assert.equal(c.currents.rtofsRegion, 'west_atl');
+  assert.deepEqual(c.currents.rtofsExtra, [], 'no extra RTOFS products: the one the vessel is in is loaded');
   assert.equal(c.currents.rtofsHorizonS, 72 * HOUR_S);
   assert.equal(c.currents.rtofsStepS, 3 * HOUR_S);
   assert.ok(Math.abs(c.routing.sailThreshMs - 4.9 * KTS_TO_MS) < 1e-12);
@@ -85,14 +85,14 @@ test('migration converts the old plugin config to SI settings and ignores region
   assert.equal(m.values.forecast.refreshInterval, 3600, 'min → s');
   assert.ok(Math.abs(m.values.routing.sailThreshold - 4.9 * 0.514444444) < 1e-6, 'kt → m/s');
   assert.equal(m.values.routing.headingIncrement, 1);
-  assert.equal(m.values.currents.rtofsRegion, 'west_atl', 'unset → default');
+  assert.deepEqual(m.values.currents.rtofsExtra, [], 'unset → no extra product');
   assert.ok(!('region' in m.values.forecast) && !('regionFromVesselDeg' in m.values.forecast));
   assert.ok(m.migrated.includes('vessel.motorSpeed') && m.migrated.includes('forecast.horizon'));
   assert.deepEqual(m.skipped, []);
   // An invalid legacy value is skipped (default kept), the rest still migrate.
   const bad = migrateLegacy({ forecast: { horizonHours: 500 }, currents: { rtofsRegion: 'mars' }, vessel: { motorSpeedKts: 5 } });
   assert.equal(bad.values.forecast.horizon, 72 * 3600);
-  assert.equal(bad.values.currents.rtofsRegion, 'west_atl');
+  assert.deepEqual(bad.values.currents.rtofsExtra, []);
   assert.ok(Math.abs(bad.values.vessel.motorSpeed - 5 * KTS_TO_MS) < 1e-12);
   assert.equal(bad.skipped.length, 2);
 });
@@ -110,7 +110,7 @@ test('partial merge validates with the old ranges and enums, all-or-nothing', ()
     mergeSettings(base, {
       vessel: { motorSpeed: 51, name: 5, draught: 1 },
       forecast: { horizon: 2 * 3600, refreshInterval: 601, keepCycles: 2.5 },
-      currents: { rtofsRegion: 'mars', rtofsStep: 7 * 3600 },
+      currents: { rtofsExtra: ['mars'], rtofsStep: 7 * 3600 },
       routing: { headingIncrement: 0.1, sailThreshold: -1 },
       publish: { toResources: 'yes' },
       nope: {},
@@ -125,7 +125,7 @@ test('partial merge validates with the old ranges and enums, all-or-nothing', ()
     assert.match(e['forecast.horizon'], /\[\{time:10800\}, \{time:1296000\}\]/);
     assert.match(e['forecast.refreshInterval'], /multiple of \{time:60\}/);
     assert.match(e['forecast.keepCycles'], /whole number/);
-    assert.match(e['currents.rtofsRegion'], /one of west_atl, west_conus/);
+    assert.match(e['currents.rtofsExtra'], /a list of west_atl, west_conus/);
     assert.match(e['currents.rtofsStep'], /\[\{time:3600\}, \{time:21600\}\]/);
     assert.match(e['routing.headingIncrement'], /\[\{angle:0\.004363323129985824\}, \{angle:0\.17453292519943295\}\]/);
     assert.match(e['routing.sailThreshold'], /\[\{speed:0\}, /);
@@ -137,10 +137,10 @@ test('partial merge validates with the old ranges and enums, all-or-nothing', ()
 });
 
 test('reload kinds per changed key', () => {
-  assert.deepEqual([...reloadsFor(['forecast.horizon'])], ['forecast']);
+  assert.deepEqual([...reloadsFor(['forecast.horizon'])], ['forecast', 'currents', 'tides']);
   assert.deepEqual([...reloadsFor(['forecast.extraFields'])], ['forecast']);
   assert.deepEqual([...reloadsFor(['forecast.energyFields'])], ['forecast']);
-  assert.deepEqual([...reloadsFor(['currents.rtofsRegion', 'currents.rtofsEnabled'])], ['currents']);
+  assert.deepEqual([...reloadsFor(['currents.rtofsExtra', 'currents.rtofsEnabled'])], ['currents']);
   assert.deepEqual([...reloadsFor(['vessel.motorSpeed', 'routing.stages', 'publish.toResources'])], ['next_job']);
   assert.deepEqual([...reloadsFor(['forecast.refreshInterval'])], ['refresh_timer']);
   assert.deepEqual([...reloadsFor(['routing.keepJobs'])], ['jobs']);
@@ -355,31 +355,104 @@ test('CMEMS SMOC settings: defaults in SI, 1 h or 3 h step only, changes reload 
   const d = defaultSettings();
   assert.equal(d.currents.smocEnabled, true);
   assert.equal(d.currents.smocStep, 3 * 3600);
-  assert.equal(d.currents.smocHorizon, 72 * 3600);
   assert.equal(d.currents.smocHalfWidth, 15);
   const c = resolveConfig({ landShapefiles: '/a.shp' }, d);
   assert.deepEqual(
     [c.currents.smocEnabled, c.currents.smocStepS, c.currents.smocHorizonS, c.currents.smocHalfWidthDeg],
     [true, 3 * HOUR_S, 72 * HOUR_S, 15]
   );
-  const ok = mergeSettings(d, { currents: { smocStep: 3600, smocHalfWidth: 20, smocHorizon: 120 * 3600 } });
-  assert.deepEqual(ok.changed.sort(), ['currents.smocHalfWidth', 'currents.smocHorizon', 'currents.smocStep']);
+  const ok = mergeSettings(d, { currents: { smocStep: 3600, smocHalfWidth: 20 } });
+  assert.deepEqual(ok.changed.sort(), ['currents.smocHalfWidth', 'currents.smocStep']);
   assert.deepEqual([...reloadsFor(ok.changed)], ['currents']);
   try {
-    mergeSettings(d, { currents: { smocStep: 7200, smocHalfWidth: 60, smocHorizon: 300 * 3600 } });
+    mergeSettings(d, { currents: { smocStep: 7200, smocHalfWidth: 60 } });
     assert.fail('should throw');
   } catch (err) {
     const e = (err as SettingsValidationError).errors;
     assert.match(e['currents.smocStep'], /one of \{time:3600\}, \{time:10800\}/);
     assert.match(e['currents.smocHalfWidth'], /\[\{angle:0\.03490658503988659\}, \{angle:0\.5235987755982988\}\]/);
-    assert.match(e['currents.smocHorizon'], /\[\{time:21600\}, \{time:864000\}\]/);
   }
   const specs = settingsSchema().settings.filter(s => s.key.startsWith('currents.smoc'));
   assert.deepEqual(
     specs.map(s => s.key),
-    ['currents.smocEnabled', 'currents.smocHorizon', 'currents.smocStep', 'currents.smocHalfWidth']
+    ['currents.smocEnabled', 'currents.smocStep', 'currents.smocHalfWidth']
   );
   assert.deepEqual(SETTINGS_SPEC.find(s => s.key === 'currents.smocStep')!.oneOf, [3600, 10800]);
+});
+
+test("RTOFS extra products: a list in the products' order, each once; the old product setting carried over", () => {
+  const d = defaultSettings();
+  assert.deepEqual(d.currents.rtofsExtra, []);
+  const spec = SETTINGS_SPEC.find(s => s.key === 'currents.rtofsExtra')!;
+  assert.equal(spec.type, 'enumList');
+  assert.ok(spec.enumHelp && spec.enum!.every(p => spec.enumHelp![p]), 'every product has its area and sizes');
+  assert.ok(!SETTINGS_SPEC.some(s => s.key === 'currents.rtofsRegion'), 'the one-product setting is gone');
+  // Kept in the products' order, each once; the same list again is no change.
+  const r = mergeSettings(d, { currents: { rtofsExtra: ['samoa', 'west_atl', 'samoa'] } });
+  assert.deepEqual(r.values.currents.rtofsExtra, ['west_atl', 'samoa']);
+  assert.deepEqual(r.changed, ['currents.rtofsExtra']);
+  assert.deepEqual([...reloadsFor(r.changed)], ['currents']);
+  assert.deepEqual(mergeSettings(r.values, { currents: { rtofsExtra: ['samoa', 'west_atl'] } }).changed, []);
+  assert.throws(() => mergeSettings(d, { currents: { rtofsExtra: 'samoa' } }), /a list of west_atl/);
+  assert.equal(resolveConfig({}, r.values).currents.rtofsExtra.join(','), 'west_atl,samoa');
+  // settings.json from before: a chosen product (not west_atl, the old default) becomes an extra product.
+  const dir = tmp();
+  const write = (currents: Record<string, unknown>): void =>
+    fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ version: 1, values: { currents } }));
+  write({ rtofsEnabled: true, rtofsRegion: 'samoa' });
+  let st = new SettingsStore(dir);
+  let loaded = st.load(undefined);
+  assert.deepEqual(st.values.currents.rtofsExtra, ['samoa']);
+  assert.deepEqual(loaded.problems, []);
+  assert.match(loaded.notes.join(' '), /rtofsRegion samoa is now an extra RTOFS product/);
+  write({ rtofsEnabled: true, rtofsRegion: 'west_atl' });
+  st = new SettingsStore(dir);
+  loaded = st.load(undefined);
+  assert.deepEqual(st.values.currents.rtofsExtra, [], 'west_atl: loaded whenever the vessel is inside it');
+  assert.deepEqual(loaded.notes, []);
+  write({ rtofsRegion: 'samoa', rtofsExtra: [] });
+  st = new SettingsStore(dir);
+  st.load(undefined);
+  assert.deepEqual(st.values.currents.rtofsExtra, [], 'a file already saved with the list keeps it');
+  // Saving writes the list and drops the old key.
+  write({ rtofsRegion: 'guam' });
+  st = new SettingsStore(dir);
+  st.load(undefined);
+  st.update({ currents: { rtofsStep: 3600 } });
+  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')).values.currents;
+  assert.deepEqual(saved.rtofsExtra, ['guam']);
+  assert.ok(!('rtofsRegion' in saved));
+  // The plugin config of the oldest versions: the same rule.
+  assert.deepEqual(migrateLegacy({ currents: { rtofsRegion: 'honolulu' } }).values.currents.rtofsExtra, ['honolulu']);
+  assert.deepEqual(migrateLegacy({ currents: { rtofsRegion: 'west_atl' } }).values.currents.rtofsExtra, []);
+});
+
+test('a currents settings change reloads only the source it concerns', () => {
+  const d = defaultSettings();
+  const cfg = (patch: unknown): ReturnType<typeof resolveConfig> => resolveConfig({}, mergeSettings(d, patch).values);
+  const base = resolveConfig({}, d);
+  // An extra RTOFS product: SMOC and the products loaded are kept (the refresh adds the new one).
+  const extra = cfg({ currents: { rtofsExtra: ['samoa'] } });
+  assert.ok(smocLoadSame(base, extra) && rtofsLoadSame(base, extra));
+  // The RTOFS step: every RTOFS product again, SMOC kept.
+  assert.ok(!rtofsLoadSame(base, cfg({ currents: { rtofsStep: 3600 } })));
+  assert.ok(smocLoadSame(base, cfg({ currents: { rtofsStep: 3600 } })));
+  // The forecast horizon is every source's: SMOC and RTOFS again, and the change reloads currents and tides too.
+  const horizon = cfg({ forecast: { horizon: 120 * 3600 } });
+  assert.ok(!smocLoadSame(base, horizon) && !rtofsLoadSame(base, horizon));
+  assert.deepEqual(
+    [horizon.currents.smocHorizonS, horizon.currents.rtofsHorizonS, horizon.tides.horizonS],
+    [120 * HOUR_S, 120 * HOUR_S, 120 * HOUR_S]
+  );
+  assert.deepEqual([...reloadsFor(['forecast.horizon'])].sort(), ['currents', 'forecast', 'tides']);
+  assert.ok(
+    !SETTINGS_SPEC.some(s => ['currents.smocHorizon', 'currents.rtofsHorizon', 'tides.horizon'].includes(s.key)),
+    'no horizon of their own'
+  );
+  assert.ok(!rtofsLoadSame(base, cfg({ currents: { rtofsEnabled: false } })), 'turned off');
+  // A SMOC setting: SMOC again, RTOFS kept.
+  const smoc = cfg({ currents: { smocHalfWidth: 10 } });
+  assert.ok(!smocLoadSame(base, smoc) && rtofsLoadSame(base, smoc));
 });
 
 test('allow canals: routing setting, off by default, applies to the next route', () => {
@@ -397,16 +470,16 @@ test('allow canals: routing setting, off by default, applies to the next route',
 
 test('settings: Tides group reloads tides only', () => {
   const d = defaultSettings();
-  assert.deepEqual(d.tides, { enabled: true, halfWidth: 15, horizon: 24 * 3600 });
+  assert.deepEqual(d.tides, { enabled: true, halfWidth: 15 });
   const c = resolveConfig({}, d);
-  assert.deepEqual(c.tides, { enabled: true, halfWidthDeg: 15, horizonS: 24 * HOUR_S });
-  const r = mergeSettings(d, { tides: { enabled: false, halfWidth: 8, horizon: 48 * 3600 } });
-  assert.deepEqual(r.changed.sort(), ['tides.enabled', 'tides.halfWidth', 'tides.horizon']);
+  assert.deepEqual(c.tides, { enabled: true, halfWidthDeg: 15, horizonS: 72 * HOUR_S }, 'the forecast horizon');
+  const r = mergeSettings(d, { tides: { enabled: false, halfWidth: 8 } });
+  assert.deepEqual(r.changed.sort(), ['tides.enabled', 'tides.halfWidth']);
   assert.deepEqual([...reloadsFor(r.changed)], ['tides']);
   assert.throws(() => mergeSettings(d, { tides: { halfWidth: 40 } }), /\[\{angle:0\.017453292519943295\}, \{angle:0\.5235987755982988\}\]/);
   assert.deepEqual(
     SETTINGS_SPEC.filter(s => s.group === 'tides').map(s => s.key),
-    ['tides.enabled', 'tides.halfWidth', 'tides.horizon']
+    ['tides.enabled', 'tides.halfWidth']
   );
 });
 

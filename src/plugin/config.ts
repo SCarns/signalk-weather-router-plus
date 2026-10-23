@@ -133,7 +133,8 @@ export interface ResolvedConfig {
     smocStepS: number;
     smocHalfWidthDeg: number;
     rtofsEnabled: boolean;
-    rtofsRegion: string;
+    /** Products loaded wherever the vessel is, besides the one that contains it (RTOFS_REGIONS order). */
+    rtofsExtra: string[];
     rtofsHorizonS: number;
     rtofsStepS: number;
   };
@@ -421,18 +422,20 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
     currents: {
       harmonicDir: harmonicDir && harmonicDir.trim() ? harmonicDir.trim() : null,
       smocEnabled: cu.smocEnabled,
-      smocHorizonS: cu.smocHorizon,
+      // One horizon for every source (the owner's decision, 2026-10-22): each reaches the forecast's, or the end of
+      // its own data when that comes first (SMOC's run, RTOFS's last file, the tide run).
+      smocHorizonS: f.horizon,
       smocStepS: cu.smocStep,
       smocHalfWidthDeg: cu.smocHalfWidth,
       rtofsEnabled: cu.rtofsEnabled,
-      rtofsRegion: cu.rtofsRegion,
-      rtofsHorizonS: cu.rtofsHorizon,
+      rtofsExtra: [...cu.rtofsExtra],
+      rtofsHorizonS: f.horizon,
       rtofsStepS: cu.rtofsStep,
     },
     tides: {
       enabled: settings.tides.enabled,
       halfWidthDeg: settings.tides.halfWidth,
-      horizonS: settings.tides.horizon,
+      horizonS: f.horizon,
     },
     routing: {
       stages: r.stages,
@@ -481,6 +484,29 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       };
     })(),
   };
+}
+
+/** Do two configs load the same CMEMS SMOC (on, step, horizon, area)? A currents reload then keeps it. */
+export function smocLoadSame(a: ResolvedConfig, b: ResolvedConfig): boolean {
+  const x = a.currents;
+  const y = b.currents;
+  return (
+    x.smocEnabled === y.smocEnabled &&
+    x.smocStepS === y.smocStepS &&
+    x.smocHorizonS === y.smocHorizonS &&
+    x.smocHalfWidthDeg === y.smocHalfWidthDeg
+  );
+}
+
+/**
+ * Do two configs load each RTOFS product the same way (on in both, same
+ * horizon and step)? A currents reload then keeps the products loaded; the
+ * refresh adds or drops products only.
+ */
+export function rtofsLoadSame(a: ResolvedConfig, b: ResolvedConfig): boolean {
+  const x = a.currents;
+  const y = b.currents;
+  return x.rtofsEnabled && y.rtofsEnabled && x.rtofsHorizonS === y.rtofsHorizonS && x.rtofsStepS === y.rtofsStepS;
 }
 
 /** Draught and air draft as Signal K's vessel base data has them (design.draft.maximum, design.airHeight), null when unset. */

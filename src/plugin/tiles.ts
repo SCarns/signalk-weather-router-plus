@@ -66,6 +66,55 @@ export function tileGroup(layer: TileLayer): TileGroup {
   }
 }
 
+/** What each group's tiles are made from (index.ts reads it from the data in use and the settings). */
+export interface GenerationInputs {
+  /** The coastline shapefiles in use. */
+  coast: string;
+  /** The decoded run: its cycle, fields and last step (a shorter horizon leaves hours with no forecast). */
+  forecast: { cycleTimeMs: number; params: readonly string[]; lastValidMs: number } | null;
+  /**
+   * The current sources (null before the data worker's first status): their names and runs, the SMOC run, the
+   * harmonics folder, and the settings that change a value at a given hour: the SMOC and RTOFS steps (hours between
+   * steps are interpolated) and the RTOFS horizon (past it RTOFS has no data and a lower source answers).
+   */
+  currents: { sources: string; smoc: string; harmonicDir: string; smocStepS: number; rtofsStepS: number; rtofsHorizonS: number } | null;
+  /** The tide run, 'off', or null while none is loaded. */
+  tides: { run: string; settled: boolean } | 'off' | null;
+}
+
+/**
+ * SEA_STATE_REV: bumped when the sea-state index's formula changes (the `cur` group holds the sea_state and seas
+ * tiles), so tiles saved with the old index are not served (2: wave-period damping and SWELL_COEFF 10; 3: seas points
+ * carry wind and current).
+ */
+const SEA_STATE_REV = 3;
+/**
+ * POINT_ANSWER_REV: bumped when the answer's content changes for the same data (2: current_ms null where no current
+ * source has data; 3: the recalibrated sea-state index), so answers saved by an older version are not served.
+ */
+const POINT_ANSWER_REV = 3;
+
+/**
+ * Each group's generation key: only what its tiles are made from, so a new run of one source, or a setting that
+ * changes one source's values, replaces that group's tiles alone. Until 2026-10-22 every key also carried a counter
+ * bumped by any settings change that reloaded the forecast, currents or tides: ticking an RTOFS product replaced every
+ * wind, wave and tide tile too (brain: 30,800 wx and 14,988 tide tiles built again besides 15,378 current tiles).
+ * Point answers (conditions, Weather API) read forecast, currents and tides. A route's meteogram also reads the
+ * regional wind runs: its query names them (api.ts, protocol.ts track_conditions), so a new run is a new query and the
+ * other answers are kept.
+ */
+export function tileGenerationKeys(d: GenerationInputs): Record<TileGroup, string | null> {
+  const f = d.forecast;
+  const wx = f ? `${d.coast}|${f.cycleTimeMs}|${f.params.join(',')}|${f.lastValidMs}` : null;
+  const c = d.currents;
+  const cur =
+    wx && c ? `${wx}|${c.sources}|${c.smoc}|${c.harmonicDir}|${c.smocStepS}|${c.rtofsStepS}|${c.rtofsHorizonS}|ss${SEA_STATE_REV}` : null;
+  const t = d.tides;
+  const tide = t === 'off' ? `${d.coast}|off` : t ? `${d.coast}|${t.run}|${t.settled}` : null;
+  const pt = cur && tide ? `${cur}|${tide}|rev${POINT_ANSWER_REV}` : null;
+  return { wx, cur, tide, land: d.coast, pt };
+}
+
 export const TILE_MIN_ZOOM = 0;
 export const TILE_MAX_ZOOM = 18;
 /** Coastline mask tiles: pixels per side. */

@@ -445,7 +445,15 @@ export function dataStatus(st: WorkerState): DataStatus {
     decodingBlockBytes: st.decodingBlockBytes,
     forecastMemory: { ...st.forecastMemory },
     currents: currentsStatus(st),
-    rtofsRun: st.rtofs ? new Date(st.rtofs.runMs).toISOString().slice(0, 10) : null,
+    rtofs: st.config?.currents.rtofsEnabled
+      ? {
+          auto: st.rtofsChoice?.auto ?? null,
+          autoReason: st.rtofsChoice?.autoReason ?? null,
+          extra: [...st.config.currents.rtofsExtra],
+          runs: st.rtofs.map(s => ({ product: s.product, run: new Date(s.runMs).toISOString().slice(0, 10) })),
+          unknownExtents: st.rtofsChoice?.unknownExtents ?? [],
+        }
+      : null,
     land: st.overlayLand ? st.overlayLand.stats() : null,
     tides: st.tides ? st.tides.status() : null,
     tidesError: st.tidesError,

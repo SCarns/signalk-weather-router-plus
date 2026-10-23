@@ -20,6 +20,8 @@ import type { IRouter } from 'express';
 import {
   CONFIG_SCHEMA,
   resolveConfig,
+  rtofsLoadSame,
+  smocLoadSame,
   type LegacyPluginConfig,
   type PluginConfig,
   type ResolvedConfig,
@@ -35,7 +37,7 @@ import { JobManager, type Job } from './plugin/jobs';
 import { windowNotification, WindowManager, type DepartureWindow } from './plugin/windows';
 import { registerApi } from './plugin/api';
 import { NotStartedError } from './plugin/errors';
-import { TileService, TileStore, tileGroup, type TileGroup } from './plugin/tiles';
+import { TileService, TileStore, tileGenerationKeys, tileGroup } from './plugin/tiles';
 import { hasStep, TilePrebuilder } from './plugin/prebuild';
 import { runLastMs, type ArcoRun } from './data/arco';
 import { gshhgInstalled, gshhgInstalledAt, unreadableCoastlines } from './geo/gshhg';
@@ -77,12 +79,18 @@ import {
 import { SMOC_NAME } from './currents/smoc';
 import { SL_NAME } from './tides/sealevel';
 import type { SerializedSmoc } from './currents/smoc';
-import { rtofsForRegion, type SerializedRtofs } from './currents/rtofs';
+import { chooseRtofsProduct, readRtofsExtents, rtofsSetForConfig, type SerializedRtofsSet } from './currents/rtofs';
 import type { SerializedHarmonic } from './currents/harmonic';
 
 const PLUGIN_ID = 'signalk-weather-router-plus';
 const BASE_PATH = `/plugins/${PLUGIN_ID}`;
 const QUERY_TIMEOUT_MS = 120_000;
+/**
+ * How often the vessel position is looked at between refresh rounds: a first
+ * fix after a start, or a move into another RTOFS product, refreshes at once
+ * instead of at the next round (up to forecast.refreshInterval later).
+ */
+const POSITION_CHECK_MS = 30_000;
 
 interface SkApp {
   debug: (msg: string, ...args: unknown[]) => void;
@@ -137,14 +145,14 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let routeForecastMemory: ForecastMemory | null = null;
   /** The data worker's CMEMS SMOC run + resident area (shared memory), relayed to the route worker. */
   let smocShared: SerializedSmoc | null = null;
-  /** The data worker's RTOFS run (shared memory), relayed to the route and tiles workers. */
-  let rtofsShared: SerializedRtofs | null = null;
+  /** The data worker's RTOFS products (shared memory), relayed to the route and tiles workers. */
+  let rtofsShared: SerializedRtofsSet | null = null;
   /** The data worker's tidal-harmonic sources (shared constituent blocks), relayed to the route worker. */
   let harmonicShared: SerializedHarmonic[] | null = null;
   /** Raw Signal K plugin options from start(). */
   let pluginOptions: PluginConfig | undefined;
   let settings: SettingsStore | null = null;
-  /** Current sources last reported by the data worker (name list + RTOFS run), to tell the route worker to reload. */
+  /** Current sources last reported by the data worker (name list + RTOFS runs), to tell the route worker to reload. */
   let currentsKey = '';
   let forecastError: string | null = null;
   /** What the last forecast check found (newest, could not check, new run, failed). */
@@ -157,14 +165,17 @@ export = function plugin(app: SkApp): SignalKPlugin {
   /** The route worker's own current sources (its SMOC on-demand areas and memory). */
   let routeCurrents: DataStatus['currents'] | null = null;
   let refreshTimer: NodeJS.Timeout | null = null;
+  let positionTimer: NodeJS.Timeout | null = null;
+  /** The position the last refresh round was sent with (null: none was known then). */
+  let refreshPosition: VesselPosition | null = null;
+  /** The RTOFS product a move last asked a refresh for (asked once per product, not every check). */
+  let positionRefreshFor: string | null = null;
   let failedRefreshTimer: NodeJS.Timeout | null = null;
   let weatherRegistered = false;
   let stopped = true;
   let pendingRefresh: { force: boolean } | null = null;
   /** Map overlay tiles on disk (null before start). */
   let tiles: TileService | null = null;
-  /** Bumped by settings changes that reload forecast, currents or tides (tile generations). */
-  let dataSettingsRev = 0;
   /** Tiles built ahead of time (null before start or when off). */
   let prebuilder: TilePrebuilder | null = null;
   /** The data worker's tide run (relayed to the tiles workers). */
@@ -505,31 +516,31 @@ export = function plugin(app: SkApp): SignalKPlugin {
   function updateTileGenerations(): void {
     if (!tiles || !config) return;
     const cfg = config;
-    const coast = `${cfg.landShapefiles.join('|')}`;
-    const wx = forecastRun
-      ? `${coast}|${forecastRun.index.cycleTimeMs}|${forecastRun.index.request.params.join(',')}|${dataSettingsRev}`
-      : null;
-    const smoc = smocShared ? `${smocShared.run.key}|${smocShared.run.settled}` : 'off';
-    // SEA_STATE_REV: bumped when the sea-state index's formula changes (the
-    // `cur` group holds the sea_state and seas tiles), so tiles saved with
-    // the old index are not served (2: wave-period damping and SWELL_COEFF 10;
-    // 3: seas points carry wind and current).
-    const SEA_STATE_REV = 3;
-    const cur = wx && dataStatus ? `${wx}|${currentsKey}|${smoc}|${cfg.currents.harmonicDir ?? ''}|ss${SEA_STATE_REV}` : null;
-    const t = dataStatus?.tides;
-    const tide = !cfg.tides.enabled ? `${coast}|off` : t ? `${coast}|${t.run}|${t.settled}|${dataSettingsRev}` : null;
-    // Point answers (conditions, Weather API) read forecast, currents and tides.
-    // A route's meteogram also reads the regional wind runs: its query names them
-    // (api.ts, protocol.ts track_conditions), so a new run is a new query and the
-    // other answers are kept.
-    // POINT_ANSWER_REV: bumped when the answer's content changes for the same
-    // data (2: current_ms null where no current source has data; 3: the
-    // recalibrated sea-state index), so answers saved by an older version
-    // are not served.
-    const POINT_ANSWER_REV = 3;
-    const pt = cur && tide ? `${cur}|${tide}|rev${POINT_ANSWER_REV}` : null;
-    const g: Record<TileGroup, string | null> = { wx, cur, tide, land: coast, pt };
-    tiles.store.setGenerations(g);
+    const steps = forecastRun?.index.steps;
+    tiles.store.setGenerations(
+      tileGenerationKeys({
+        coast: cfg.landShapefiles.join('|'),
+        forecast:
+          forecastRun && steps
+            ? {
+                cycleTimeMs: forecastRun.index.cycleTimeMs,
+                params: forecastRun.index.request.params,
+                lastValidMs: steps[steps.length - 1].validMs,
+              }
+            : null,
+        currents: dataStatus
+          ? {
+              sources: currentsKey,
+              smoc: smocShared ? `${smocShared.run.key}|${smocShared.run.settled}` : 'off',
+              harmonicDir: cfg.currents.harmonicDir ?? '',
+              smocStepS: cfg.currents.smocStepS,
+              rtofsStepS: cfg.currents.rtofsStepS,
+              rtofsHorizonS: cfg.currents.rtofsHorizonS,
+            }
+          : null,
+        tides: !cfg.tides.enabled ? 'off' : dataStatus?.tides ? { run: dataStatus.tides.run, settled: dataStatus.tides.settled } : null,
+      })
+    );
   }
 
   /** Own-vessel position from Signal K (navigation.position), or null. */
@@ -552,7 +563,37 @@ export = function plugin(app: SkApp): SignalKPlugin {
       pendingRefresh = { force: (pendingRefresh?.force ?? false) || force };
       return;
     }
-    pool.post('data', { type: 'refresh', force, position: vesselPosition() });
+    refreshPosition = vesselPosition();
+    pool.post('data', { type: 'refresh', force, position: refreshPosition });
+  }
+
+  /**
+   * Between refresh rounds: a refresh at once when the vessel's first
+   * position arrives (the round at start often runs before the first fix,
+   * leaving SMOC without its resident area and RTOFS without a product), or
+   * when the vessel is in another RTOFS product than the data worker chose
+   * (by the extents it keeps on disk).
+   */
+  function checkPosition(): void {
+    if (stopped || !config) return;
+    const pos = vesselPosition();
+    if (!pos) return;
+    if (!refreshPosition) {
+      log(`vessel position ${pos.lat.toFixed(4)}, ${pos.lon.toFixed(4)} known now; refreshing`);
+      requestRefresh(false);
+      return;
+    }
+    const r = config.currents.rtofsEnabled ? dataStatus?.rtofs : null;
+    if (!r) return;
+    const product = chooseRtofsProduct(readRtofsExtents(path.join(app.getDataDirPath(), 'rtofs')), pos).product;
+    if (product === r.auto) {
+      positionRefreshFor = null;
+      return;
+    }
+    if (product === positionRefreshFor) return;
+    positionRefreshFor = product;
+    log(`vessel moved ${product ? `into RTOFS product ${product}` : `out of RTOFS product ${r.auto}`}; refreshing`);
+    requestRefresh(false);
   }
 
   function jobsSummary(): string {
@@ -619,19 +660,21 @@ export = function plugin(app: SkApp): SignalKPlugin {
     }
     const currents = dataStatus?.currents ?? [];
     let smoc = false;
-    let rtofs = false;
     for (const c of currents) {
       if (c.smoc) {
         smoc = true;
         out.push(arcoFreshness(c.name, ['currents'], c.smoc.run, c.smoc.metadata_modified, nowMs));
       } else if (c.name.startsWith('RTOFS-')) {
-        rtofs = true;
-        out.push(rtofsFreshness(c.name, rtofsShared?.runMs ?? null, cfg.currents.rtofsHorizonS, nowMs));
+        const run = rtofsShared?.runs.find(r => `RTOFS-${r.product}` === c.name);
+        out.push(rtofsFreshness(c.name, run?.runMs ?? null, cfg.currents.rtofsHorizonS, nowMs));
       } else out.push(harmonicFreshness(c.name));
     }
     if (cfg.currents.smocEnabled && !smoc) out.push(arcoFreshness(SMOC_NAME, ['currents'], null, null, nowMs));
-    if (cfg.currents.rtofsEnabled && !rtofs)
-      out.push(rtofsFreshness(`RTOFS-${cfg.currents.rtofsRegion}`, null, cfg.currents.rtofsHorizonS, nowMs));
+    // An RTOFS product wanted but not loaded is red. None is wanted where no product covers the vessel: no entry,
+    // the header says why (status `rtofs`).
+    const r = cfg.currents.rtofsEnabled ? dataStatus?.rtofs : null;
+    for (const p of new Set([...(r?.auto ? [r.auto] : []), ...(r?.extra ?? [])]))
+      if (!currents.some(c => c.name === `RTOFS-${p}`)) out.push(rtofsFreshness(`RTOFS-${p}`, null, cfg.currents.rtofsHorizonS, nowMs));
     for (const e of dataStatus?.harmonicErrors ?? []) out.push(harmonicFailure(e));
     if (cfg.tides.enabled) {
       const t = dataStatus?.tides ?? null;
@@ -809,13 +852,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (role === 'route') routeCurrents = msg.status;
         if (role === 'data') {
           log(`currents: ${msg.status.length ? msg.status.map(c => `${c.name} (p${c.priority})`).join(', ') : 'none'}`);
-          // New RTOFS on disk (new run or region): the route worker reloads its copy from the cache.
-          const key = `${msg.status.map(c => c.name).join('+')}|${msg.rtofsRun ?? ''}`;
+          // New RTOFS on disk (a new run or another product): the route worker reloads its copy from the cache.
+          const key = `${msg.status.map(c => c.name).join('+')}|${msg.rtofsRuns.join(',')}`;
           if (key !== currentsKey) {
             const first = currentsKey === '';
             currentsKey = key;
             updateTileGenerations();
-            if (!first || msg.rtofsRun) {
+            if (!first || msg.rtofsRuns.length) {
               pool.post('route', { type: 'refresh', force: false });
               prebuilder?.broadcast({ type: 'refresh', force: false });
             }
@@ -832,8 +875,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
         return;
       case 'rtofs':
         if (role === 'data') {
-          // A run loaded for a region the settings have since replaced is dropped here (and by the workers).
-          if (msg.rtofs && !(config && rtofsForRegion(msg.rtofs, config.currents.rtofsEnabled, config.currents.rtofsRegion))) return;
+          // Products loaded under settings that have since changed are dropped here (and by the workers).
+          if (msg.rtofs && !(config && rtofsSetForConfig(msg.rtofs, config.currents.rtofsEnabled, config.currents.rtofsExtra))) return;
           rtofsShared = msg.rtofs;
           pool.post('route', { type: 'rtofs', rtofs: msg.rtofs });
           prebuilder?.broadcast({ type: 'rtofs', rtofs: msg.rtofs });
@@ -931,15 +974,14 @@ export = function plugin(app: SkApp): SignalKPlugin {
     };
     if (stopped || !settings || changed.length === 0)
       return { forecast: false, currents: false, tides: false, refresh_timer: false, jobs: false };
+    const prevConfig = config;
     config = resolve(pluginOptions, settings.values);
-    if (out.currents) {
-      smocShared = null;
-      rtofsShared = null;
+    // What the data worker reloads (worker.ts 'config'), and relays again when it has.
+    if (out.currents && prevConfig) {
+      if (!smocLoadSame(prevConfig, config)) smocShared = null;
+      if (!rtofsLoadSame(prevConfig, config)) rtofsShared = null;
     }
-    if (out.forecast || out.currents || out.tides) {
-      dataSettingsRev++;
-      updateTileGenerations();
-    }
+    if (out.forecast || out.currents || out.tides) updateTileGenerations();
     pool.post('data', {
       type: 'config',
       config,
@@ -986,16 +1028,19 @@ export = function plugin(app: SkApp): SignalKPlugin {
           return m;
         },
         vesselPosition,
+        // Every layer to the forecast horizon (the owner's decision, 2026-10-22: one horizon); tides also no further
+        // than their run.
         lastHourMs: layer => {
-          if (layer === 'tide') return tidesRun ? runLastMs(tidesRun) : null;
           if (!forecastRun) return null;
-          return forecastRun.index.steps[forecastRun.index.steps.length - 1].validMs;
+          const end = forecastRun.index.steps[forecastRun.index.steps.length - 1].validMs;
+          if (layer === 'tide') return tidesRun ? Math.min(runLastMs(tidesRun), end) : null;
+          return end;
         },
         // Each layer at its data's steps (prebuild.ts hasStep); the map draws the hours between on demand.
         atStep: (layer, hourMs) =>
           hasStep(tileGroup(layer), hourMs, {
             forecast: forecastRun ? forecastRun.index.steps.map(s => s.validMs) : null,
-            rtofs: rtofsShared ? rtofsShared.steps.map(s => s.validMs) : [],
+            rtofs: rtofsShared ? [...new Set(rtofsShared.runs.flatMap(r => r.steps.map(s => s.validMs)))] : [],
             smocStepMs: smocShared ? smocShared.settings.stepS * 1000 : null,
             harmonic: !!harmonicShared?.length,
           }),
@@ -1023,6 +1068,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           `settings.json created; migrated from the plugin config: ${loaded.migrated.length ? loaded.migrated.join(', ') : 'nothing set'}`
         );
       for (const p of loaded.problems) app.error(`settings: ${p}`);
+      for (const n of loaded.notes) log(`settings: ${n}`);
       config = resolve(options, settings.values);
     } catch (err) {
       app.setPluginError((err as Error).message);
@@ -1103,6 +1149,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     }
     requestRefresh(false);
     refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshIntervalS * 1000);
+    positionTimer = setInterval(checkPosition, POSITION_CHECK_MS);
     updateStatus();
     log(`${PLUGIN_ID} started; data dir ${dataDir}`);
   }
@@ -1114,8 +1161,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
     meshes.stop();
     roughCutCtrl?.abort();
     if (refreshTimer) clearInterval(refreshTimer);
+    if (positionTimer) clearInterval(positionTimer);
     if (failedRefreshTimer) clearTimeout(failedRefreshTimer);
-    refreshTimer = failedRefreshTimer = null;
+    refreshTimer = failedRefreshTimer = positionTimer = null;
+    refreshPosition = null;
+    positionRefreshFor = null;
     pool.stopAll();
     pool.rejectPending('plugin stopped');
     // The windows first: failing the running job must not start a window's next departure.
@@ -1221,7 +1271,15 @@ export = function plugin(app: SkApp): SignalKPlugin {
         currents: dataStatus?.currents ?? [],
         currents_route_worker: routeCurrents ?? [],
         corridor_fallbacks: corridorFallbacks,
-        rtofs_run: dataStatus?.rtofsRun ?? null,
+        rtofs: dataStatus?.rtofs
+          ? {
+              auto: dataStatus.rtofs.auto,
+              auto_reason: dataStatus.rtofs.autoReason,
+              extra: dataStatus.rtofs.extra,
+              runs: dataStatus.rtofs.runs,
+              unknown_extents: dataStatus.rtofs.unknownExtents,
+            }
+          : null,
         tides: config?.tides.enabled ? (dataStatus?.tides ?? null) : null,
         tides_enabled: config?.tides.enabled ?? null,
         tides_error: dataStatus?.tidesError ?? null,
