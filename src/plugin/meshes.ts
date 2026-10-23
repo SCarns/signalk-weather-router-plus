@@ -34,6 +34,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { runChildTask } from './childtask';
+import { INTERNET_HOLD_RETRY_MS } from './internet';
 import { DOWNLOAD_PROGRESS_FILE, downloadWorkDir, type MeshDownloadProgress } from './mesharchive';
 
 /** One mesh as the catalogue lists it (s57Work build-mesh.yml, "Write charts/mesh/index.json"). */
@@ -133,6 +134,8 @@ export const DISTRICT_NAMES: Record<string, string> = {
 export const DEFAULT_MESH_CATALOG_URL = 'https://pub-281728c6a69f4f549cf0ec4e83f9fcde.r2.dev/US-ENC/charts/mesh/index.json';
 /** The catalogue is read again this often. */
 export const CATALOG_REFRESH_MS = 24 * 3600 * 1000;
+/** A daily pass looks at the internet state this often while it downloads. */
+export const HOLD_CHECK_MS = 60 * 1000;
 const CATALOG_TIMEOUT_MS = 30_000;
 export const MARKER_FILE = '.wrp-mesh.json';
 /** Meshes downloaded at the same time (the owner's choice, 2026-10-18). */
@@ -439,7 +442,9 @@ export class MeshManager {
   constructor(
     private readonly log: (m: string) => void,
     /** A mesh was downloaded or updated and is in place (its rough cuts are rebuilt then: index.ts). */
-    private readonly onReady: (name: string) => void = () => undefined
+    private readonly onReady: (name: string) => void = () => undefined,
+    /** Why the daily pass waits (internet.ts), or null when it may run; the panel's buttons do not wait. */
+    private readonly hold: () => string | null = () => null
   ) {}
 
   /** Apply a configuration; the next `run` reconciles the store with it. */
@@ -491,27 +496,58 @@ export class MeshManager {
     return true;
   }
 
-  /** Read the catalogue, download what is ticked and missing or stale, delete what is unticked; then again daily. */
+  /** How often a daily pass looks at the internet state while it downloads. */
+  protected holdCheckMs = HOLD_CHECK_MS;
+  /** The owner asked for something (refresh) since the daily pass began: the internet state does not stop that pass. */
+  private ownerAsked = false;
+
+  /**
+   * Read the catalogue, download what is ticked and missing or stale, delete what is unticked; then again daily.
+   * While the internet state holds downloads (internet.ts) the pass waits, looking again every 15 minutes; a pass
+   * under way when it starts holding is stopped (the downloads resume from their parts later), unless the owner
+   * asked for something meanwhile.
+   */
   run(): void {
     this.stop();
     this.ctrl = new AbortController();
     const loop = async (): Promise<void> => {
       const signal = this.ctrl!.signal;
+      let wasHeld: string | null = null;
       while (!signal.aborted) {
-        await this.reconcile(signal);
+        const held = this.hold();
+        if (held && held !== wasHeld) this.log(`catalogue and downloads wait: ${held}`);
+        wasHeld = held;
+        if (!held) {
+          this.ownerAsked = false;
+          const watch = setInterval(() => {
+            if (this.ownerAsked || signal.aborted || !this.hold()) return;
+            clearInterval(watch);
+            this.stop();
+            this.run();
+          }, this.holdCheckMs);
+          try {
+            await this.reconcile(signal);
+          } finally {
+            clearInterval(watch);
+          }
+        }
         // A stop during the pass has already aborted: no timer then, or it would hold the process a day.
         if (signal.aborted) break;
         await new Promise<void>(resolve => {
-          this.timer = setTimeout(resolve, CATALOG_REFRESH_MS);
-          signal.addEventListener(
-            'abort',
+          const onAbort = (): void => {
+            if (this.timer) clearTimeout(this.timer);
+            this.timer = null;
+            resolve();
+          };
+          this.timer = setTimeout(
             () => {
-              if (this.timer) clearTimeout(this.timer);
-              this.timer = null;
+              // One signal serves every wait: the listener must not pile up.
+              signal.removeEventListener('abort', onAbort);
               resolve();
             },
-            { once: true }
+            held ? INTERNET_HOLD_RETRY_MS : CATALOG_REFRESH_MS
           );
+          signal.addEventListener('abort', onAbort, { once: true });
         });
       }
     };
@@ -530,6 +566,7 @@ export class MeshManager {
    * loop's.
    */
   async refresh(): Promise<void> {
+    this.ownerAsked = true;
     const signal = this.ctrl?.signal ?? (this.refreshCtrl ??= new AbortController()).signal;
     // A running pass on this same signal is shared, not followed by one of its own, and may be past the name
     // just changed: it runs once more when it ends. (A refresh before `run` gets a pass of its own anyway.)
