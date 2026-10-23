@@ -194,8 +194,8 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   from `geoChunked`, a wide area from `timeChunked`).
   - *Resident area:* the vessel's position (Signal K
     `navigation.position`) ± the configured half-width (15°), every step
-    from the current hour to the SMOC horizon (72 h) at 3 h (or 1 h)
-    spacing, cropped from the decoded chunks and held as Float32 in
+    from the current hour to the forecast horizon (72 h by default; SMOC
+    has no horizon of its own) at 3 h (or 1 h) spacing, cropped from the decoded chunks and held as Float32 in
     SharedArrayBuffers: the data worker loads it and the route worker
     uses the same memory. It is rebuilt when the window moves on a step,
     when the vessel has moved more than a third of the half-width, or
@@ -318,13 +318,16 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   *Tide-height map layer* (`/api/field?layer=tide`): `ocean_tide` only,
   hourly (a 3-hourly step would err by up to ~30 % of the amplitude
   mid-step). A resident area around the vessel (± `tides.halfWidth`,
-  default 15°) over now → `tides.horizon` (default 24 h), its start
+  default 15°) over now → the forecast horizon (72 h by default; it was
+  a separate `tides.horizon`, default 24 h, before 0.2.0-beta.3), its start
   aligned to 6 h so it is rebuilt four times a day; views elsewhere load
   their hour on demand (1/3° grid for zoomed-out views); at most 16 MB
   of those on-demand hours are kept between queries. Measured at 15° around Newport: 368 × 368 cells × 31 hourly
   steps, 16.8 MB in memory, 62 timeChunked chunks = 39.9 MB downloaded
   in 3.5 s (about 1.3 MB per hour of window; a new daily run re-downloads
-  it). One on-demand hour: 0.74 MB (1/12°, Sydney) or 0.53 MB (1/3°,
+  it). At the 72 h default the resident area held 42,793,984 bytes (test
+  box, 2026-10-22, 15° around 40.6°N 74.0°W). One on-demand hour: 0.74 MB
+  (1/12°, Sydney) or 0.53 MB (1/3°,
   most of the North Atlantic). The same 2-cell coastal extension as the
   current layers is applied for display; the page's land mask clips it.
 
@@ -1218,7 +1221,8 @@ it drawn dashed with a "forecast ends" marker on the map, a chip on the
 itinerary cards, and a note in the saved route's description. The
 Freeboard panel shows the same note. The **Forecast horizon** setting
 (Defaults tab, Forecast group, 3 h to 360 h) decides how far the forecast
-reaches.
+reaches, and with it SMOC, RTOFS and the tide map, each to the end of its
+own data when that comes first.
 
 **Regional wind (optional).** With the signalk-grib-downloader plugin
 installed (AROME, ARPEGE, ICON-EU, GFS), the plugin decodes the 10 m

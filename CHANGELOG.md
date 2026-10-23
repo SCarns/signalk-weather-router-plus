@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0-beta.3] - 2026-10-22
+
 ### Added
 
 - **Weather tab in the Freeboard panel** (issue #53). The plotter-extension panel
@@ -82,6 +84,83 @@ uses [Semantic Versioning](https://semver.org/).
   application data, a write to it reads no login status first. After security is
   switched on or off, a browser's choices from the other side are asked
   about (Keep / Discard), not dropped or sent.
+- **How fresh each source is, in the page header** (`plugin/freshness.ts`,
+  `/api/status` `freshness`): a green, orange or red pill per source (ECMWF
+  wind and waves, regional wind, CMEMS SMOC, RTOFS, sea level, tidal
+  harmonics) with the run's age, from the source's own publication cadence:
+  green until 30 min before the next run is due, orange until 60 min after,
+  red later than that or with nothing loaded (the owner's thresholds). When
+  each run is due: ECMWF from the measured publication times below, RTOFS
+  from its NOMADS file times (one day measured: f024/f048 at 09:36Z, f072
+  09:42Z, f144 15:38Z), SMOC and sea level a day after their store last
+  updated, AROME by run hour (measured 2026-10-16..19: 00z 2.9 h, 03z 2.8 h,
+  06z 5.6 h, 09z 4.3 h, 12z 4.2 h, 15z 3.9 h, 18z 5.3 h, 21z 4.2 h after the
+  run), the other regional models by signalk-grib-downloader's own schedule
+  (not measured here); harmonics are green when loaded, red for a file that
+  failed. A red line under the header names what is late. The header
+  collapses to one line of coloured dots per row (Show / Hide, remembered
+  in the browser); expanded, every source has its own line, and a source
+  that does not cover the route or the map view says so.
+- **The connection, separately from freshness** (`/api/status`
+  `connectivity`, a line under the title): blue "online" when the data
+  worker's last request reached a server, grey "No internet connection since
+  …" when it found none. Data can be fresh while the connection is down.
+- **Every check says what it found** (`/api/status` `checks`, per source):
+  `newest`, `could-not-check` (the server could not be asked; the run in use
+  stays, not known to be the newest), `new-run`, or `failed` (the server
+  answered but the new run could not be loaded). An ECMWF check that falls
+  back to the cached cycle offline is reported as could not check; it was
+  reported as unchanged. Online, a check that failed shows its line under
+  the header ("ECMWF check failed at …: HTTP 503"). The forecast error line
+  clears only on a check that reached ECMWF.
+- **"Processing new forecast data: 00Z, step 12 of 37"** under the header
+  while a new run decodes behind the one in use.
+- **Mesh catalogue rows are checked when the catalogue is read**
+  (`meshes.ts` `catalogEntryProblem`): every field the plugin reads (a safe
+  name, `archive` as a bare `.tar.zst` file name, `build_date`, `bytes`,
+  `triangles`, `clusters` with valid boxes). A bad row is set aside with its
+  reason on its own panel row and never downloaded; rows without a usable
+  name are listed in `/api/meshes` `catalog_problems`. A row missing
+  `clusters`, `bytes`, `triangles` or `build_date` made `/api/meshes` and
+  `/api/status` fail as a whole; one without `archive` failed its download
+  with a bare TypeError. An `archive` that is a URL or a path (a catalogue
+  sending downloads to another address) is refused.
+- **Under-keel and overhead clearance** (vessel settings, defaults 0.5 m and
+  2 m; request overrides `vessel.under_keel_clearance_m`,
+  `vessel.overhead_clearance_m`): the margins over the draught and the air
+  draft on chart-mesh legs, which were fixed at 0.5 m and 1 m. The higher
+  overhead default blocks bridges and cables 1–2 m above the air draft that
+  passed before. Rough cuts carry them in their
+  rules and file names (`COARSE_VERSION` 6; existing rough cuts are rebuilt
+  once, on demand).
+- **The final depth check repairs before it fails** (`worker/route.ts`
+  `repairViolations`): each segment that crosses water a chart mesh blocks for
+  the boat is routed again with the leg search at a sail threshold of 0 and
+  the detour spliced in, the later waypoints shifted by the time it added; at
+  most 2 passes and 5 detours. A detour that motors on a `sail_max` route is
+  a `detour_motored` warning (under `fastest` motoring is chosen whenever it
+  is quicker, so it says nothing about the wind). Warnings and opening
+  bridges after a detour move with its waypoints, and the detour's own
+  opening bridges are reported. A route still crossing such water fails as
+  before. `repairs_applied` reports the detours (it was always 0).
+- **GeoJSON download** beside GPX in the Itinerary tab: the route line and
+  every waypoint with its times, wind, waves, current and depth.
+- **Route request fields `tack_penalty`** (s, 0..3600; overrides
+  `routing.tackPenalty`) **and `smoother_sim_step_m`** (m, 50..5000; the
+  smoother's own step, overriding `routing.simStep` for the smoother only).
+  API only; absent, routes are as before.
+- **Backups skip the caches.** The forecast, current and sea-level
+  downloads, the decoded runs, the meshes' rough cuts and the saved map
+  tiles each get a `CACHEDIR.TAG` (https://bford.info/cachedir/) at start
+  (`plugin/cachedir.ts`), so backups leave them out: Kopia by default,
+  restic, Borg and GNU tar with `--exclude-caches`. A tag without the
+  signature is written again. On one boat running
+  0.1.1 these directories held 4.78 GB (`du -sb`), and files written in
+  the last 24 h made up 4.78 GB of it (`find -newermt`), so the hourly
+  backups stored a new copy of nearly all of it every day. Settings,
+  jobs, polars, the coastline and the downloaded meshes
+  are still backed up: they change rarely, and offshore they cannot be
+  downloaded again.
 
 ### Changed
 
@@ -193,94 +272,6 @@ uses [Semantic Versioning](https://semver.org/).
   over the stored one and sent up. README, Users: the user is the Signal K login name
   (`req.skPrincipal.identifier`, as `loginStatus` reports it), nothing is
   per user without a login, and a read-only user owns nothing.
-
-### Fixed
-
-- **RTOFS products across the antimeridian answered on one side only**
-  (`RtofsCurrentSource.contains`). The product's box was tested with plain
-  longitudes, so `alaska`, `arctic`, `bering`, `samoa` and `trop_paci_lowres`
-  (east edge past 180°) had no current east of the antimeridian. It is now
-  tested as an offset east of the box's west edge.
-- **Deleting the route on the map leaves nothing of it in use**
-  (`_clearDisplayedRoute()` in `public/rp-plan.js`). Itinerary → Delete
-  cleared the map and the result strip but kept the route's state, as
-  Reset does not. GPX then still exported the deleted route. The plan
-  hint still said to click the route. The next marker change brought
-  back the deleted route's result strip, marked stale, with "Markers
-  changed — press Find Route to recompute".
-
-## [0.2.0-beta.3] - 2026-10-19
-
-### Added
-
-- **How fresh each source is, in the page header** (`plugin/freshness.ts`,
-  `/api/status` `freshness`): a green, orange or red pill per source (ECMWF
-  wind and waves, regional wind, CMEMS SMOC, RTOFS, sea level, tidal
-  harmonics) with the run's age, from the source's own publication cadence:
-  green until 30 min before the next run is due, orange until 60 min after,
-  red later than that or with nothing loaded (the owner's thresholds). When
-  each run is due: ECMWF from the measured publication times below, RTOFS
-  from its NOMADS file times (one day measured: f024/f048 at 09:36Z, f072
-  09:42Z, f144 15:38Z), SMOC and sea level a day after their store last
-  updated, AROME by run hour (measured 2026-10-16..19: 00z 2.9 h, 03z 2.8 h,
-  06z 5.6 h, 09z 4.3 h, 12z 4.2 h, 15z 3.9 h, 18z 5.3 h, 21z 4.2 h after the
-  run), the other regional models by signalk-grib-downloader's own schedule
-  (not measured here); harmonics are green when loaded, red for a file that
-  failed. A red line under the header names what is late. The header
-  collapses to one line of coloured dots per row (Show / Hide, remembered
-  in the browser); expanded, every source has its own line, and a source
-  that does not cover the route or the map view says so.
-- **The connection, separately from freshness** (`/api/status`
-  `connectivity`, a line under the title): blue "online" when the data
-  worker's last request reached a server, grey "No internet connection since
-  …" when it found none. Data can be fresh while the connection is down.
-- **Every check says what it found** (`/api/status` `checks`, per source):
-  `newest`, `could-not-check` (the server could not be asked; the run in use
-  stays, not known to be the newest), `new-run`, or `failed` (the server
-  answered but the new run could not be loaded). An ECMWF check that falls
-  back to the cached cycle offline is reported as could not check; it was
-  reported as unchanged. Online, a check that failed shows its line under
-  the header ("ECMWF check failed at …: HTTP 503"). The forecast error line
-  clears only on a check that reached ECMWF.
-- **"Processing new forecast data: 00Z, step 12 of 37"** under the header
-  while a new run decodes behind the one in use.
-- **Mesh catalogue rows are checked when the catalogue is read**
-  (`meshes.ts` `catalogEntryProblem`): every field the plugin reads (a safe
-  name, `archive` as a bare `.tar.zst` file name, `build_date`, `bytes`,
-  `triangles`, `clusters` with valid boxes). A bad row is set aside with its
-  reason on its own panel row and never downloaded; rows without a usable
-  name are listed in `/api/meshes` `catalog_problems`. A row missing
-  `clusters`, `bytes`, `triangles` or `build_date` made `/api/meshes` and
-  `/api/status` fail as a whole; one without `archive` failed its download
-  with a bare TypeError. An `archive` that is a URL or a path (a catalogue
-  sending downloads to another address) is refused.
-- **Under-keel and overhead clearance** (vessel settings, defaults 0.5 m and
-  2 m; request overrides `vessel.under_keel_clearance_m`,
-  `vessel.overhead_clearance_m`): the margins over the draught and the air
-  draft on chart-mesh legs, which were fixed at 0.5 m and 1 m. The higher
-  overhead default blocks bridges and cables 1–2 m above the air draft that
-  passed before. Rough cuts carry them in their
-  rules and file names (`COARSE_VERSION` 6; existing rough cuts are rebuilt
-  once, on demand).
-- **The final depth check repairs before it fails** (`worker/route.ts`
-  `repairViolations`): each segment that crosses water a chart mesh blocks for
-  the boat is routed again with the leg search at a sail threshold of 0 and
-  the detour spliced in, the later waypoints shifted by the time it added; at
-  most 2 passes and 5 detours. A detour that motors on a `sail_max` route is
-  a `detour_motored` warning (under `fastest` motoring is chosen whenever it
-  is quicker, so it says nothing about the wind). Warnings and opening
-  bridges after a detour move with its waypoints, and the detour's own
-  opening bridges are reported. A route still crossing such water fails as
-  before. `repairs_applied` reports the detours (it was always 0).
-- **GeoJSON download** beside GPX in the Itinerary tab: the route line and
-  every waypoint with its times, wind, waves, current and depth.
-- **Route request fields `tack_penalty`** (s, 0..3600; overrides
-  `routing.tackPenalty`) **and `smoother_sim_step_m`** (m, 50..5000; the
-  smoother's own step, overriding `routing.simStep` for the smoother only).
-  API only; absent, routes are as before.
-
-### Changed
-
 - **The ECMWF decode runs in a child process, and the data worker's network
   work beside its queries** (`plugin/forecastdecodetask.ts`, child task
   `forecast-decode`; `worker.ts`). A refresh round, a decode and a settings
@@ -341,6 +332,30 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A stalled RTOFS extent read held the data worker** (`currents/rtofs.ts`
+  `fetchExtent`, PR #68 review). The 4 KB read of a product's file had no
+  timeout once the headers had arrived, so a server that stalled after them
+  kept that refresh, and every forecast, SMOC and tide refresh queued behind
+  it, waiting. The read is now cancelled at the client's timeout and that
+  product is left unknown.
+- **A queued refresh ran on an older vessel position** (`worker/refreshqueue.ts`,
+  PR #68 review). A settings change queued ahead of a refresh set the
+  position it was sent with when it ran, after the refresh had stored the
+  newer one, so RTOFS could choose the product for where the vessel had
+  been until the next round. The refresh now puts back the newest position
+  it was sent when it starts.
+- **RTOFS products across the antimeridian answered on one side only**
+  (`RtofsCurrentSource.contains`). The product's box was tested with plain
+  longitudes, so `alaska`, `arctic`, `bering`, `samoa` and `trop_paci_lowres`
+  (east edge past 180°) had no current east of the antimeridian. It is now
+  tested as an offset east of the box's west edge.
+- **Deleting the route on the map leaves nothing of it in use**
+  (`_clearDisplayedRoute()` in `public/rp-plan.js`). Itinerary → Delete
+  cleared the map and the result strip but kept the route's state, as
+  Reset does not. GPX then still exported the deleted route. The plan
+  hint still said to click the route. The next marker change brought
+  back the deleted route's result strip, marked stale, with "Markers
+  changed — press Find Route to recompute".
 - **A forecast update stalled the map** (see the decode above): every map
   tile not already saved waited for the whole decode.
 - **Offline, the forecast stayed on an old cycle without a word**: the check
@@ -410,21 +425,6 @@ uses [Semantic Versioning](https://semver.org/).
   Outside the box is now land. The map overlays' land rasters reach one cell
   past the view (`landcache.ts` `forBBox`), so the view's own north and east
   edges are not counted as land.
-
-### Added
-
-- **Backups skip the caches.** The forecast, current and sea-level
-  downloads, the decoded runs, the meshes' rough cuts and the saved map
-  tiles each get a `CACHEDIR.TAG` (https://bford.info/cachedir/) at start
-  (`plugin/cachedir.ts`), so backups leave them out: Kopia by default,
-  restic, Borg and GNU tar with `--exclude-caches`. A tag without the
-  signature is written again. On one boat running
-  0.1.1 these directories held 4.78 GB (`du -sb`), and files written in
-  the last 24 h made up 4.78 GB of it (`find -newermt`), so the hourly
-  backups stored a new copy of nearly all of it every day. Settings,
-  jobs, polars, the coastline and the downloaded meshes
-  are still backed up: they change rarely, and offshore they cannot be
-  downloaded again.
 
 ## [0.2.0-beta.2] - 2026-10-13
 
@@ -2183,7 +2183,8 @@ builds before this release, with their measurements, is in
   loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.2...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.3...HEAD
+[0.2.0-beta.3]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.2...v0.2.0-beta.3
 [0.2.0-beta.2]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.1...v0.2.0-beta.2
 [0.2.0-beta.1]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.2-beta.1...v0.2.0-beta.1
 [0.1.2-beta.1]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.1...v0.1.2-beta.1
