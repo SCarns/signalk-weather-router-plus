@@ -195,7 +195,8 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   - *Resident area:* the vessel's position (Signal K
     `navigation.position`) ± the configured half-width (15°), every step
     from the current hour to the forecast horizon (72 h by default; SMOC
-    has no horizon of its own) at 3 h (or 1 h) spacing, cropped from the decoded chunks and held as Float32 in
+    has no horizon of its own) at 3 h (or 1 h) spacing, cropped from
+    the decoded chunks and held as Float32 in
     SharedArrayBuffers: the data worker loads it and the route worker
     uses the same memory. It is rebuilt when the window moves on a step,
     when the vessel has moved more than a third of the half-width, or
