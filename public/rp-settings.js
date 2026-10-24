@@ -16,8 +16,8 @@
 import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml } from './rp-core.js';
 (function () {
   const form = document.getElementById('srvSettingsForm');
-  const saveBtn = document.getElementById('srvSettingsSave');
-  const revertBtn = document.getElementById('srvSettingsRevert');
+  const saveBtn = /** @type {HTMLButtonElement} */ (document.getElementById('srvSettingsSave'));
+  const revertBtn = /** @type {HTMLButtonElement} */ (document.getElementById('srvSettingsRevert'));
   const dirtyEl = document.getElementById('srvSettingsDirty');
   const statusEl = document.getElementById('srvSettingsStatus');
   if (!form || !saveBtn || !revertBtn || !statusEl) return;
@@ -202,8 +202,9 @@ import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSI
       const row = form.querySelector('.st-row[data-key="' + spec.key + '"]');
       const list = spec.type === 'enumList';
       const boxes = list ? [...row.querySelectorAll('.st-opt input[type="checkbox"]')] : [];
+      /** @type {HTMLInputElement | HTMLSelectElement} */
       const input = list ? null : row.classList.contains('st-bool') ? row.querySelector('input[type="checkbox"]') : row.querySelector('select, input[type="range"], input[type="text"]');
-      const r = { spec, row, input, boxes, errEl: row.querySelector('.st-err'), unitEl: row.querySelector('.st-unit'), valEl: row.querySelector('.st-val'), noneEl: row.querySelector('.st-none input'), conv: convFor(spec), initialText: '' };
+      const r = { spec, row, input, boxes, errEl: row.querySelector('.st-err'), unitEl: row.querySelector('.st-unit'), valEl: row.querySelector('.st-val'), noneEl: /** @type {HTMLInputElement} */ (row.querySelector('.st-none input')), conv: convFor(spec), initialText: '' };
       const onEdit = () => { if (r.valEl) showValue(r, currentText(r)); validateRow(r); refreshDirty(); };
       for (const el of list ? boxes : [input]) {
         el.addEventListener('input', onEdit);
@@ -375,6 +376,6 @@ import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSI
   form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
   // Reload from the server when the tab is opened with no unsaved edits
   // (another client may have changed them).
-  window.addEventListener('rp:tab', (e) => { if (e.detail === 'srvSettingsSection' && !loading && dirtyRows().length === 0) load(); });
+  window.addEventListener('rp:tab', (/** @type {CustomEvent} */ e) => { if (e.detail === 'srvSettingsSection' && !loading && dirtyRows().length === 0) load(); });
   load();
 })();

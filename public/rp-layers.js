@@ -436,7 +436,7 @@ export function setTimeOverride(iso) { _currentTimeOverride = iso; }
 export function timeOverride() { return _currentTimeOverride; }
 export function _overlayTimeIso() {
   if (_currentTimeOverride) return _currentTimeOverride;
-  const depEl = document.getElementById('departure');
+  const depEl = /** @type {HTMLInputElement} */ (document.getElementById('departure'));
   const dep = fromClockInput(depEl.value);
   return (dep || new Date()).toISOString();
 }
@@ -799,7 +799,7 @@ function _seasGlyphStyle(f) {
 }
 const seasArrowsLayer = new ol.layer.Vector({ source: seasSource, visible: false, style: _seasGlyphStyle, zIndex: 8 });
 // The A/B selector (index.html seasStyleRow): redraw and relabel at once.
-for (const r of document.querySelectorAll('input[name="seasStyle"]')) {
+for (const r of /** @type {NodeListOf<HTMLInputElement>} */ (document.querySelectorAll('input[name="seasStyle"]'))) {
   r.checked = r.value === SEAS_STYLE;
   r.addEventListener('change', () => {
     if (!r.checked) return;
@@ -2023,7 +2023,7 @@ function _classesRow(title, classes, glyph) {
   }).join('');
   return '<div class="lg-row"><div class="lg-title">' + title + ' <span>(' + u.u + ')</span></div><div class="lg-classes">' + cells + '</div></div>';
 }
-function _on(id) { const el = document.getElementById(id); return !!(el && el.checked); }
+function _on(id) { const el = /** @type {HTMLInputElement} */ (document.getElementById(id)); return !!(el && el.checked); }
 function _noteRow(id) {
   const m = _overlayNotes[id];
   return m ? '<div class="lg-note" style="color:var(--danger);">unavailable: ' + m + '</div>' : '';
@@ -2146,7 +2146,7 @@ const LAYER_TOGGLES = [
   ['tideToggle', tideLayer, loadTide, () => tideLayer.setSource(null)],
 ];
 for (const [id, layer, load, clear, streamlines, persist = true] of LAYER_TOGGLES) {
-  const el = document.getElementById(id);
+  const el = /** @type {HTMLInputElement} */ (document.getElementById(id));
   if (!el) continue;
   const KEY = 'layer:' + id;
   el.addEventListener('change', () => {
@@ -2171,7 +2171,7 @@ for (const [id, layer, load, clear, streamlines, persist = true] of LAYER_TOGGLE
 window.addEventListener('rp:forecast-ready', () => {
   for (const k of Object.keys(_overlayNotes)) delete _overlayNotes[k];
   for (const [id, layer, , clear] of LAYER_TOGGLES) {
-    const el = document.getElementById(id);
+    const el = /** @type {HTMLInputElement} */ (document.getElementById(id));
     // Notes come from Signal K, not the forecast: they stay.
     if (id !== 'notesToggle' && el && el.checked && layer && layer.getVisible() && clear) clear();
   }
@@ -2182,8 +2182,8 @@ window.addEventListener('rp:forecast-ready', () => {
 // The Decision lines switch beside Find Route is the same switch as the one
 // in Layers → Base: either drives the other, and the saved state is one.
 {
-  const main = document.getElementById('frontToggle');
-  const twin = document.getElementById('frontToggleRoute');
+  const main = /** @type {HTMLInputElement} */ (document.getElementById('frontToggle'));
+  const twin = /** @type {HTMLInputElement} */ (document.getElementById('frontToggleRoute'));
   if (main && twin) {
     twin.checked = main.checked;
     twin.addEventListener('change', () => {

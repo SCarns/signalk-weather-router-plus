@@ -107,7 +107,7 @@ function displayRoute(geojson) {
     const navWarns = _drawSnapConnectors(p);
     _routeWarnings = Array.isArray(p.warnings) ? p.warnings : [];
     renderResultStrip(p, navWarns);
-    const nameInput = document.getElementById('routeNameInput');
+    const nameInput = /** @type {HTMLInputElement} */ (document.getElementById('routeNameInput'));
     if (nameInput) nameInput.value = p.name || _currentRouteName || '';
     routeSource.removeFeature(lineFeat);
   }
@@ -153,7 +153,7 @@ function _placeRoutePins(pts, snapProps) {
   if (stops) {
     waypointCoords = stops.map(s => [s.lon, s.lat]);
     waypointRadii = stops.map(s => (Number.isFinite(s.radius_m) ? s.radius_m : null));
-    const precEl = document.getElementById('precision');
+    const precEl = /** @type {HTMLSelectElement} */ (document.getElementById('precision'));
     if (precEl && (snapProps.precision === 'precise' || snapProps.precision === 'approximate') && precEl.value !== snapProps.precision) {
       // The loaded route's own precision: not a change by the user, so the
       // route is not stale (the change listener below checks the flag).
@@ -395,7 +395,7 @@ function _hideRecompute() {
   const yes = document.getElementById('recomputeYes'), no = document.getElementById('recomputeNo');
   if (yes) yes.addEventListener('click', () => {
     _hideRecompute();
-    const fr = document.getElementById('findRoute');
+    const fr = /** @type {HTMLButtonElement} */ (document.getElementById('findRoute'));
     if (fr && !fr.disabled) fr.click();
   });
   if (no) no.addEventListener('click', _hideRecompute);
@@ -484,7 +484,7 @@ function _loadRouteJob(id, given) {
         const wps = Array.isArray(req.waypoints) ? req.waypoints : [];
         waypointCoords = wps.map(w => [w.lon, w.lat]);
         waypointRadii = wps.map(w => (Number.isFinite(w.radius_m) ? w.radius_m : (req.precision === 'approximate' && Number.isFinite(req.arrival_radius_m) ? req.arrival_radius_m : null)));
-        const precEl = document.getElementById('precision');
+        const precEl = /** @type {HTMLSelectElement} */ (document.getElementById('precision'));
         const prec = wps.length ? (req.precision === 'approximate' ? 'approximate' : 'precise') : null;
         if (precEl && prec && precEl.value !== prec) {
           precEl.value = prec;
@@ -523,7 +523,7 @@ function _clearDisplayedRoute() {
   if (routeInfo) routeInfo.innerHTML = '';
   const modalItin = document.getElementById('modalItinerary');
   if (modalItin) modalItin.innerHTML = '';
-  const nameInput = document.getElementById('routeNameInput');
+  const nameInput = /** @type {HTMLInputElement} */ (document.getElementById('routeNameInput'));
   if (nameInput) nameInput.value = '';
   // The deleted job's itinerary and meteogram go with it (PR #50 review), and the map time picked on it.
   _displayedJobId = null;
@@ -616,7 +616,7 @@ function getVesselType() {
 // (rp-plan.js `_LIMITS`): typed in the user's unit, kept in SI.
 function readPowerBoat() {
   return {
-    name: (document.getElementById('pb_name').value || '').trim(),
+    name: (/** @type {HTMLInputElement} */ (document.getElementById('pb_name')).value || '').trim(),
     cruise_ms: _limitSI('pb_cruise'),
   };
 }
@@ -635,14 +635,14 @@ function loadPowerBoat() {
     const j = prefs.get('powerBoat');
     if (!j) return;
     const pb = JSON.parse(j);
-    if (pb.name != null) document.getElementById('pb_name').value = pb.name;
+    if (pb.name != null) /** @type {HTMLInputElement} */ (document.getElementById('pb_name')).value = pb.name;
     // The cruise speed this held in knots until 2026-10 was moved to routeVar:pb_cruise:si by prefs.load().
   } catch (_) {}
 }
 function refreshFindRouteEnabled() {
   // Find Route stays disabled until start + end are set; power mode
   // additionally requires the boat's name and cruise speed.
-  const btn = document.getElementById('findRoute');
+  const btn = /** @type {HTMLButtonElement} */ (document.getElementById('findRoute'));
   const haveEndpoints = !!(startCoord && endCoord);
   let blocked = !haveEndpoints;
   const status = document.getElementById('pb_status');
@@ -667,7 +667,7 @@ function applyVesselType(vt) {
   const powerSection = document.getElementById('powerBoatSection');
   panel.classList.toggle('power', vt === 'power');
   powerSection.style.display = vt === 'power' ? 'block' : 'none';
-  document.querySelectorAll('#vesselTypeToggle .vt-btn').forEach(b => {
+  /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('#vesselTypeToggle .vt-btn')).forEach(b => {
     const active = b.dataset.val === vt;
     b.classList.toggle('vt-active', active);
     b.setAttribute('aria-pressed', String(active));
@@ -676,7 +676,7 @@ function applyVesselType(vt) {
 }
 // Stored on a click only: start-up shows the stored type (or the default) without storing it, so neither a default
 // nobody chose nor a choice from before waiting for Keep / Discard reaches the user's record.
-document.querySelectorAll('#vesselTypeToggle .vt-btn').forEach(b => {
+/** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('#vesselTypeToggle .vt-btn')).forEach(b => {
   b.addEventListener('click', () => { prefs.set('vesselType', b.dataset.val); applyVesselType(b.dataset.val); });
 });
 ['pb_name', 'pb_cruise'].forEach(id => {
@@ -735,7 +735,7 @@ function _fileName(name, ext) {
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
     appendLog('GPX file downloaded: ' + a.download, 'done');
   });
-  const input = document.getElementById('routeNameInput');
+  const input = /** @type {HTMLInputElement} */ (document.getElementById('routeNameInput'));
   if (pubBtn) {
     pubBtn.addEventListener('click', () => {
       if (!_currentRouteJobId) { status.textContent = '(no route loaded)'; return; }
@@ -921,9 +921,9 @@ function _rebuildWaypointFeatures() {
 function _rebuildRings() {
   _savePlan();   // every waypoint or radius change passes through here
   ringSource.clear();
-  const precEl = document.getElementById('precision');
+  const precEl = /** @type {HTMLSelectElement} */ (document.getElementById('precision'));
   if (!precEl || precEl.value !== 'approximate') return;
-  const slider = parseFloat(document.getElementById('arrivalRadiusM').value);
+  const slider = parseFloat(/** @type {HTMLInputElement} */ (document.getElementById('arrivalRadiusM')).value);
   waypointCoords.forEach((c, i) => {
     const r = Number.isFinite(waypointRadii[i]) ? waypointRadii[i] : slider;
     if (!Number.isFinite(r) || r <= 0) return;
@@ -932,7 +932,7 @@ function _rebuildRings() {
   });
 }
 {
-  const precEl = document.getElementById('precision');
+  const precEl = /** @type {HTMLSelectElement} */ (document.getElementById('precision'));
   const slider = document.getElementById('arrivalRadiusM');
   // Both change what a route with waypoints would be: a user's change makes
   // the shown route stale (a loaded route setting the selector does not).
@@ -1091,7 +1091,7 @@ function _noteWriteError(r) {
 }
 function _notesShown() {
   // After a write: the notes layer on (and remembered on, as its switch would), then reloaded.
-  const t = document.getElementById('notesToggle');
+  const t = /** @type {HTMLInputElement} */ (document.getElementById('notesToggle'));
   if (t && !t.checked) { t.checked = true; t.dispatchEvent(new Event('change', { bubbles: true })); }
   else loadNotes();
 }
@@ -1312,7 +1312,7 @@ function updateButton() {
 // window, starts from it. Saved on every change; restored once on load.
 function _savePlan() {
   if (!_planRestored) return;   // start-up events must not overwrite the saved plan before it is read
-  const t = fromClockInput(document.getElementById('departure').value);
+  const t = fromClockInput(/** @type {HTMLInputElement} */ (document.getElementById('departure')).value);
   const plan = {
     start: startCoord, end: endCoord,
     waypoints: waypointCoords, radii: waypointRadii,
@@ -1328,7 +1328,7 @@ function _initRouteChoices() {
   // Values an earlier panel saved under the old names.
   const renamed = { search: { wide: 'moderate', finer: 'maximum' }, router: { experimental: 'refined' } };
   for (const [id, key] of [['search', 'rp:search'], ['router', 'rp:router']]) {
-    const el = document.getElementById(id);
+    const el = /** @type {HTMLSelectElement} */ (document.getElementById(id));
     if (!el) continue;
     let saved = prefs.get(key);
     if (saved && renamed[id] && renamed[id][saved]) saved = renamed[id][saved];
@@ -1340,12 +1340,12 @@ function _initRouteChoices() {
 // shortcut replaces laid-out tacks only where the straight course can be
 // sailed within the tolerance, which the smoother times with the real polar.
 function _syncSmoothing() {
-  const sm = document.getElementById('smootherSel');
+  const sm = /** @type {HTMLSelectElement} */ (document.getElementById('smootherSel'));
   if (sm) sm.disabled = false;
 }
 document.getElementById('router')?.addEventListener('change', _syncSmoothing);
-window.addEventListener('rp:status', e => {
-  const el = document.getElementById('router');
+window.addEventListener('rp:status', (/** @type {CustomEvent} */ e) => {
+  const el = /** @type {HTMLSelectElement} */ (document.getElementById('router'));
   const st = e.detail;
   const saved = prefs.get('rp:router');
   if (el && !saved && st && st.router && [...el.options].some(o => o.value === st.router)) el.value = st.router;
@@ -1396,7 +1396,7 @@ function _clearRoute() {
   document.getElementById('modalLog').innerHTML = '';
   document.getElementById('modalStatus').textContent = 'Waiting...';
   document.getElementById('modalItinerary').innerHTML = '';
-  document.getElementById('routeNameInput').value = '';
+  /** @type {HTMLInputElement} */ (document.getElementById('routeNameInput')).value = '';
   document.getElementById('routeNameStatus').textContent = '';
   _currentRouteJobId = null;
   _currentRouteName = '';
@@ -1452,7 +1452,7 @@ function _restorePlan() {
     const dep = typeof plan.departure === 'string' ? new Date(plan.departure) : null;
     if (dep && Number.isFinite(dep.getTime())) {
       if (dep.getTime() > Date.now()) {
-        document.getElementById('departure').value = toClockInput(dep);
+        /** @type {HTMLInputElement} */ (document.getElementById('departure')).value = toClockInput(dep);
         document.getElementById('departure').dispatchEvent(new Event('change'));
       } else if (startCoord || endCoord) {
         document.getElementById('status').textContent = 'The saved departure (' + fmtClock(dep, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) + ') has passed; departure set to now.';
@@ -1484,7 +1484,7 @@ function showTab(id) {
     const pane = document.getElementById(t);
     if (pane) pane.classList.toggle('active', t === id);
   }
-  document.querySelectorAll('#tabBar button').forEach(b => {
+  /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('#tabBar button')).forEach(b => {
     const on = b.dataset.tab === id;
     b.classList.toggle('active', on);
     b.setAttribute('aria-selected', String(on));
@@ -1493,7 +1493,7 @@ function showTab(id) {
   if (id === 'routeSection' && _routeGroup === 'options') drawPolarDiagram();
   window.dispatchEvent(new CustomEvent('rp:tab', { detail: id }));
 }
-document.querySelectorAll('#tabBar button').forEach(b => {
+/** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('#tabBar button')).forEach(b => {
   b.addEventListener('click', () => showTab(b.dataset.tab));
 });
 (function () {
@@ -1507,7 +1507,7 @@ document.querySelectorAll('#tabBar button').forEach(b => {
 (function () {
   const row = document.getElementById('routeSubTabs');
   if (!row) return;
-  const groups = Array.from(document.querySelectorAll('#routeSection .route-group'));
+  const groups = Array.from(/** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('#routeSection .route-group')));
   function show(id) {
     _routeGroup = id;
     groups.forEach(g => g.classList.toggle('active', g.dataset.group === id));
@@ -1516,7 +1516,7 @@ document.querySelectorAll('#tabBar button').forEach(b => {
     if (id === 'options') drawPolarDiagram();
   }
   // The polar diagram draws into a canvas that has no size while Vessel is closed: draw when it opens.
-  document.getElementById('vesselSection')?.addEventListener('toggle', e => { if (e.target.open) drawPolarDiagram(); });
+  document.getElementById('vesselSection')?.addEventListener('toggle', e => { if (/** @type {HTMLDetailsElement} */ (e.target).open) drawPolarDiagram(); });
   // One Options section open at a time.
   oneOpenAtATime(document.querySelector('#routeSection .route-group[data-group="options"]'));
   row.querySelectorAll('button').forEach(b => b.addEventListener('click', () => show(b.dataset.group)));
@@ -1529,7 +1529,7 @@ document.querySelectorAll('#tabBar button').forEach(b => {
 (function () {
   const row = document.getElementById('layersSubTabs');
   if (!row) return;
-  const groups = Array.from(document.querySelectorAll('#layersSection .layer-group'));
+  const groups = Array.from(/** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('#layersSection .layer-group')));
   function show(id) {
     groups.forEach(g => g.classList.toggle('active', g.dataset.group === id));
     row.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.group === id));
@@ -1692,10 +1692,10 @@ function renderResultStrip(p, navWarns) {
     }).join('') + '</div>';
   }
   el.innerHTML = html;
-  const b = el.querySelector('#rsBadge'), list = el.querySelector('#rsWarnList');
+  const b = /** @type {HTMLElement} */ (el.querySelector('#rsBadge')), list = /** @type {HTMLElement} */ (el.querySelector('#rsWarnList'));
   if (b && list) b.onclick = () => { list.hidden = !list.hidden; };
   const toSettings = () => { showTab('srvSettingsSection'); };
-  const bb = el.querySelector('#rsBeyond'), bl = el.querySelector('#rsBeyondLink');
+  const bb = /** @type {HTMLElement} */ (el.querySelector('#rsBeyond')), bl = /** @type {HTMLElement} */ (el.querySelector('#rsBeyondLink'));
   if (bb) bb.onclick = toSettings;
   if (bl) bl.onclick = toSettings;
 }
@@ -1711,9 +1711,9 @@ function renderResultStrip(p, navWarns) {
     dst.innerHTML = src.innerHTML.replace(/id="rsBadge"/g, 'data-rs="badge"').replace(/id="rsWarnList"/g, 'data-rs="list"')
       .replace(/id="rsBeyond"/g, 'data-rs="beyond"').replace(/id="rsBeyondLink"/g, 'data-rs="beyond"');
     dst.classList.toggle('stale', src.classList.contains('stale'));
-    const b = dst.querySelector('[data-rs="badge"]'), list = dst.querySelector('[data-rs="list"]');
+    const b = /** @type {HTMLElement} */ (dst.querySelector('[data-rs="badge"]')), list = /** @type {HTMLElement} */ (dst.querySelector('[data-rs="list"]'));
     if (b && list) b.onclick = () => { list.hidden = !list.hidden; };
-    dst.querySelectorAll('[data-rs="beyond"]').forEach(e => { e.onclick = () => { showTab('srvSettingsSection'); }; });
+    /** @type {NodeListOf<HTMLElement>} */ (dst.querySelectorAll('[data-rs="beyond"]')).forEach(e => { e.onclick = () => { showTab('srvSettingsSection'); }; });
   };
   new MutationObserver(copy).observe(src, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
   copy();
@@ -1745,7 +1745,7 @@ function showModal() {
   // The meteogram described the route that is gone (PR #50 review); the new one opens it again from the itinerary.
   closeMeteogram();
   _clearRouteTime();
-  const nameInput = document.getElementById('routeNameInput');
+  const nameInput = /** @type {HTMLInputElement} */ (document.getElementById('routeNameInput'));
   if (nameInput) nameInput.value = '';
   renderResultStrip(null);
   updatePlanHint();
@@ -2135,7 +2135,7 @@ function _itineraryWarnBlockHtml(warnRows) {
 }
 
 function _bindItineraryClicks() {
-  modalItinerary.querySelectorAll('#itinWarnings .iw-row').forEach(row => {
+  /** @type {NodeListOf<HTMLElement>} */ (modalItinerary.querySelectorAll('#itinWarnings .iw-row')).forEach(row => {
     row.addEventListener('click', () => {
       const w = _routeWarnings[parseInt(row.dataset.wi, 10)];
       const ci = parseInt(row.dataset.ci, 10);
@@ -2145,7 +2145,7 @@ function _bindItineraryClicks() {
     });
   });
 
-  modalItinerary.querySelectorAll('.leg-card[data-idx]').forEach(card => {
+  /** @type {NodeListOf<HTMLElement>} */ (modalItinerary.querySelectorAll('.leg-card[data-idx]')).forEach(card => {
     card.addEventListener('click', () => {
       const idx = parseInt(card.dataset.idx, 10);
       const f = _itineraryFeatures[idx];
@@ -2184,9 +2184,9 @@ function _focusOnWaypoint(f) {
 let _nextDrawbridges = null;
 function buildRoutePayload(overrides) {
   overrides = overrides || {};
-  const sailThreshMs = parseFloat(document.getElementById('sailThresh').value);
-  const radiusM = parseFloat(document.getElementById('arrivalRadiusM').value);
-  const depVal = document.getElementById('departure').value;
+  const sailThreshMs = parseFloat(/** @type {HTMLInputElement} */ (document.getElementById('sailThresh')).value);
+  const radiusM = parseFloat(/** @type {HTMLInputElement} */ (document.getElementById('arrivalRadiusM')).value);
+  const depVal = /** @type {HTMLInputElement} */ (document.getElementById('departure')).value;
   const body = {
     start: overrides.start
         ? { lat: overrides.start[1], lon: overrides.start[0] }
@@ -2194,35 +2194,35 @@ function buildRoutePayload(overrides) {
     end: overrides.end
         ? { lat: overrides.end[1], lon: overrides.end[0] }
         : { lat: endCoord[1], lon: endCoord[0] },
-    mode: document.getElementById('mode').value,
+    mode: /** @type {HTMLSelectElement} */ (document.getElementById('mode')).value,
     sail_thresh_ms: sailThreshMs,
   };
-  const routerSel = document.getElementById('router');
+  const routerSel = /** @type {HTMLSelectElement} */ (document.getElementById('router'));
   if (routerSel && routerSel.value) body.router = routerSel.value;
-  const searchSel = document.getElementById('search');
+  const searchSel = /** @type {HTMLSelectElement} */ (document.getElementById('search'));
   if (searchSel && searchSel.value && searchSel.value !== 'normal') body.search = searchSel.value;
   const maxWindMs = _limitSI('maxWind'), maxSwhM = _limitSI('maxSwh');
   if (maxWindMs !== null) body.max_wind_ms = maxWindMs;
   if (maxSwhM !== null) body.max_swh_m = maxSwhM;
   if (overrides.departure !== undefined) body.departure = overrides.departure;
   else if (fromClockInput(depVal)) body.departure = fromClockInput(depVal).toISOString();
-  const name = (document.getElementById('routeName').value || '').trim();
+  const name = (/** @type {HTMLInputElement} */ (document.getElementById('routeName')).value || '').trim();
   if (name) body.name = name;
-  const pub = document.getElementById('publishSel').value;
+  const pub = /** @type {HTMLSelectElement} */ (document.getElementById('publishSel')).value;
   if (pub === 'true') body.publish = true; else if (pub === 'false') body.publish = false;
-  const sm = document.getElementById('smootherSel');
+  const sm = /** @type {HTMLSelectElement} */ (document.getElementById('smootherSel'));
   // Drawbridges: the Defaults setting (routing.drawbridges) rules; the only
   // request-level choice is the one-shot "re-plan avoiding them" below.
   // Sent, not cleared, here: the request's success handler clears it, so a
   // request that fails to start keeps it for the next attempt.
   if (_nextDrawbridges) body.drawbridges = _nextDrawbridges;
   if (sm && sm.value === 'true') body.smoother = true; else if (sm && sm.value === 'false') body.smoother = false;
-  if (document.getElementById('noCurrents').checked) body.no_currents = true;
-  const rw = document.getElementById('regionalWind');
+  if (/** @type {HTMLInputElement} */ (document.getElementById('noCurrents')).checked) body.no_currents = true;
+  const rw = /** @type {HTMLInputElement} */ (document.getElementById('regionalWind'));
   if (rw && !rw.checked) body.wind_model = 'ecmwf';
-  const av = document.getElementById('avoidAreas');
+  const av = /** @type {HTMLInputElement} */ (document.getElementById('avoidAreas'));
   if (av && !av.checked) body.avoid_areas = false;
-  if (document.getElementById('noForecast').checked) body.no_forecast = true;
+  if (/** @type {HTMLInputElement} */ (document.getElementById('noForecast')).checked) body.no_forecast = true;
   const vessel = {};
   // Vessel-type override. Power mode forces mode=motor, drops polar,
   // and sends the boat's name and cruise speed as a per-request override.
@@ -2232,7 +2232,7 @@ function buildRoutePayload(overrides) {
     vessel.name = pb.name;
     vessel.motor_speed_ms = pb.cruise_ms;
   } else {
-    const polarPath = document.getElementById('polarSelect').value;
+    const polarPath = /** @type {HTMLSelectElement} */ (document.getElementById('polarSelect')).value;
     if (polarPath) vessel.polar = polarPath;
   }
   if (Object.keys(vessel).length) body.vessel = vessel;
@@ -2249,7 +2249,7 @@ function buildRoutePayload(overrides) {
     // Each waypoint ends one leg and starts the next. radius_m only when a
     // caller supplies one per waypoint; otherwise arrival_radius_m applies.
     body.waypoints = wps.map(w => (w.radius_m != null ? { lat: w.lat, lon: w.lon, radius_m: w.radius_m } : { lat: w.lat, lon: w.lon }));
-    const precEl = document.getElementById('precision');
+    const precEl = /** @type {HTMLSelectElement} */ (document.getElementById('precision'));
     body.precision = precEl && precEl.value === 'approximate' ? 'approximate' : 'precise';
     if (Number.isFinite(radiusM)) body.arrival_radius_m = radiusM;
   }
@@ -2261,14 +2261,14 @@ function buildRoutePayload(overrides) {
 // unit preference keeps the meaning; no unit → the field is disabled.
 // (_LIMITS is declared at the top of the file: start-up code reads it through _limitSI.)
 function _limitSI(id) {
-  const c = UI_UNITS[_LIMITS[id]], el = document.getElementById(id);
+  const c = UI_UNITS[_LIMITS[id]], el = /** @type {HTMLInputElement} */ (document.getElementById(id));
   if (!el || !c || !c.inv || el.value === '') return null;
   const v = parseFloat(el.value);
   return Number.isFinite(v) ? c.inv(v) : null;
 }
 function _initLimitInputs() {
   for (const id of Object.keys(_LIMITS)) {
-    const el = document.getElementById(id);
+    const el = /** @type {HTMLInputElement} */ (document.getElementById(id));
     if (!el) continue;
     const c = UI_UNITS[_LIMITS[id]];
     for (const u of document.querySelectorAll('.unitOf[data-q="' + _LIMITS[id] + '"]')) u.textContent = c ? c.unit : UNIT_MISSING;
@@ -2332,7 +2332,7 @@ function attachToJob(id, jobRow) {
   if (_activeJobId !== id) _jobBeforeAttach = { id: _currentRouteJobId, name: _currentRouteName };
   _closeJobStream();
   _activeJobId = id;
-  const btn = document.getElementById('findRoute');
+  const btn = /** @type {HTMLButtonElement} */ (document.getElementById('findRoute'));
   const statusEl = document.getElementById('status');
   btn.disabled = true;
   btn.textContent = 'Calculating…';
@@ -2341,7 +2341,7 @@ function attachToJob(id, jobRow) {
   // before, they were cleared, so a new route's Publish, Delete, name and points of sail had no job).
   showModal();
   _currentRouteJobId = id;
-  _currentRouteName = jobRow && jobRow.request ? (jobRow.request.name || '') : ((document.getElementById('routeName').value || '').trim());
+  _currentRouteName = jobRow && jobRow.request ? (jobRow.request.name || '') : ((/** @type {HTMLInputElement} */ (document.getElementById('routeName')).value || '').trim());
   appendLog('job ' + id);
   if (jobRow && Array.isArray(jobRow.progress)) {
     // Backfill from the status row; the SSE replay adds the rest.
@@ -2487,7 +2487,7 @@ function _jobOnError(job, ev) {
     _computeUiIdle();
     _backToEarlierRoute();
     showTab('logSection');
-    const rawLog = document.getElementById('rawLog');
+    const rawLog = /** @type {HTMLDetailsElement} */ (document.getElementById('rawLog'));
     if (rawLog) rawLog.open = true;
     loadRouteHistory();
     loadPluginStatus();
@@ -2511,7 +2511,7 @@ function _jobOnError(job, ev) {
   }
 }
 
-document.getElementById('findRoute').addEventListener('click', function() {
+document.getElementById('findRoute').addEventListener('click', /** @this {HTMLButtonElement} */ function() {
   _hideRecompute();
   const btn = this;
   const statusEl = document.getElementById('status');
@@ -2839,6 +2839,7 @@ const _COND_TABS = [
   { id: 'raw', label: 'Raw' },
 ];
 let _condTab = 'wind';
+/** @type {{ lon: number, lat: number, hourIso: string, instant: any, series: any, note: string, isLand?: boolean, tides?: any, tidesError?: string } | null} */
 let _cond = null;   // { lon, lat, hourIso, instant, series, note, isLand }
 
 function _condDisplay(v, unit) {
@@ -3165,7 +3166,7 @@ function _tideDetailsHtml(series) {
   let h = '<div style="font-size:11px;color:#333;margin-top:4px;">';
   if (T) {
     const ev = (T.highs || []).map(e => ({ e, hi: true })).concat((T.lows || []).map(e => ({ e, hi: false })))
-      .sort((a, b) => new Date(a.e.time) - new Date(b.e.time));
+      .sort((a, b) => new Date(a.e.time).getTime() - new Date(b.e.time).getTime());
     if (ev.length) {
       h += '<div style="display:flex;flex-wrap:wrap;gap:2px 10px;">' + ev.map(({ e, hi }) =>
         '<span><b style="color:' + (hi ? '#004d40' : '#6d4c41') + ';">' + (hi ? '▲ High' : '▼ Low') + '</b> '
@@ -3279,7 +3280,7 @@ function _condOverlaysHtml(tab) {
     html += '<div id="condOverlays" style="display:flex;gap:4px;align-items:center;margin:0 0 6px 0;font-size:11px;">'
       + '<span style="color:#666;">Map:</span>';
     for (const [id, label] of overlays) {
-      const on = document.getElementById(id).checked;
+      const on = /** @type {HTMLInputElement} */ (document.getElementById(id)).checked;
       html += '<span data-toggle="' + id + '" title="' + (on ? 'Hide' : 'Show') + ' this overlay on the map" '
         + 'style="padding:2px 8px;cursor:pointer;border-radius:10px;border:1px solid ' + (on ? '#1565c0' : '#ccc') + ';'
         + (on ? 'background:#1565c0;color:#fff;font-weight:600;' : 'background:#fff;color:#555;')
@@ -3424,19 +3425,19 @@ let _winOpenJob = null; // the departure's route opened from the table
 
 // The departures the inputs describe (ms), or null with the reason.
 function _winPlan() {
-  const from = fromClockInput(document.getElementById('departure').value) || new Date();
-  const to = fromClockInput(document.getElementById('windowTo').value);
-  const step = Number(document.getElementById('windowStep').value) * 1000;
+  const from = fromClockInput(/** @type {HTMLInputElement} */ (document.getElementById('departure')).value) || new Date();
+  const to = fromClockInput(/** @type {HTMLInputElement} */ (document.getElementById('windowTo')).value);
+  const step = Number(/** @type {HTMLSelectElement} */ (document.getElementById('windowStep')).value) * 1000;
   if (!to) return { error: 'Set the latest departure.' };
   if (to < from) return { error: 'The latest departure is before the Departure.' };
-  const n = Math.floor((to - from) / step + 1e-9) + 1;
+  const n = Math.floor((to.getTime() - from.getTime()) / step + 1e-9) + 1;
   if (n > 48) return { error: n + ' departures: at most 48 (a longer step, or an earlier latest departure).' };
   return { from, to, n };
 }
 
 // The count line and the button; DOM only (also called from start-up code, before this section's state exists).
 function _winRefresh() {
-  const btn = document.getElementById('windowStart');
+  const btn = /** @type {HTMLButtonElement} */ (document.getElementById('windowStart'));
   const count = document.getElementById('windowCount');
   if (!btn || !count) return;
   const p = _winPlan();
@@ -3454,12 +3455,12 @@ function _winStart() {
   if (p.error) return;
   const route = buildRoutePayload({ departure: p.from.toISOString() });
   delete route.publish;
-  const body = { route, from: p.from.toISOString(), to: p.to.toISOString(), step_s: Number(document.getElementById('windowStep').value) };
+  const body = { route, from: p.from.toISOString(), to: p.to.toISOString(), step_s: Number(/** @type {HTMLSelectElement} */ (document.getElementById('windowStep')).value) };
   document.getElementById('windowStatus').textContent = 'Starting…';
   // Off until the window's first poll shows Cancel: a second click would start a second window (PR #51 review).
   // Marked on the button, which _winRefresh reads, so a refresh meanwhile keeps it off: 'post' while the
   // request is out, then the window's id until its first poll (a poll of an older window does not count).
-  const btn = document.getElementById('windowStart');
+  const btn = /** @type {HTMLButtonElement} */ (document.getElementById('windowStart'));
   btn.dataset.starting = 'post';
   btn.disabled = true;
   authFetch(API + '/windows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, null)
@@ -3569,11 +3570,11 @@ function _winRender() {
   if (w.departures.some(d => d.metrics && d.metrics.beyond_forecast)) html += '<div class="ctl-hint">* arrives after the forecast ends; not ranked.</div>';
   html += '<div class="ctl-hint">The forecast grows less certain with every day ahead: compare the late departures again on a newer run.</div>';
   out.innerHTML = html;
-  out.querySelector('#windowSort').onchange = e => {
-    try { localStorage.setItem('rp:windowSort', e.target.value); } catch (_) { /* not remembered */ }
+  /** @type {HTMLSelectElement} */ (out.querySelector('#windowSort')).onchange = e => {
+    try { localStorage.setItem('rp:windowSort', /** @type {HTMLSelectElement} */ (e.target).value); } catch (_) { /* not remembered */ }
     _winRender();
   };
-  out.querySelectorAll('tr.win-row[data-job]').forEach(tr => { tr.onclick = () => _winOpen(tr.dataset.job); });
+  /** @type {NodeListOf<HTMLElement>} */ (out.querySelectorAll('tr.win-row[data-job]')).forEach(tr => { tr.onclick = () => _winOpen(tr.dataset.job); });
 }
 
 // Open one departure's route (a window job is not in the Saved list: its record is fetched first).
@@ -3589,16 +3590,16 @@ function _winOpen(jobId) {
 }
 
 (function() {
-  const toEl = document.getElementById('windowTo');
+  const toEl = /** @type {HTMLInputElement} */ (document.getElementById('windowTo'));
   if (!toEl) return;
   // Latest departure: two days after the Departure until set.
-  const depEl = document.getElementById('departure');
+  const depEl = /** @type {HTMLInputElement} */ (document.getElementById('departure'));
   const defaultTo = () => {
     if (toEl.value) return;
     const from = fromClockInput(depEl.value) || new Date();
     toEl.value = toClockInput(new Date(from.getTime() + 48 * 3600 * 1000));
   };
-  document.getElementById('windowSection').addEventListener('toggle', e => { if (e.target.open) { defaultTo(); _winRefresh(); } });
+  document.getElementById('windowSection').addEventListener('toggle', e => { if (/** @type {HTMLDetailsElement} */ (e.target).open) { defaultTo(); _winRefresh(); } });
   for (const el of [toEl, depEl, document.getElementById('windowStep')]) {
     el.addEventListener('change', _winRefresh);
     el.addEventListener('input', _winRefresh);
@@ -3662,7 +3663,7 @@ function openMeteogram() {
   if (!jobId || !_itineraryFeatures.length) { appendLog('Meteogram: no computed route on the map', 'error'); return; }
   box.hidden = false;
   document.body.classList.add('meteogram-open');   // a phone's bottom sheet makes room (index.html)
-  const step = _meteoEl('meteoStep').value || '3600';
+  const step = /** @type {HTMLSelectElement} */ (_meteoEl('meteoStep')).value || '3600';
   const fit = !(_meteo && _meteo.jobId === jobId);   // a new route, not another step for this one
   _meteo = { jobId, data: null, hoverIdx: null, keyIdx: null, panels: [] };
   // The marker was for the rows being replaced (another route's, or another step's), and the charts it was hovered on
@@ -3713,7 +3714,7 @@ function _renderMeteogram() {
   const cyc = c => _shortUtc(c);
   // The data changed while the rows were read (PR #50 review): the currents or tides may mix two sources.
   if (d.complete === false) notes.push('These conditions were read while the forecast, the currents or the tides changed: close and open the meteogram again for the newest.');
-  const stepOpt = [..._meteoEl('meteoStep').options].find(o => Number(o.value) === d.step_s);
+  const stepOpt = [.../** @type {HTMLSelectElement} */ (_meteoEl('meteoStep')).options].find(o => Number(o.value) === d.step_s);
   notes.push('Conditions from the ECMWF run of ' + cyc(d.forecast_cycle) + ', every ' + (stepOpt ? stepOpt.textContent : _fmt(d.step_s, 'time'))
     + (d.step_raised ? ' (raised to keep the row count down)' : '') + '.');
   const windNote = _meteoWindNote(d, rows);
@@ -3765,7 +3766,7 @@ function _meteoDraw() {
   const rows = m.data.rows || [];
   const dims = _meteoDims();
   const hourIso = _overlayTimeIso();
-  _meteoEl('meteoBody').querySelectorAll('canvas[data-panel]').forEach(cv => {
+  /** @type {NodeListOf<HTMLCanvasElement>} */ (_meteoEl('meteoBody').querySelectorAll('canvas[data-panel]')).forEach(cv => {
     const p = m.panels[Number(cv.dataset.panel)];
     const g = _drawConditionsChart(cv, p, rows, hourIso, null, m.hoverIdx, dims);
     if (!g) return;
@@ -3809,7 +3810,7 @@ function _meteoBindCanvases() {
     setTimeOverride(new Date(rows[i].time).toISOString());
     _reloadTimedOverlays();
   };
-  _meteoEl('meteoBody').querySelectorAll('canvas[data-panel]').forEach(cv => {
+  /** @type {NodeListOf<HTMLCanvasElement>} */ (_meteoEl('meteoBody').querySelectorAll('canvas[data-panel]')).forEach(cv => {
     const p = m.panels[Number(cv.dataset.panel)];
     const idxAt = ev => _condIdxAtX(rows, ev.offsetX, p, _meteoDims());
     cv.onpointermove = ev => { const i = idxAt(ev); if (i == null || i === m.hoverIdx) return; m.hoverIdx = i; _meteoDraw(); _meteoReadout(i); };
@@ -3824,7 +3825,7 @@ function _meteoBindCanvases() {
     cv.onfocus = () => { if (rows.length) show(cv, clamp(m.hoverIdx != null ? m.hoverIdx : m.keyIdx != null ? m.keyIdx : 0)); };
     // To another chart (Tab, a click): its focus shows the step, nothing to clear.
     cv.onblur = ev => {
-      if (ev.relatedTarget && ev.relatedTarget.closest && ev.relatedTarget.closest('#meteoBody canvas[data-panel]')) return;
+      if (ev.relatedTarget && /** @type {Element} */ (ev.relatedTarget).closest && /** @type {Element} */ (ev.relatedTarget).closest('#meteoBody canvas[data-panel]')) return;
       m.hoverIdx = null;
       _meteoDraw();
       _meteoReadout(null);
@@ -3898,7 +3899,7 @@ function _meteoRouteChanged() {
 // Find Route. Live always starts OFF on page load — explicit opt-in.
 (function() {
   function numOr(id, fallback) {
-    const el = document.getElementById(id);
+    const el = /** @type {HTMLInputElement} */ (document.getElementById(id));
     const v = el ? parseFloat(el.value) : NaN;
     return Number.isFinite(v) ? v : fallback;
   }
@@ -3929,18 +3930,18 @@ function _meteoRouteChanged() {
   let simTrack = null, simTrackFeature = null;
   let liveSince = null, liveTrackFeatures = [], liveTrackBusy = false;
 
-  const btnPlanning = document.getElementById('modeBtnPlanning');
-  const btnLive = document.getElementById('modeBtnLive');
-  const btnSim = document.getElementById('modeBtnSim');
+  const btnPlanning = /** @type {HTMLButtonElement} */ (document.getElementById('modeBtnPlanning'));
+  const btnLive = /** @type {HTMLButtonElement} */ (document.getElementById('modeBtnLive'));
+  const btnSim = /** @type {HTMLButtonElement} */ (document.getElementById('modeBtnSim'));
   const modeHint = document.getElementById('modeHint');
-  const simFactorEl = document.getElementById('simFactor');
+  const simFactorEl = /** @type {HTMLInputElement} */ (document.getElementById('simFactor'));
   const simFactorLabel = document.getElementById('simFactorLabel');
   const simPushBtn = document.getElementById('simPushBtn');
   const simControls = document.getElementById('simControls');
-  const simStartBtn = document.getElementById('simStartBtn');
-  const simStopBtn = document.getElementById('simStopBtn');
+  const simStartBtn = /** @type {HTMLButtonElement} */ (document.getElementById('simStartBtn'));
+  const simStopBtn = /** @type {HTMLButtonElement} */ (document.getElementById('simStopBtn'));
   const simRewindBtn = document.getElementById('simRewindBtn');
-  const vesselToggle = document.getElementById('vesselToggle');
+  const vesselToggle = /** @type {HTMLInputElement} */ (document.getElementById('vesselToggle'));
   let simOverlayHour = null;  // the hour the weather layers show for the simulated time (ISO)
   let simOverlayAt = 0;       // when they were last redrawn for it (wall ms)
   const readoutBody = document.getElementById('liveReadoutBody');
@@ -4016,7 +4017,7 @@ function _meteoRouteChanged() {
 
   function setVisual() {
     const mode = !liveMode ? 'planning' : simMode ? 'sim' : 'live';
-    for (const [btn, m] of [[btnPlanning, 'planning'], [btnLive, 'live'], [btnSim, 'sim']]) {
+    for (const [btn, m] of /** @type {[HTMLButtonElement, string][]} */ ([[btnPlanning, 'planning'], [btnLive, 'live'], [btnSim, 'sim']])) {
       btn.classList.toggle('live-active', mode === m);
       btn.classList.toggle('live-on', mode === m && m !== 'planning');
       btn.setAttribute('aria-pressed', String(mode === m));
@@ -4048,7 +4049,7 @@ function _meteoRouteChanged() {
   // pointer went down, so a tap that wobbles does not count) unticks it;
   // ticking it, the "Centre the map on the boat" button, or starting LIVE /
   // SIMULATE, follows again. Zooming keeps following.
-  const followBox = document.getElementById('followBoat');
+  const followBox = /** @type {HTMLInputElement} */ (document.getElementById('followBoat'));
   const FOLLOW_DRAG_PX = 10;   // the same movement the long press treats as a pan (CANCEL_PX)
   let followDragStart = null;  // pixel of the last pointerdown on the map
   map.getViewport().addEventListener('pointerdown', e => {
@@ -4230,17 +4231,17 @@ function _meteoRouteChanged() {
     }
     const out = passage.update([snap.lon, snap.lat], snap.sog_ms);
     for (const f of out.passed) setCardNote(f.index, 'passed', passageText(f, true));
-    modalItinerary.querySelectorAll('.leg-card.live-next').forEach(c => { if (+c.dataset.idx !== out.target) c.classList.remove('live-next'); });
+    /** @type {NodeListOf<HTMLElement>} */ (modalItinerary.querySelectorAll('.leg-card.live-next')).forEach(c => { if (+c.dataset.idx !== out.target) c.classList.remove('live-next'); });
     if (out.live) setCardNote(out.target, 'live-next', passageText(out.live, false));
     showActiveCard();
   }
   // Keep the active card in view: every update (it scrolls only when the
   // card is out of view) and when the Itinerary tab is opened.
   function showActiveCard() {
-    const card = modalItinerary.querySelector('.leg-card.live-next');
+    const card = /** @type {HTMLElement} */ (modalItinerary.querySelector('.leg-card.live-next'));
     if (card && card.offsetParent !== null && card.scrollIntoView) card.scrollIntoView({ block: 'nearest' });
   }
-  window.addEventListener('rp:tab', e => { if (liveMode && e.detail === 'itinerarySection') showActiveCard(); });
+  window.addEventListener('rp:tab', (/** @type {CustomEvent} */ e) => { if (liveMode && e.detail === 'itinerarySection') showActiveCard(); });
   window.addEventListener('rp:units', () => { if (lastSnap && liveMode) updatePassage(lastSnap); });
 
   let _pollFails = 0;
@@ -4431,7 +4432,7 @@ function _meteoRouteChanged() {
         finish(resolve, jobId);
       });
       // Server-pushed `event: error` — always terminal; always rejects.
-      es.addEventListener('error', (ev) => {
+      es.addEventListener('error', (/** @type {MessageEvent} */ ev) => {
         let msg = 'compute error';
         try {
           const d = ev && ev.data ? JSON.parse(ev.data) : null;
@@ -4532,7 +4533,7 @@ function _meteoRouteChanged() {
     updatePlanHint();
     // SIMULATE: the new course starts with no push off course.
     if (simMode) {
-      const push = document.getElementById('simPushDeg');
+      const push = /** @type {HTMLInputElement} */ (document.getElementById('simPushDeg'));
       push.value = '0';
       push.dispatchEvent(new Event('input'));   // its label
     }

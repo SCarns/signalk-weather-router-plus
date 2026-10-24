@@ -15,11 +15,8 @@
  */
 
 import type { ConditionsRow } from './overlays';
-import type { DrawbridgeChoice } from '../engine/mesh/route';
 import type { AvoidArea } from '../geo/avoid';
 import type { ResolvedConfig, SelfDesign } from './config';
-import type { RouterKind } from '../engine/router';
-import type { SearchPreset } from '../engine/search/presets';
 import type { BBox } from '../geo/geodesy';
 import type { DecodedIndex } from '../data/decoded';
 import type { SerializedSmoc, SmocStatus } from '../currents/smoc';
@@ -29,6 +26,7 @@ import type { TideStatus } from '../tides/sealevel';
 import type { ArcoRun } from '../data/arco';
 import type { TileId } from './tiles';
 import type { RouteRequest } from './request_schema';
+import type { JobProgress, JobStatus, RouteSummary } from './response_schema';
 
 /** data: forecast, currents, map queries; route: the engine; tiles: builds map tiles ahead of time (prebuild.ts). */
 export type WorkerRole = 'data' | 'route' | 'tiles';
@@ -41,65 +39,8 @@ export interface VesselPosition {
 /** The route request: its type comes from the schema that also validates it and documents it (request_schema.ts). */
 export type { RouteRequest };
 
-export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
-
-export interface JobProgress {
-  time: string;
-  stage: number;
-  total: number;
-  message: string;
-}
-
-export interface RouteSummary {
-  total_distance_m: number;
-  total_time_s: number;
-  sailing_time_s: number;
-  motoring_time_s: number;
-  waypoint_count: number;
-  warnings: number;
-  departure: string;
-  arrival: string;
-  forecast_cycle?: string;
-  current_sources?: string[];
-  /** Label of the polar the route was computed with, or null when motor-only. */
-  polar?: string | null;
-  /** Polar performance applied (ratio; 1 = the polar as written). */
-  polar_performance?: number;
-  /** Automatic vias placed at narrow passages (not waypoints of the route). */
-  auto_vias?: { name: string; width_m: number }[];
-  /** Routes with waypoints: number of legs and the waypoint precision used. */
-  legs?: number;
-  precision?: 'precise' | 'approximate';
-  /** A leg's corridor search failed and ran on the coarse per-route skeleton (counted in /api/status corridor_fallbacks). */
-  corridor_fallback?: true;
-  /** Regional wind models used and the share of the search's wind samples each answered (0..1); absent when only ECMWF was used. */
-  regional_wind?: { name: string; run: string; share: number }[];
-  /** At least one leg was routed on the chart mesh (charted depths and obstructions) instead of the coastline search. */
-  mesh?: true;
-  /** The finished route passed the final depth check against the chart meshes it meets (absent when no mesh meets it). */
-  depth_checked?: true;
-  /**
-   * Per leg: what planned it (chart mesh, coastline search, or both for a leg leaving the mesh), and what the
-   * check found along it: metres on the mesh, with no charted depth, outside the mesh; the shallowest charted
-   * depth crossed (m) and where ([lon, lat]), null when none was charted.
-   */
-  legs_detail?: {
-    leg: number;
-    source: 'mesh' | 'coastline' | 'mixed';
-    on_mesh_m: number;
-    unknown_depth_m: number;
-    outside_mesh_m: number;
-    shallowest_m: number | null;
-    shallowest_at: [number, number] | null;
-  }[];
-  /** Opening bridges the route passes under (mesh legs), and the rule that applied. */
-  drawbridges?: { lat: number; lon: number; clear_m: number | null; leg_index: number }[];
-  drawbridges_rule?: DrawbridgeChoice;
-  /** The open-water router that ran. */
-  router?: RouterKind;
-  /** The search method the route ran with. */
-  search?: SearchPreset;
-}
+/** The job document's parts: their types come from the schemas that also document them (response_schema.ts). */
+export type { JobStatus, JobProgress, RouteSummary };
 
 export type QueryKind =
   | 'field'
