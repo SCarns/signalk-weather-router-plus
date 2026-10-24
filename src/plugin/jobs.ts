@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { JobProgress, JobStatus, RouteRequest, RouteSummary } from './protocol';
+import type { JobLinks, JobPublic } from './response_schema';
 
 export interface JobEvent {
   id: number;
@@ -40,21 +41,8 @@ export interface Job {
   nextEventId: number;
 }
 
-export interface JobPublic {
-  id: string;
-  status: JobStatus;
-  request: RouteRequest;
-  created_at: string;
-  started_at?: string;
-  finished_at?: string;
-  progress: JobProgress[];
-  summary?: RouteSummary;
-  error?: string;
-  resource_id?: string;
-  publish_error?: string;
-  window_id?: string;
-  links: Record<string, string>;
-}
+/** A job as the API answers it: the type comes from its schema (response_schema.ts), as does the OpenAPI document. */
+export type { JobPublic };
 
 /** What a finished departure-window job keeps only in its file (see release). */
 const RESULT_KEYS = ['geojson', 'skRoute', 'skeleton', 'fronts', 'events', 'progress'] as const;
@@ -176,7 +164,7 @@ export class JobManager extends EventEmitter {
     this.emit('event', job.id, ev);
   }
 
-  links(id: string): Record<string, string> {
+  links(id: string): JobLinks {
     const b = `${this.basePath}/api/routes/${id}`;
     return {
       self: b,

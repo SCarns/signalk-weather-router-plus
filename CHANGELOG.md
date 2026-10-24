@@ -6,6 +6,25 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The OpenAPI document describes the job document in full: `window_id`, the
+  `progress` items, every `summary` field and the `links`, with which fields
+  are always present; and the answers of `GET /api/windows` and
+  `GET /api/windows/{id}`. Nothing else in the document changes.
+
+### Changed
+
+- The route request, the job document and the departure-window documents are
+  each described once, as a schema (TypeBox, the plugin's first runtime
+  dependency, `typebox` ^1.4.3): the TypeScript types and the OpenAPI document
+  come from it, so a field can no longer be in one and missing from the other
+  (issue #76). Requests, answers and error texts are unchanged.
+- `npm run typecheck` also type-checks the web app's scripts
+  (`tsconfig.public.json`, `checkJs`). The scripts gained JSDoc types, and
+  six date checks and subtractions now go through `getTime()` (same
+  results); the page behaves as before.
+
 ## [0.2.0-beta.3] - 2026-10-22
 
 ### Added

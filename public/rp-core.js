@@ -127,7 +127,7 @@ function applyDisplayUnits() {
   refreshSliderLabels();
   fillUnitTokens();
   // Unit names next to inputs (.unitOf[data-q="<quantity>"]).
-  for (const u of document.querySelectorAll('.unitOf[data-q]')) {
+  for (const u of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.unitOf[data-q]'))) {
     const c = UI_UNITS[u.dataset.q];
     u.textContent = c ? c.unit : UNIT_MISSING;
   }
@@ -193,7 +193,7 @@ export function unitText(text) {
   return String(text).replace(UNIT_TOKEN, (_, q, v) => unitQuantityText(q, Number(v)));
 }
 export function fillUnitTokens(root = document) {
-  for (const el of root.querySelectorAll('.uq')) el.textContent = unitQuantityText(el.dataset.q, Number(el.dataset.v));
+  for (const el of /** @type {NodeListOf<HTMLElement>} */ (root.querySelectorAll('.uq'))) el.textContent = unitQuantityText(el.dataset.q, Number(el.dataset.v));
 }
 
 /** An angle the plugin gives in degrees, in the user's angle unit. */
@@ -229,7 +229,7 @@ const SLIDER_DISPLAY = {
 };
 function refreshSliderLabels() {
   for (const id of Object.keys(SLIDER_DISPLAY)) {
-    const inp = document.getElementById(id), lbl = document.getElementById(id + 'Label');
+    const inp = /** @type {HTMLInputElement} */ (document.getElementById(id)), lbl = document.getElementById(id + 'Label');
     if (!inp || !lbl) continue;
     const d = SLIDER_DISPLAY[id], c = UI_UNITS[d.q];
     const u = document.querySelector('.unitOf[data-for="' + id + 'Label"]');
@@ -247,7 +247,7 @@ function refreshSliderLabels() {
     'proximityRadiusM', 'xteThresholdM', 'xteSustainSec', 'simPushDeg',
   ];
   for (const id of SLIDER_IDS) {
-    const inp = document.getElementById(id);
+    const inp = /** @type {HTMLInputElement} */ (document.getElementById(id));
     const lbl = document.getElementById(id + 'Label');
     if (!inp || !lbl) continue;
     inp.addEventListener('input', () => {
@@ -294,11 +294,11 @@ export const TACK_COLOR = { starboard: '#2E7D32', port: '#D32F2F' };
     'tideToggle',
   ];
   const inputs = HEATMAP_TOGGLE_IDS
-    .map((id) => document.getElementById(id))
+    .map((id) => /** @type {HTMLInputElement} */ (document.getElementById(id)))
     .filter(Boolean);
 
   inputs.forEach((inp) => {
-    inp.addEventListener('change', function () {
+    inp.addEventListener('change', /** @this {HTMLInputElement} */ function () {
       // We only need to enforce exclusivity when this toggle was
       // just TURNED ON. A user un-checking a heatmap just hides it;
       // siblings don't need to know.
@@ -440,6 +440,7 @@ export async function authFetch(url, opts, channel) {
     _rateNote(r.ok || r.status === 400 || r.status === 404 || r.status === 409 || r.status === 422 || r.status === 403 || r.status === 503);
     if (r.status === 401) {
       AuthGate.trip(r.status);
+      /** @type {Error & { rateNoted?: boolean }} */
       const err = new Error('auth ' + r.status);
       err.rateNoted = true;
       throw err;
@@ -447,6 +448,7 @@ export async function authFetch(url, opts, channel) {
     if (r.status === 403) {
       // Logged in but lacking permission (readonly user hitting a
       // write route) — a real answer, not a dead session.
+      /** @type {Error & { scopeMiss?: boolean, rateNoted?: boolean }} */
       const err = new Error('permission denied (HTTP 403)');
       err.scopeMiss = true;
       err.rateNoted = true;
@@ -473,6 +475,7 @@ export async function authFetch(url, opts, channel) {
 export async function _apiError(r) {
   let d = null;
   try { d = await r.clone().json(); } catch (_) { /* not JSON */ }
+  /** @type {Error & { waiting?: boolean }} */
   const err = new Error(d && (d.error || d.message) ? unitText(String(d.error || d.message)) : 'HTTP ' + r.status);
   if (r.status === 503 && d && 'loading' in d) { err.waiting = true; _serverWaiting(); }
   return err;
@@ -490,7 +493,7 @@ export async function _apiErrorText(r) {
 const now = new Date();
 now.setMinutes(0, 0, 0);
 const _pad = n => String(n).padStart(2, '0');
-document.getElementById('departure').value =
+/** @type {HTMLInputElement} */ (document.getElementById('departure')).value =
     `${now.getFullYear()}-${_pad(now.getMonth() + 1)}-${_pad(now.getDate())}` +
     `T${_pad(now.getHours())}:${_pad(now.getMinutes())}`;
 // (Rewritten in the ship's zone by loadShipTime once that is known.)
@@ -499,7 +502,7 @@ document.getElementById('departure').value =
 let _polarItems = [];
 
 function _renderPolarOptions(filterText) {
-  const sel = document.getElementById('polarSelect');
+  const sel = /** @type {HTMLSelectElement} */ (document.getElementById('polarSelect'));
   const needle = (filterText || '').trim().toLowerCase();
   const filtered = needle
     ? _polarItems.filter(it => it.label.toLowerCase().includes(needle)
@@ -521,7 +524,7 @@ function _renderPolarOptions(filterText) {
 }
 
 function loadPolarList() {
-  const sel = document.getElementById('polarSelect');
+  const sel = /** @type {HTMLSelectElement} */ (document.getElementById('polarSelect'));
   const stored = prefs.get('polarPath') || '';
   return authFetch(API + '/polars', {}, null)
     .then(r => r.json())
@@ -583,7 +586,7 @@ function loadPolarTable(polarPath) {
 }
 const _POLAR_TWS_COLORS = ['#90caf9', '#4fc3f7', '#00897b', '#43a047', '#f9a825', '#e64a19', '#c62828', '#8a0000', '#6a1b9a', '#ad1457', '#37474f', '#000'];
 export function drawPolarDiagram() {
-  const canvas = document.getElementById('polarDiagram');
+  const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('polarDiagram'));
   const info = document.getElementById('polarInfo');
   if (!canvas) return;
   // PLOT_H is the diagram; the strip below it holds the caption, clear of the 180° label.
@@ -678,7 +681,7 @@ export function drawPolarDiagram() {
   ctx.fillStyle = '#777'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
   ctx.fillText('rings: boat speed (' + u.u + ') · dots: beat / run VMG angles', lx, H - 4);
   if (info) {
-    const sel = document.getElementById('polarSelect');
+    const sel = /** @type {HTMLSelectElement} */ (document.getElementById('polarSelect'));
     const it = _polarItems.find(p => p.path === (sel ? sel.value : ''));
     info.textContent = (it ? it.label + ' — ' : '') + T.twa_deg.length + ' angles × ' + nW + ' wind speeds';
   }
@@ -700,7 +703,7 @@ function _polarSpeedAt(T, twa, k) {
   return null;
 }
 
-document.getElementById('polarSelect').addEventListener('change', function() {
+document.getElementById('polarSelect').addEventListener('change', /** @this {HTMLSelectElement} */ function() {
   prefs.set('polarPath', this.value);
   loadPolarAngles(this.value);
   loadPolarTable(this.value);
@@ -721,7 +724,7 @@ document.getElementById('polarSelect').addEventListener('change', function() {
   // converted the knots it held before 2026-10.
   const KEY = (id) => 'routeVar:' + (id === 'sailThresh' ? 'sailThreshMs' : id);
   for (const id of PERSIST_IDS) {
-    const el = document.getElementById(id);
+    const el = /** @type {HTMLInputElement} */ (document.getElementById(id));
     if (!el) continue;
     const saved = prefs.get(KEY(id));
     if (saved != null && saved !== '') {
@@ -739,7 +742,7 @@ document.getElementById('polarSelect').addEventListener('change', function() {
     }
   }
   for (const id of CHECK_IDS) {
-    const el = document.getElementById(id);
+    const el = /** @type {HTMLInputElement} */ (document.getElementById(id));
     if (!el) continue;
     const saved = prefs.get(KEY(id));
     if (saved === 'true' || saved === 'false') el.checked = saved === 'true';
@@ -749,7 +752,7 @@ document.getElementById('polarSelect').addEventListener('change', function() {
   }
 })();
 
-document.getElementById('polarFilter').addEventListener('input', function() {
+document.getElementById('polarFilter').addEventListener('input', /** @this {HTMLInputElement} */ function() {
   _renderPolarOptions(this.value);
 });
 loadPolarList();
@@ -765,8 +768,8 @@ loadPolarList();
   const openBtn = document.getElementById('openVesselForm');
   const closeBtn = document.getElementById('vesselClose');
   const cancelBtn = document.getElementById('vf_cancel');
-  const generateBtn = document.getElementById('vf_generate');
-  const sbdLink = document.getElementById('sbdLink');
+  const generateBtn = /** @type {HTMLButtonElement} */ (document.getElementById('vf_generate'));
+  const sbdLink = /** @type {HTMLAnchorElement} */ (document.getElementById('sbdLink'));
   const resultDiv = document.getElementById('vf_result');
   const warnDiv = document.getElementById('vf_warnings');
 
@@ -784,7 +787,7 @@ loadPolarList();
 
   // Update the sailboatdata link to use the current boat name as a
   // hint for the user's search.
-  document.getElementById('vf_name').addEventListener('input', function() {
+  document.getElementById('vf_name').addEventListener('input', /** @this {HTMLInputElement} */ function() {
     const name = this.value.trim();
     if (name) {
       sbdLink.href = 'https://sailboatdata.com/?s=' + encodeURIComponent(name);
@@ -815,7 +818,7 @@ loadPolarList();
   const SPEC_UNIT_NAMES = { short_distance: 'length', mass: 'mass', area: 'area' };
   // A field without a unit can't be typed in: disabled, its label shows the missing mark.
   function syncSpecInputs() {
-    for (const f of SPEC_FIELDS) document.getElementById(f.id).disabled = !UI_UNITS[f.q];
+    for (const f of SPEC_FIELDS) /** @type {HTMLInputElement} */ (document.getElementById(f.id)).disabled = !UI_UNITS[f.q];
   }
   window.addEventListener('rp:units', syncSpecInputs);
   syncSpecInputs();
@@ -835,7 +838,7 @@ loadPolarList();
     warnDiv.innerHTML = '';
     resultDiv.innerHTML = '';
 
-    const g = id => document.getElementById(id);
+    const g = id => /** @type {HTMLInputElement | HTMLSelectElement} */ (document.getElementById(id));
     const name = g('vf_name').value.trim();
     if (!name) {
       warnDiv.innerHTML = 'Boat name is required.';
@@ -901,10 +904,10 @@ loadPolarList();
       // Stored first: loadPolarList() restores the stored path and loads
       // its angles and diagram. The filter is cleared so the entry shows.
       prefs.set('polarPath', data.path);
-      const filt = document.getElementById('polarFilter');
+      const filt = /** @type {HTMLInputElement} */ (document.getElementById('polarFilter'));
       if (filt) filt.value = '';
       await loadPolarList();
-      const sel = document.getElementById('polarSelect');
+      const sel = /** @type {HTMLSelectElement} */ (document.getElementById('polarSelect'));
       let found = false;
       for (let i = 0; i < sel.options.length; i++) {
         if (sel.options[i].value === data.path) {
@@ -935,7 +938,7 @@ loadPolarList();
 // any Tuesday).
 export function fmtWhen(iso) {
   const d = iso ? new Date(iso) : null;
-  if (!d || isNaN(d)) return '';
+  if (!d || isNaN(d.getTime())) return '';
   const far = Math.abs(d.getTime() - Date.now()) >= LONG_DURATION_S * 1000;
   return fmtClock(d, far ? { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' } : { weekday: 'short', hour: '2-digit', minute: '2-digit' });
 }
@@ -971,7 +974,7 @@ export function loadShipTime() {
       }
       const changed = JSON.stringify(z) !== JSON.stringify(_shipZone);
       // The departure field keeps its moment: read in the old zone, written in the new.
-      const dep = document.getElementById('departure');
+      const dep = /** @type {HTMLInputElement} */ (document.getElementById('departure'));
       const at = changed && dep ? fromClockInput(dep.value) : null;
       _shipZone = z;
       if (at) dep.value = toClockInput(at);
@@ -989,7 +992,7 @@ export function shipZoneLabel() {
 /** A time as text in the ship's zone (Intl options as for toLocaleString). */
 export function fmtClock(t, opts = {}) {
   const d = t instanceof Date ? t : new Date(t);
-  if (isNaN(d)) return '';
+  if (isNaN(d.getTime())) return '';
   const z = _shipZone;
   if (z && z.tz) return d.toLocaleString([], { ...opts, timeZone: z.tz });
   if (z && z.offsetMin != null) {
@@ -1041,11 +1044,11 @@ export function fromClockInput(v) {
     return new Date(t);
   }
   const d = new Date(v);
-  return isNaN(d) ? null : d;
+  return isNaN(d.getTime()) ? null : d;
 }
 // The departure field shows the time actually used: a skipped wall time
 // (fromClockInput) is rewritten to the moved one before anything reads it.
-const _depField = typeof document !== 'undefined' ? document.getElementById('departure') : null;
+const _depField = typeof document !== 'undefined' ? /** @type {HTMLInputElement} */ (document.getElementById('departure')) : null;
 if (_depField) {
   _depField.addEventListener('change', () => {
     const t = fromClockInput(_depField.value);
@@ -1096,7 +1099,7 @@ export function _shortUtc(v) {
 // An ISO time as "Mon 20:00 EDT" in the browser's time zone, the UTC time as its tooltip.
 function _shortLocal(iso) {
   const d = iso ? new Date(iso) : null;
-  if (!d || isNaN(d)) return escapeHtml(iso || '');
+  if (!d || isNaN(d.getTime())) return escapeHtml(iso || '');
   const far = Math.abs(d.getTime() - Date.now()) >= LONG_DURATION_S * 1000;
   const local = fmtClock(d, far ? { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' } : { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
   return '<span title="' + escapeHtml(d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC') + '">' + escapeHtml(local) + '</span>';
@@ -1121,7 +1124,7 @@ let _statusCollapsed = (() => { try { return localStorage.getItem('statusCollaps
   const el = document.getElementById('dataStatus');
   if (!el) return;
   el.addEventListener('click', e => {
-    if (!e.target.closest('.ds-toggle')) return;
+    if (!/** @type {Element} */ (e.target).closest('.ds-toggle')) return;
     _statusCollapsed = !_statusCollapsed;
     try { localStorage.setItem('statusCollapsed', String(_statusCollapsed)); } catch (_) { /* private window */ }
     redrawStatusLine();
@@ -1188,7 +1191,7 @@ function _regionalWind(r, area) {
       ? ['regional: <span class="warn">' + escapeHtml(r.note || ((r.sources || [])[0] || {}).problem || 'no complete run') + '</span>']
       : [];
   }
-  const rw = document.getElementById('regionalWind');
+  const rw = /** @type {HTMLInputElement} */ (document.getElementById('regionalWind'));
   const off = rw && !rw.checked ? ' <span class="warn">(off for routes: Regional wind unticked)</span>' : '';
   return ok.map(x => {
     const d = x.decoded;
@@ -1280,7 +1283,7 @@ function _showBanner(s) {
   if (!_waiting) { el.hidden = true; _loadRate = null; return; }
   const l = !s.starting ? s.forecast_loading : null;
   let text = _waitText(s);
-  const bar = el.querySelector('.lb-bar'), fill = el.querySelector('.lb-fill');
+  const bar = /** @type {HTMLElement} */ (el.querySelector('.lb-bar')), fill = /** @type {HTMLElement} */ (el.querySelector('.lb-fill'));
   if (l && l.phase === 'decoding' && l.total) {
     bar.hidden = false;
     fill.style.width = Math.round((100 * l.done) / l.total) + '%';

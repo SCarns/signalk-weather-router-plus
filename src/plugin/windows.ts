@@ -24,8 +24,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Job, JobEvent, JobManager } from './jobs';
-import type { RouteRequest } from './protocol';
-import { validateRouteRequest } from './request_schema';
+import { Type, type Static } from 'typebox';
+import { RouteRequestSchema, validateRouteRequest } from './request_schema';
 
 export const WINDOW_LIMITS = {
   /** Departures in one window. */
@@ -43,57 +43,78 @@ export const WINDOW_LIMITS = {
 /** Close-hauled: a true wind angle below this, degrees. */
 export const UPWIND_TWA_DEG = 60;
 
-export interface WindowRequest {
-  /** The route, as POST /api/routes takes it; its `departure` and `publish` are set per departure. */
-  route: RouteRequest;
-  /** Earliest and latest departure, ISO 8601. */
-  from: string;
-  to: string;
-  /** Seconds between departures (default 6 h). */
-  step_s?: number;
-}
+/** The window request (POST /api/windows): the type and the OpenAPI schema. */
+export const WindowRequestSchema = Type.Object({
+  route: Type.Object(RouteRequestSchema.properties, {
+    description: 'The route request, as POST /api/routes takes it; departure and publish are set per departure',
+  }),
+  from: Type.String({ format: 'date-time', description: 'Earliest departure' }),
+  to: Type.String({ format: 'date-time', description: 'Latest departure (at most 16 days after from)' }),
+  step_s: Type.Optional(
+    Type.Number({
+      minimum: WINDOW_LIMITS.stepS.min,
+      maximum: WINDOW_LIMITS.stepS.max,
+      default: WINDOW_LIMITS.stepS.default,
+      description: `Seconds between departures (at most ${WINDOW_LIMITS.maxDepartures} departures)`,
+    })
+  ),
+});
+export type WindowRequest = Static<typeof WindowRequestSchema>;
 
-export type DepartureStatus = 'pending' | 'queued' | 'running' | 'done' | 'failed' | 'cancelled' | 'skipped';
+export const DepartureStatusSchema = Type.Enum(['pending', 'queued', 'running', 'done', 'failed', 'cancelled', 'skipped'] as const, {
+  type: 'string',
+});
+export type DepartureStatus = Static<typeof DepartureStatusSchema>;
 
-export interface DepartureMetrics {
-  arrival: string;
-  total_time_s: number;
-  sailing_time_s: number;
-  motoring_time_s: number;
-  total_distance_m: number;
-  /** Strongest wind on any leg, m/s (null when the route carries none). */
-  max_wind_ms: number | null;
-  /** Highest significant wave height on any leg, m. */
-  max_swh_m: number | null;
-  /** Roughest sea met: the largest encounter (or sea-state) index of a leg. */
-  max_sea_index: number | null;
-  /** Time sailed with the true wind less than UPWIND_TWA_DEG off the bow, s. */
-  upwind_time_s: number;
-  /** The passage ended after the forecast's last step (its last legs ran on conditions held there). */
-  beyond_forecast: boolean;
-  /** Route warnings (land crossings and the like). */
-  warnings: number;
-}
+const nullableNumber = (description: string) => Type.Union([Type.Number(), Type.Null()], { description });
 
-export interface WindowDeparture {
-  departure: string;
-  job_id: string | null;
-  status: DepartureStatus;
-  error?: string;
-  metrics?: DepartureMetrics;
-}
+export const DepartureMetricsSchema = Type.Object({
+  arrival: Type.String(),
+  total_time_s: Type.Number(),
+  sailing_time_s: Type.Number(),
+  motoring_time_s: Type.Number(),
+  total_distance_m: Type.Number(),
+  max_wind_ms: nullableNumber('Strongest wind on any leg, m/s (null when the route carries none).'),
+  max_swh_m: nullableNumber('Highest significant wave height on any leg, m.'),
+  max_sea_index: nullableNumber('Roughest sea met: the largest encounter (or sea-state) index of a leg.'),
+  upwind_time_s: Type.Number({ description: `Time sailed with the true wind less than ${UPWIND_TWA_DEG} degrees off the bow, s.` }),
+  beyond_forecast: Type.Boolean({
+    description: "The passage ended after the forecast's last step (its last legs ran on conditions held there).",
+  }),
+  warnings: Type.Number({ description: 'Route warnings (land crossings and the like).' }),
+});
+export type DepartureMetrics = Static<typeof DepartureMetricsSchema>;
 
-export type WindowStatus = 'running' | 'done' | 'cancelled' | 'failed';
+export const WindowDepartureSchema = Type.Object({
+  departure: Type.String(),
+  job_id: Type.Union([Type.String(), Type.Null()]),
+  status: DepartureStatusSchema,
+  error: Type.Optional(Type.String()),
+  metrics: Type.Optional(DepartureMetricsSchema),
+});
+export type WindowDeparture = Static<typeof WindowDepartureSchema>;
 
-export interface DepartureWindow {
-  id: string;
-  status: WindowStatus;
-  created_at: string;
-  finished_at?: string;
-  error?: string;
-  request: WindowRequest;
-  departures: WindowDeparture[];
-}
+export const WindowStatusSchema = Type.Enum(['running', 'done', 'cancelled', 'failed'] as const, { type: 'string' });
+export type WindowStatus = Static<typeof WindowStatusSchema>;
+
+export const DepartureWindowSchema = Type.Object({
+  id: Type.String(),
+  status: WindowStatusSchema,
+  created_at: Type.String(),
+  finished_at: Type.Optional(Type.String()),
+  error: Type.Optional(Type.String()),
+  request: WindowRequestSchema,
+  departures: Type.Array(WindowDepartureSchema),
+});
+export type DepartureWindow = Static<typeof DepartureWindowSchema>;
+
+/** A window as the API answers it (WindowManager.toPublic): the departure computing's last progress line, and links. */
+export const WindowPublicSchema = Type.Object({
+  ...DepartureWindowSchema.properties,
+  progress: Type.Union([Type.String(), Type.Null()]),
+  links: Type.Object({ self: Type.String(), cancel: Type.String() }),
+});
+export type WindowPublic = Static<typeof WindowPublicSchema>;
 
 function finiteNum(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
@@ -235,7 +256,7 @@ export class WindowManager {
     return [...this.windows.values()].filter(w => w.status === 'running').length;
   }
 
-  links(id: string): Record<string, string> {
+  links(id: string): WindowPublic['links'] {
     const b = `${this.basePath}/api/windows/${id}`;
     return { self: b, cancel: `${b}/cancel` };
   }
@@ -268,7 +289,7 @@ export class WindowManager {
   }
 
   /** The window as the API shows it: the departures, the progress of the one computing, links. */
-  toPublic(w: DepartureWindow): DepartureWindow & { progress: string | null; links: Record<string, string> } {
+  toPublic(w: DepartureWindow): WindowPublic {
     const active = w.departures.find(d => d.status === 'running' || d.status === 'queued');
     const job = active?.job_id ? this.jobs.get(active.job_id) : undefined;
     const last = job?.progress[job.progress.length - 1];

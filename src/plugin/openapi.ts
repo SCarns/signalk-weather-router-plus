@@ -4,6 +4,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SETTINGS_GROUPS, SETTINGS_SPEC, type SettingSpec } from './settings';
 import { routeRequestSchema } from './request_schema';
+import { JobPublicSchema } from './response_schema';
+import { WindowPublicSchema, WindowRequestSchema } from './windows';
 
 /** JSON schema of one setting's value (SI). */
 function settingValueSchema(s: SettingSpec): Record<string, unknown> {
@@ -50,25 +52,41 @@ function packageVersion(): string {
   }
 }
 
+/**
+ * A TypeBox schema (JSON Schema) as OpenAPI 3.0 writes it: 3.0 has no `null`
+ * type, no `const` and no tuple `items`. `anyOf [X, null]` becomes X with
+ * `nullable: true`, `const: v` becomes `enum: [v]`, and a tuple of one item
+ * schema becomes an array of it with `minItems` / `maxItems`.
+ */
+export function openApi30(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(openApi30);
+  if (schema === null || typeof schema !== 'object') return schema;
+  const s = schema as Record<string, unknown>;
+  const anyOf = s.anyOf as Record<string, unknown>[] | undefined;
+  if (anyOf && anyOf.length === 2 && anyOf.some(x => x.type === 'null')) {
+    const { anyOf: _drop, ...rest } = s;
+    void _drop;
+    return { ...(openApi30(anyOf.find(x => x.type !== 'null')) as object), ...(openApi30(rest) as object), nullable: true };
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(s)) {
+    if (k === 'const') out.enum = [v];
+    else if (k === 'items' && Array.isArray(v)) {
+      const items = v.map(openApi30);
+      if (!items.every(x => JSON.stringify(x) === JSON.stringify(items[0]))) throw new Error('openApi30: a tuple of mixed items');
+      out.items = items[0];
+      out.minItems = v.length;
+      out.maxItems = v.length;
+    } else if (k === 'additionalItems' && Array.isArray(s.items)) continue;
+    else out[k] = openApi30(v);
+  }
+  return out;
+}
+
 export function openApiDocument(basePath: string): Record<string, unknown> {
   const routeRequest = routeRequestSchema();
-  const job = {
-    type: 'object',
-    properties: {
-      id: { type: 'string' },
-      status: { type: 'string', enum: ['queued', 'running', 'done', 'failed', 'cancelled'] },
-      request: routeRequest,
-      created_at: { type: 'string' },
-      started_at: { type: 'string' },
-      finished_at: { type: 'string' },
-      progress: { type: 'array', items: { type: 'object' } },
-      summary: { type: 'object' },
-      error: { type: 'string' },
-      resource_id: { type: 'string' },
-      publish_error: { type: 'string', description: 'Why publishing to the Resources API failed, when it did' },
-      links: { type: 'object' },
-    },
-  };
+  const job = openApi30(JobPublicSchema);
+  const windowDoc = openApi30(WindowPublicSchema);
   return {
     openapi: '3.0.0',
     info: {
@@ -717,32 +735,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
       '/api/windows': {
         post: {
           summary: 'Departure window: the route computed for a series of departures, one route job each, one at a time',
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  required: ['route', 'from', 'to'],
-                  properties: {
-                    route: {
-                      ...routeRequest,
-                      description: 'The route request, as POST /api/routes takes it; departure and publish are set per departure',
-                    },
-                    from: { type: 'string', format: 'date-time', description: 'Earliest departure' },
-                    to: { type: 'string', format: 'date-time', description: 'Latest departure (at most 16 days after from)' },
-                    step_s: {
-                      type: 'number',
-                      minimum: 3600,
-                      maximum: 86400,
-                      default: 21600,
-                      description: 'Seconds between departures (at most 48 departures)',
-                    },
-                  },
-                },
-              },
-            },
-          },
+          requestBody: { required: true, content: { 'application/json': { schema: openApi30(WindowRequestSchema) } } },
           responses: {
             202: { description: '{id, status: "running", departures, links}' },
             400: { description: '{error}' },
@@ -754,7 +747,10 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         get: {
           summary: 'The departure windows, newest first',
           parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 12, default: 12 } }],
-          responses: { 200: { description: 'OK' }, 503: { description: 'Plugin not started' } },
+          responses: {
+            200: { description: 'OK', content: { 'application/json': { schema: { type: 'array', items: windowDoc } } } },
+            503: { description: 'Plugin not started' },
+          },
         },
       },
       '/api/windows/{id}': {
@@ -765,6 +761,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             200: {
               description:
                 '{id, status: "running" | "done" | "cancelled" | "failed", created_at, finished_at, error, request, progress, links, departures: [{departure, job_id, status: "pending" | "queued" | "running" | "done" | "failed" | "cancelled" | "skipped", error, metrics: {arrival, total_time_s, sailing_time_s, motoring_time_s, total_distance_m, max_wind_ms, max_swh_m, max_sea_index, upwind_time_s, beyond_forecast, warnings}}]}',
+              content: { 'application/json': { schema: windowDoc } },
             },
             404: { description: 'Not found' },
             503: { description: 'Plugin not started' },
