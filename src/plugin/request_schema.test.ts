@@ -17,9 +17,10 @@ test('route request: ranges come from the settings they override, and the OpenAP
     ['smoother_sim_step_m', 'routing.simStep'],
     ['tack_penalty', 'routing.tackPenalty'],
   ] as const) {
-    const f = ROUTE_REQUEST_FIELDS[field];
+    // The field's JSON Schema keywords (TypeBox's types do not declare them on a number).
+    const f = ROUTE_REQUEST_FIELDS[field] as { type?: string; minimum?: number; maximum?: number };
     assert.equal(f.type, 'number');
-    if (f.type === 'number') assert.deepEqual([f.min, f.max], [spec(key).min, spec(key).max], field);
+    assert.deepEqual([f.minimum, f.maximum], [spec(key).min, spec(key).max], field);
   }
   const schema = routeRequestSchema() as { properties: Record<string, unknown> };
   assert.deepEqual(Object.keys(schema.properties), ['start', 'end', 'waypoints', ...Object.keys(ROUTE_REQUEST_FIELDS), 'vessel']);

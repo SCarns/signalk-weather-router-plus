@@ -18,7 +18,6 @@ import type { ConditionsRow } from './overlays';
 import type { DrawbridgeChoice } from '../engine/mesh/route';
 import type { AvoidArea } from '../geo/avoid';
 import type { ResolvedConfig, SelfDesign } from './config';
-import type { ModePolicy } from '../engine/legsim';
 import type { RouterKind } from '../engine/router';
 import type { SearchPreset } from '../engine/search/presets';
 import type { BBox } from '../geo/geodesy';
@@ -29,6 +28,7 @@ import type { SerializedHarmonic } from '../currents/harmonic';
 import type { TideStatus } from '../tides/sealevel';
 import type { ArcoRun } from '../data/arco';
 import type { TileId } from './tiles';
+import type { RouteRequest } from './request_schema';
 
 /** data: forecast, currents, map queries; route: the engine; tiles: builds map tiles ahead of time (prebuild.ts). */
 export type WorkerRole = 'data' | 'route' | 'tiles';
@@ -38,68 +38,8 @@ export interface VesselPosition {
   lon: number;
 }
 
-export interface RouteRequest {
-  start: { lat: number; lon: number };
-  end: { lat: number; lon: number };
-  /**
-   * Intermediate waypoints; each ends one leg and starts the next.
-   * radius_m overrides arrival_radius_m for that waypoint (approximate).
-   */
-  waypoints?: { lat: number; lon: number; radius_m?: number }[];
-  /** "precise" (default): each leg ends exactly on its waypoint; "approximate": one search through the waypoint circles. */
-  precision?: 'precise' | 'approximate';
-  /** Waypoint circle radius in approximate mode, metres (default 200, 0..5000, > 0 when approximate). */
-  arrival_radius_m?: number;
-  departure?: string;
-  mode?: ModePolicy;
-  sail_thresh_ms?: number;
-  /** Wind speed (m/s) and significant wave height (m) a leg must not exceed; default from routing.maxWind / routing.maxSwh. */
-  max_wind_ms?: number;
-  max_swh_m?: number;
-  /** Comfort weight, 0–3 (0 = off); overrides routing.comfortWeight. */
-  comfort_weight?: number;
-  /** RDP simplification tolerance, metres (0 = off); default from routing.simplify. */
-  simplify_m?: number;
-  /** Run the shortcut smoother; default from routing.smoother. */
-  smoother?: boolean;
-  /** Opening bridges on chart-mesh legs: ask (plan as open and report the ones crossed), open, or avoid; default from routing.drawbridges. */
-  drawbridges?: DrawbridgeChoice;
-  /** Smoother time tolerance, ratio; default from routing.smootherTolerance. */
-  smoother_tolerance?: number;
-  /** The smoother's simulation step, m; default from routing.simStep (the search's step is unchanged). */
-  smoother_sim_step_m?: number;
-  /** Seconds lost per tack or gybe; default from routing.tackPenalty. */
-  tack_penalty?: number;
-  name?: string;
-  stages?: number;
-  no_forecast?: boolean;
-  no_currents?: boolean;
-  /** auto (default): regional wind layered over ECMWF where available; ecmwf: ECMWF only. */
-  wind_model?: 'auto' | 'ecmwf';
-  /** Open-water router: standard (the isochrone search) or refined (engine/experimental); default from the routing.router setting. */
-  router?: RouterKind;
-  /** Search method: normal (the routing settings), moderate or maximum (engine/search/presets.ts); an explicit `stages` still wins. */
-  search?: SearchPreset;
-  /** Treat the areas marked on Signal K notes (properties.avoid.radius_m) as land (default true). */
-  avoid_areas?: boolean;
-  publish?: boolean;
-  vessel?: {
-    name?: string;
-    motor_speed_ms?: number;
-    /** Share of the polar's boat speeds achieved under sail, ratio 0.3..1.2 (default from settings). */
-    polar_performance?: number;
-    /** Polar token from GET /api/polars (`default` or a library file name). */
-    polar?: string;
-    /** Draught, m (default: Signal K design.draft.maximum); with the air draft, enables the chart mesh for motoring legs. */
-    draught_m?: number;
-    /** Air draft, m (default: Signal K design.airHeight). */
-    air_draft_m?: number;
-    /** Water kept under the keel on chart-mesh legs, m (default: the Under-keel clearance setting). */
-    under_keel_clearance_m?: number;
-    /** Headroom kept above the mast on chart-mesh legs, m (default: the Overhead clearance setting). */
-    overhead_clearance_m?: number;
-  };
-}
+/** The route request: its type comes from the schema that also validates it and documents it (request_schema.ts). */
+export type { RouteRequest };
 
 export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
