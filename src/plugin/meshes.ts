@@ -498,8 +498,8 @@ export class MeshManager {
 
   /** How often a daily pass looks at the internet state while it downloads. */
   protected holdCheckMs = HOLD_CHECK_MS;
-  /** The owner asked for something (refresh) since the daily pass began: the internet state does not stop that pass. */
-  private ownerAsked = false;
+  /** Counts the owner's requests (refresh): a pass with one since the last pass ended is not stopped by the internet state. */
+  private ownerAsks = 0;
 
   /**
    * Read the catalogue, download what is ticked and missing or stale, delete what is unticked; then again daily.
@@ -513,18 +513,18 @@ export class MeshManager {
     const loop = async (): Promise<void> => {
       const signal = this.ctrl!.signal;
       let wasHeld: string | null = null;
+      let asksSeen = this.ownerAsks;
       while (!signal.aborted) {
         const held = this.internet ? await this.internet.holdNow() : null;
         if (signal.aborted) break;
         if (held && held !== wasHeld) this.log(`catalogue and downloads wait: ${held}`);
         wasHeld = held;
         if (!held) {
-          this.ownerAsked = false;
           const internet = this.internet;
           const watch = internet?.active
             ? setInterval(() => {
                 void internet.holdNow().then(why => {
-                  if (!why || this.ownerAsked || signal.aborted) return;
+                  if (!why || this.ownerAsks !== asksSeen || signal.aborted) return;
                   clearInterval(watch);
                   this.stop();
                   this.run();
@@ -536,6 +536,7 @@ export class MeshManager {
           } finally {
             clearInterval(watch);
           }
+          asksSeen = this.ownerAsks;
         }
         // A stop during the pass has already aborted: no timer then, or it would hold the process a day.
         if (signal.aborted) break;
@@ -572,7 +573,7 @@ export class MeshManager {
    * loop's.
    */
   async refresh(): Promise<void> {
-    this.ownerAsked = true;
+    this.ownerAsks++;
     const signal = this.ctrl?.signal ?? (this.refreshCtrl ??= new AbortController()).signal;
     // A running pass on this same signal is shared, not followed by one of its own, and may be past the name
     // just changed: it runs once more when it ends. (A refresh before `run` gets a pass of its own anyway.)

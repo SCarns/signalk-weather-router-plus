@@ -1105,6 +1105,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
       .settle(() => gen === startGen && !stopped)
       .then(ok => {
         if (ok) startData(options, gen, dataDir);
+      })
+      .catch(err => {
+        if (gen === startGen && !stopped) app.setPluginError(`start failed: ${(err as Error).message}`);
       });
   }
 
