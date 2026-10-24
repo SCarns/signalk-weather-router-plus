@@ -2348,13 +2348,11 @@ function attachToJob(id, jobRow) {
   _currentRouteJobId = id;
   _currentRouteName = jobRow && jobRow.request ? (jobRow.request.name || '') : ((/** @type {HTMLInputElement} */ (document.getElementById('routeName')).value || '').trim());
   appendLog('job ' + id);
-  // The search's boat waits at the start until the first stage moves it (_jobOnFrontier). A reconnect leaves it where
-  // the last stage put it: the stage fronts are not stored with the job (jobs.ts), so the stream does not replay them.
-  const st = jobRow && jobRow.request && jobRow.request.start;
-  if (!reconnect) {
-    if (st && Number.isFinite(st.lon) && Number.isFinite(st.lat)) showSearchBoat([[st.lon, st.lat]], 'starting…');
-    else clearSearchBoat();
-  }
+  // The search's boat comes with the first stage (_jobOnFrontier): the start as drawn can be on land, which the router
+  // first leaves for usable water (up to 1 km, worker/route.ts SNAP_MAX_M; the owner's review of #78). A reconnect
+  // leaves it where the last stage put it: the stage fronts are not stored with the job (jobs.ts), so the stream does
+  // not replay them.
+  if (!reconnect) clearSearchBoat();
   if (jobRow && Array.isArray(jobRow.progress)) {
     // Backfill from the status row; the SSE replay adds the rest.
     for (const p of jobRow.progress) RouteProgress.feed(p);
@@ -2412,6 +2410,8 @@ function _jobOnProgress(job, p) {
 // leg is searched again (e.g. the retry without automatic vias), so a
 // stage number that drops on the same leg means a re-run: clear that leg's
 // fronts. A new leg keeps the earlier legs' fronts.
+// The first leg number of a repair detour (worker/route.ts: finalDepthCheck's detours are numbered from 1000).
+const _DETOUR_LEG0 = 1000;
 function _jobOnFrontier(job, fr) {
   const leg = fr.leg || 0;
   const first = job.lastFrontLeg < 0;
@@ -2419,6 +2419,9 @@ function _jobOnFrontier(job, fr) {
   job.lastFrontLeg = leg;
   job.lastFrontStage = fr.stage;
   drawFront(fr, { reset: first, resetLeg: rerun ? leg : undefined });
+  // A repair detour's fronts (legs from _DETOUR_LEG0, after the search) are drawn but leave the boat where the search
+  // ended: it would jump back to the detour, and its leg number is no leg of the route.
+  if (leg >= _DETOUR_LEG0) return;
   // The boat at the head of this stage's best path; with waypoints, which leg it is on. Stages counted as the progress
   // line counts them (its `total` is the planned stages; a front's is the search's cap, half as many again).
   const legs = job.legs || 1;

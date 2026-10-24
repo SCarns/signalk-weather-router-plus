@@ -658,9 +658,12 @@ computed with what that request says, not with the user's saved Setup.
 - **The search's boat**: while a route computes, a small boat on the map
   at the head of the search's best path so far, with that path behind
   it and the stage beside it ("stage 13/20", and the leg with
-  waypoints), moving on with each stage. It waits at the start until
-  the first stage, and goes when the job ends. With the decision lines
-  on, the path is theirs (dashed) and the boat sits at its end.
+  waypoints), moving on with each stage. It comes with the first stage
+  (the start as drawn can be on land, which the router first leaves for
+  usable water) and goes when the job ends; a repair detour after the
+  search (water too shallow on the finished route) leaves it where the
+  search ended. With the decision lines on, the path is theirs (dashed)
+  and the boat sits at its end.
 - **Defaults tab**: the web-app settings below (what every route starts from, shared by every client), in the selected units. Numbers are sliders with the value beside the label; max wind and max wave height have a "no limit" box.
 - **While the server gets its forecast** (a first start, or after the
   forecast settings changed, when the forecast is decoded again): a notice

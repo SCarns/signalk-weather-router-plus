@@ -17,8 +17,9 @@ uses [Semantic Versioning](https://semver.org/).
   behind it and the stage beside it, and moves on with each stage, so
   the map shows the search going on. It uses the job's stage fronts,
   which the page already received but drew only with the decision lines
-  on. It waits at the start until the first stage and goes when the job
-  ends.
+  on. It comes with the first stage, as the start as drawn can be on
+  land, and goes when the job ends; a repair detour after the search
+  does not move it.
 
 ### Changed
 
