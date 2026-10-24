@@ -2328,11 +2328,15 @@ function _backToEarlierRoute() {
   _currentRouteName = shown ? _jobBeforeAttach.name : '';
   _jobBeforeAttach = null;
 }
+// Counts the attachments: an answer meant for an earlier one, even of the same job, is dropped (_jobOnError).
+let _attachSeq = 0;
 function attachToJob(id, jobRow) {
   // A reconnect to the same job keeps what was on the map before it.
-  if (_activeJobId !== id) _jobBeforeAttach = { id: _currentRouteJobId, name: _currentRouteName };
+  const reconnect = _activeJobId === id;
+  if (!reconnect) _jobBeforeAttach = { id: _currentRouteJobId, name: _currentRouteName };
   _closeJobStream();
   _activeJobId = id;
+  _attachSeq++;
   const btn = /** @type {HTMLButtonElement} */ (document.getElementById('findRoute'));
   const statusEl = document.getElementById('status');
   btn.disabled = true;
@@ -2344,10 +2348,13 @@ function attachToJob(id, jobRow) {
   _currentRouteJobId = id;
   _currentRouteName = jobRow && jobRow.request ? (jobRow.request.name || '') : ((/** @type {HTMLInputElement} */ (document.getElementById('routeName')).value || '').trim());
   appendLog('job ' + id);
-  // The search's boat waits at the start until the first stage moves it (_jobOnFrontier).
+  // The search's boat waits at the start until the first stage moves it (_jobOnFrontier). A reconnect leaves it where
+  // the last stage put it: the stage fronts are not stored with the job (jobs.ts), so the stream does not replay them.
   const st = jobRow && jobRow.request && jobRow.request.start;
-  if (st && Number.isFinite(st.lon) && Number.isFinite(st.lat)) showSearchBoat([[st.lon, st.lat]], 'starting…');
-  else clearSearchBoat();
+  if (!reconnect) {
+    if (st && Number.isFinite(st.lon) && Number.isFinite(st.lat)) showSearchBoat([[st.lon, st.lat]], 'starting…');
+    else clearSearchBoat();
+  }
   if (jobRow && Array.isArray(jobRow.progress)) {
     // Backfill from the status row; the SSE replay adds the rest.
     for (const p of jobRow.progress) RouteProgress.feed(p);
@@ -2510,9 +2517,10 @@ function _jobOnError(job, ev) {
   // server answered 404/401) — check the job's status once.
   if (es.readyState === EventSource.CLOSED) {
     _closeJobStream();
-    // The answer acts only while this job is still the one followed: one attached meanwhile (from Saved) keeps its
-    // progress, Cancel and boat.
-    const current = () => _activeJobId === id;
+    // The answer acts only while this attachment is still the one followed: another attached meanwhile (from Saved,
+    // even of this same job) keeps its progress, Cancel and boat.
+    const seq = _attachSeq;
+    const current = () => _activeJobId === id && _attachSeq === seq;
     authFetch(API + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
       .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
       .then(j => {
