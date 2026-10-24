@@ -55,7 +55,7 @@ import { WorkerPool, type MainRole } from './plugin/workerpool';
 import { BUNDLED_DEFAULT_POLAR, BUNDLED_POLARS_DIR } from './plugin/polars';
 import { openApiDocument } from './plugin/openapi';
 import { registerWeatherProvider } from './plugin/weather';
-import { internetHold } from './plugin/internet';
+import { InternetGate } from './plugin/internet';
 import type {
   DataStatus,
   ForecastLoading,
@@ -102,6 +102,7 @@ interface SkApp {
   /** Writes the plugin's options file (no restart); the panel's mesh actions keep the download list through it. */
   savePluginOptions?: (configuration: object, cb: (err: Error | null) => void) => void;
   getSelfPath?: (path: string) => unknown;
+  getFeatures?: (onlyEnabled?: boolean) => Promise<{ plugins: { id: string; enabled: boolean }[] }>;
   handleMessage?: (id: string, delta: unknown) => void;
   registerWeatherProvider?: (provider: unknown) => void;
   registerResourceProvider?: (provider: {
@@ -193,6 +194,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
   /** Why the services are not up yet, for API answers and the status (`starting`). */
   function notStartedReason(): string {
     if (stopped) return 'plugin not started';
+    if (internet.settling) return 'starting: waiting for the internet state from signalk-internet';
+    if (coast.held)
+      return `starting: the coastline download waits (${coast.held}); press Download coastline in the plugin configuration to download it now`;
     if (coast.state.downloading) {
       const m = (coast.state.message ?? '').replace(/^coastline:\s*/, '');
       return `starting: downloading the coastline${m ? ` (${m})` : ' (GSHHG, {dataSize:149000000}, once)'}`;
@@ -285,12 +289,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
   const execArgv = isTs ? ['--import', 'tsx'] : [];
 
   /** Why background downloads wait now (signalk-internet's state), or null. */
-  const internetHeld = (): string | null => internetHold(p => app.getSelfPath?.(p));
-  const coast = new Coastline(app, log, internetHeld);
+  const internet = new InternetGate(app);
+  const internetHeld = (): string | null => internet.hold();
+  const coast = new Coastline(app, log, internet);
   const meshes = new MeshManager(
     m => log(`meshes: ${m}`),
     name => void rebuildRoughCuts(name),
-    internetHeld
+    internet
   );
 
   /**
@@ -1095,6 +1100,17 @@ export = function plugin(app: SkApp): SignalKPlugin {
     const dataDir = app.getDataDirPath();
     // Before the first download, so a backup taken meanwhile already skips them.
     for (const p of tagCacheDirs(dataDir)) app.error(`cache directory tag: ${p}`);
+    // signalk-internet starts beside this plugin: its first state decides whether the first downloads run. Not awaited.
+    void internet
+      .settle(() => gen === startGen && !stopped)
+      .then(ok => {
+        if (ok) startData(options, gen, dataDir);
+      });
+  }
+
+  /** The coastline (configured, or downloaded first), then the services. */
+  function startData(options: PluginConfig, gen: number, dataDir: string): void {
+    if (!config) return;
     if (config.landShapefiles.length > 0) {
       // A configured coastline must be there: it is never replaced by a download.
       const bad = unreadableCoastlines(config.landShapefiles);
@@ -1143,6 +1159,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
       // rather than downloading its own copy of the same fields alongside.
       if (!forecastRun && !forecastError) {
         waitingForForecast = job;
+        // The first forecast was held back (internet.ts): a route is the owner asking, so it downloads now.
+        if (refreshHeld) requestRefresh(false, true);
         jobs?.onProgress(job.id, 0, 0, `waiting for the forecast: ${forecastWaitText()}`);
         updateStatus();
         return;

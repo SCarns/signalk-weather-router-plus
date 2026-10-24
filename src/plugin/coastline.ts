@@ -9,7 +9,7 @@
 import { MINUTE_MS } from '../geo/units';
 import { ensureGshhg, gshhgInstalled } from '../geo/gshhg';
 import { siText } from './unittext';
-import { INTERNET_HOLD_RETRY_MS } from './internet';
+import { INTERNET_HOLD_RETRY_MS, type DownloadHold } from './internet';
 
 /** Downloaded-coastline state (status `coastline`, config panel). */
 export interface CoastlineState {
@@ -28,6 +28,8 @@ export class Coastline {
   readonly state: CoastlineState = { downloading: false, message: null, error: null, path: null, startedAt: null, finishedAt: null };
   /** Downloaded GSHHG coastline, used when the plugin config names none. */
   autoPath: string | null = null;
+  /** Why the download at start waits now (internet.ts), or null (notStartedReason). */
+  held: string | null = null;
   /** The download running, if any (one at a time), with the signal that cancels it. */
   private run: { promise: Promise<string | null>; signal: AbortSignal } | null = null;
   /** Wakes a start waiting to retry the download. */
@@ -40,8 +42,8 @@ export class Coastline {
   constructor(
     private readonly app: { setPluginStatus: (s: string) => void; setPluginError: (s: string) => void; getDataDirPath: () => string },
     private readonly log: (m: string) => void,
-    /** Why the download at start waits (internet.ts), or null when it may run; the Download button does not wait. */
-    private readonly hold: () => string | null = () => null
+    /** Holds the download at start (internet.ts); the Download button does not wait. */
+    private readonly internet?: DownloadHold
   ) {}
 
   /** Stop: cancel a running download and its retry wait. */
@@ -66,7 +68,9 @@ export class Coastline {
     let pressed = false;
     for (;;) {
       // Already on disk: nothing to download, so nothing to hold.
-      const held = pressed || gshhgInstalled(dataDir) ? null : this.hold();
+      const held = pressed || gshhgInstalled(dataDir) || !this.internet ? null : await this.internet.holdNow();
+      if (!current()) return false;
+      this.held = held;
       if (held) {
         this.app.setPluginStatus(
           siText(
@@ -74,6 +78,7 @@ export class Coastline {
           )
         );
         const woke = await this.wait(ctrl.signal, INTERNET_HOLD_RETRY_MS);
+        this.held = null;
         if (woke === 'stopped' || !current()) return false;
         pressed = woke === 'pressed';
         continue;

@@ -151,7 +151,7 @@ export async function refresh(st: WorkerState, force: boolean, hold: string | nu
   await refreshRtofs(st, networkAllowed, offline());
   sendCurrents(st);
   if (st.role === 'data') {
-    await refreshForecast(st, force, offline());
+    await refreshForecast(st, force, offline(), hold !== null);
     // After the forecast, so a first boot is not held up by the SMOC resident download.
     await refreshSmoc(st, offline());
     sendCurrents(st);

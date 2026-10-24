@@ -34,7 +34,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { runChildTask } from './childtask';
-import { INTERNET_HOLD_RETRY_MS } from './internet';
+import { INTERNET_HOLD_RETRY_MS, type DownloadHold } from './internet';
 import { DOWNLOAD_PROGRESS_FILE, downloadWorkDir, type MeshDownloadProgress } from './mesharchive';
 
 /** One mesh as the catalogue lists it (s57Work build-mesh.yml, "Write charts/mesh/index.json"). */
@@ -443,8 +443,8 @@ export class MeshManager {
     private readonly log: (m: string) => void,
     /** A mesh was downloaded or updated and is in place (its rough cuts are rebuilt then: index.ts). */
     private readonly onReady: (name: string) => void = () => undefined,
-    /** Why the daily pass waits (internet.ts), or null when it may run; the panel's buttons do not wait. */
-    private readonly hold: () => string | null = () => null
+    /** Holds the daily pass (internet.ts); the panel's buttons do not wait. */
+    private readonly internet?: DownloadHold
   ) {}
 
   /** Apply a configuration; the next `run` reconciles the store with it. */
@@ -514,17 +514,23 @@ export class MeshManager {
       const signal = this.ctrl!.signal;
       let wasHeld: string | null = null;
       while (!signal.aborted) {
-        const held = this.hold();
+        const held = this.internet ? await this.internet.holdNow() : null;
+        if (signal.aborted) break;
         if (held && held !== wasHeld) this.log(`catalogue and downloads wait: ${held}`);
         wasHeld = held;
         if (!held) {
           this.ownerAsked = false;
-          const watch = setInterval(() => {
-            if (this.ownerAsked || signal.aborted || !this.hold()) return;
-            clearInterval(watch);
-            this.stop();
-            this.run();
-          }, this.holdCheckMs);
+          const internet = this.internet;
+          const watch = internet?.active
+            ? setInterval(() => {
+                void internet.holdNow().then(why => {
+                  if (!why || this.ownerAsked || signal.aborted) return;
+                  clearInterval(watch);
+                  this.stop();
+                  this.run();
+                });
+              }, this.holdCheckMs)
+            : undefined;
           try {
             await this.reconcile(signal);
           } finally {

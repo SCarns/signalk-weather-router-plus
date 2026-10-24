@@ -757,7 +757,7 @@ test('MeshManager.run: while the internet state holds downloads the daily pass w
   const mgr = new MeshManager(
     m => logs.push(m),
     () => undefined,
-    () => 'the internet connection is metered (network.internet.state)'
+    { active: true, holdNow: async () => 'the internet connection is metered (network.internet.state)' }
   );
   try {
     mgr.configure(url + 'charts/mesh/index.json', ['01CGD'], store);
@@ -788,7 +788,7 @@ test('MeshManager.run: a daily pass stops when the internet state starts holding
   const mgr = new MeshManager(
     () => undefined,
     () => undefined,
-    () => state
+    { active: true, holdNow: async () => state }
   );
   (mgr as unknown as { holdCheckMs: number }).holdCheckMs = 20;
   try {

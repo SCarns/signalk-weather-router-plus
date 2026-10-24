@@ -3027,9 +3027,12 @@ send no notification, nor does a window that ends other than done
 #### Metered or no internet (signalk-internet)
 
 With the [signalk-internet](https://www.npmjs.com/package/@meri-imperiumi/signalk-internet)
-plugin installed (recommended in the App Store), the plugin reads its
-`network.internet.state` on the vessel. While it is `metered`,
-`offline` or `captive`, nothing is downloaded on its own:
+plugin installed and enabled (recommended in the App Store), the plugin
+reads its `network.internet.state` on the vessel. A value left behind by
+a disabled signalk-internet counts for nothing. At start the plugin
+waits for signalk-internet's first state (at most 30 s) before its first
+downloads. While the state is `metered`, `offline` or `captive`, nothing
+is downloaded on its own:
 
 - the forecast, current and tide refresh rounds use what is on disk
   (`checks` in `/api/status` says `skipped: the internet connection is
@@ -3040,9 +3043,11 @@ plugin installed (recommended in the App Store), the plugin reads its
   `/api/status`).
 
 What you ask for still downloads: **Refresh forecast**, **Download
-coastline**, the mesh panel's buttons, routes and departure windows,
-and the map and conditions you look at. Without the plugin, or in any
-other state, downloads run as before.
+coastline**, the mesh panel's buttons, routes and departure windows
+(a route with no forecast on disk yet downloads the forecast first),
+and the map and conditions you look at. The plugin status says why it
+waits. Without signalk-internet, or in any other state, downloads run as
+before.
 
 #### OpenAPI
 

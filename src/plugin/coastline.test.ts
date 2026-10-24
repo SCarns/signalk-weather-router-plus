@@ -21,16 +21,16 @@ test('a held start waits without downloading; Download pressed starts it anyway'
     setPluginError: () => undefined,
     getDataDirPath: () => dataDir,
   };
-  const coast: Coastline = new Coastline(
-    app,
-    () => undefined,
-    () => 'the internet connection is metered (network.internet.state)'
-  );
+  const coast: Coastline = new Coastline(app, () => undefined, {
+    active: true,
+    holdNow: async () => 'the internet connection is metered (network.internet.state)',
+  });
   try {
     const done = coast.download(dataDir, () => true);
     await new Promise(r => setImmediate(r));
     assert.equal(statuses.length, 1);
     assert.match(statuses[0], /waits, the internet connection is metered/);
+    assert.match(coast.held ?? '', /metered/, 'the reason the status answers while starting');
     assert.equal(coast.state.downloading, false, 'nothing downloads while held');
     coast.requestDownload();
     assert.equal(await done, false);
