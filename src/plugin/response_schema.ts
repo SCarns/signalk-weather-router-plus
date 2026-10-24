@@ -2,7 +2,7 @@
  * The job document (GET /api/routes, /api/routes/:id), described once as
  * TypeBox schemas: the TypeScript types (JobStatus, JobProgress,
  * RouteSummary, JobPublic) and the OpenAPI document come from them
- * (docs/plans/typebox-and-checkjs.md, step 2). Field descriptions are the
+ * (issue #76, step 2). Field descriptions are the
  * ones the types carried as comments.
  */
 

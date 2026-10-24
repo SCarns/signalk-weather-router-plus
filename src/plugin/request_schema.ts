@@ -3,7 +3,7 @@
  * ranges (shared with the settings they override, from SETTINGS_SPEC), and
  * their documentation. The TypeScript type (RouteRequest), the API
  * validator and the OpenAPI document all come from it, so a field cannot be
- * in one and missing from another (docs/plans/typebox-and-checkjs.md, step 1).
+ * in one and missing from another (issue #76, step 1).
  * The validator reads each field's range from the schema and keeps the API's
  * own error texts; TypeBox's checker is not used.
  */
