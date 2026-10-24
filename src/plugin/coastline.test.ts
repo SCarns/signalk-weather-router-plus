@@ -98,3 +98,43 @@ test('a stop while the hold is reported ends the start at once', async () => {
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test('a stopped start whose lookup ends late leaves the new start its Download press', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-coast-'));
+  const statuses: string[] = [];
+  const lookups: (() => void)[] = [];
+  const app = {
+    setPluginStatus: (s: string) => {
+      statuses.push(s);
+      if (s.includes('downloading GSHHG')) coast.abort();
+    },
+    setPluginError: () => undefined,
+    getDataDirPath: () => dataDir,
+  };
+  const coast: Coastline = new Coastline(app, () => undefined, {
+    active: true,
+    holdNow: () => new Promise(r => lookups.push(() => r('the internet connection is metered (network.internet.state)'))),
+  });
+  try {
+    let first = true;
+    const old = coast.download(dataDir, () => first);
+    await new Promise(r => setImmediate(r));
+    first = false;
+    coast.abort();
+    const next = coast.download(dataDir, () => true);
+    await new Promise(r => setImmediate(r));
+    lookups[0](); // the stopped start's lookup ends after the new start installed its press
+    assert.equal(await old, false);
+    coast.requestDownload();
+    assert.equal(coast.state.downloading, false, 'the press goes to the new start, not to a fetch of its own');
+    lookups[1]();
+    assert.equal(await next, false);
+    assert.ok(
+      statuses.some(s => s.includes('downloading GSHHG')),
+      'the new start downloads at the press'
+    );
+  } finally {
+    coast.abort();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});

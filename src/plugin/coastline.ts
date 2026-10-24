@@ -71,11 +71,15 @@ export class Coastline {
       let held: string | null = null;
       if (!pressed && !gshhgInstalled(dataDir) && this.internet) {
         // A Download press during the lookup is a press, not a second download beside this one.
-        this.wake = () => (pressed = true);
+        const wake = (): void => {
+          pressed = true;
+        };
+        this.wake = wake;
         try {
           held = await this.internet.holdNow();
         } finally {
-          this.wake = null;
+          // A newer start (after a stop) may have put its own in place meanwhile.
+          if (this.wake === wake) this.wake = null;
         }
         if (pressed) held = null;
       }
@@ -123,14 +127,15 @@ export class Coastline {
       }
       const onAbort = (): void => done('stopped');
       const timer = setTimeout(() => done('timer'), ms);
+      const wake = (): void => done('pressed');
       const done = (v: 'timer' | 'pressed' | 'stopped'): void => {
         clearTimeout(timer);
         // One signal serves every wait: the listener must not pile up.
         signal.removeEventListener('abort', onAbort);
-        this.wake = null;
+        if (this.wake === wake) this.wake = null;
         resolve(v);
       };
-      this.wake = () => done('pressed');
+      this.wake = wake;
       signal.addEventListener('abort', onAbort, { once: true });
     });
   }
