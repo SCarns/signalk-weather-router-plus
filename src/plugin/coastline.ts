@@ -68,7 +68,17 @@ export class Coastline {
     let pressed = false;
     for (;;) {
       // Already on disk: nothing to download, so nothing to hold.
-      const held = pressed || gshhgInstalled(dataDir) || !this.internet ? null : await this.internet.holdNow();
+      let held: string | null = null;
+      if (!pressed && !gshhgInstalled(dataDir) && this.internet) {
+        // A Download press during the lookup is a press, not a second download beside this one.
+        this.wake = () => (pressed = true);
+        try {
+          held = await this.internet.holdNow();
+        } finally {
+          this.wake = null;
+        }
+        if (pressed) held = null;
+      }
       if (!current()) return false;
       this.held = held;
       if (held) {
@@ -106,6 +116,11 @@ export class Coastline {
   /** Wait `ms`, a Download press (wakes it) or a stop, whichever comes first. */
   private wait(signal: AbortSignal, ms: number): Promise<'timer' | 'pressed' | 'stopped'> {
     return new Promise(resolve => {
+      // Stopped already (a status callback can stop the plugin): the abort event has passed.
+      if (signal.aborted) {
+        resolve('stopped');
+        return;
+      }
       const onAbort = (): void => done('stopped');
       const timer = setTimeout(() => done('timer'), ms);
       const done = (v: 'timer' | 'pressed' | 'stopped'): void => {

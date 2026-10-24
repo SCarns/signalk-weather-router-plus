@@ -1162,8 +1162,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
       // rather than downloading its own copy of the same fields alongside.
       if (!forecastRun && !forecastError) {
         waitingForForecast = job;
-        // The first forecast was held back (internet.ts): a route is the owner asking, so it downloads now.
-        if (refreshHeld) requestRefresh(false, true);
+        // The first forecast was held back (internet.ts), or its round still waits for the data worker: a route is
+        // the owner asking, so it downloads now.
+        if (refreshHeld || pendingRefresh) requestRefresh(false, true);
         jobs?.onProgress(job.id, 0, 0, `waiting for the forecast: ${forecastWaitText()}`);
         updateStatus();
         return;

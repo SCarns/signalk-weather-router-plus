@@ -43,3 +43,58 @@ test('a held start waits without downloading; Download pressed starts it anyway'
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test('Download pressed while the start looks up the internet state downloads at once, without a second download', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-coast-'));
+  const statuses: string[] = [];
+  let lookedUp!: () => void;
+  const lookup = new Promise<void>(r => (lookedUp = r));
+  const app = {
+    setPluginStatus: (s: string) => {
+      statuses.push(s);
+      if (s.includes('downloading GSHHG')) coast.abort();
+    },
+    setPluginError: () => undefined,
+    getDataDirPath: () => dataDir,
+  };
+  const coast: Coastline = new Coastline(app, () => undefined, {
+    active: true,
+    holdNow: async () => {
+      await lookup;
+      return 'the internet connection is metered (network.internet.state)';
+    },
+  });
+  try {
+    const done = coast.download(dataDir, () => true);
+    await new Promise(r => setImmediate(r));
+    coast.requestDownload();
+    assert.equal(coast.state.downloading, false, 'the press joins the start, it does not start a fetch of its own');
+    lookedUp();
+    assert.equal(await done, false);
+    assert.ok(!statuses.some(s => s.includes('waits')), 'not held after the press');
+    assert.ok(statuses.some(s => s.includes('downloading GSHHG')));
+  } finally {
+    coast.abort();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test('a stop while the hold is reported ends the start at once', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-coast-'));
+  const app = {
+    setPluginStatus: () => coast.abort(),
+    setPluginError: () => undefined,
+    getDataDirPath: () => dataDir,
+  };
+  const coast: Coastline = new Coastline(app, () => undefined, {
+    active: true,
+    holdNow: async () => 'the internet connection is metered (network.internet.state)',
+  });
+  try {
+    const result = await Promise.race([coast.download(dataDir, () => true), new Promise(r => setTimeout(() => r('pending'), 500))]);
+    assert.equal(result, false);
+  } finally {
+    coast.abort();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});
