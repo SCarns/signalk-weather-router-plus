@@ -2510,14 +2510,18 @@ function _jobOnError(job, ev) {
   // server answered 404/401) — check the job's status once.
   if (es.readyState === EventSource.CLOSED) {
     _closeJobStream();
+    // The answer acts only while this job is still the one followed: one attached meanwhile (from Saved) keeps its
+    // progress, Cancel and boat.
+    const current = () => _activeJobId === id;
     authFetch(API + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
       .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
       .then(j => {
+        if (!current()) return;
         if (j.status === 'done') { appendLog('stream closed; job finished — loading result', 'done'); _computeUiIdle(); RouteProgress.hide(); _loadRouteJob(id); }
-        else if (j.status === 'queued' || j.status === 'running') { appendLog('stream lost; reconnecting…', 'error'); setTimeout(() => attachToJob(id, j), 2000); }
+        else if (j.status === 'queued' || j.status === 'running') { appendLog('stream lost; reconnecting…', 'error'); setTimeout(() => { if (current()) attachToJob(id, j); }, 2000); }
         else { appendLog('job ' + j.status + (j.error ? ': ' + j.error : ''), 'error'); RouteProgress.fail(j.status); _computeUiIdle(); _backToEarlierRoute(); }
       })
-      .catch(e => { appendLog('Connection error: ' + e.message, 'error'); statusEl.textContent = 'Error: ' + e.message; RouteProgress.fail('Connection error'); _computeUiIdle(); });
+      .catch(e => { if (!current()) return; appendLog('Connection error: ' + e.message, 'error'); statusEl.textContent = 'Error: ' + e.message; RouteProgress.fail('Connection error'); _computeUiIdle(); });
   } else {
     appendLog('(event stream interrupted — reconnecting)', 'error');
   }
