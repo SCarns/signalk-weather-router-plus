@@ -1154,7 +1154,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         waitingForForecast = job;
         // The first forecast was held back (internet.ts), or its round still waits for signalk-internet's first
         // state or for the data worker: a route is the owner asking, so it downloads now.
-        if (refreshHeld || pendingRefresh || internet.settling) requestRefresh(false, true);
+        if (refreshHeld || pendingRefresh || internet.pending) requestRefresh(false, true);
         jobs?.onProgress(job.id, 0, 0, `waiting for the forecast: ${forecastWaitText()}`);
         updateStatus();
         return;

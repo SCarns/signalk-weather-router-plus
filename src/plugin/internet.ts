@@ -62,8 +62,11 @@ export interface DownloadHold {
 export class InternetGate implements DownloadHold {
   private enabled = false;
   private checkedAt = 0;
-  private checking: Promise<void> | null = null;
+  /** The lookup in flight, and the reset generation it belongs to. */
+  private checking: { gen: number; done: Promise<void> } | null = null;
+  private gen = 0;
   private firstState: Promise<void> | null = null;
+  private firstStateDone = false;
   private round = 0;
   /** At start: waiting for signalk-internet's first state (notStartedReason). */
   settling = false;
@@ -76,16 +79,30 @@ export class InternetGate implements DownloadHold {
 
   /** Look up whether signalk-internet is enabled (a server without getFeatures has no answer: not enabled). */
   check(): Promise<void> {
-    this.checking ??= (async () => {
+    if (this.checking?.gen === this.gen) return this.checking.done;
+    const gen = this.gen;
+    const done = (async () => {
+      let enabled: boolean;
       try {
         const f = await this.app.getFeatures?.(true);
-        this.enabled = !!f?.plugins.some(p => p.id === INTERNET_PLUGIN_ID && p.enabled);
+        enabled = !!f?.plugins.some(p => p.id === INTERNET_PLUGIN_ID && p.enabled);
       } catch {
-        this.enabled = false;
+        enabled = false;
       }
+      // A lookup from before a reset speaks for the stopped start, not this one.
+      if (gen !== this.gen) return;
+      this.enabled = enabled;
       this.checkedAt = Date.now();
-    })().finally(() => (this.checking = null));
-    return this.checking;
+    })().finally(() => {
+      if (this.checking?.done === done) this.checking = null;
+    });
+    this.checking = { gen, done };
+    return done;
+  }
+
+  /** The first-state wait has not finished yet, the lookup included (a route then asks for its forecast itself). */
+  get pending(): boolean {
+    return this.firstState !== null && !this.firstStateDone;
   }
 
   /** Why background downloads wait now, or null. Sync: an old lookup is renewed for the next call. */
@@ -109,7 +126,10 @@ export class InternetGate implements DownloadHold {
   async settle(current: () => boolean, waitMs = FIRST_STATE_WAIT_MS, stepMs = FIRST_STATE_STEP_MS): Promise<boolean> {
     if (!this.firstState) {
       const round = ++this.round;
-      this.firstState = this.waitFirstState(round, waitMs, stepMs);
+      this.firstStateDone = false;
+      this.firstState = this.waitFirstState(round, waitMs, stepMs).finally(() => {
+        if (round === this.round) this.firstStateDone = true;
+      });
     }
     await this.firstState;
     return current();
@@ -118,8 +138,12 @@ export class InternetGate implements DownloadHold {
   /** Stop: the next start waits for a first state again (signalk-internet may have been enabled meanwhile). */
   reset(): void {
     this.firstState = null;
+    this.firstStateDone = false;
     this.round++;
     this.settling = false;
+    this.gen++;
+    this.checking = null;
+    this.checkedAt = 0;
   }
 
   /** `round`: a reset since ends this wait, so it no longer speaks for `settling`. */

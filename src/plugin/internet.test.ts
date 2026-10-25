@@ -100,3 +100,27 @@ test('InternetGate.reset: the next start waits for a first state again', async (
   await gate.settle(() => true, 100, 10);
   assert.ok(Date.now() - t0 >= 90, 'enabled since: the new start waits for its first state');
 });
+
+test('InternetGate.reset: a lookup from before the reset does not speak for the new start', async () => {
+  const answers: ((plugins: { id: string; enabled: boolean }[]) => void)[] = [];
+  const state = { value: undefined as unknown };
+  const gate = new InternetGate({
+    getSelfPath: (p: string) => (p === INTERNET_STATE_PATH && state.value !== undefined ? { value: state.value } : undefined),
+    getFeatures: () => new Promise(r => answers.push(plugins => r({ plugins }))),
+  });
+  const first = gate.settle(() => false, 1000, 10);
+  assert.equal(gate.pending, true, 'pending from the start of the lookup');
+  gate.reset();
+  const second = gate.settle(() => true, 100, 10);
+  assert.equal(answers.length, 2, 'the new start asks again instead of joining the old lookup');
+  answers[0]([]); // the stopped start's answer: not enabled
+  answers[1]([{ id: INTERNET_PLUGIN_ID, enabled: true }]);
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(gate.active, true, "the old answer did not overwrite the new start's");
+  assert.equal(gate.settling, true, 'the new start waits for the first state');
+  state.value = 'metered';
+  assert.equal(await second, true);
+  assert.equal(await first, false);
+  assert.equal(gate.pending, false);
+  assert.match(gate.hold() ?? '', /metered/);
+});

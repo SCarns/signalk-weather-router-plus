@@ -520,6 +520,8 @@ export class MeshManager {
         if (held && held !== wasHeld) this.log(`catalogue and downloads wait: ${held}`);
         wasHeld = held;
         if (!held) {
+          // Joining a pass the owner's refresh started keeps the count from before it, so the watcher spares it.
+          if (this.reconciling?.signal !== signal) asksSeen = this.ownerAsks;
           const internet = this.internet;
           const watch = internet?.active
             ? setInterval(() => {
@@ -536,7 +538,6 @@ export class MeshManager {
           } finally {
             clearInterval(watch);
           }
-          asksSeen = this.ownerAsks;
         }
         // A stop during the pass has already aborted: no timer then, or it would hold the process a day.
         if (signal.aborted) break;
