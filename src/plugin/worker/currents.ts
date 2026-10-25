@@ -301,6 +301,8 @@ export function loadHarmonic(st: WorkerState, dir: string | null): void {
 
 /** The tidal-harmonic folder the tiles worker's sources were read from (adoptCurrentsRef); one per process. */
 let harmonicFrom: string | null = null;
+/** The horizon and step the tiles worker's RTOFS sources were read with (adoptCurrentsRef); null when none are. */
+let rtofsReadWith: { horizonS: number; stepS: number } | null = null;
 
 const sameSteps = (a: readonly number[], b: readonly number[]): boolean => a.length === b.length && a.every((t, i) => t === b[i]);
 
@@ -335,7 +337,12 @@ export async function adoptCurrentsRef(st: WorkerState, ref: BuilderCurrentsRef)
   }
   const runsKey = (runs: { product: string; runMs: number }[]): string => runs.map(r => `${r.product}@${r.runMs}`).join(',');
   const rtofs = cfg.currents.rtofsEnabled ? ref.rtofs : null;
-  if (runsKey(st.rtofs) !== runsKey(rtofs?.runs ?? [])) {
+  if (
+    runsKey(st.rtofs) !== runsKey(rtofs?.runs ?? []) ||
+    rtofs?.horizonS !== rtofsReadWith?.horizonS ||
+    rtofs?.stepS !== rtofsReadWith?.stepS
+  ) {
+    rtofsReadWith = rtofs ? { horizonS: rtofs.horizonS, stepS: rtofs.stepS } : null;
     st.rtofs = [];
     for (const r of rtofs ? await rtofsFromCache(rtofs, null) : []) {
       if (r.source) st.rtofs.push(r.source);
