@@ -7,7 +7,7 @@
 import { oneOpenAtATime, _apiErrorText, _fmt, _shortUtc, _polarAngles, fetchPolarAngles, fmtClock, clockParts, toClockInput, fromClockInput, API, authFetch, AuthGate, drawPolarDiagram, escapeHtml, fmtAngleDeg, unitText, unitTextHtml, fmtDepth, fmtDist, fmtPrecip, fmtPressure, fmtSpeed, fmtSwh, fmtTemp, fmtTime, fmtWavePeriod, fmtWhen, loadPluginStatus, TACK_COLOR, tackSide, UI_UNITS, UNIT_MISSING, unitDesc, setStatusArea, redrawStatusLine } from './rp-core.js';
 import { createLiveTriggers, createPassageTracker, createRouteSimulator, createTrackRecorder, haversineM, VESSEL_STALE_MS } from './rp-live.js';
 import { prefs } from './rp-prefs.js';
-import { _overlayTimeIso, centreOnVesselOnce, seaBand, notesLayer, loadNotes, avoidRing, condMarkerFeature, meteoMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
+import { _overlayTimeIso, centreOnVesselOnce, clearSearchBoat, showSearchBoat, seaBand, notesLayer, loadNotes, avoidRing, condMarkerFeature, meteoMarkerFeature, drawFront, drawFronts, endFeature, frontSource, map, markerLayer, markerSource, pastRouteSource, proposedRouteSource, reloadOverlays, ringSource, routeLayer, routeSource, selectedRouteFeature, setSelectedRouteFeature, setTimeOverride, skeletonSource, startFeature, timeOverride, trackSource, vesselMarkerSource, unwrapLonLats } from './rp-layers.js';
 
 // ─────────── Route state (markers, replan stream, route history) ───────────
 // The limit inputs and the quantity of each (used by _limitSI, below). Declared
@@ -2305,6 +2305,7 @@ function _closeJobStream() {
 function _computeUiIdle() {
   _routeComputing = false;
   _activeJobId = null;
+  clearSearchBoat();
   const btn = document.getElementById('findRoute');
   btn.textContent = 'Find Route';
   cancelBtn.style.display = 'none';
@@ -2327,11 +2328,15 @@ function _backToEarlierRoute() {
   _currentRouteName = shown ? _jobBeforeAttach.name : '';
   _jobBeforeAttach = null;
 }
+// Counts the attachments: an answer meant for an earlier one, even of the same job, is dropped (_jobOnError).
+let _attachSeq = 0;
 function attachToJob(id, jobRow) {
   // A reconnect to the same job keeps what was on the map before it.
-  if (_activeJobId !== id) _jobBeforeAttach = { id: _currentRouteJobId, name: _currentRouteName };
+  const reconnect = _activeJobId === id;
+  if (!reconnect) _jobBeforeAttach = { id: _currentRouteJobId, name: _currentRouteName };
   _closeJobStream();
   _activeJobId = id;
+  _attachSeq++;
   const btn = /** @type {HTMLButtonElement} */ (document.getElementById('findRoute'));
   const statusEl = document.getElementById('status');
   btn.disabled = true;
@@ -2343,6 +2348,11 @@ function attachToJob(id, jobRow) {
   _currentRouteJobId = id;
   _currentRouteName = jobRow && jobRow.request ? (jobRow.request.name || '') : ((/** @type {HTMLInputElement} */ (document.getElementById('routeName')).value || '').trim());
   appendLog('job ' + id);
+  // The search's boat comes with the first stage (_jobOnFrontier): the start as drawn can be on land, which the router
+  // first leaves for usable water (up to 1 km, worker/route.ts SNAP_MAX_M; the owner's review of #78). A reconnect
+  // leaves it where the last stage put it: the stage fronts are not stored with the job (jobs.ts), so the stream does
+  // not replay them.
+  if (!reconnect) clearSearchBoat();
   if (jobRow && Array.isArray(jobRow.progress)) {
     // Backfill from the status row; the SSE replay adds the rest.
     for (const p of jobRow.progress) RouteProgress.feed(p);
@@ -2350,7 +2360,8 @@ function attachToJob(id, jobRow) {
   const es = _activeJobES = new EventSource(API + '/routes/' + encodeURIComponent(id) + '/events', { withCredentials: true });
   // What the handlers share: the stream (to tell a stale one from the
   // current), timing, the line count, and the last front seen.
-  const job = { id, es, statusEl, t0: Date.now(), lineCount: 0, lastFrontLeg: -1, lastFrontStage: 0 };
+  const wps = jobRow && jobRow.request && Array.isArray(jobRow.request.waypoints) ? jobRow.request.waypoints.length : 0;
+  const job = { id, es, statusEl, t0: Date.now(), lineCount: 0, lastFrontLeg: -1, lastFrontStage: 0, legs: wps + 1 };
   const mine = handler => ev => {
     if (_activeJobES !== es) return;
     let d = null; try { d = JSON.parse(ev.data); } catch (_) {}
@@ -2388,6 +2399,7 @@ function _jobOnStatus(job, d) {
 
 function _jobOnProgress(job, p) {
   job.lineCount++;
+  if (Number(p.total) > 0) job.plannedStages = Number(p.total);
   const msg = String(p.message || '');
   appendLog((p.total ? '[' + p.stage + '/' + p.total + '] ' : '') + msg, msg.startsWith('WARNING') ? 'warn' : undefined);
   RouteProgress.feed(p);
@@ -2398,6 +2410,8 @@ function _jobOnProgress(job, p) {
 // leg is searched again (e.g. the retry without automatic vias), so a
 // stage number that drops on the same leg means a re-run: clear that leg's
 // fronts. A new leg keeps the earlier legs' fronts.
+// The first leg number of a repair detour (worker/route.ts: finalDepthCheck's detours are numbered from 1000).
+const _DETOUR_LEG0 = 1000;
 function _jobOnFrontier(job, fr) {
   const leg = fr.leg || 0;
   const first = job.lastFrontLeg < 0;
@@ -2405,6 +2419,14 @@ function _jobOnFrontier(job, fr) {
   job.lastFrontLeg = leg;
   job.lastFrontStage = fr.stage;
   drawFront(fr, { reset: first, resetLeg: rerun ? leg : undefined });
+  // A repair detour's fronts (legs from _DETOUR_LEG0, after the search) are drawn but leave the boat where the search
+  // ended: it would jump back to the detour, and its leg number is no leg of the route.
+  if (leg >= _DETOUR_LEG0) return;
+  // The boat at the head of this stage's best path; with waypoints, which leg it is on. Stages counted as the progress
+  // line counts them (its `total` is the planned stages; a front's is the search's cap, half as many again).
+  const legs = job.legs || 1;
+  const total = job.plannedStages ? Math.max(job.plannedStages, fr.stage) : fr.total;
+  showSearchBoat(fr.best, (legs > 1 ? 'leg ' + (leg + 1) + ' · ' : '') + (total ? 'stage ' + fr.stage + '/' + total : ''));
 }
 
 // The job finished: log the summary, fetch the route (and the skeleton),
@@ -2498,14 +2520,19 @@ function _jobOnError(job, ev) {
   // server answered 404/401) — check the job's status once.
   if (es.readyState === EventSource.CLOSED) {
     _closeJobStream();
+    // The answer acts only while this attachment is still the one followed: another attached meanwhile (from Saved,
+    // even of this same job) keeps its progress, Cancel and boat.
+    const seq = _attachSeq;
+    const current = () => _activeJobId === id && _attachSeq === seq;
     authFetch(API + '/routes/' + encodeURIComponent(id), { cache: 'no-store' }, null)
       .then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)))
       .then(j => {
+        if (!current()) return;
         if (j.status === 'done') { appendLog('stream closed; job finished — loading result', 'done'); _computeUiIdle(); RouteProgress.hide(); _loadRouteJob(id); }
-        else if (j.status === 'queued' || j.status === 'running') { appendLog('stream lost; reconnecting…', 'error'); setTimeout(() => attachToJob(id, j), 2000); }
+        else if (j.status === 'queued' || j.status === 'running') { appendLog('stream lost; reconnecting…', 'error'); setTimeout(() => { if (current()) attachToJob(id, j); }, 2000); }
         else { appendLog('job ' + j.status + (j.error ? ': ' + j.error : ''), 'error'); RouteProgress.fail(j.status); _computeUiIdle(); _backToEarlierRoute(); }
       })
-      .catch(e => { appendLog('Connection error: ' + e.message, 'error'); statusEl.textContent = 'Error: ' + e.message; RouteProgress.fail('Connection error'); _computeUiIdle(); });
+      .catch(e => { if (!current()) return; appendLog('Connection error: ' + e.message, 'error'); statusEl.textContent = 'Error: ' + e.message; RouteProgress.fail('Connection error'); _computeUiIdle(); });
   } else {
     appendLog('(event stream interrupted — reconnecting)', 'error');
   }
@@ -2524,6 +2551,9 @@ document.getElementById('findRoute').addEventListener('click', /** @this {HTMLBu
   _routeComputing = true;
 
   const body = buildRoutePayload();
+  // A job opened from Saved while this request is on its way is the one followed if the request fails: the failure is
+  // logged, and that job keeps its progress, Cancel, boat and stream.
+  const seq = _attachSeq;
   authFetch(API + '/routes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2537,6 +2567,7 @@ document.getElementById('findRoute').addEventListener('click', /** @this {HTMLBu
       loadRouteHistory();
     })
     .catch(err => {
+      if (_attachSeq !== seq) { appendLog('Could not start the route calculation: ' + err.message, 'error'); return; }
       showModal();
       appendLog('Could not start the route calculation: ' + err.message, 'error');
       statusEl.textContent = 'Error: ' + err.message;
