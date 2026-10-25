@@ -428,21 +428,21 @@ export class CoastTiles {
       if (this.keys[mid] < key) lo = mid + 1;
       else hi = mid - 1;
     }
+    // A tile without pieces (open sea): nothing to read, nothing to cache.
+    if (at < 0) return [];
     const shapes: ShapePolygon[] = [];
     let bytes = 0;
-    if (at >= 0) {
-      this.reads++;
-      const fd = fs.openSync(path.join(this.dir, 'tiles.bin'), 'r');
-      try {
-        for (let k = this.first[at]; k < this.first[at + 1]; k++) {
-          const b = Buffer.alloc(this.length[k]);
-          if (fs.readSync(fd, b, 0, b.length, this.offset[k]) !== b.length) throw new Error(`${this.dir}: truncated tile data`);
-          shapes.push(decodePiece(b));
-          bytes += b.length;
-        }
-      } finally {
-        fs.closeSync(fd);
+    this.reads++;
+    const fd = fs.openSync(path.join(this.dir, 'tiles.bin'), 'r');
+    try {
+      for (let k = this.first[at]; k < this.first[at + 1]; k++) {
+        const b = Buffer.alloc(this.length[k]);
+        if (fs.readSync(fd, b, 0, b.length, this.offset[k]) !== b.length) throw new Error(`${this.dir}: truncated tile data`);
+        shapes.push(decodePiece(b));
+        bytes += b.length;
       }
+    } finally {
+      fs.closeSync(fd);
     }
     this.cache.set(key, { shapes, bytes });
     this.cacheBytes += bytes;

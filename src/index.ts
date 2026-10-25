@@ -1143,25 +1143,28 @@ export = function plugin(app: SkApp): SignalKPlugin {
   async function cutCoastThenStart(dataDir: string, gen: number): Promise<void> {
     if (!config) return;
     const paths = config.landShapefiles;
-    if (!coastTilesReady(dataDir, paths)) {
-      coastCut.running = true;
-      coastCut.error = null;
-      app.setPluginStatus('starting: cutting the coastline into tiles (once per coastline)');
-      coastCutCtrl = new AbortController();
-      try {
-        const r = await runChildTask({ task: 'coast-cut', paths, root: dataDir }, null, coastCutCtrl.signal);
-        log(
-          `coastline cut into tiles: ${r.tiles} tiles, ${r.pieces} pieces, ${(r.bytes / 1e6).toFixed(1)} MB, ${(r.ms / 1000).toFixed(1)} s`
-        );
-      } catch (err) {
-        if (gen !== startGen || stopped) return;
-        coastCut.error = (err as Error).message;
-        app.setPluginError(`the coastline could not be cut into tiles: ${coastCut.error}`);
-        return;
-      } finally {
-        coastCut.running = false;
-        coastCutCtrl = null;
+    try {
+      // Inside the try: an incomplete GSHHG hierarchy throws here (shorelinePaths).
+      if (!coastTilesReady(dataDir, paths)) {
+        coastCut.running = true;
+        coastCut.error = null;
+        app.setPluginStatus('starting: cutting the coastline into tiles (once per coastline)');
+        coastCutCtrl = new AbortController();
+        try {
+          const r = await runChildTask({ task: 'coast-cut', paths, root: dataDir }, null, coastCutCtrl.signal);
+          log(
+            `coastline cut into tiles: ${r.tiles} tiles, ${r.pieces} pieces, ${(r.bytes / 1e6).toFixed(1)} MB, ${(r.ms / 1000).toFixed(1)} s`
+          );
+        } finally {
+          coastCut.running = false;
+          coastCutCtrl = null;
+        }
       }
+    } catch (err) {
+      if (gen !== startGen || stopped) return;
+      coastCut.error = (err as Error).message;
+      app.setPluginError(`the coastline could not be cut into tiles: ${coastCut.error}`);
+      return;
     }
     if (gen !== startGen || stopped) return;
     startServices(dataDir);
