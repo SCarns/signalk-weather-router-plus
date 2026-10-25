@@ -28,6 +28,15 @@ uses [Semantic Versioning](https://semver.org/).
   dependency, `typebox` ^1.4.3): the TypeScript types and the OpenAPI document
   come from it, so a field can no longer be in one and missing from the other
   (issue #76). Requests, answers and error texts are unchanged.
+- **A route that cannot be made says why in plain words.** When every move
+  is over the wind or wave limit, the message names the value against the
+  limit, where, when it eases, and what to do: "Forecast at the start: waves
+  4.6 m against your 3.0 m limit. It comes under the limit about 26 Oct
+  09:00 UTC. Raise the limit or depart after that." The coast, a dead-upwind
+  start and a boat that makes no way get their own sentences. The counts of
+  candidates tried stay in the job's progress log. One module writes these
+  sentences (the engine's `refusal.ts`), so the other route errors convert
+  to it one by one.
 - `npm run typecheck` also type-checks the web app's scripts
   (`tsconfig.public.json`, `checkJs`). The scripts gained JSDoc types, and
   six date checks and subtractions now go through `getTime()` (same

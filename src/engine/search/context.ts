@@ -10,6 +10,9 @@
 import { haversineDistanceM } from '../../geo/geodesy';
 import { HOUR_MS } from '../../geo/units';
 import { NoCurrent, NoWind } from '../environment';
+import type { EngineErrorCode } from '../errors';
+import { fmtUtc, limitsAt, limitsEaseAt, type RefusalPlace, RouteRefused, type RouteRefusal } from '../refusal';
+import { haversineBearing, projectAlongBearing } from '../../geo/geodesy';
 import type { Waypoint } from '../route';
 import {
   RouteCancelled,
@@ -57,14 +60,67 @@ export function tryNote(ctx: SearchContext): string {
     : `the last stage tried ${lastTry.tried} candidates`;
 }
 
-export function fmtUtc(ms: number): string {
-  return `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
-}
+export { fmtUtc } from '../refusal';
 
 export function forecastNote(ctx: SearchContext): string {
   const { args, lastTry } = ctx;
   if (args.forecastEndMs === undefined || lastTry.latestMs <= args.forecastEndMs) return '';
   return ` The forecast ends ${fmtUtc(args.forecastEndMs)} and the search is ${((lastTry.latestMs - args.forecastEndMs) / HOUR_MS).toFixed(0)} h past it, on conditions held at that last step: a longer forecast horizon (Defaults) may open a way.`;
+}
+
+/** How far ahead a limit's ease is looked for when the forecast's end is not known. */
+const EASE_LOOKAHEAD_MS = 72 * HOUR_MS;
+
+/**
+ * The refusal for a front with nowhere to go from `stuck` (the candidates whose every move failed), from what the
+ * last try counted: the reason that stopped most moves, placed at the candidate it stopped hardest. Over a limit,
+ * the wind and waves are read at each candidate and one stage step ahead of it towards its goal (a move is stopped
+ * where it would arrive), the worst against its limit is named, and the hour they ease there is looked for up to the
+ * forecast's end. The counts (tryNote) go on the error as its detail, for the log; `suffix` follows the sentence.
+ */
+export function refuseDeadEnd(ctx: SearchContext, stuck: Candidate[], code: EngineErrorCode = 'route', suffix = ''): RouteRefused {
+  const { args, wind, lastTry, goals } = ctx;
+  const detail = tryNote(ctx);
+  const start: Candidate = { ...stuck[0], lon: ctx.sLon, lat: ctx.sLat, timeMs: args.departureTime.getTime(), parentIdx: -1, elapsedS: 0 };
+  const first = stuck[0] ?? start;
+  const place = (c: Candidate): RefusalPlace => (c.parentIdx < 0 && c.elapsedS === 0 ? null : { lon: c.lon, lat: c.lat });
+  const top = Math.max(lastTry.limited, lastTry.land, lastTry.noGo, lastTry.stuck);
+  if (top > 0 && lastTry.limited === top) {
+    let worst = first;
+    let worstOver = -Infinity;
+    let worstL = limitsAt(wind, first.lon, first.lat, first.timeMs, args.maxWindMs, args.maxSwhM);
+    const aheadS = ctx.budget.candStepM / ctx.cruise;
+    for (const c of stuck.length ? stuck : [first]) {
+      const g = goals[Math.min(c.viaCount, goals.length - 1)];
+      const [aLon, aLat] = projectAlongBearing(c.lon, c.lat, haversineBearing(c.lon, c.lat, g.lon, g.lat), ctx.budget.candStepM);
+      for (const [lon, lat, t] of [
+        [c.lon, c.lat, c.timeMs],
+        [aLon, aLat, c.timeMs + aheadS * 1000],
+      ]) {
+        const l = limitsAt(wind, lon, lat, t, args.maxWindMs, args.maxSwhM);
+        const over = Math.max(l.wind ? l.wind.seen / l.wind.limit : 0, l.waves ? l.waves.seen / l.waves.limit : 0);
+        if (over > worstOver) {
+          worstOver = over;
+          worst = { ...c, lon, lat, timeMs: t };
+          worstL = l;
+        }
+      }
+    }
+    const untilMs = args.forecastEndMs !== undefined ? Math.max(args.forecastEndMs, worst.timeMs) : worst.timeMs + EASE_LOOKAHEAD_MS;
+    const refusal: RouteRefusal = {
+      kind: 'over_limit',
+      // The start keeps its name even when the reading one step ahead of it is the worst.
+      at: place(first) === null ? null : { lon: worst.lon, lat: worst.lat },
+      atMs: worst.timeMs,
+      wind: worstL.wind,
+      waves: worstL.waves,
+      easesMs: limitsEaseAt(wind, worst.lon, worst.lat, worst.timeMs, untilMs, args.maxWindMs, args.maxSwhM),
+      untilMs,
+    };
+    return new RouteRefused(refusal, detail, code, suffix);
+  }
+  const kind = top > 0 && lastTry.land === top ? 'coast' : top > 0 && lastTry.noGo === top ? 'dead_upwind' : 'stopped';
+  return new RouteRefused({ kind, at: place(first), atMs: first.timeMs }, detail, code, suffix);
 }
 
 /**
