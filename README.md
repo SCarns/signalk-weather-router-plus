@@ -3036,9 +3036,11 @@ is downloaded on its own:
 
 - the forecast, current and tide refresh rounds use what is on disk
   (`checks` in `/api/status` says `skipped: the internet connection is
-  metered …`), and one runs as soon as the state clears;
+  metered …`), and one runs as soon as the state clears; a round under
+  way when the state turns skips the sources it has not reached yet;
 - the coastline download at first start and the chart meshes' daily
-  catalogue read and downloads wait, looking again every 15 minutes;
+  catalogue read and downloads wait, and start as soon as the state
+  clears; a mesh download under way stops and resumes later;
 - map tiles are not built ahead of time (`overlay_prebuild.paused` in
   `/api/status`).
 
