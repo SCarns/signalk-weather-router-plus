@@ -4,190 +4,127 @@
  * money per byte (metered), carries no traffic (offline) or is caught by a
  * sign-in page (captive), nothing here downloads on its own: the forecast
  * and current refresh rounds use what is on disk, the coastline and the
- * chart meshes wait. What the owner starts (Refresh, Download coastline,
- * the mesh panel's buttons, a route) still downloads.
+ * chart meshes wait, and work of theirs under way stops. What the owner
+ * starts (Refresh, Download coastline, the mesh panel's buttons, a route)
+ * still downloads.
  *
- * The state counts only while signalk-internet is enabled: Signal K keeps
- * the last value a disabled plugin published until it restarts. Without
- * the plugin, or with any other state, downloads run as they always did.
+ * The state comes from one subscription, from start to stop: no lookups,
+ * no waits, no timers. The server sends the last value when the
+ * subscription starts, so a start beside a running signalk-internet knows
+ * it at once. Without signalk-internet nothing is ever delivered: nothing
+ * is held and nothing waits. (Signal K keeps a value after the plugin that
+ * published it stops; clearing it is signalk-internet's to do on stop.)
  */
 
-import { MINUTE_MS } from '../geo/units';
-
 export const INTERNET_STATE_PATH = 'network.internet.state';
-export const INTERNET_PLUGIN_ID = 'signalk-internet';
-
-/** Held work (the coastline download, the meshes' pass) looks at the state again after this long. */
-export const INTERNET_HOLD_RETRY_MS = 15 * MINUTE_MS;
-/** Whether signalk-internet is enabled is looked up again when the answer is older than this. */
-export const PLUGIN_CHECK_MS = 30_000;
-/** At start, how long to wait for signalk-internet's first state before the first downloads. */
-export const FIRST_STATE_WAIT_MS = 30_000;
-const FIRST_STATE_STEP_MS = 1000;
 
 const HOLDING_STATES: ReadonlySet<string> = new Set(['metered', 'offline', 'captive']);
 
-/** The state's value: `getSelfPath` answers the leaf (`{ value, $source, timestamp }`); a bare value is taken too. */
-export function internetState(getSelfPath: ((path: string) => unknown) | undefined): unknown {
-  let node: unknown;
-  try {
-    node = getSelfPath?.(INTERNET_STATE_PATH);
-  } catch {
-    return undefined;
-  }
-  return node !== null && typeof node === 'object' ? (node as { value?: unknown }).value : node;
-}
-
-/** Why background downloads wait for this state, or null when they may run. */
-export function internetHold(getSelfPath: ((path: string) => unknown) | undefined): string | null {
-  const value = internetState(getSelfPath);
+/** Why background downloads wait for this state value, or null when they may run. */
+export function internetHold(value: unknown): string | null {
   if (typeof value !== 'string' || !HOLDING_STATES.has(value)) return null;
   return `the internet connection is ${value} (${INTERNET_STATE_PATH})`;
 }
 
+interface StateDelta {
+  updates?: { values?: { path?: string; value?: unknown }[] }[];
+}
+
 export interface InternetApp {
-  getSelfPath?: (path: string) => unknown;
-  streambundle?: { getSelfStream: (path: string) => { onValue: (cb: (value: unknown) => void) => () => void } };
-  getFeatures?: (onlyEnabled?: boolean) => Promise<{ plugins: { id: string; enabled: boolean }[] }>;
+  subscriptionmanager?: {
+    subscribe: (
+      subscription: { context: string; subscribe: { path: string; policy: string }[] },
+      unsubscribes: (() => void)[],
+      onError: (err: unknown) => void,
+      onDelta: (delta: StateDelta) => void
+    ) => void;
+  };
 }
 
 /** What held background work asks (coastline.ts, meshes.ts). */
-export interface DownloadHold {
-  /** signalk-internet is enabled (at the last lookup): without it nothing is held or watched. */
-  readonly active: boolean;
-  /** Why background downloads wait now, or null, with the lookup renewed first. */
-  holdNow(): Promise<string | null>;
+export interface InternetHold {
+  /** Why background downloads wait now, or null. */
+  hold(): string | null;
+  /** Call `fn` whenever `hold()` changes; answers the unsubscribe. */
+  onChange(fn: () => void): () => void;
+  /** Resolves once `hold()` is null (at once when it is) or `signal` aborts. */
+  whenClear(signal: AbortSignal): Promise<void>;
 }
 
-/** The state, read only while signalk-internet is enabled. */
-export class InternetGate implements DownloadHold {
-  private enabled = false;
-  private checkedAt = 0;
-  /** The lookup in flight, and the reset generation it belongs to. */
-  private checking: { gen: number; done: Promise<void> } | null = null;
-  private gen = 0;
-  private firstState: Promise<void> | null = null;
-  private firstStateDone = false;
-  private round = 0;
-  /** At start: waiting for signalk-internet's first state (notStartedReason). */
-  settling = false;
+/** signalk-internet's state, as its last delta gave it. */
+export class InternetState implements InternetHold {
+  private value: unknown = undefined;
+  private unsubscribes: (() => void)[] = [];
+  private readonly listeners = new Set<() => void>();
 
-  constructor(private readonly app: InternetApp) {}
+  constructor(
+    private readonly app: InternetApp,
+    private readonly log: (m: string) => void = () => undefined
+  ) {}
 
-  get active(): boolean {
-    return this.enabled;
-  }
-
-  /** Look up whether signalk-internet is enabled (a server without getFeatures has no answer: not enabled). */
-  check(): Promise<void> {
-    if (this.checking?.gen === this.gen) return this.checking.done;
-    const gen = this.gen;
-    const done = (async () => {
-      let enabled: boolean;
-      try {
-        const f = await this.app.getFeatures?.(true);
-        enabled = !!f?.plugins.some(p => p.id === INTERNET_PLUGIN_ID && p.enabled);
-      } catch {
-        enabled = false;
-      }
-      // A lookup from before a reset speaks for the stopped start, not this one.
-      if (gen !== this.gen) return;
-      this.enabled = enabled;
-      this.checkedAt = Date.now();
-    })().finally(() => {
-      if (this.checking?.done === done) this.checking = null;
-    });
-    this.checking = { gen, done };
-    return done;
-  }
-
-  /** The first-state wait has not finished yet, the lookup included (a route then asks for its forecast itself). */
-  get pending(): boolean {
-    return this.firstState !== null && !this.firstStateDone;
-  }
-
-  /** Why background downloads wait now, or null. Sync: an old lookup is renewed for the next call. */
-  hold(): string | null {
-    if (Date.now() - this.checkedAt > PLUGIN_CHECK_MS) void this.check();
-    return this.enabled ? internetHold(p => this.app.getSelfPath?.(p)) : null;
-  }
-
-  /** As `hold`, with the lookup renewed first (work that waited minutes). */
-  async holdNow(): Promise<string | null> {
-    await this.check();
-    return this.hold();
-  }
-
-  /**
-   * Before the first downloads: with signalk-internet enabled but no state
-   * published yet (it starts beside this plugin), wait for one, up to
-   * FIRST_STATE_WAIT_MS. One wait serves every caller; later calls return
-   * at once. False when `current` is false by then.
-   */
-  async settle(current: () => boolean, waitMs = FIRST_STATE_WAIT_MS, stepMs = FIRST_STATE_STEP_MS): Promise<boolean> {
-    if (!this.firstState) {
-      const round = ++this.round;
-      this.firstStateDone = false;
-      this.firstState = this.waitFirstState(round, waitMs, stepMs).finally(() => {
-        if (round === this.round) this.firstStateDone = true;
-      });
-    }
-    await this.firstState;
-    return current();
-  }
-
-  /**
-   * Call `onChange` whenever signalk-internet publishes a different state;
-   * the same state published again is not a change. The callers look at
-   * the hold themselves (`hold`, `holdNow`), so a change that holds nothing
-   * (the plugin not enabled) leaves them as they are. Answers the
-   * unsubscribe. A server without a stream bundle has nothing to watch.
-   */
-  watch(onChange: () => void): () => void {
-    // The raw state, not the hold: the plugin lookup may not have answered yet, and the next state must still count.
-    let last = internetState(p => this.app.getSelfPath?.(p));
+  /** Subscribe (plugin start). A server without a subscription manager has nothing to follow. */
+  start(): void {
+    this.stop();
     try {
-      const stream = this.app.streambundle?.getSelfStream(INTERNET_STATE_PATH);
-      return (
-        stream?.onValue(value => {
-          const now = value !== null && typeof value === 'object' ? (value as { value?: unknown }).value : value;
-          if (now === last) return;
-          last = now;
-          onChange();
-        }) ?? (() => undefined)
+      this.app.subscriptionmanager?.subscribe(
+        { context: 'vessels.self', subscribe: [{ path: INTERNET_STATE_PATH, policy: 'instant' }] },
+        this.unsubscribes,
+        err => this.log(`subscription: ${err instanceof Error ? err.message : String(err)}`),
+        delta => this.onDelta(delta)
       );
-    } catch {
-      return () => undefined;
+    } catch (err) {
+      this.log(`subscription: ${(err as Error).message}`);
     }
   }
 
-  /** Stop: the next start waits for a first state again (signalk-internet may have been enabled meanwhile). */
-  reset(): void {
-    this.firstState = null;
-    this.firstStateDone = false;
-    this.round++;
-    this.settling = false;
-    this.gen++;
-    this.checking = null;
-    this.checkedAt = 0;
+  /** Unsubscribe (plugin stop): the value is forgotten, the next start gets it again with its subscription. */
+  stop(): void {
+    for (const unsubscribe of this.unsubscribes.splice(0)) unsubscribe();
+    this.value = undefined;
   }
 
-  /** `round`: a reset since ends this wait, so it no longer speaks for `settling`. */
-  private async waitFirstState(round: number, waitMs: number, stepMs: number): Promise<void> {
-    await this.check();
-    const until = Date.now() + waitMs;
-    const mine = (): boolean => round === this.round;
-    const missing = (): boolean => internetState(p => this.app.getSelfPath?.(p)) == null;
-    if (!mine()) return;
-    this.settling = this.enabled && missing();
-    try {
-      while (this.settling && Date.now() < until) {
-        await new Promise(r => setTimeout(r, stepMs));
-        if (!mine()) return;
-        this.settling = missing();
+  hold(): string | null {
+    return internetHold(this.value);
+  }
+
+  onChange(fn: () => void): () => void {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  whenClear(signal: AbortSignal): Promise<void> {
+    return new Promise(resolve => {
+      if (signal.aborted || !this.hold()) {
+        resolve();
+        return;
       }
-    } finally {
-      if (mine()) this.settling = false;
+      const done = (): void => {
+        off();
+        signal.removeEventListener('abort', done);
+        resolve();
+      };
+      const off = this.onChange(() => {
+        if (!this.hold()) done();
+      });
+      signal.addEventListener('abort', done, { once: true });
+    });
+  }
+
+  private onDelta(delta: StateDelta): void {
+    for (const u of delta.updates ?? []) for (const v of u.values ?? []) if (v.path === INTERNET_STATE_PATH) this.set(v.value);
+  }
+
+  private set(value: unknown): void {
+    const before = this.hold();
+    this.value = value;
+    if (this.hold() === before) return;
+    // A listener that throws must not keep the others from hearing it.
+    for (const fn of [...this.listeners]) {
+      try {
+        fn();
+      } catch (err) {
+        this.log(`a listener failed: ${(err as Error).message}`);
+      }
     }
   }
 }

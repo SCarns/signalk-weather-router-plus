@@ -59,7 +59,7 @@ import {
 import { makeSeaLevelClient, refreshTides, tideSettings } from './worker/tides';
 import { refreshRegional } from './worker/regional';
 import { route } from './worker/route';
-import { refreshQueue, roundHold } from './worker/refreshqueue';
+import { refreshQueue } from './worker/refreshqueue';
 import { buildTile, dataStatus, query } from './worker/query';
 import type { WorkerState } from './worker/state';
 
@@ -129,6 +129,7 @@ const st: WorkerState = {
   connectivity: { online: null, since: null, lastOkAt: null, reason: null },
   lastOfflineMs: 0,
   internetHold: null,
+  backgroundRound: false,
   harmonicErrors: [],
   decodeAbort: null,
 };
@@ -142,28 +143,37 @@ if (role === 'data') setNetworkObserver((state, reason) => noteNetwork(st, state
  * (location relayed by the main thread) and adopts its SMOC memory. Once a
  * request of this round finds no connection, the sources after it are not
  * asked (each uses what it has and reports "could not check" with the reason).
+ * `user`: the owner asked (Refresh, a route): the round downloads whatever
+ * the internet state. Any other round looks at the state (internet.ts, sent
+ * as 'internet-hold') before each source: while it holds, the sources
+ * answer from what is on disk, and it starting to hold stops the forecast
+ * decode under way.
  */
-/** `hold`: why this round must not download (internet.ts): every source then answers from what is on disk. */
-export async function refresh(st: WorkerState, force: boolean, hold: string | null = null, user = false): Promise<void> {
+export async function refresh(st: WorkerState, force: boolean, user = false): Promise<void> {
   const networkAllowed = st.role === 'data';
   const t0 = Date.now();
-  const held = (): string | null => roundHold(hold, user, st.internetHold);
+  const held = (): string | null => (user ? null : st.internetHold);
   const offline = (): string | null => {
     const h = held();
     if (h) return `skipped: ${h}`;
     return st.lastOfflineMs >= t0 ? `skipped: ${st.connectivity.reason ?? 'no internet connection'}` : null;
   };
-  await refreshRtofs(st, networkAllowed, offline());
-  sendCurrents(st);
-  if (st.role === 'data') {
-    await refreshForecast(st, force, offline(), held() !== null);
-    // After the forecast, so a first boot is not held up by the SMOC resident download.
-    await refreshSmoc(st, offline());
+  st.backgroundRound = !user;
+  try {
+    await refreshRtofs(st, networkAllowed, offline());
     sendCurrents(st);
-    await refreshTides(st, offline());
-    st.send({ type: 'tides-run', run: st.tides?.run ?? null });
-    // Last: optional finer wind from signalk-grib-downloader's runs (local files, no network).
-    await refreshRegional(st);
+    if (st.role === 'data') {
+      await refreshForecast(st, force, offline(), held);
+      // After the forecast, so a first boot is not held up by the SMOC resident download.
+      await refreshSmoc(st, offline());
+      sendCurrents(st);
+      await refreshTides(st, offline());
+      st.send({ type: 'tides-run', run: st.tides?.run ?? null });
+      // Last: optional finer wind from signalk-grib-downloader's runs (local files, no network).
+      await refreshRegional(st);
+    }
+  } finally {
+    st.backgroundRound = false;
   }
 }
 
@@ -222,7 +232,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
     }
     case 'refresh':
       if (msg.position !== undefined) st.vesselPos = msg.position;
-      await refresh(st, msg.force ?? false, msg.hold ?? null, msg.user ?? false);
+      await refresh(st, msg.force ?? false, msg.user ?? false);
       st.send({ type: 'data-status', status: dataStatus(st) });
       return;
     case 'forecast': {
@@ -403,8 +413,8 @@ function inBackground(msg: MainToWorker, fn: () => Promise<void>): void {
 const queueRefresh = refreshQueue({
   inBackground: fn => inBackground({ type: 'refresh' }, fn),
   setPosition: pos => (st.vesselPos = pos),
-  run: async (force, hold, user) => {
-    await refresh(st, force, hold, user);
+  run: async (force, user) => {
+    await refresh(st, force, user);
     st.send({ type: 'data-status', status: dataStatus(st) });
   },
 });
@@ -419,6 +429,8 @@ port.on('message', (msg: MainToWorker) => {
   // Not chained either: it must reach a refresh round that is under way.
   if (msg.type === 'internet-hold') {
     st.internetHold = msg.hold;
+    // A background round's decode stops, its download with it; the owner's round goes on.
+    if (msg.hold && st.backgroundRound) st.decodeAbort?.abort();
     return;
   }
   // Initialised first (its own message chain); the rest of the data worker's network work beside the queries.

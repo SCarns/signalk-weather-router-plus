@@ -55,7 +55,7 @@ import { WorkerPool, type MainRole } from './plugin/workerpool';
 import { BUNDLED_DEFAULT_POLAR, BUNDLED_POLARS_DIR } from './plugin/polars';
 import { openApiDocument } from './plugin/openapi';
 import { registerWeatherProvider } from './plugin/weather';
-import { InternetGate, type InternetApp } from './plugin/internet';
+import { InternetState, type InternetApp } from './plugin/internet';
 import type {
   DataStatus,
   ForecastLoading,
@@ -102,8 +102,7 @@ interface SkApp {
   /** Writes the plugin's options file (no restart); the panel's mesh actions keep the download list through it. */
   savePluginOptions?: (configuration: object, cb: (err: Error | null) => void) => void;
   getSelfPath?: (path: string) => unknown;
-  getFeatures?: (onlyEnabled?: boolean) => Promise<{ plugins: { id: string; enabled: boolean }[] }>;
-  streambundle?: InternetApp['streambundle'];
+  subscriptionmanager?: InternetApp['subscriptionmanager'];
   handleMessage?: (id: string, delta: unknown) => void;
   registerWeatherProvider?: (provider: unknown) => void;
   registerResourceProvider?: (provider: {
@@ -177,11 +176,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let weatherRegistered = false;
   let stopped = true;
   let pendingRefresh: { force: boolean; user: boolean } | null = null;
-  /** The last refresh round was held by the internet state (internet.ts): one runs as soon as it clears (checkPosition). */
+  /** A refresh round was held or stopped by the internet state (internet.ts): one runs as soon as it clears (onInternetChange). */
   let refreshHeld = false;
   /** The internet hold the data worker was last told ('internet-hold'); undefined: not told since it started. */
   let holdSent: string | null | undefined;
-  let unwatchInternet: () => void = () => undefined;
   /** Map overlay tiles on disk (null before start). */
   let tiles: TileService | null = null;
   /** Tiles built ahead of time (null before start or when off). */
@@ -198,7 +196,6 @@ export = function plugin(app: SkApp): SignalKPlugin {
   /** Why the services are not up yet, for API answers and the status (`starting`). */
   function notStartedReason(): string {
     if (stopped) return 'plugin not started';
-    if (internet.settling) return 'starting: waiting for the internet state from signalk-internet';
     if (coast.held)
       return `starting: the coastline download waits (${coast.held}); press Download coastline in the plugin configuration to download it now`;
     if (coast.state.downloading) {
@@ -292,9 +289,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
   const workerPath = path.join(__dirname, 'plugin', isTs ? 'worker.ts' : 'worker.js');
   const execArgv = isTs ? ['--import', 'tsx'] : [];
 
-  /** Why background downloads wait now (signalk-internet's state), or null. */
-  const internet = new InternetGate(app);
+  /** Why background downloads wait now (signalk-internet's state, followed from start to stop), or null. */
+  const internet = new InternetState(app, m => log(`internet state: ${m}`));
   const internetHeld = (): string | null => internet.hold();
+  internet.onChange(onInternetChange);
   const coast = new Coastline(app, log, internet);
   const meshes = new MeshManager(
     m => log(`meshes: ${m}`),
@@ -585,7 +583,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     // A Refresh press leaves it: pressed while offline it fails, and the held round must still run once online.
     if (!user) refreshHeld = hold !== null;
     syncHold();
-    pool.post('data', { type: 'refresh', force, position: refreshPosition, hold, user });
+    pool.post('data', { type: 'refresh', force, position: refreshPosition, user });
   }
 
   /**
@@ -605,15 +603,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
   }
 
   /**
-   * The internet hold changed (internet.ts `watch`): the data worker, the
-   * coastline and the meshes hear it at once instead of at their next look,
-   * and a round held by it runs as soon as it clears.
+   * The internet hold changed (internet.ts): the data worker hears it at
+   * once, and a round held or stopped by it runs as soon as it clears. (The
+   * coastline and the meshes follow the state themselves.)
    */
   function onInternetChange(): void {
-    if (stopped) return;
-    coast.internetChanged();
-    meshes.internetChanged();
-    if (!config || internet.settling) return;
+    if (stopped || !config) return;
     syncHold();
     if (refreshHeld && !internetHeld()) {
       log('the internet connection is usable again; refreshing');
@@ -629,13 +624,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
    * (by the extents it keeps on disk).
    */
   function checkPosition(): void {
-    if (stopped || !config || internet.settling) return;
-    syncHold();
-    if (refreshHeld && !internetHeld()) {
-      log('the internet connection is usable again; refreshing');
-      requestRefresh(false);
-      return;
-    }
+    if (stopped || !config) return;
     const pos = vesselPosition();
     if (!pos) return;
     if (!refreshPosition) {
@@ -843,7 +832,10 @@ export = function plugin(app: SkApp): SignalKPlugin {
         // A (re)started route worker learns where the decoded run is.
         if (role === 'route') for (const m of sharedDataMessages()) pool.post('route', m);
         // A (re)started data worker has not been told the internet hold.
-        if (role === 'data') holdSent = undefined;
+        if (role === 'data') {
+          holdSent = undefined;
+          syncHold();
+        }
         if (role === 'data' && pendingRefresh) {
           const { force, user } = pendingRefresh;
           pendingRefresh = null;
@@ -1108,7 +1100,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           }),
         layerAvailable: layer => charts.layerAvailable(layer),
         // Held by the internet state too: the builders load SMOC and tide areas they lack from the network.
-        busy: () => !!jobs?.runningId || pool.pendingCount > 0 || internet.settling || internetHeld() !== null,
+        busy: () => !!jobs?.runningId || pool.pendingCount > 0 || internetHeld() !== null,
         log,
         error: m => app.error(m),
       }
@@ -1139,7 +1131,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
     }
     const gen = ++startGen;
     const dataDir = app.getDataDirPath();
-    unwatchInternet = internet.watch(onInternetChange);
+    // The server sends signalk-internet's last state with the subscription: the coastline below already sees it.
+    internet.start();
     // Before the first download, so a backup taken meanwhile already skips them.
     for (const p of tagCacheDirs(dataDir)) app.error(`cache directory tag: ${p}`);
     if (config.landShapefiles.length > 0) {
@@ -1155,17 +1148,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
       return;
     }
     // None configured: download GSHHG (minutes), then start. Not awaited, so the server's start-up is not held up.
-    // signalk-internet starts beside this plugin: its first state decides whether a download runs.
-    const current = (): boolean => gen === startGen && !stopped;
-    void (gshhgInstalled(dataDir) ? Promise.resolve(true) : internet.settle(current))
-      .then(ok => (ok ? coast.download(dataDir, current) : false))
+    void coast
+      .download(dataDir, () => gen === startGen && !stopped)
       .then(ok => {
-        if (!ok || !settings || !current()) return;
+        if (!ok || !settings || gen !== startGen || stopped) return;
         config = resolve(options, settings.values);
         startServices(dataDir);
-      })
-      .catch(err => {
-        if (current()) app.setPluginError(`start failed: ${(err as Error).message}`);
       });
   }
 
@@ -1182,6 +1170,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       config.mesh.preferLocal,
       config.mesh.preferDownload
     );
+    meshes.run();
     tiles = new TileService(
       new TileStore({ root: path.join(dataDir, 'overlay-tiles'), capBytes: config.overlayCache.diskCapBytes, log }),
       (kind, args, signal) => pool.queryFull(kind, args, signal)
@@ -1194,9 +1183,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
       // rather than downloading its own copy of the same fields alongside.
       if (!forecastRun && !forecastError) {
         waitingForForecast = job;
-        // The first forecast was held back (internet.ts), or its round still waits for signalk-internet's first
-        // state or for the data worker: a route is the owner asking, so it downloads now.
-        if (refreshHeld || pendingRefresh || internet.pending) requestRefresh(false, true);
+        // The first forecast was held back (internet.ts), or its round still waits for the data worker: a route is the
+        // owner asking, so it downloads now.
+        if (refreshHeld || pendingRefresh) requestRefresh(false, true);
         jobs?.onProgress(job.id, 0, 0, `waiting for the forecast: ${forecastWaitText()}`);
         updateStatus();
         return;
@@ -1218,15 +1207,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       pool.start(role);
       pool.post(role, { type: 'init', role, config, cacheDir: dataDir });
     }
-    // The first downloads wait for signalk-internet's first state (internet.ts); the services answer meanwhile.
-    const gen = startGen;
-    void internet
-      .settle(() => gen === startGen && !stopped)
-      .then(ok => {
-        if (!ok) return;
-        meshes.run();
-        requestRefresh(false);
-      });
+    requestRefresh(false);
     refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshIntervalS * 1000);
     positionTimer = setInterval(checkPosition, POSITION_CHECK_MS);
     updateStatus();
@@ -1236,9 +1217,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
   async function stop(): Promise<void> {
     stopped = true;
     startGen++;
-    unwatchInternet();
-    unwatchInternet = () => undefined;
-    internet.reset();
+    internet.stop();
     coast.abort();
     meshes.stop();
     roughCutCtrl?.abort();

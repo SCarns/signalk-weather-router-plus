@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { VesselPosition } from '../protocol';
-import { refreshQueue, roundHold } from './refreshqueue';
+import { refreshQueue } from './refreshqueue';
 
 /** `runGate`: each refresh run waits on it (a run in progress). */
 function harness(runGate?: Promise<void>): {
@@ -16,13 +16,11 @@ function harness(runGate?: Promise<void>): {
   pos: () => VesselPosition | null;
   setPos: (p: VesselPosition | null) => void;
   runs: { force: boolean; pos: VesselPosition | null }[];
-  holds: (string | null)[];
   users: boolean[];
 } {
   let chain: Promise<void> = Promise.resolve();
   let vesselPos: VesselPosition | null = null;
   const runs: { force: boolean; pos: VesselPosition | null }[] = [];
-  const holds: (string | null)[] = [];
   const users: boolean[] = [];
   const background = (fn: () => Promise<void>): void => {
     chain = chain.then(fn);
@@ -30,14 +28,13 @@ function harness(runGate?: Promise<void>): {
   const queue = refreshQueue({
     inBackground: background,
     setPosition: p => (vesselPos = p),
-    run: async (force, hold, user) => {
+    run: async (force, user) => {
       runs.push({ force, pos: vesselPos });
-      holds.push(hold);
       users.push(user);
       await runGate;
     },
   });
-  return { queue, background, drain: () => chain, pos: () => vesselPos, setPos: p => (vesselPos = p), runs, holds, users };
+  return { queue, background, drain: () => chain, pos: () => vesselPos, setPos: p => (vesselPos = p), runs, users };
 }
 
 const OLD = { lat: 41.6, lon: -70.7 };
@@ -88,40 +85,18 @@ test('a request made while a refresh runs is done once more after it, with its o
   ]);
 });
 
-test('a joined round is held only when every request was held; one that may download makes it download', async () => {
-  const h = harness();
-  let release!: () => void;
-  const gate = new Promise<void>(r => (release = r));
-  h.background(() => gate);
-  h.queue({ hold: 'metered' });
-  h.queue({ hold: 'offline' });
-  release();
-  await h.drain();
-  assert.deepEqual(h.holds, ['offline'], 'held, for the latest reason');
-  let release2!: () => void;
-  const gate2 = new Promise<void>(r => (release2 = r));
-  h.background(() => gate2);
-  h.queue({ hold: 'metered' });
-  h.queue({ force: true });
-  h.queue({ hold: 'metered' });
-  release2();
-  await h.drain();
-  assert.deepEqual(h.holds, ['offline', null], 'the Refresh press among them downloads');
-});
-
-test("a joined round is the owner's when any request was; only a background round follows the internet state once it starts holding", async () => {
+test("a joined round is the owner's when any request was (it downloads whatever the internet state)", async () => {
   const h = harness();
   let release!: () => void;
   const gate = new Promise<void>(r => (release = r));
   h.background(() => gate);
   h.queue({});
   h.queue({ user: true });
+  h.queue({});
   release();
   await h.drain();
   assert.deepEqual(h.users, [true]);
-  const metered = 'the internet connection is metered (network.internet.state)';
-  assert.equal(roundHold(null, false, metered), metered, 'a background round stops downloading');
-  assert.equal(roundHold(null, true, metered), null, 'a Refresh press still downloads');
-  assert.equal(roundHold('offline', false, null), 'offline', 'held when sent stays held');
-  assert.equal(roundHold(null, false, null), null);
+  h.queue({});
+  await h.drain();
+  assert.deepEqual(h.users, [true, false], 'a round of its own afterwards is a background one');
 });

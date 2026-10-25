@@ -9,7 +9,7 @@
 import { MINUTE_MS } from '../geo/units';
 import { ensureGshhg, gshhgInstalled } from '../geo/gshhg';
 import { siText } from './unittext';
-import { INTERNET_HOLD_RETRY_MS, type DownloadHold } from './internet';
+import type { InternetHold } from './internet';
 
 /** Downloaded-coastline state (status `coastline`, config panel). */
 export interface CoastlineState {
@@ -34,8 +34,6 @@ export class Coastline {
   private run: { promise: Promise<string | null>; signal: AbortSignal } | null = null;
   /** Wakes a start waiting to retry the download. */
   private wake: (() => void) | null = null;
-  /** Ends the held wait early (internetChanged). */
-  private recheck: (() => void) | null = null;
   /** Cancels the download (and its retry wait) on stop. */
   private ctrl: AbortController | null = null;
   /** Cancels a download started from the config panel, on stop. */
@@ -45,7 +43,7 @@ export class Coastline {
     private readonly app: { setPluginStatus: (s: string) => void; setPluginError: (s: string) => void; getDataDirPath: () => string },
     private readonly log: (m: string) => void,
     /** Holds the download at start (internet.ts); the Download button does not wait. */
-    private readonly internet?: DownloadHold
+    private readonly internet?: InternetHold
   ) {}
 
   /** Stop: cancel a running download and its retry wait. */
@@ -59,9 +57,10 @@ export class Coastline {
   /**
    * No coastline configured: download GSHHG (geo/gshhg.ts), trying again
    * every 10 minutes after a failure, until it is in place or the plugin
-   * stops. While the internet state holds downloads (internet.ts) it waits,
-   * looking again every 15 minutes, unless Download is pressed. True when
-   * the coastline is ready and this start is still current.
+   * stops. While the internet state holds downloads (internet.ts) it waits
+   * until the state clears, unless Download is pressed; a download of its
+   * own under way when the state starts holding stops and waits the same
+   * way. True when the coastline is ready and this start is still current.
    */
   async download(dataDir: string, stillCurrent: () => boolean): Promise<boolean> {
     const ctrl = new AbortController();
@@ -70,30 +69,15 @@ export class Coastline {
     let pressed = false;
     for (;;) {
       // Already on disk: nothing to download, so nothing to hold.
-      let held: string | null = null;
-      if (!pressed && !gshhgInstalled(dataDir) && this.internet) {
-        // A Download press during the lookup is a press, not a second download beside this one.
-        const wake = (): void => {
-          pressed = true;
-        };
-        this.wake = wake;
-        try {
-          held = await this.internet.holdNow();
-        } finally {
-          // A newer start (after a stop) may have put its own in place meanwhile.
-          if (this.wake === wake) this.wake = null;
-        }
-        if (pressed) held = null;
-      }
-      if (!current()) return false;
-      this.held = held;
+      const held = !pressed && this.internet && !gshhgInstalled(dataDir) ? this.internet.hold() : null;
       if (held) {
+        this.held = held;
         this.app.setPluginStatus(
           siText(
             `no coastline configured: the GSHHG download ({dataSize:149000000}) waits, ${held}; press Download coastline in the plugin config to download it now`
           )
         );
-        const woke = await this.wait(ctrl.signal, INTERNET_HOLD_RETRY_MS, true);
+        const woke = await this.wait(ctrl.signal, null);
         this.held = null;
         if (woke === 'stopped' || !current()) return false;
         pressed = woke === 'pressed';
@@ -101,13 +85,37 @@ export class Coastline {
       }
       // Values in Signal K base units (siText): the client converts.
       this.app.setPluginStatus(siText('no coastline configured: downloading GSHHG ({dataSize:149000000}, once)'));
-      const shp = await this.fetch(dataDir, ctrl.signal, m => {
-        if (current()) this.app.setPluginStatus(siText(m));
-      });
+      // Not pressed: the state starting to hold stops it (a stop still does too).
+      const dl = new AbortController();
+      const onStop = (): void => dl.abort();
+      ctrl.signal.addEventListener('abort', onStop, { once: true });
+      const internet = this.internet;
+      const unwatch =
+        !pressed && internet
+          ? internet.onChange(() => {
+              if (internet.hold()) dl.abort();
+            })
+          : () => undefined;
+      let shp: string | null;
+      try {
+        shp = await this.fetch(dataDir, dl.signal, m => {
+          if (current()) this.app.setPluginStatus(siText(m));
+        });
+      } finally {
+        unwatch();
+        ctrl.signal.removeEventListener('abort', onStop);
+      }
       if (!current()) return false; // stopped
       if (shp) {
         this.autoPath = shp;
         return true;
+      }
+      if (dl.signal.aborted) {
+        // Stopped by the internet state, not failed: it waits for the state to clear above.
+        this.log(`coastline: the download stops: ${internet?.hold() ?? 'the internet state'}; it starts again once that clears`);
+        this.state.error = null;
+        pressed = false;
+        continue;
       }
       const at = new Date(Date.now() + COASTLINE_RETRY_MS).toISOString().slice(11, 16);
       this.app.setPluginError(
@@ -119,13 +127,11 @@ export class Coastline {
     }
   }
 
-  /** A held download looks at the internet state again at once (internet.ts `watch`). */
-  internetChanged(): void {
-    this.recheck?.();
-  }
-
-  /** Wait `ms`, a Download press (wakes it) or a stop, whichever comes first; `held`: a change of the internet state ends it too, as the timer would. */
-  private wait(signal: AbortSignal, ms: number, held = false): Promise<'timer' | 'pressed' | 'stopped'> {
+  /**
+   * Wait `ms`, a Download press (wakes it) or a stop, whichever comes first. `ms` null: the held wait, which a change
+   * of the internet state ends instead of a timer (the loop looks at it again: cleared, or held for another reason).
+   */
+  private wait(signal: AbortSignal, ms: number | null): Promise<'timer' | 'pressed' | 'stopped' | 'changed'> {
     return new Promise(resolve => {
       // Stopped already (a status callback can stop the plugin): the abort event has passed.
       if (signal.aborted) {
@@ -133,19 +139,19 @@ export class Coastline {
         return;
       }
       const onAbort = (): void => done('stopped');
-      const timer = setTimeout(() => done('timer'), ms);
+      const timer = ms === null ? null : setTimeout(() => done('timer'), ms);
+      const internet = this.internet;
+      const unwatch = ms === null && internet ? internet.onChange(() => done('changed')) : () => undefined;
       const wake = (): void => done('pressed');
-      const done = (v: 'timer' | 'pressed' | 'stopped'): void => {
-        clearTimeout(timer);
+      const done = (v: 'timer' | 'pressed' | 'stopped' | 'changed'): void => {
+        if (timer) clearTimeout(timer);
+        unwatch();
         // One signal serves every wait: the listener must not pile up.
         signal.removeEventListener('abort', onAbort);
         if (this.wake === wake) this.wake = null;
-        if (this.recheck === recheck) this.recheck = null;
         resolve(v);
       };
-      const recheck = (): void => done('timer');
       this.wake = wake;
-      if (held) this.recheck = recheck;
       signal.addEventListener('abort', onAbort, { once: true });
     });
   }

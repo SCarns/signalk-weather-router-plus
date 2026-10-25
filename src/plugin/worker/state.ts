@@ -91,6 +91,8 @@ export interface WorkerState {
   lastOfflineMs: number;
   /** Why background downloads wait now (the main thread's 'internet-hold'), or null (data worker). */
   internetHold: string | null;
+  /** A refresh round the owner did not ask for is under way: the internet state starting to hold stops its decode (data worker). */
+  backgroundRound: boolean;
   /** Tidal-harmonic files that failed to load (data worker). */
   harmonicErrors: string[];
   /** Kills the forecast decode child process (plugin stopped). */

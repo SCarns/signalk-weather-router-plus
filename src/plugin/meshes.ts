@@ -34,7 +34,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { runChildTask } from './childtask';
-import { INTERNET_HOLD_RETRY_MS, type DownloadHold } from './internet';
+import type { InternetHold } from './internet';
 import { DOWNLOAD_PROGRESS_FILE, downloadWorkDir, type MeshDownloadProgress } from './mesharchive';
 
 /** One mesh as the catalogue lists it (s57Work build-mesh.yml, "Write charts/mesh/index.json"). */
@@ -134,8 +134,6 @@ export const DISTRICT_NAMES: Record<string, string> = {
 export const DEFAULT_MESH_CATALOG_URL = 'https://pub-281728c6a69f4f549cf0ec4e83f9fcde.r2.dev/US-ENC/charts/mesh/index.json';
 /** The catalogue is read again this often. */
 export const CATALOG_REFRESH_MS = 24 * 3600 * 1000;
-/** A daily pass looks at the internet state this often while it downloads. */
-export const HOLD_CHECK_MS = 60 * 1000;
 const CATALOG_TIMEOUT_MS = 30_000;
 export const MARKER_FILE = '.wrp-mesh.json';
 /** Meshes downloaded at the same time (the owner's choice, 2026-10-18). */
@@ -444,7 +442,7 @@ export class MeshManager {
     /** A mesh was downloaded or updated and is in place (its rough cuts are rebuilt then: index.ts). */
     private readonly onReady: (name: string) => void = () => undefined,
     /** Holds the daily pass (internet.ts); the panel's buttons do not wait. */
-    private readonly internet?: DownloadHold
+    private readonly internet?: InternetHold
   ) {}
 
   /** Apply a configuration; the next `run` reconciles the store with it. */
@@ -496,10 +494,6 @@ export class MeshManager {
     return true;
   }
 
-  /** How often a daily pass looks at the internet state while it downloads. */
-  protected holdCheckMs = HOLD_CHECK_MS;
-  /** What a change of the internet state does now (internetChanged): look at it during a pass, end a held wait. */
-  private recheck: (() => void) | null = null;
   /** Counts the owner's requests (refresh): a pass with one since the last pass ended is not stopped by the internet state. */
   private ownerAsks = 0;
   /** Owner refreshes still reading the catalogue: their pass has not started yet, but it is theirs. */
@@ -507,9 +501,9 @@ export class MeshManager {
 
   /**
    * Read the catalogue, download what is ticked and missing or stale, delete what is unticked; then again daily.
-   * While the internet state holds downloads (internet.ts) the pass waits, looking again every 15 minutes; a pass
-   * under way when it starts holding is stopped (the downloads resume from their parts later), unless the owner
-   * asked for something meanwhile.
+   * While the internet state holds downloads (internet.ts) the pass waits until it clears; a pass under way when it
+   * starts holding is stopped (the downloads resume from their parts later), unless the owner asked for something
+   * meanwhile.
    */
   run(): void {
     this.stopLoop();
@@ -519,31 +513,31 @@ export class MeshManager {
       let wasHeld: string | null = null;
       let asksSeen = this.ownerAsks;
       while (!signal.aborted) {
-        const held = this.internet ? await this.internet.holdNow() : null;
-        if (signal.aborted) break;
-        if (held && held !== wasHeld) this.log(`catalogue and downloads wait: ${held}`);
-        wasHeld = held;
-        if (!held) {
-          // Joining a pass the owner's refresh started (or is about to, once its catalogue read ends) keeps the count
-          // from before it, so the watcher spares it.
-          if (this.reconciling?.signal !== signal && this.refreshesReading === 0) asksSeen = this.ownerAsks;
-          const internet = this.internet;
-          const look = (): void => {
-            if (!internet) return;
-            void internet.holdNow().then(why => {
-              if (!why || this.ownerAsks !== asksSeen || signal.aborted) return;
-              clearInterval(watch);
+        const held = this.internet?.hold() ?? null;
+        if (held) {
+          if (held !== wasHeld) this.log(`catalogue and downloads wait: ${held}`);
+          wasHeld = held;
+          // No timer: the pass runs as soon as the state clears.
+          await this.internet!.whenClear(signal);
+          continue;
+        }
+        wasHeld = null;
+        // Joining a pass the owner's refresh started (or is about to, once its catalogue read ends) keeps the count
+        // from before it, so it is spared.
+        if (this.reconciling?.signal !== signal && this.refreshesReading === 0) asksSeen = this.ownerAsks;
+        const internet = this.internet;
+        const unwatch = internet
+          ? internet.onChange(() => {
+              if (!internet.hold() || this.ownerAsks !== asksSeen || signal.aborted) return;
+              unwatch();
+              // Stops this pass (its downloads included); the new loop waits for the state to clear.
               this.run();
-            });
-          };
-          const watch = internet?.active ? setInterval(look, this.holdCheckMs) : undefined;
-          this.recheck = look;
-          try {
-            await this.reconcile(signal);
-          } finally {
-            clearInterval(watch);
-            if (this.recheck === look) this.recheck = null;
-          }
+            })
+          : () => undefined;
+        try {
+          await this.reconcile(signal);
+        } finally {
+          unwatch();
         }
         // A stop during the pass has already aborted: no timer then, or it would hold the process a day.
         if (signal.aborted) break;
@@ -553,22 +547,14 @@ export class MeshManager {
             this.timer = null;
             // One signal serves every wait: the listener must not pile up.
             signal.removeEventListener('abort', end);
-            if (this.recheck === end) this.recheck = null;
             resolve();
           };
-          this.timer = setTimeout(end, held ? INTERNET_HOLD_RETRY_MS : CATALOG_REFRESH_MS);
+          this.timer = setTimeout(end, CATALOG_REFRESH_MS);
           signal.addEventListener('abort', end, { once: true });
-          // Held: a change of the internet state ends the wait, as the timer would.
-          if (held) this.recheck = end;
         });
       }
     };
     void loop();
-  }
-
-  /** The internet state changed (internet.ts `watch`): a held pass looks again at once, a running one checks it. */
-  internetChanged(): void {
-    this.recheck?.();
   }
 
   /**

@@ -69,6 +69,7 @@ function state(sent: WorkerToMain[]): WorkerState {
     connectivity: { online: null, since: null, lastOkAt: null, reason: null },
     lastOfflineMs: 0,
     internetHold: null,
+    backgroundRound: false,
     harmonicErrors: [],
     decodeAbort: null,
   };

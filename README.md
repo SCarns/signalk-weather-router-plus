@@ -3027,20 +3027,24 @@ send no notification, nor does a window that ends other than done
 #### Metered or no internet (signalk-internet)
 
 With the [signalk-internet](https://www.npmjs.com/package/@meri-imperiumi/signalk-internet)
-plugin installed and enabled (recommended in the App Store), the plugin
-reads its `network.internet.state` on the vessel. A value left behind by
-a disabled signalk-internet counts for nothing. At start the plugin
-waits for signalk-internet's first state (at most 30 s) before its first
-downloads. While the state is `metered`, `offline` or `captive`, nothing
-is downloaded on its own:
+plugin installed (recommended in the App Store), the plugin follows its
+`network.internet.state` on the vessel with one subscription: it asks for
+nothing, waits for nothing at start and keeps no timers for it. The
+server sends the last state when the subscription starts; at a server
+start the first round may download in the seconds before signalk-internet
+publishes its first state. While the state is `metered`, `offline` or
+`captive`, nothing is downloaded on its own:
 
 - the forecast, current and tide refresh rounds use what is on disk
   (`checks` in `/api/status` says `skipped: the internet connection is
   metered …`), and one runs as soon as the state clears; a round under
-  way when the state turns skips the sources it has not reached yet;
+  way when the state turns skips the sources it has not reached yet, and
+  its forecast decode stops (a SMOC, RTOFS or tide request already under
+  way finishes);
 - the coastline download at first start and the chart meshes' daily
   catalogue read and downloads wait, and start as soon as the state
-  clears; a mesh download under way stops and resumes later;
+  clears; a coastline or mesh download under way stops (a mesh download
+  resumes from its parts later);
 - map tiles are not built ahead of time (`overlay_prebuild.paused` in
   `/api/status`).
 
@@ -3049,7 +3053,10 @@ coastline**, the mesh panel's buttons, routes and departure windows
 (a route with no forecast on disk yet downloads the forecast first),
 and the map and conditions you look at. The plugin status says why it
 waits. Without signalk-internet, or in any other state, downloads run as
-before.
+before. signalk-internet 0.7.1 and older leave their last state behind
+when disabled, and Signal K keeps it until it restarts; that state then
+still holds (clearing it on stop is
+[signalk-internet#4](https://github.com/meri-imperiumi/signalk-internet/pull/4)).
 
 #### OpenAPI
 
