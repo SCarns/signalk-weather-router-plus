@@ -264,6 +264,9 @@ async function refreshForecastInner(
     });
   decoding(0, null);
   st.decodeAbort = new AbortController();
+  // A hold that began while the cycle was looked up found no decode to stop: stop it before it downloads (worker.ts
+  // 'internet-hold'). A cycle fully in the GRIB cache decodes without the network and goes on.
+  if (!resolved.fromCache && held()) st.decodeAbort.abort();
   try {
     // The one-step block lives in the child process; shown in the status while it runs.
     st.decodingBlockBytes = res.needBytes;

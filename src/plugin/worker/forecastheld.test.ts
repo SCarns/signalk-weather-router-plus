@@ -88,7 +88,8 @@ test('a held round with no forecast yet sends no refresh-error; an offline unhel
  * sources after it are, not failed. The child is aborted as soon as it is forked; its requests would go to a proxy on
  * a closed port anyway.
  */
-async function decodeStopped(held: () => string | null): Promise<WorkerToMain[]> {
+/** `stop`: called once the decode has started, before it is aborted (the state turning then); none: no abort by hand. */
+async function decodeStopped(held: () => string | null, stop?: () => void): Promise<WorkerToMain[]> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-held-'));
   const env = { proxy: process.env.HTTPS_PROXY, use: process.env.NODE_USE_ENV_PROXY };
   process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
@@ -105,10 +106,17 @@ async function decodeStopped(held: () => string | null): Promise<WorkerToMain[]>
       findLatestCycle: async (horizonS: number) => latestExpectedCycle(new Date(), horizonS),
     } as unknown as EcmwfClient;
     const round = refreshForecast(st, false, null, held);
-    for (let i = 0; i < 500 && !st.decodeAbort; i++) await new Promise(r => setTimeout(r, 2));
-    assert.ok(st.decodeAbort, 'the decode started');
-    st.decodeAbort.abort();
+    if (stop) {
+      for (let i = 0; i < 500 && !st.decodeAbort; i++) await new Promise(r => setTimeout(r, 2));
+      assert.ok(st.decodeAbort, 'the decode started');
+      stop();
+      st.decodeAbort.abort();
+    }
+    // A decode still running after 10 s (one the hold missed) is killed rather than left downloading, then reported.
+    const ended = await Promise.race([round.then(() => true), new Promise<false>(r => setTimeout(() => r(false), 10_000))]);
+    st.decodeAbort?.abort();
     await round;
+    assert.ok(ended, 'the round ended on its own');
     assert.equal(st.decodeAbort, null);
     return sent;
   } finally {
@@ -122,13 +130,30 @@ async function decodeStopped(held: () => string | null): Promise<WorkerToMain[]>
 
 test('a decode the internet state stops is skipped, not failed; one stopped otherwise is still an error', async () => {
   const metered = 'the internet connection is metered (network.internet.state)';
-  const sent = await decodeStopped(() => metered);
+  let holding: string | null = null;
+  const sent = await decodeStopped(
+    () => holding,
+    () => (holding = metered)
+  );
   assert.equal(sent.filter(m => m.type === 'refresh-error').length, 0, 'no error for the page');
   const check = sent.find(m => m.type === 'forecast-check');
   assert.ok(check && check.type === 'forecast-check');
   assert.equal(check.check.outcome, 'could-not-check');
   assert.equal(check.check.reason, `skipped: ${metered}`);
 
-  const sent2 = await decodeStopped(() => null);
+  const sent2 = await decodeStopped(
+    () => null,
+    () => undefined
+  );
   assert.equal(sent2.filter(m => m.type === 'refresh-error').length, 1, 'not held: the stop is reported as before');
+});
+
+test('a hold that began while the cycle was looked up stops the decode before it downloads', async () => {
+  const metered = 'the internet connection is metered (network.internet.state)';
+  // The round passed its first look at the state; the hold came while resolveCycle ran, before st.decodeAbort existed.
+  const sent = await decodeStopped(() => metered);
+  assert.equal(sent.filter(m => m.type === 'refresh-error').length, 0);
+  const check = sent.find(m => m.type === 'forecast-check');
+  assert.ok(check && check.type === 'forecast-check');
+  assert.equal(check.check.reason, `skipped: ${metered}`);
 });
