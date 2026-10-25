@@ -63,6 +63,7 @@ export class InternetGate implements DownloadHold {
   private enabled = false;
   private checkedAt = 0;
   private checking: Promise<void> | null = null;
+  private firstState: Promise<void> | null = null;
   /** At start: waiting for signalk-internet's first state (notStartedReason). */
   settling = false;
 
@@ -101,21 +102,27 @@ export class InternetGate implements DownloadHold {
   /**
    * Before the first downloads: with signalk-internet enabled but no state
    * published yet (it starts beside this plugin), wait for one, up to
-   * FIRST_STATE_WAIT_MS. False when `current` turns false meanwhile.
+   * FIRST_STATE_WAIT_MS. One wait serves every caller; later calls return
+   * at once. False when `current` is false by then.
    */
   async settle(current: () => boolean, waitMs = FIRST_STATE_WAIT_MS, stepMs = FIRST_STATE_STEP_MS): Promise<boolean> {
+    this.firstState ??= this.waitFirstState(waitMs, stepMs);
+    await this.firstState;
+    return current();
+  }
+
+  private async waitFirstState(waitMs: number, stepMs: number): Promise<void> {
     await this.check();
     const until = Date.now() + waitMs;
-    this.settling = this.enabled && internetState(p => this.app.getSelfPath?.(p)) === undefined;
+    const missing = (): boolean => internetState(p => this.app.getSelfPath?.(p)) === undefined;
+    this.settling = this.enabled && missing();
     try {
       while (this.settling && Date.now() < until) {
         await new Promise(r => setTimeout(r, stepMs));
-        if (!current()) return false;
-        this.settling = internetState(p => this.app.getSelfPath?.(p)) === undefined;
+        this.settling = missing();
       }
     } finally {
       this.settling = false;
     }
-    return current();
   }
 }

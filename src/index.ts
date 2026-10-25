@@ -591,7 +591,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
    * (by the extents it keeps on disk).
    */
   function checkPosition(): void {
-    if (stopped || !config) return;
+    if (stopped || !config || internet.settling) return;
     if (refreshHeld && !internetHeld()) {
       log('the internet connection is usable again; refreshing');
       requestRefresh(false);
@@ -1067,7 +1067,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           }),
         layerAvailable: layer => charts.layerAvailable(layer),
         // Held by the internet state too: the builders load SMOC and tide areas they lack from the network.
-        busy: () => !!jobs?.runningId || pool.pendingCount > 0 || internetHeld() !== null,
+        busy: () => !!jobs?.runningId || pool.pendingCount > 0 || internet.settling || internetHeld() !== null,
         log,
         error: m => app.error(m),
       }
@@ -1100,20 +1100,6 @@ export = function plugin(app: SkApp): SignalKPlugin {
     const dataDir = app.getDataDirPath();
     // Before the first download, so a backup taken meanwhile already skips them.
     for (const p of tagCacheDirs(dataDir)) app.error(`cache directory tag: ${p}`);
-    // signalk-internet starts beside this plugin: its first state decides whether the first downloads run. Not awaited.
-    void internet
-      .settle(() => gen === startGen && !stopped)
-      .then(ok => {
-        if (ok) startData(options, gen, dataDir);
-      })
-      .catch(err => {
-        if (gen === startGen && !stopped) app.setPluginError(`start failed: ${(err as Error).message}`);
-      });
-  }
-
-  /** The coastline (configured, or downloaded first), then the services. */
-  function startData(options: PluginConfig, gen: number, dataDir: string): void {
-    if (!config) return;
     if (config.landShapefiles.length > 0) {
       // A configured coastline must be there: it is never replaced by a download.
       const bad = unreadableCoastlines(config.landShapefiles);
@@ -1127,12 +1113,17 @@ export = function plugin(app: SkApp): SignalKPlugin {
       return;
     }
     // None configured: download GSHHG (minutes), then start. Not awaited, so the server's start-up is not held up.
-    void coast
-      .download(dataDir, () => gen === startGen && !stopped)
+    // signalk-internet starts beside this plugin: its first state decides whether a download runs.
+    const current = (): boolean => gen === startGen && !stopped;
+    void (gshhgInstalled(dataDir) ? Promise.resolve(true) : internet.settle(current))
+      .then(ok => (ok ? coast.download(dataDir, current) : false))
       .then(ok => {
-        if (!ok || !settings || gen !== startGen || stopped) return;
+        if (!ok || !settings || !current()) return;
         config = resolve(options, settings.values);
         startServices(dataDir);
+      })
+      .catch(err => {
+        if (current()) app.setPluginError(`start failed: ${(err as Error).message}`);
       });
   }
 
@@ -1149,7 +1140,6 @@ export = function plugin(app: SkApp): SignalKPlugin {
       config.mesh.preferLocal,
       config.mesh.preferDownload
     );
-    meshes.run();
     tiles = new TileService(
       new TileStore({ root: path.join(dataDir, 'overlay-tiles'), capBytes: config.overlayCache.diskCapBytes, log }),
       (kind, args, signal) => pool.queryFull(kind, args, signal)
@@ -1186,7 +1176,15 @@ export = function plugin(app: SkApp): SignalKPlugin {
       pool.start(role);
       pool.post(role, { type: 'init', role, config, cacheDir: dataDir });
     }
-    requestRefresh(false);
+    // The first downloads wait for signalk-internet's first state (internet.ts); the services answer meanwhile.
+    const gen = startGen;
+    void internet
+      .settle(() => gen === startGen && !stopped)
+      .then(ok => {
+        if (!ok) return;
+        meshes.run();
+        requestRefresh(false);
+      });
     refreshTimer = setInterval(() => requestRefresh(false), config.forecast.refreshIntervalS * 1000);
     positionTimer = setInterval(checkPosition, POSITION_CHECK_MS);
     updateStatus();

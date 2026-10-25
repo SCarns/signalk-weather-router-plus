@@ -78,3 +78,14 @@ test('InternetGate.settle: waits for the first state while signalk-internet is e
   current = false;
   assert.equal(await stopped, false);
 });
+
+test('InternetGate.settle: one wait serves every caller; a later caller does not wait again', async () => {
+  const silent = new InternetGate(gateApp([{ id: INTERNET_PLUGIN_ID, enabled: true }], { value: undefined }));
+  const t0 = Date.now();
+  const [a, b] = await Promise.all([silent.settle(() => true, 100, 10), silent.settle(() => true, 100, 10)]);
+  assert.deepEqual([a, b], [true, true]);
+  const t1 = Date.now();
+  assert.ok(t1 - t0 < 300, 'the two callers shared one wait');
+  assert.equal(await silent.settle(() => true, 100, 10), true);
+  assert.ok(Date.now() - t1 < 50, 'after the first wait, at once');
+});
