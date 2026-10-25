@@ -3,7 +3,9 @@
  * (worker.ts): a refresh asked for while one waits to start joins it (force
  * if either asked; held only when every request was: a request that may
  * download makes the round download); one asked for while one runs is done
- * once after it.
+ * once after it. A round the owner asked for (Refresh) downloads whatever
+ * the internet state; any other round skips the sources it has not reached
+ * once the state starts holding (roundHold).
  *
  * The vessel position a refresh was sent with is taken at once (queries see
  * it) and put back when the refresh starts: a settings change queued ahead
@@ -19,12 +21,20 @@ export interface RefreshRequest {
   position?: VesselPosition | null;
   /** Why this round must not download (internet.ts), null or absent when it may. */
   hold?: string | null;
+  /** The owner asked (Refresh). */
+  user?: boolean;
 }
 
 interface Queued {
   force: boolean;
   position?: VesselPosition | null;
   hold: string | null;
+  user: boolean;
+}
+
+/** Why a round must not download now: held when sent, or (unless the owner asked) the internet state since. */
+export function roundHold(hold: string | null, user: boolean, live: string | null): string | null {
+  return hold ?? (user ? null : live);
 }
 
 export function refreshQueue(deps: {
@@ -32,7 +42,7 @@ export function refreshQueue(deps: {
   inBackground: (fn: () => Promise<void>) => void;
   setPosition: (pos: VesselPosition | null) => void;
   /** One refresh round. */
-  run: (force: boolean, hold: string | null) => Promise<void>;
+  run: (force: boolean, hold: string | null, user: boolean) => Promise<void>;
 }): (msg: RefreshRequest) => void {
   let queued: Queued | null = null;
   return msg => {
@@ -41,14 +51,15 @@ export function refreshQueue(deps: {
       queued.force ||= msg.force ?? false;
       if (msg.position !== undefined) queued.position = msg.position;
       queued.hold = queued.hold === null ? null : (msg.hold ?? null);
+      queued.user ||= msg.user ?? false;
       return;
     }
-    const q: Queued = { force: msg.force ?? false, position: msg.position, hold: msg.hold ?? null };
+    const q: Queued = { force: msg.force ?? false, position: msg.position, hold: msg.hold ?? null, user: msg.user ?? false };
     queued = q;
     deps.inBackground(async () => {
       queued = null;
       if (q.position !== undefined) deps.setPosition(q.position);
-      await deps.run(q.force, q.hold);
+      await deps.run(q.force, q.hold, q.user);
     });
   };
 }

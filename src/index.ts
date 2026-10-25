@@ -178,6 +178,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let pendingRefresh: { force: boolean; user: boolean } | null = null;
   /** The last refresh round was held by the internet state (internet.ts): one runs as soon as it clears (checkPosition). */
   let refreshHeld = false;
+  /** The internet hold the data worker was last told ('internet-hold'); undefined: not told since it started. */
+  let holdSent: string | null | undefined;
   /** Map overlay tiles on disk (null before start). */
   let tiles: TileService | null = null;
   /** Tiles built ahead of time (null before start or when off). */
@@ -580,7 +582,24 @@ export = function plugin(app: SkApp): SignalKPlugin {
     if (hold && !refreshHeld) log(`forecast and currents: ${hold}; using what is on disk until it is online again`);
     // A Refresh press leaves it: pressed while offline it fails, and the held round must still run once online.
     if (!user) refreshHeld = hold !== null;
-    pool.post('data', { type: 'refresh', force, position: refreshPosition, hold });
+    syncHold();
+    pool.post('data', { type: 'refresh', force, position: refreshPosition, hold, user });
+  }
+
+  /**
+   * Tell the data worker when the internet state starts or stops holding: a
+   * background round under way then skips the sources it has not reached
+   * (a Refresh press still downloads), and one runs again once it clears.
+   */
+  function syncHold(): void {
+    if (!pool.ready('data')) return;
+    const hold = internetHeld();
+    if (hold === holdSent) return;
+    if (hold && holdSent !== undefined) log(`forecast and currents: ${hold}; a round under way stops downloading`);
+    // Whatever ran meanwhile (a Refresh press that failed offline included), one round runs once it clears.
+    if (hold) refreshHeld = true;
+    holdSent = hold;
+    pool.post('data', { type: 'internet-hold', hold });
   }
 
   /**
@@ -592,6 +611,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
    */
   function checkPosition(): void {
     if (stopped || !config || internet.settling) return;
+    syncHold();
     if (refreshHeld && !internetHeld()) {
       log('the internet connection is usable again; refreshing');
       requestRefresh(false);
@@ -803,6 +823,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
         log(`${role} worker ready`);
         // A (re)started route worker learns where the decoded run is.
         if (role === 'route') for (const m of sharedDataMessages()) pool.post('route', m);
+        // A (re)started data worker has not been told the internet hold.
+        if (role === 'data') holdSent = undefined;
         if (role === 'data' && pendingRefresh) {
           const { force, user } = pendingRefresh;
           pendingRefresh = null;
@@ -1205,6 +1227,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     refreshPosition = null;
     positionRefreshFor = null;
     refreshHeld = false;
+    holdSent = undefined;
     pool.stopAll();
     pool.rejectPending('plugin stopped');
     // The windows first: failing the running job must not start a window's next departure.

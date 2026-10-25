@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { VesselPosition } from '../protocol';
-import { refreshQueue } from './refreshqueue';
+import { refreshQueue, roundHold } from './refreshqueue';
 
 /** `runGate`: each refresh run waits on it (a run in progress). */
 function harness(runGate?: Promise<void>): {
@@ -17,24 +17,27 @@ function harness(runGate?: Promise<void>): {
   setPos: (p: VesselPosition | null) => void;
   runs: { force: boolean; pos: VesselPosition | null }[];
   holds: (string | null)[];
+  users: boolean[];
 } {
   let chain: Promise<void> = Promise.resolve();
   let vesselPos: VesselPosition | null = null;
   const runs: { force: boolean; pos: VesselPosition | null }[] = [];
   const holds: (string | null)[] = [];
+  const users: boolean[] = [];
   const background = (fn: () => Promise<void>): void => {
     chain = chain.then(fn);
   };
   const queue = refreshQueue({
     inBackground: background,
     setPosition: p => (vesselPos = p),
-    run: async (force, hold) => {
+    run: async (force, hold, user) => {
       runs.push({ force, pos: vesselPos });
       holds.push(hold);
+      users.push(user);
       await runGate;
     },
   });
-  return { queue, background, drain: () => chain, pos: () => vesselPos, setPos: p => (vesselPos = p), runs, holds };
+  return { queue, background, drain: () => chain, pos: () => vesselPos, setPos: p => (vesselPos = p), runs, holds, users };
 }
 
 const OLD = { lat: 41.6, lon: -70.7 };
@@ -104,4 +107,21 @@ test('a joined round is held only when every request was held; one that may down
   release2();
   await h.drain();
   assert.deepEqual(h.holds, ['offline', null], 'the Refresh press among them downloads');
+});
+
+test("a joined round is the owner's when any request was; only a background round follows the internet state once it starts holding", async () => {
+  const h = harness();
+  let release!: () => void;
+  const gate = new Promise<void>(r => (release = r));
+  h.background(() => gate);
+  h.queue({});
+  h.queue({ user: true });
+  release();
+  await h.drain();
+  assert.deepEqual(h.users, [true]);
+  const metered = 'the internet connection is metered (network.internet.state)';
+  assert.equal(roundHold(null, false, metered), metered, 'a background round stops downloading');
+  assert.equal(roundHold(null, true, metered), null, 'a Refresh press still downloads');
+  assert.equal(roundHold('offline', false, null), 'offline', 'held when sent stays held');
+  assert.equal(roundHold(null, false, null), null);
 });

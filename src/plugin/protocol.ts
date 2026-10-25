@@ -283,8 +283,11 @@ export type MainToWorker =
    * data worker: check ECMWF/NOMADS/Copernicus and reload the forecast and currents; route worker: reload RTOFS from the disk cache.
    * `position`: the vessel's position (Signal K navigation.position), centre of the SMOC resident area; null when unknown.
    * `hold`: why this round must not download (plugin/internet.ts); the sources answer from the disk cache.
+   * `user`: the owner asked (Refresh): the round downloads whatever the internet state.
    */
-  | { type: 'refresh'; force?: boolean; position?: VesselPosition | null; hold?: string | null }
+  | { type: 'refresh'; force?: boolean; position?: VesselPosition | null; hold?: string | null; user?: boolean }
+  /** data worker: why background downloads wait now, or null (plugin/internet.ts); a background round under way skips the sources it has not reached. */
+  | { type: 'internet-hold'; hold: string | null }
   /** route worker: adopt the data worker's SMOC run and resident area (shared memory, relayed by the main thread). */
   | { type: 'smoc'; smoc: SerializedSmoc | null }
   /** The data worker's RTOFS products (SharedArrayBuffer views: relaying shares, not copies). */

@@ -89,6 +89,8 @@ export interface WorkerState {
   connectivity: Connectivity;
   /** When a request last found no connection (ms; 0 = never): a refresh round stops asking servers after it. */
   lastOfflineMs: number;
+  /** Why background downloads wait now (the main thread's 'internet-hold'), or null (data worker). */
+  internetHold: string | null;
   /** Tidal-harmonic files that failed to load (data worker). */
   harmonicErrors: string[];
   /** Kills the forecast decode child process (plugin stopped). */
