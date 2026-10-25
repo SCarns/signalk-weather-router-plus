@@ -24,6 +24,7 @@ import {
   readMarker,
   readyMeshDirs,
   type CatalogMesh,
+  type MeshRow,
 } from './meshes';
 import { downloadWorkDir } from './mesharchive';
 import { tarOf, zstd } from './tarfixture';
@@ -860,5 +861,82 @@ test('MeshManager.run: a refresh whose catalogue read is still in flight when th
     close();
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test('MeshManager.run: a refresh pressed before the daily loop starts keeps its catalogue read and its pass', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshsrv-'));
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshstore-'));
+  publish(root, '2026-10-09T06:43:40Z', 500);
+  let releaseCatalog!: () => void;
+  const catalogGate = new Promise<void>(r => (releaseCatalog = r));
+  let reads = 0;
+  const { url, close } = await serve(root, undefined, () => (++reads === 1 ? catalogGate : Promise.resolve()));
+  const mgr = new MeshManager(
+    () => undefined,
+    () => undefined,
+    { active: false, holdNow: async () => null }
+  );
+  try {
+    mgr.configure(url + 'charts/mesh/index.json', ['01CGD'], store);
+    const asked = mgr.refresh();
+    for (let i = 0; i < 200 && reads < 1; i++) await new Promise(r => setTimeout(r, 10));
+    assert.equal(reads, 1, 'the refresh reads the catalogue');
+    mgr.run();
+    releaseCatalog();
+    await asked;
+    assert.equal(mgr.status().catalog_error, null, 'the read was not aborted');
+    const ready = (): boolean => mgr.status().meshes.find(r => r.name === '01CGD')?.state === 'ready';
+    for (let i = 0; i < 200 && !ready(); i++) await new Promise(r => setTimeout(r, 10));
+    assert.ok(ready());
+    // The loop's own pass follows the refresh's: let it end before the files go.
+    const passes = mgr as unknown as { reconciling: { done: Promise<void> } | null };
+    while (passes.reconciling) await passes.reconciling.done.catch(() => undefined);
+  } finally {
+    releaseCatalog();
+    mgr.stop();
+    close();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test('MeshManager: a refresh still reading the catalogue configured before is not shared with a pass for the new one', async () => {
+  const oldRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshsrv-'));
+  const newRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshsrv-'));
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshstore-'));
+  publish(oldRoot, '2026-10-01T06:43:40Z', 500);
+  publish(newRoot, '2026-10-09T06:43:40Z', 500);
+  let releaseOld!: () => void;
+  const oldGate = new Promise<void>(r => (releaseOld = r));
+  const oldHits = { catalog: 0 };
+  const oldSrv = await serve(oldRoot, undefined, () => oldGate, oldHits);
+  const newSrv = await serve(newRoot);
+  const mgr = new MeshManager(
+    () => undefined,
+    () => undefined,
+    { active: false, holdNow: async () => null }
+  );
+  try {
+    mgr.configure(oldSrv.url + 'charts/mesh/index.json', [], store);
+    const asked = mgr.refresh();
+    for (let i = 0; i < 200 && oldHits.catalog < 1; i++) await new Promise(r => setTimeout(r, 10));
+    assert.equal(oldHits.catalog, 1, 'the refresh reads the old catalogue');
+    mgr.configure(newSrv.url + 'charts/mesh/index.json', ['01CGD'], store);
+    mgr.run();
+    const row = (): MeshRow | undefined => mgr.status().meshes.find(r => r.name === '01CGD');
+    for (let i = 0; i < 200 && row()?.state !== 'ready'; i++) await new Promise(r => setTimeout(r, 10));
+    releaseOld();
+    await asked;
+    assert.equal(row()?.state, 'ready');
+    assert.equal(row()?.catalog_build_date, '2026-10-09T06:43:40Z', 'the new catalogue is the one used');
+    const passes = mgr as unknown as { reconciling: { done: Promise<void> } | null };
+    while (passes.reconciling) await passes.reconciling.done.catch(() => undefined);
+  } finally {
+    releaseOld();
+    mgr.stop();
+    oldSrv.close();
+    newSrv.close();
+    for (const d of [oldRoot, newRoot, store]) fs.rmSync(d, { recursive: true, force: true });
   }
 });

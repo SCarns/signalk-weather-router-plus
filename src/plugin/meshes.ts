@@ -435,7 +435,7 @@ export class MeshManager {
    * of a newer one's. Its signal is kept so a read aborted by `stop` is not
    * shared with the next `run`.
    */
-  private catalogRead: { signal: AbortSignal; done: Promise<void> } | null = null;
+  private catalogRead: { signal: AbortSignal; url: string; done: Promise<void> } | null = null;
   /** Counts catalogue reads; a read superseded by a newer one writes nothing. */
   private catalogSeq = 0;
 
@@ -510,7 +510,7 @@ export class MeshManager {
    * asked for something meanwhile.
    */
   run(): void {
-    this.stop();
+    this.stopLoop();
     this.ctrl = new AbortController();
     const loop = async (): Promise<void> => {
       const signal = this.ctrl!.signal;
@@ -531,7 +531,6 @@ export class MeshManager {
                 void internet.holdNow().then(why => {
                   if (!why || this.ownerAsks !== asksSeen || signal.aborted) return;
                   clearInterval(watch);
-                  this.stop();
                   this.run();
                 });
               }, this.holdCheckMs)
@@ -593,10 +592,15 @@ export class MeshManager {
   }
 
   stop(): void {
-    this.ctrl?.abort();
-    this.ctrl = null;
+    this.stopLoop();
     this.refreshCtrl?.abort();
     this.refreshCtrl = null;
+  }
+
+  /** The daily loop only: a refresh pressed before `run` (its own controller) carries on. */
+  private stopLoop(): void {
+    this.ctrl?.abort();
+    this.ctrl = null;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
@@ -693,18 +697,20 @@ export class MeshManager {
    */
   private readCatalog(signal: AbortSignal): Promise<void> {
     const active = this.catalogRead;
-    if (active && !active.signal.aborted) return active.done;
-    const done = this.fetchCatalog(signal).finally(() => {
+    // A read of the catalogue configured before (a refresh pressed before `configure`) is not shared: the newer read wins.
+    if (active && !active.signal.aborted && active.url === this.catalogUrl) return active.done;
+    const url = this.catalogUrl;
+    const done = this.fetchCatalog(signal, url).finally(() => {
       if (this.catalogRead?.done === done) this.catalogRead = null;
     });
-    this.catalogRead = { signal, done };
+    this.catalogRead = { signal, url, done };
     return done;
   }
 
-  private async fetchCatalog(signal: AbortSignal): Promise<void> {
+  private async fetchCatalog(signal: AbortSignal, url: string): Promise<void> {
     const seq = ++this.catalogSeq;
     try {
-      const res = await fetch(this.catalogUrl, { signal: AbortSignal.any([signal, AbortSignal.timeout(CATALOG_TIMEOUT_MS)]) });
+      const res = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(CATALOG_TIMEOUT_MS)]) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const c = (await res.json()) as Catalog;
       if (!c || !Array.isArray(c.meshes)) throw new Error('not a mesh catalogue (no meshes[])');
@@ -725,8 +731,8 @@ export class MeshManager {
       });
       // A name with a usable row is served by it, whether an unusable row of the same name comes before or after.
       for (const m of meshes) problems.delete(m.name);
-      for (const [n, p] of problems) this.log(`mesh catalogue ${this.catalogUrl}: ${n}: unusable entry (${p}); not downloaded`);
-      for (const u of unnamed) this.log(`mesh catalogue ${this.catalogUrl}: ${u}; skipped`);
+      for (const [n, p] of problems) this.log(`mesh catalogue ${url}: ${n}: unusable entry (${p}); not downloaded`);
+      for (const u of unnamed) this.log(`mesh catalogue ${url}: ${u}; skipped`);
       this.catalog = { ...c, meshes };
       this.catalogProblems = problems;
       this.catalogUnnamed = unnamed;
@@ -734,7 +740,7 @@ export class MeshManager {
     } catch (err) {
       if (seq !== this.catalogSeq) return;
       this.catalogError = (err as Error).message;
-      this.log(`mesh catalogue ${this.catalogUrl}: ${this.catalogError}`);
+      this.log(`mesh catalogue ${url}: ${this.catalogError}`);
     }
   }
 
