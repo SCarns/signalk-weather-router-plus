@@ -113,7 +113,10 @@ async function decodeStopped(held: () => string | null, stop?: () => void): Prom
       st.decodeAbort.abort();
     }
     // A decode still running after 10 s (one the hold missed) is killed rather than left downloading, then reported.
-    const ended = await Promise.race([round.then(() => true), new Promise<false>(r => setTimeout(() => r(false), 10_000))]);
+    let timer: NodeJS.Timeout | undefined;
+    const ended = await Promise.race([round.then(() => true), new Promise<false>(r => (timer = setTimeout(() => r(false), 10_000)))]);
+    // Cleared, or the timer keeps the test process alive for its 10 s.
+    clearTimeout(timer);
     st.decodeAbort?.abort();
     await round;
     assert.ok(ended, 'the round ended on its own');
