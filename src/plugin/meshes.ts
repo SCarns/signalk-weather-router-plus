@@ -500,6 +500,8 @@ export class MeshManager {
   protected holdCheckMs = HOLD_CHECK_MS;
   /** Counts the owner's requests (refresh): a pass with one since the last pass ended is not stopped by the internet state. */
   private ownerAsks = 0;
+  /** Owner refreshes still reading the catalogue: their pass has not started yet, but it is theirs. */
+  private refreshesReading = 0;
 
   /**
    * Read the catalogue, download what is ticked and missing or stale, delete what is unticked; then again daily.
@@ -520,8 +522,9 @@ export class MeshManager {
         if (held && held !== wasHeld) this.log(`catalogue and downloads wait: ${held}`);
         wasHeld = held;
         if (!held) {
-          // Joining a pass the owner's refresh started keeps the count from before it, so the watcher spares it.
-          if (this.reconciling?.signal !== signal) asksSeen = this.ownerAsks;
+          // Joining a pass the owner's refresh started (or is about to, once its catalogue read ends) keeps the count
+          // from before it, so the watcher spares it.
+          if (this.reconciling?.signal !== signal && this.refreshesReading === 0) asksSeen = this.ownerAsks;
           const internet = this.internet;
           const watch = internet?.active
             ? setInterval(() => {
@@ -579,9 +582,14 @@ export class MeshManager {
     // A running pass on this same signal is shared, not followed by one of its own, and may be past the name
     // just changed: it runs once more when it ends. (A refresh before `run` gets a pass of its own anyway.)
     if (this.reconciling && this.reconciling.signal === signal) this.again = true;
-    await this.readCatalog(signal);
-    if (signal.aborted) return;
-    void this.reconcile(signal).catch(() => undefined);
+    this.refreshesReading++;
+    try {
+      await this.readCatalog(signal);
+      if (signal.aborted) return;
+      void this.reconcile(signal).catch(() => undefined);
+    } finally {
+      this.refreshesReading--;
+    }
   }
 
   stop(): void {

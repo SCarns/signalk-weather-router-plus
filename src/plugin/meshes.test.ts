@@ -812,3 +812,53 @@ test('MeshManager.run: a daily pass stops when the internet state starts holding
     fs.rmSync(store, { recursive: true, force: true });
   }
 });
+
+test('MeshManager.run: a refresh whose catalogue read is still in flight when the daily pass starts keeps that pass running when the state holds', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshsrv-'));
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshstore-'));
+  publish(root, '2026-10-09T06:43:40Z', 500);
+  let releaseArchive!: () => void;
+  const archiveGate = new Promise<void>(r => (releaseArchive = r));
+  let releaseCatalog!: () => void;
+  const catalogGate = new Promise<void>(r => (releaseCatalog = r));
+  let archives = 0;
+  const { url, close } = await serve(
+    root,
+    () => (++archives === 1 ? archiveGate : Promise.resolve()),
+    () => catalogGate
+  );
+  let state: string | null = null;
+  let answerFirst!: (v: string | null) => void;
+  const firstHold = new Promise<string | null>(r => (answerFirst = r));
+  let holds = 0;
+  const mgr = new MeshManager(
+    () => undefined,
+    () => undefined,
+    { active: true, holdNow: () => (++holds === 1 ? firstHold : Promise.resolve(state)) }
+  );
+  (mgr as unknown as { holdCheckMs: number }).holdCheckMs = 20;
+  try {
+    mgr.configure(url + 'charts/mesh/index.json', ['01CGD'], store);
+    mgr.run();
+    const asked = mgr.refresh();
+    await new Promise(r => setTimeout(r, 50));
+    answerFirst(null);
+    await new Promise(r => setTimeout(r, 50));
+    releaseCatalog();
+    await asked;
+    while (archives < 1) await new Promise(r => setTimeout(r, 10));
+    state = 'the internet connection is metered (network.internet.state)';
+    await new Promise(r => setTimeout(r, 200));
+    releaseArchive();
+    const ready = (): boolean => mgr.status().meshes.find(r => r.name === '01CGD')!.state === 'ready';
+    for (let i = 0; i < 100 && !ready(); i++) await new Promise(r => setTimeout(r, 10));
+    assert.ok(ready(), 'the owner asked: the pass was not stopped');
+  } finally {
+    releaseArchive();
+    releaseCatalog();
+    mgr.stop();
+    close();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
