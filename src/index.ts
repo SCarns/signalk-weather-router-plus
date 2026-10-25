@@ -610,6 +610,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
   function onInternetChange(): void {
     if (stopped || !config) return;
     syncHold();
+    // A route waiting for the first forecast is the owner asking: the background round the hold stops (its decode
+    // included) must not leave it waiting until the state clears. The queue runs this round after that one.
+    if (waitingForForecast && internetHeld()) requestRefresh(false, true);
     if (refreshHeld && !internetHeld()) {
       log('the internet connection is usable again; refreshing');
       requestRefresh(false);
