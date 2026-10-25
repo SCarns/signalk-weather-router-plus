@@ -64,6 +64,7 @@ export class InternetGate implements DownloadHold {
   private checkedAt = 0;
   private checking: Promise<void> | null = null;
   private firstState: Promise<void> | null = null;
+  private round = 0;
   /** At start: waiting for signalk-internet's first state (notStartedReason). */
   settling = false;
 
@@ -106,23 +107,37 @@ export class InternetGate implements DownloadHold {
    * at once. False when `current` is false by then.
    */
   async settle(current: () => boolean, waitMs = FIRST_STATE_WAIT_MS, stepMs = FIRST_STATE_STEP_MS): Promise<boolean> {
-    this.firstState ??= this.waitFirstState(waitMs, stepMs);
+    if (!this.firstState) {
+      const round = ++this.round;
+      this.firstState = this.waitFirstState(round, waitMs, stepMs);
+    }
     await this.firstState;
     return current();
   }
 
-  private async waitFirstState(waitMs: number, stepMs: number): Promise<void> {
+  /** Stop: the next start waits for a first state again (signalk-internet may have been enabled meanwhile). */
+  reset(): void {
+    this.firstState = null;
+    this.round++;
+    this.settling = false;
+  }
+
+  /** `round`: a reset since ends this wait, so it no longer speaks for `settling`. */
+  private async waitFirstState(round: number, waitMs: number, stepMs: number): Promise<void> {
     await this.check();
     const until = Date.now() + waitMs;
-    const missing = (): boolean => internetState(p => this.app.getSelfPath?.(p)) === undefined;
+    const mine = (): boolean => round === this.round;
+    const missing = (): boolean => internetState(p => this.app.getSelfPath?.(p)) == null;
+    if (!mine()) return;
     this.settling = this.enabled && missing();
     try {
       while (this.settling && Date.now() < until) {
         await new Promise(r => setTimeout(r, stepMs));
+        if (!mine()) return;
         this.settling = missing();
       }
     } finally {
-      this.settling = false;
+      if (mine()) this.settling = false;
     }
   }
 }

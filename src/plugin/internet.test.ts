@@ -89,3 +89,14 @@ test('InternetGate.settle: one wait serves every caller; a later caller does not
   assert.equal(await silent.settle(() => true, 100, 10), true);
   assert.ok(Date.now() - t1 < 50, 'after the first wait, at once');
 });
+
+test('InternetGate.reset: the next start waits for a first state again', async () => {
+  const plugins = [{ id: INTERNET_PLUGIN_ID, enabled: false }];
+  const gate = new InternetGate(gateApp(plugins, { value: undefined }));
+  assert.equal(await gate.settle(() => true, 1000, 10), true, 'without signalk-internet: at once');
+  plugins[0].enabled = true;
+  gate.reset();
+  const t0 = Date.now();
+  await gate.settle(() => true, 100, 10);
+  assert.ok(Date.now() - t0 >= 90, 'enabled since: the new start waits for its first state');
+});
