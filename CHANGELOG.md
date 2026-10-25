@@ -45,6 +45,20 @@ uses [Semantic Versioning](https://semver.org/).
   and reads them itself, as the chart-mesh process already did. Signal K
   grew by 0.4 MB when the builders started, and the tiles are byte for byte
   the same.
+- **The coastline is read in 0.5° tiles, never a whole continent.** GSHHG
+  keeps each continent as one record: North America is 14.0 MB, Eurasia
+  18.6 MB. Any land question near a coast decoded the whole record and
+  dropped it: the map's land pictures (twice each), the land point test,
+  every route's land mask and every snapped start or end. On brain, a map
+  area nobody had viewed yet added 80 MB that Signal K kept. At start the
+  plugin now cuts the coastline into tiles once per coastline, in its own
+  process: 13.6 s for GSHHG full resolution on brain, 188 MB on disk in
+  `coast-tiles/`. Each question then reads only the tiles near it. A new
+  map area added 12.5 MB, and a box's coastline loads in 3–16 ms instead of
+  68–95 ms. The answers are the same. On real GSHHG, 18 land rasters showed
+  0 cells changed. Thousands of point, leg and keep-off-distance checks
+  near coasts and on tile borders showed 0 differences. A water-grid
+  region rebuild and a route rerun were identical too.
 
 ## [0.2.0-beta.3] - 2026-10-22
 

@@ -34,6 +34,7 @@ import * as path from 'node:path';
 import { ECMWF_MIRRORS, EcmwfClient } from '../data/ecmwf';
 import { DecodedRun } from '../data/decoded';
 import { OnDemandLand } from '../geo/landcache';
+import { CoastTiles } from '../geo/coasttiles';
 import { PolarDiagram } from '../vessel/polar';
 import { HarmonicCurrentSource } from '../currents/harmonic';
 import { CurrentStack } from '../currents/stack';
@@ -185,7 +186,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       if (st.config.landShapefiles.length === 0) throw new Error('no land shapefile configured');
       st.overlayLand =
         st.role === 'data' || st.role === 'tiles'
-          ? new OnDemandLand(st.config.landShapefiles, {
+          ? new OnDemandLand(CoastTiles.open(st.config.landShapefiles, st.cacheRoot), {
               log: m => st.log('debug', m),
               // Rasters saved on disk: a map box seen once is never rasterised again.
               cacheDir: st.cacheRoot ? path.join(st.cacheRoot, 'overlay-land') : undefined,

@@ -20,6 +20,7 @@ import { LayeredWind, type RegionalWind } from '../../engine/layeredwind';
 import { checkRouteForecastMemory } from '../memguard';
 import { type BBox, bboxFromLonLat, bboxHeight, bboxWidth, boxesMeet, haversineDistanceM, latLonText } from '../../geo/geodesy';
 import { LandMask } from '../../geo/landmask';
+import { CoastTiles } from '../../geo/coasttiles';
 import { releaseMemory } from '../../util/gc';
 import { NoCurrent } from '../../engine/environment';
 import { RouteCancelled } from '../../engine/propagator';
@@ -229,6 +230,7 @@ function meshLegRunner(
             names: c.names,
             land: {
               shapefiles: cfg.landShapefiles,
+              tilesRoot: st.cacheRoot,
               bbox: c.box,
               maxCells: cfg.routing.landRasterMaxCells,
               bufferM: cfg.routing.landBufferM,
@@ -367,6 +369,7 @@ function meshLegRunner(
             names: c.names,
             land: {
               shapefiles: cfg.landShapefiles,
+              tilesRoot: st.cacheRoot,
               bbox: c.box,
               maxCells: cfg.routing.landRasterMaxCells,
               bufferM: cfg.routing.landBufferM,
@@ -409,6 +412,7 @@ function meshLegRunner(
             names: c.names,
             land: {
               shapefiles: cfg.landShapefiles,
+              tilesRoot: st.cacheRoot,
               bbox: c.box,
               maxCells: cfg.routing.landRasterMaxCells,
               bufferM: cfg.routing.landBufferM,
@@ -655,7 +659,9 @@ export async function route(
         // SNAP_CLEAR_M): one box over every stop would decode the coastline
         // of the whole route, both coasts of an ocean for a crossing. The
         // raster is coarse because only the polygons matter here.
-        const land = LandMask.fromShapefiles(cfg.landShapefiles, bboxFromLonLat([s.lon], [s.lat], 0.02), { resolutionDeg: 0.05 });
+        const land = LandMask.fromCoastline(CoastTiles.open(cfg.landShapefiles, st.cacheRoot), bboxFromLonLat([s.lon], [s.lat], 0.02), {
+          resolutionDeg: 0.05,
+        });
         if (!land.hasPolygons || waterAround(land, s.lon, s.lat, SNAP_CLEAR_M)) continue;
         // Quantities as unit tokens ({length:…}): the web app writes them in its user's units.
         const why = land.isLandExact(s.lon, s.lat) ? 'is on land' : `is within {length:${SNAP_CLEAR_M}} of the shore`;

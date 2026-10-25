@@ -27,6 +27,14 @@ export interface Ring {
   minLat: number;
   maxLon: number;
   maxLat: number;
+  /**
+   * Per edge k → k+1: 0 when it is a cut along a coastline tile's border (coasttiles.ts), not coastline; 1 coastline;
+   * 2 coastline a cut shortened, whose whole edge is in `whole`. Absent: every edge is coastline as it stands (a
+   * record read from the shapefile).
+   */
+  real?: Uint8Array;
+  /** For each edge k with real[k] = 2: the whole coastline edge, [x0, y0, x1, y1] at 4k. */
+  whole?: Float64Array;
 }
 
 export interface ShapePolygon {

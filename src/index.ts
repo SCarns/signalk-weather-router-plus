@@ -46,6 +46,7 @@ import { localMeshes, MeshManager, meshesToOpen, readyMeshDirs } from './plugin/
 import { coarseFile, coarseKey, coarseRulesOf, joinsFile, meshesMeet, pruneCoarse, withBuildLock } from './plugin/meshcoarse';
 import * as fs from 'node:fs';
 import { runChildTask } from './plugin/childtask';
+import { coastTilesReady } from './geo/coasttiles';
 import { ChartsProvider } from './plugin/charts';
 import { makePlotterExtension } from './plugin/plotterext';
 import { refreshPublicFileDates } from './plugin/webfiles';
@@ -187,9 +188,15 @@ export = function plugin(app: SkApp): SignalKPlugin {
   /** The job last sent to the route worker: only it can be cancelled through the worker's flag (see cancelRunning). */
   let routeAtWorker: string | null = null;
 
+  /** The coastline's cut into tiles (geo/coasttiles.ts), once per coastline before the services start. */
+  const coastCut: { running: boolean; error: string | null } = { running: false, error: null };
+  let coastCutCtrl: AbortController | null = null;
+
   /** Why the services are not up yet, for API answers and the status (`starting`). */
   function notStartedReason(): string {
     if (stopped) return 'plugin not started';
+    if (coastCut.running) return 'starting: cutting the coastline into tiles (once per coastline, seconds)';
+    if (coastCut.error) return `starting: the coastline could not be cut into tiles (${coastCut.error}); fix it and restart the plugin`;
     if (coast.state.downloading) {
       const m = (coast.state.message ?? '').replace(/^coastline:\s*/, '');
       return `starting: downloading the coastline${m ? ` (${m})` : ' (GSHHG, {dataSize:149000000}, once)'}`;
@@ -1115,7 +1122,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         );
         return;
       }
-      startServices(dataDir);
+      void cutCoastThenStart(dataDir, gen);
       return;
     }
     // None configured: download GSHHG (minutes), then start. Not awaited, so the server's start-up is not held up.
@@ -1124,8 +1131,40 @@ export = function plugin(app: SkApp): SignalKPlugin {
       .then(ok => {
         if (!ok || !settings || gen !== startGen || stopped) return;
         config = resolve(options, settings.values);
-        startServices(dataDir);
+        void cutCoastThenStart(dataDir, gen);
       });
+  }
+
+  /**
+   * The services, once the coastline is cut into its tiles (geo/coasttiles.ts): every land question reads the tiles.
+   * The cut runs once per coastline (a new download, another file), in a child process: it reads every record, the
+   * continents included, and that memory goes with the process.
+   */
+  async function cutCoastThenStart(dataDir: string, gen: number): Promise<void> {
+    if (!config) return;
+    const paths = config.landShapefiles;
+    if (!coastTilesReady(dataDir, paths)) {
+      coastCut.running = true;
+      coastCut.error = null;
+      app.setPluginStatus('starting: cutting the coastline into tiles (once per coastline)');
+      coastCutCtrl = new AbortController();
+      try {
+        const r = await runChildTask({ task: 'coast-cut', paths, root: dataDir }, null, coastCutCtrl.signal);
+        log(
+          `coastline cut into tiles: ${r.tiles} tiles, ${r.pieces} pieces, ${(r.bytes / 1e6).toFixed(1)} MB, ${(r.ms / 1000).toFixed(1)} s`
+        );
+      } catch (err) {
+        if (gen !== startGen || stopped) return;
+        coastCut.error = (err as Error).message;
+        app.setPluginError(`the coastline could not be cut into tiles: ${coastCut.error}`);
+        return;
+      } finally {
+        coastCut.running = false;
+        coastCutCtrl = null;
+      }
+    }
+    if (gen !== startGen || stopped) return;
+    startServices(dataDir);
   }
 
   /** Workers, jobs, tiles and timers, once the coastline is known. */
@@ -1186,6 +1225,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
     stopped = true;
     startGen++;
     coast.abort();
+    coastCutCtrl?.abort();
+    coastCut.error = null;
     meshes.stop();
     roughCutCtrl?.abort();
     if (refreshTimer) clearInterval(refreshTimer);

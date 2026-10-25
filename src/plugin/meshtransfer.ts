@@ -9,6 +9,7 @@
 
 import type { BBox } from '../geo/geodesy';
 import { type CellMask, LandMask } from '../geo/landmask';
+import { CoastTiles } from '../geo/coasttiles';
 import type { MeshRules } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
 import { findMeshGap, findMeshTransfer, type TransferMesh } from '../engine/mesh/transfer';
@@ -24,7 +25,7 @@ export interface MeshTransferTask {
   end: [number, number];
   names: { start: string; end: string };
   /** The coastline search's land for the leg's area, for a leg across the water between the meshes. */
-  land: { shapefiles: string[]; bbox: BBox; maxCells: number; bufferM: number };
+  land: { shapefiles: string[]; tilesRoot: string; bbox: BBox; maxCells: number; bufferM: number };
 }
 
 export type MeshTransferTaskResult =
@@ -78,7 +79,9 @@ export function runMeshTransferTask(t: MeshTransferTask): MeshTransferTaskResult
       ms: Date.now() - t0,
     };
   const res = LandMask.chooseResolution(t.land.bbox, t.land.maxCells);
-  const land = LandMask.fromShapefiles(t.land.shapefiles, t.land.bbox, { resolutionDeg: res }).withBuffer(t.land.bufferM);
+  const land = LandMask.fromCoastline(CoastTiles.open(t.land.shapefiles, t.land.tilesRoot), t.land.bbox, { resolutionDeg: res }).withBuffer(
+    t.land.bufferM
+  );
   const g = findMeshGap(from, to, t.rules, land, t.start, t.end, t.names);
   if (!g.ok) return { ok: false, reason: `in their overlap, ${x.reason}; across the water between them, ${g.reason}` };
   return { ...g, kind: 'gap', overlap: x.reason, ms: Date.now() - t0 };

@@ -3,11 +3,13 @@ import * as path from 'node:path';
 import { DECODED_DIR } from '../data/decoded';
 import { REGIONAL_DIR } from '../data/regionaldecode';
 import { COARSE_DIR } from './meshcoarse';
+import { COAST_TILES_DIR } from '../geo/coasttiles';
 
 /**
  * The data directory's subdirectories that hold only what the plugin
  * downloads or works out again by itself: the forecast, current and
- * sea-level downloads, the decoded runs, the meshes' rough cuts and the
+ * sea-level downloads, the decoded runs, the meshes' rough cuts, the
+ * coastline cut into tiles (cut again from the coastline itself) and the
  * rendered tiles. Together they are gigabytes, rewritten with every
  * forecast run, and stale by the time a backup of them is restored.
  *
@@ -24,6 +26,7 @@ export const CACHE_DIRS = [
   'sealevel',
   REGIONAL_DIR,
   COARSE_DIR,
+  COAST_TILES_DIR,
   'overlay-tiles',
   'overlay-land',
 ] as const;

@@ -8,6 +8,7 @@
 
 import type { BBox } from '../geo/geodesy';
 import { type CellMask, LandMask } from '../geo/landmask';
+import { CoastTiles } from '../geo/coasttiles';
 import { findMeshExit } from '../engine/mesh/exit';
 import type { MeshRules } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
@@ -22,8 +23,8 @@ export interface MeshExitTask {
   inside: [number, number];
   outside: [number, number];
   names: { inside: string; outside: string };
-  /** The coastline search's land for the leg's area: its polygons, box, cell budget and land buffer. */
-  land: { shapefiles: string[]; bbox: BBox; maxCells: number; bufferM: number };
+  /** The coastline search's land for the leg's area: its coastline (and where its tiles are), box, cell budget and land buffer. */
+  land: { shapefiles: string[]; tilesRoot: string; bbox: BBox; maxCells: number; bufferM: number };
 }
 
 export type MeshExitTaskResult =
@@ -32,7 +33,9 @@ export type MeshExitTaskResult =
 export function runMeshExitTask(t: MeshExitTask): MeshExitTaskResult {
   const t0 = Date.now();
   const res = LandMask.chooseResolution(t.land.bbox, t.land.maxCells);
-  const land = LandMask.fromShapefiles(t.land.shapefiles, t.land.bbox, { resolutionDeg: res }).withBuffer(t.land.bufferM);
+  const land = LandMask.fromCoastline(CoastTiles.open(t.land.shapefiles, t.land.tilesRoot), t.land.bbox, { resolutionDeg: res }).withBuffer(
+    t.land.bufferM
+  );
   const store = MeshStore.open(t.dir);
   const map = readCoarseMap(t.mapFile, store, coarseRulesOf(t.rules), 'the mesh');
   if (typeof map === 'string') return { ok: false, reason: map };

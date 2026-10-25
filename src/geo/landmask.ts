@@ -28,8 +28,8 @@ import type { BBox } from './geodesy';
 import { wrapLon, unwrapLonNear } from './angles';
 import { bboxHeight, bboxWidth, lonOffsetFromWest, slerpSamples, haversineDistanceM, projectAlongBearing } from './geodesy';
 import { M_PER_DEG } from './units';
-import { pointInShape, shorelinePaths, type ShapePolygon } from './shapefile';
-import { polygonCache } from './polygoncache';
+import { pointInShape, type ShapePolygon } from './shapefile';
+import type { CoastTiles } from './coasttiles';
 import { avoidAt, legHitsAvoid, type AvoidArea } from './avoid';
 
 export interface SerializedLandRaster {
@@ -176,12 +176,12 @@ export class LandMask implements LandTest {
   }
 
   /**
-   * Load every polygon from the given shapefiles that intersects `bbox`
-   * (plus `bufferDeg` margin) and rasterise it. The polygons come from the
-   * thread's polygon cache (polygoncache.ts): a route's legs and stops, or
-   * a re-routed corridor box, decode each record once.
+   * Load the coastline pieces in the tiles meeting `bbox` (plus `bufferDeg`
+   * margin) and rasterise them. The pieces come from the coastline's tile
+   * store (coasttiles.ts): only the coast near the box, never a whole
+   * continent.
    */
-  static fromShapefiles(paths: string[], bbox: BBox, opts: LandMaskOptions = {}): LandMask {
+  static fromCoastline(coast: CoastTiles, bbox: BBox, opts: LandMaskOptions = {}): LandMask {
     const resolutionDeg = opts.resolutionDeg ?? 0.002;
     const buffer = opts.bufferDeg ?? 0.1;
     if (!(resolutionDeg > 0)) throw new Error(`LandMask resolutionDeg must be > 0 (got ${resolutionDeg})`);
@@ -192,8 +192,7 @@ export class LandMask implements LandTest {
       south: Math.max(-90, bbox.south - buffer),
       north: Math.min(90, bbox.north + buffer),
     };
-    const shapes: ShapePolygon[] = polygonCache.read(shorelinePaths(paths), padded);
-    return new LandMask(shapes, padded, resolutionDeg);
+    return new LandMask(coast.read(padded), padded, resolutionDeg);
   }
 
   /**
@@ -271,7 +270,7 @@ export class LandMask implements LandTest {
   /**
    * Rasterise a finer conservative patch over `bbox` (clipped to the base
    * raster) from the loaded polygons; `isLand` then answers from it inside
-   * the box. Needs polygons (a mask from fromShapefiles/fromPolygons).
+   * the box. Needs polygons (a mask from fromCoastline/fromPolygons).
    * Returns the patch, or null when the box is outside the base raster or
    * an equal-or-finer patch already covers it.
    */
@@ -382,7 +381,11 @@ export class LandMask implements LandTest {
     if (rMinRow > rMaxRow) return;
 
     const rings: Float64Array[] = [];
+    const reals: (Uint8Array | undefined)[] = [];
+    const wholes: (Float64Array | undefined)[] = [];
     for (const ring of shape.rings) {
+      reals.push(ring.real);
+      wholes.push(ring.whole);
       const c = ring.coords;
       const n = c.length / 2;
       const xs = new Float64Array(2 * n);
@@ -417,16 +420,20 @@ export class LandMask implements LandTest {
         }
       }
       if (!overlaps) continue;
-      this.fillShape(rings, shift, rMinRow, rMaxRow, nx, res, south, raster, width);
+      this.fillShape(rings, reals, wholes, shift, rMinRow, rMaxRow, nx, res, south, raster, width);
     }
   }
 
   /**
    * Scanline even-odd fill of one shape (all rings together) into the
-   * raster, plus conservative marking of every cell an edge passes through.
+   * raster, plus conservative marking of every cell a coastline edge passes
+   * through (not a cut along a coastline tile's border: Ring.real; a coastline edge a cut shortened is walked whole,
+   * so it touches exactly the cells the record's edge touches).
    */
   private fillShape(
     rings: Float64Array[],
+    reals: (Uint8Array | undefined)[],
+    wholes: (Float64Array | undefined)[],
     shift: number,
     rowLo: number,
     rowHi: number,
@@ -446,15 +453,23 @@ export class LandMask implements LandTest {
     }
     const buckets = new Map<number, Edge[]>();
     let edgeCount = 0;
-    for (const xs of rings) {
+    for (let r = 0; r < rings.length; r++) {
+      const xs = rings[r];
+      const real = reals[r];
+      const whole = wholes[r];
       const n = xs.length / 2;
       for (let i = 0, j = n - 1; i < n; j = i++) {
         const xa = xs[2 * j] + shift;
         const ya = xs[2 * j + 1];
         const xb = xs[2 * i] + shift;
         const yb = xs[2 * i + 1];
-        // Conservative boundary marking: every cell the edge touches.
-        if (this.boundaryPass) this.markEdgeCells(xa, ya, xb, yb, nx, res, south, raster, width);
+        // Conservative boundary marking: every cell a coastline edge touches.
+        if (this.boundaryPass && real && real[j] === 2 && whole) {
+          // In the offset frame next to this piece's own vertex, as the record's ring places it.
+          const wa = unwrapLonNear(lonOffsetFromWest(this.bbox, whole[4 * j]), xs[2 * j]);
+          const wb = unwrapLonNear(lonOffsetFromWest(this.bbox, whole[4 * j + 2]), wa);
+          this.markEdgeCells(wa + shift, whole[4 * j + 1], wb + shift, whole[4 * j + 3], nx, res, south, raster, width);
+        } else if (this.boundaryPass && (!real || real[j])) this.markEdgeCells(xa, ya, xb, yb, nx, res, south, raster, width);
         if (this.boundaryPass || ya === yb) continue; // horizontal edges do not cross scanlines
         const y0 = Math.min(ya, yb);
         const y1 = Math.max(ya, yb);
@@ -588,7 +603,7 @@ export class LandMask implements LandTest {
 
   /**
    * Raster land test (finest patch first). Positions outside the raster are land. Nothing was
-   * loaded there (fromShapefiles loads the polygons of its box only), so "water" was a guess, and routes went over
+   * loaded there (fromCoastline loads the coastline of its box only), so "water" was a guess, and routes went over
    * islands outside the corridor box (Caribbean, 2026-10-15: Aruba, Curaçao, Bonaire, Venezuela, Barbados).
    */
   isLand(lon: number, lat: number): boolean {
@@ -643,12 +658,17 @@ export class LandMask implements LandTest {
       for (const ring of s.rings) {
         if (ring.maxLon < lon - dLon || ring.minLon > lon + dLon || ring.maxLat < lat - dLat || ring.minLat > lat + dLat) continue;
         const c = ring.coords;
+        const real = ring.real;
+        const whole = ring.whole;
         const m = c.length / 2;
         for (let i = 0, j = m - 1; i < m; j = i++) {
-          const ax = c[2 * j];
-          const ay = c[2 * j + 1];
-          const bx = c[2 * i];
-          const by = c[2 * i + 1];
+          if (real && !real[j]) continue; // a cut along a tile border, not shore
+          // A shoreline edge a cut shortened is measured whole, as the record's.
+          const w = real && real[j] === 2 && whole;
+          const ax = w ? whole[4 * j] : c[2 * j];
+          const ay = w ? whole[4 * j + 1] : c[2 * j + 1];
+          const bx = w ? whole[4 * j + 2] : c[2 * i];
+          const by = w ? whole[4 * j + 3] : c[2 * i + 1];
           if (
             Math.max(ax, bx) < lon - dLon ||
             Math.min(ax, bx) > lon + dLon ||
@@ -785,12 +805,17 @@ export class LandMask implements LandTest {
           if (ring.maxLon < minX - dLonB || ring.minLon > maxX + dLonB || ring.maxLat < minY - dLatB || ring.minLat > maxY + dLatB)
             continue;
           const c = ring.coords;
+          const real = ring.real;
+          const whole = ring.whole;
           const m = c.length / 2;
           for (let i = 0, j = m - 1; i < m; j = i++) {
-            const ax = c[2 * j];
-            const ay = c[2 * j + 1];
-            const bx = c[2 * i];
-            const by = c[2 * i + 1];
+            if (real && !real[j]) continue; // a cut along a tile border, not coastline
+            // A coastline edge a cut shortened is tested whole, as the record's.
+            const w = real && real[j] === 2 && whole;
+            const ax = w ? whole[4 * j] : c[2 * j];
+            const ay = w ? whole[4 * j + 1] : c[2 * j + 1];
+            const bx = w ? whole[4 * j + 2] : c[2 * i];
+            const by = w ? whole[4 * j + 3] : c[2 * i + 1];
             if (
               Math.max(ax, bx) < minX - dLonB ||
               Math.min(ax, bx) > maxX + dLonB ||
