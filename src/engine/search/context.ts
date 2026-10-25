@@ -73,7 +73,8 @@ const EASE_LOOKAHEAD_MS = 72 * HOUR_MS;
 
 /**
  * The refusal for a front with nowhere to go from `stuck` (the candidates whose every move failed), from what the
- * last try counted: the reason that stopped most moves, placed at the candidate it stopped hardest. Over a limit,
+ * last try counted: over a limit when the limit stopped most moves, placed at the candidate it stopped hardest; land,
+ * the no-go angle or no boat speed only when it stopped every move; else the reasons listed. Over a limit,
  * the wind and waves are read at each candidate and one stage step ahead of it towards its goal (a move is stopped
  * where it would arrive), the worst against its limit is named, and the hour they ease there is looked for up to the
  * forecast's end. The counts (tryNote) go on the error as its detail, for the log; `suffix` follows the sentence.
@@ -116,11 +117,24 @@ export function refuseDeadEnd(ctx: SearchContext, stuck: Candidate[], code: Engi
       waves: worstL.waves,
       easesMs: limitsEaseAt(wind, worst.lon, worst.lat, worst.timeMs, untilMs, args.maxWindMs, args.maxSwhM),
       untilMs,
+      untilForecastEnd: args.forecastEndMs !== undefined,
     };
     return new RouteRefused(refusal, detail, code, suffix);
   }
-  const kind = top > 0 && lastTry.land === top ? 'coast' : top > 0 && lastTry.noGo === top ? 'dead_upwind' : 'stopped';
-  return new RouteRefused({ kind, at: place(first), atMs: first.timeMs }, detail, code, suffix);
+  // One cause is named only when every move tried failed for it (then it held at every candidate, `first` among
+  // them); otherwise the reasons are listed, at `first` only when it was the one candidate.
+  const all = (n: number): boolean => lastTry.tried > 0 && n === lastTry.tried;
+  const kind = all(lastTry.land) ? 'coast' : all(lastTry.noGo) ? 'dead_upwind' : all(lastTry.stuck) ? 'stopped' : null;
+  if (kind) return new RouteRefused({ kind, at: place(first), atMs: first.timeMs }, detail, code, suffix);
+  const reasons: ('land' | 'no_go' | 'stopped' | 'limit')[] = [];
+  if (lastTry.land) reasons.push('land');
+  if (lastTry.noGo) reasons.push('no_go');
+  if (lastTry.stuck) reasons.push('stopped');
+  if (lastTry.limited) reasons.push('limit');
+  let latestMs = first.timeMs;
+  for (const c of stuck) latestMs = Math.max(latestMs, c.timeMs);
+  const at = stuck.length <= 1 ? place(first) : 'front';
+  return new RouteRefused({ kind: 'mixed', at, atMs: at === 'front' ? latestMs : first.timeMs, reasons }, detail, code, suffix);
 }
 
 /**

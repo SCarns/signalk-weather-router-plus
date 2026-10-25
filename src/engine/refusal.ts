@@ -38,13 +38,27 @@ export type RouteRefusal =
       easesMs: number | null;
       /** How far ahead the ease was looked for: the forecast's end, or the search's own horizon. */
       untilMs: number;
+      /** true: `untilMs` comes from the forecast's end; false: the forecast's end is not known and `untilMs` ends a fixed look ahead. */
+      untilForecastEnd: boolean;
     }
   /** Every heading from `at` crosses land. */
   | { kind: 'coast'; at: RefusalPlace; atMs: number }
   /** Every heading from `at` is dead upwind for the polar, and the boat does not motor there. */
   | { kind: 'dead_upwind'; at: RefusalPlace; atMs: number }
   /** The boat makes no way from `at`: no boat speed, or a current stronger than the boat. */
-  | { kind: 'stopped'; at: RefusalPlace; atMs: number };
+  | { kind: 'stopped'; at: RefusalPlace; atMs: number }
+  /**
+   * The moves from `at` were stopped for more than one reason, `reasons` in the order the counts give them; `at` is
+   * 'front' when no single place is known (several candidates), `atMs` then the front's latest time.
+   */
+  | { kind: 'mixed'; at: RefusalPlace | 'front'; atMs: number; reasons: ('land' | 'no_go' | 'stopped' | 'limit')[] };
+
+const REASON_TEXT = {
+  land: 'land',
+  no_go: 'the wind dead ahead for this polar',
+  stopped: 'no boat speed or a current stronger than the boat',
+  limit: 'the wind/wave limit',
+};
 
 /** An absolute time as the messages write it. */
 export function fmtUtc(ms: number): string {
@@ -62,6 +76,16 @@ function advice(at: RefusalPlace, eases: boolean): string {
 
 /** The sentence the user sees. */
 export function refusalText(r: RouteRefusal): string {
+  if (r.kind === 'mixed') {
+    const lead =
+      r.at === 'front'
+        ? `From the search's front, reached ${fmtUtc(r.atMs)},`
+        : r.at
+          ? `From ${whereText(r.at, r.atMs).slice(3)}`
+          : 'At the start';
+    const why = r.reasons.length ? `: its moves were stopped by ${r.reasons.map(k => REASON_TEXT[k]).join(', ')}` : '';
+    return `${lead} the search found no way on${why}. Add a waypoint or choose another departure.`;
+  }
   const where = whereText(r.at, r.atMs);
   switch (r.kind) {
     case 'over_limit': {
@@ -74,7 +98,7 @@ export function refusalText(r: RouteRefusal): string {
       const ease =
         r.easesMs !== null
           ? `${they} come${parts.length > 1 ? '' : 's'} under ${limits} about ${fmtUtc(r.easesMs)}.`
-          : `${they} stay${parts.length > 1 ? '' : 's'} over ${limits} to ${fmtUtc(r.untilMs)}, as far as the forecast goes.`;
+          : `${they} stay${parts.length > 1 ? '' : 's'} over ${limits} to ${fmtUtc(r.untilMs)}, ${r.untilForecastEnd ? 'as far as the forecast goes' : 'as far ahead as was checked'}.`;
       return `Forecast ${where}: ${parts.join(' and ')}. ${ease} ${advice(r.at, r.easesMs !== null)}`;
     }
     case 'coast':

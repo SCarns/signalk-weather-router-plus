@@ -25,6 +25,7 @@ test('refusal text: waves over the limit at the start, when they ease, what to d
     waves: { seen: 4.6, limit: 3.05 },
     easesMs: t0 + 6 * H,
     untilMs: t0 + 72 * H,
+    untilForecastEnd: false,
   });
   assert.equal(
     text,
@@ -42,6 +43,7 @@ test('refusal text: both limits mid-route, never easing within the forecast; the
     waves: { seen: 4.1, limit: 3.05 },
     easesMs: null,
     untilMs: t0 + 48 * H,
+    untilForecastEnd: true,
   });
   assert.match(
     both,
@@ -58,6 +60,29 @@ test('refusal text: both limits mid-route, never easing within the forecast; the
   assert.match(refusalText({ kind: 'coast', at: null, atMs: t0 }), /at the start crosses land: .* Move the start into open water\.$/);
   assert.match(refusalText({ kind: 'dead_upwind', at: null, atMs: t0 }), /^At the start the wind is dead ahead/);
   assert.match(refusalText({ kind: 'stopped', at, atMs: t0 }), /^From 43\.1234, -5\.6789, reached .* the boat makes no way/);
+});
+
+test('refusal text: without a known forecast end the window is the one checked; mixed reasons name no single place', () => {
+  const ahead = refusalText({
+    kind: 'over_limit',
+    at: null,
+    atMs: t0,
+    wind: { seen: 15.2, limit: 12.86 },
+    waves: null,
+    easesMs: null,
+    untilMs: t0 + 72 * H,
+    untilForecastEnd: false,
+  });
+  assert.match(ahead, /It stays over the limit to 2026-10-28 17:00 UTC, as far ahead as was checked\./);
+  assert.doesNotMatch(ahead, /forecast goes/);
+  assert.equal(
+    refusalText({ kind: 'mixed', at: 'front', atMs: t0, reasons: ['land', 'no_go'] }),
+    `From the search's front, reached ${fmtUtc(t0)}, the search found no way on: its moves were stopped by land, the wind dead ahead for this polar. Add a waypoint or choose another departure.`
+  );
+  assert.match(
+    refusalText({ kind: 'mixed', at: null, atMs: t0, reasons: ['stopped'] }),
+    /^At the start the search found no way on: its moves were stopped by no boat speed/
+  );
 });
 
 test('limitsAt and limitsEaseAt: the values against the limits, and the first whole hour under both', () => {
