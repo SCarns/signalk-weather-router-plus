@@ -22,6 +22,7 @@ import type { DecodedIndex } from '../data/decoded';
 import type { SerializedSmoc, SmocStatus } from '../currents/smoc';
 import type { SerializedRtofsSet } from '../currents/rtofs';
 import type { SerializedHarmonic } from '../currents/harmonic';
+import type { BuilderCurrentsRef } from '../currents/fromcache';
 import type { TideStatus } from '../tides/sealevel';
 import type { ArcoRun } from '../data/arco';
 import type { TileId } from './tiles';
@@ -290,6 +291,11 @@ export type MainToWorker =
   | { type: 'rtofs'; rtofs: SerializedRtofsSet | null }
   /** route worker: adopt the data worker's tidal-harmonic sources (shared constituent blocks, relayed by the main thread). */
   | { type: 'harmonic'; sources: SerializedHarmonic[] }
+  /**
+   * tiles workers (separate processes, no shared memory): where the data worker's currents are on disk; each loads
+   * them itself (currents/fromcache.ts) instead of being sent copies.
+   */
+  | { type: 'currents-ref'; ref: BuilderCurrentsRef }
   /** route worker: the decoded run to read route areas from (null: none yet). */
   | { type: 'forecast'; run: ForecastRunInfo | null }
   /** Settings changed: new config; reload what `reload` names (data worker: forecast, currents and tides; route worker: currents from disk). */

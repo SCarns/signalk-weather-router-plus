@@ -7,14 +7,11 @@
  * and stage fronts are sent to the worker as they happen.
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { HarmonicCurrentSource } from '../currents/harmonic';
-import { extentMeets, extentOfField, loadRtofsSteps, RtofsClient, RtofsCurrentSource, rtofsRunFor } from '../currents/rtofs';
+import { harmonicFromDir, type RtofsCacheRef, rtofsFromCache } from '../currents/fromcache';
 import { SmocClient, SmocCurrentSource, type SmocRun, type SmocSettings } from '../currents/smoc';
 import type { ArcoLayout, ArcoResolution } from '../data/arco';
 import { CurrentStack } from '../currents/stack';
-import type { CurrentSourceLike, SourceBBox } from '../currents/types';
+import type { CurrentSourceLike } from '../currents/types';
 import { openDecodedRun } from '../data/decoded';
 import type { CurrentSource } from '../engine/environment';
 import { NoCurrent } from '../engine/environment';
@@ -83,7 +80,7 @@ export interface MeshLegTask {
       as: { res: ArcoResolution; layout: ArcoLayout } | null;
     } | null;
     /** The RTOFS products the worker holds (finest first), each read from the cache for the leg's box. */
-    rtofs: { cacheDir: string; runs: { product: string; runMs: number; bbox: SourceBBox }[]; horizonS: number; stepS: number } | null;
+    rtofs: RtofsCacheRef | null;
     harmonicDir: string | null;
   } | null;
 }
@@ -190,21 +187,9 @@ async function loadCurrents(t: MeshLegTask, box: BBox, progress: MeshLegArgs['pr
   const area = bboxFromLonLat([box.west, box.east], [box.south, box.north], CURRENTS_MARGIN_DEG);
   const sources: CurrentSourceLike[] = [];
   if (t.currents.harmonicDir) {
-    let files: string[] = [];
-    try {
-      files = fs
-        .readdirSync(t.currents.harmonicDir)
-        .filter(f => f.toLowerCase().endsWith('.npz'))
-        .sort();
-    } catch (err) {
-      progress(0, 0, `WARNING: ${t.tag}chart mesh: harmonic currents not read (${(err as Error).message})`);
-    }
-    for (const f of files) {
-      try {
-        sources.push(new HarmonicCurrentSource(path.join(t.currents.harmonicDir, f)));
-      } catch (err) {
-        progress(0, 0, `WARNING: ${t.tag}chart mesh: harmonic currents ${f} not read (${(err as Error).message})`);
-      }
+    for (const h of harmonicFromDir(t.currents.harmonicDir)) {
+      if (h.source) sources.push(h.source);
+      else progress(0, 0, `WARNING: ${t.tag}chart mesh: harmonic currents ${h.file ? `${h.file} ` : ''}not read (${h.error})`);
     }
   }
   if (t.currents.smoc) {
@@ -230,25 +215,11 @@ async function loadCurrents(t: MeshLegTask, box: BBox, progress: MeshLegArgs['pr
       );
     }
   }
-  const rtofs = t.currents.rtofs;
-  for (const r of rtofs?.runs ?? []) {
-    // A product the leg's box is outside has nothing for it.
-    if (!extentMeets(r.bbox, area)) continue;
-    try {
-      const client = new RtofsClient({
-        cacheDir: rtofs!.cacheDir,
-        region: r.product,
-        fetchImpl: () => Promise.reject(new Error('the mesh process never uses the network')),
-      });
-      const steps = await loadRtofsSteps(client, rtofsRunFor(new Date(r.runMs)), area, rtofs!.horizonS, rtofs!.stepS);
-      if (steps.length) {
-        const src = new RtofsCurrentSource(r.product, r.runMs, extentOfField(steps[0].u), steps);
-        sources.push(src);
-        progress(0, 0, `${t.tag}chart mesh: RTOFS ${r.product} read from the cache: {dataSize:${src.bytes()}}`);
-      }
-    } catch (err) {
-      progress(0, 0, `WARNING: ${t.tag}chart mesh: RTOFS ${r.product} not read from the cache (${(err as Error).message})`);
-    }
+  for (const r of t.currents.rtofs ? await rtofsFromCache(t.currents.rtofs, area) : []) {
+    if (r.source) {
+      sources.push(r.source);
+      progress(0, 0, `${t.tag}chart mesh: RTOFS ${r.product} read from the cache: {dataSize:${r.source.bytes()}}`);
+    } else if (r.error) progress(0, 0, `WARNING: ${t.tag}chart mesh: RTOFS ${r.product} not read from the cache (${r.error})`);
   }
   return sources.length ? new CurrentStack(sources) : new NoCurrent();
 }

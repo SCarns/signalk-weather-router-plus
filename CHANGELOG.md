@@ -33,6 +33,19 @@ uses [Semantic Versioning](https://semver.org/).
   six date checks and subtractions now go through `getTime()` (same
   results); the page behaves as before.
 
+### Fixed
+
+- **Signal K's memory no longer jumps when the map tiles are built ahead.**
+  Each tile builder was sent the currents (SMOC, RTOFS, tidal harmonics) as
+  copies made on Signal K's main thread, twice per builder. Glibc kept that
+  memory after it was freed. When the two builders started, Signal K grew
+  by 609 MB, and a trim left 477 MB of it held (brain). That happened with
+  every new forecast cycle, currents or tide run, new map view, or boat
+  move of over 1 km. A builder is now told where the currents are on disk
+  and reads them itself, as the chart-mesh process already did. Signal K
+  grew by 0.4 MB when the builders started, and the tiles are byte for byte
+  the same.
+
 ## [0.2.0-beta.3] - 2026-10-22
 
 ### Added

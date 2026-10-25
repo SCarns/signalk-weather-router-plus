@@ -47,6 +47,7 @@ import { noteNetwork, requireInit } from './worker/state';
 import { refreshForecast } from './worker/forecast';
 import { prepareWaterGrid } from './worker/landgrid';
 import {
+  adoptCurrentsRef,
   loadHarmonic,
   makeSmocClient,
   rebuildStack,
@@ -313,7 +314,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       await buildTile(st, msg.id, msg.tile, msg.tmp);
       return;
     case 'harmonic': {
-      // Route / tiles worker: the data worker's tidal-harmonic sources (shared constituent blocks).
+      // Route worker: the data worker's tidal-harmonic sources (shared constituent blocks; tiles workers: 'currents-ref').
       if (st.role === 'data') return;
       st.harmonic = msg.sources.map(s => new HarmonicCurrentSource(s));
       rebuildStack(st);
@@ -325,7 +326,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       return;
     }
     case 'rtofs': {
-      // Route / tiles worker: the data worker's RTOFS products (shared memory).
+      // Route worker: the data worker's RTOFS products (shared memory; tiles workers: 'currents-ref').
       if (st.role === 'data') return;
       const cur = requireInit(st).config.currents;
       const set = rtofsSetForConfig(msg.rtofs, cur.rtofsEnabled, cur.rtofsExtra);
@@ -335,7 +336,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       return;
     }
     case 'smoc': {
-      // Route / tiles worker: the data worker's run and resident area (shared memory).
+      // Route worker: the data worker's run and resident area (shared memory; tiles workers: 'currents-ref').
       if (st.role === 'data') return;
       const s = msg.smoc;
       const cfgNow = requireInit(st).config;
@@ -357,6 +358,11 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
         );
       return;
     }
+    case 'currents-ref':
+      // Tiles worker: the data worker's currents, read from its disk caches (no shared memory across processes).
+      if (st.role !== 'tiles') return;
+      await adoptCurrentsRef(st, msg.ref);
+      return;
     case 'tides-run': {
       // Tiles worker: open the data worker's tide run (areas load on demand from the shared disk cache).
       if (st.role !== 'tiles') return;

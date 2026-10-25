@@ -145,7 +145,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let routeForecastMemory: ForecastMemory | null = null;
   /** The data worker's CMEMS SMOC run + resident area (shared memory), relayed to the route worker. */
   let smocShared: SerializedSmoc | null = null;
-  /** The data worker's RTOFS products (shared memory), relayed to the route and tiles workers. */
+  /** The data worker's RTOFS products (shared memory), relayed to the route worker (tile builders: builderCurrentsRef). */
   let rtofsShared: SerializedRtofsSet | null = null;
   /** The data worker's tidal-harmonic sources (shared constituent blocks), relayed to the route worker. */
   let harmonicShared: SerializedHarmonic[] | null = null;
@@ -478,7 +478,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     error: m => app.error(m),
   });
 
-  /** The data worker's shared data a (re)started route or tiles worker must learn: the decoded run, SMOC memory, harmonic blocks. */
+  /** The data worker's shared data a (re)started route worker must learn: the decoded run, SMOC memory, harmonic blocks. */
   function sharedDataMessages(): MainToWorker[] {
     const m: MainToWorker[] = [];
     if (forecastRun) m.push({ type: 'forecast', run: forecastRun });
@@ -486,6 +486,33 @@ export = function plugin(app: SkApp): SignalKPlugin {
     if (rtofsShared) m.push({ type: 'rtofs', rtofs: rtofsShared });
     if (harmonicShared) m.push({ type: 'harmonic', sources: harmonicShared });
     return m;
+  }
+
+  /**
+   * The data worker's currents for the tile builders: where they are on disk, not the data. A builder is a separate
+   * process, so shared memory sent to it was copied here on the main thread, twice per builder (brain, 2026-10-25:
+   * 609 MB when two builders started, which glibc kept after it was freed); each loads them itself
+   * (currents/fromcache.ts).
+   */
+  function builderCurrentsRef(): MainToWorker {
+    const dataDir = app.getDataDirPath();
+    const s = smocShared;
+    return {
+      type: 'currents-ref',
+      ref: {
+        smoc: s ? { run: s.run, settings: s.settings, centre: s.centre, steps: s.resident ? [...s.resident.stepMs] : [] } : null,
+        rtofs:
+          rtofsShared?.runs.length && config
+            ? {
+                cacheDir: path.join(dataDir, 'rtofs'),
+                runs: rtofsShared.runs.map(r => ({ product: r.product, runMs: r.runMs, bbox: r.bbox })),
+                horizonS: config.currents.rtofsHorizonS,
+                stepS: config.currents.rtofsStepS,
+              }
+            : null,
+        harmonicDir: harmonicShared?.length ? (config?.currents.harmonicDir ?? null) : null,
+      },
+    };
   }
 
   function query<K extends QueryKind>(kind: K, args: QueryArgs[K], signal?: AbortSignal): Promise<unknown> {
@@ -870,7 +897,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           // Shared constituent blocks: the route worker adopts the same memory.
           harmonicShared = msg.sources;
           pool.post('route', { type: 'harmonic', sources: msg.sources });
-          prebuilder?.broadcast({ type: 'harmonic', sources: msg.sources });
+          prebuilder?.broadcast(builderCurrentsRef());
         }
         return;
       case 'rtofs':
@@ -879,7 +906,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           if (msg.rtofs && !(config && rtofsSetForConfig(msg.rtofs, config.currents.rtofsEnabled, config.currents.rtofsExtra))) return;
           rtofsShared = msg.rtofs;
           pool.post('route', { type: 'rtofs', rtofs: msg.rtofs });
-          prebuilder?.broadcast({ type: 'rtofs', rtofs: msg.rtofs });
+          prebuilder?.broadcast(builderCurrentsRef());
         }
         return;
       case 'smoc':
@@ -887,7 +914,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           // SharedArrayBuffer views: the route worker gets the same memory.
           smocShared = msg.smoc;
           pool.post('route', { type: 'smoc', smoc: msg.smoc });
-          prebuilder?.broadcast({ type: 'smoc', smoc: msg.smoc });
+          prebuilder?.broadcast(builderCurrentsRef());
           updateTileGenerations();
         }
         return;
@@ -1022,7 +1049,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
         execArgv,
         initMessage: () => ({ type: 'init', role: 'tiles', config: config as ResolvedConfig, cacheDir: dataDir }),
         replayMessages: () => {
-          const m = sharedDataMessages();
+          const m: MainToWorker[] = forecastRun ? [{ type: 'forecast', run: forecastRun }] : [];
+          m.push(builderCurrentsRef());
           m.push({ type: 'tides-run', run: tidesRun });
           m.push({ type: 'refresh', force: false });
           return m;

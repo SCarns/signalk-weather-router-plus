@@ -28,6 +28,7 @@ import {
   shareRtofsSteps,
 } from '../../currents/rtofs';
 import { type CurrentSourceLike } from '../../currents/types';
+import { type BuilderCurrentsRef, harmonicFromDir, rtofsFromCache } from '../../currents/fromcache';
 import {
   alignedSteps,
   loadResident,
@@ -298,7 +299,61 @@ export function loadHarmonic(st: WorkerState, dir: string | null): void {
   }
 }
 
-/** data worker → main → route and tiles workers: the RTOFS products (shared memory, no copy), with the setting they were loaded under. */
+/** The tidal-harmonic folder the tiles worker's sources were read from (adoptCurrentsRef); one per process. */
+let harmonicFrom: string | null = null;
+
+const sameSteps = (a: readonly number[], b: readonly number[]): boolean => a.length === b.length && a.every((t, i) => t === b[i]);
+
+/**
+ * Tiles worker (a separate process): the data worker's currents read back from the disk caches it writes, from the
+ * reference the main thread sends (currents/fromcache.ts) instead of copies of its shared memory. Each part is read
+ * only when it differs from what is loaded. SMOC's resident area is loaded as the data worker loaded it (the same
+ * region and steps, so the same chunks); RTOFS whole, as the data worker holds it.
+ */
+export async function adoptCurrentsRef(st: WorkerState, ref: BuilderCurrentsRef): Promise<void> {
+  const { config: cfg } = requireInit(st);
+  const s = ref.smoc;
+  if (!s || !cfg.currents.smocEnabled || !st.smocClient) st.smoc = null;
+  else if (
+    !st.smoc ||
+    st.smoc.run.key !== s.run.key ||
+    st.smoc.run.settled !== s.run.settled ||
+    JSON.stringify(st.smoc.settings) !== JSON.stringify(s.settings) ||
+    JSON.stringify(st.smoc.residentCentre) !== JSON.stringify(s.centre) ||
+    !sameSteps(st.smoc.resident?.stepMs ?? [], s.steps)
+  ) {
+    const src = new SmocCurrentSource(s.run, s.settings, st.smocClient, m => st.log('info', m));
+    if (s.centre && s.steps.length) {
+      try {
+        const res = await loadResident(st.smocClient, s.run, s.settings, s.centre, s.steps);
+        if (res) src.setResident(res.area, s.centre);
+      } catch (err) {
+        st.log('error', `smoc: resident area of run ${s.run.key} not read from the cache: ${(err as Error).message}`);
+      }
+    }
+    st.smoc = src;
+  }
+  const runsKey = (runs: { product: string; runMs: number }[]): string => runs.map(r => `${r.product}@${r.runMs}`).join(',');
+  const rtofs = cfg.currents.rtofsEnabled ? ref.rtofs : null;
+  if (runsKey(st.rtofs) !== runsKey(rtofs?.runs ?? [])) {
+    st.rtofs = [];
+    for (const r of rtofs ? await rtofsFromCache(rtofs, null) : []) {
+      if (r.source) st.rtofs.push(r.source);
+      else if (r.error) st.log('error', `rtofs ${r.product}: not read from the cache: ${r.error}`);
+    }
+  }
+  if (ref.harmonicDir !== harmonicFrom) {
+    harmonicFrom = ref.harmonicDir;
+    st.harmonic = [];
+    for (const h of ref.harmonicDir ? harmonicFromDir(ref.harmonicDir) : []) {
+      if (h.source) st.harmonic.push(h.source);
+      else st.log('error', `currents: harmonic ${h.file ?? ref.harmonicDir} not read: ${h.error}`);
+    }
+  }
+  rebuildStack(st);
+}
+
+/** data worker → main → route worker: the RTOFS products (shared memory, no copy), with the setting they were loaded under. */
 export function sendRtofs(st: WorkerState): void {
   if (st.role !== 'data') return;
   const cfg = st.config;
