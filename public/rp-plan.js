@@ -2551,6 +2551,9 @@ document.getElementById('findRoute').addEventListener('click', /** @this {HTMLBu
   _routeComputing = true;
 
   const body = buildRoutePayload();
+  // A job opened from Saved while this request is on its way is the one followed if the request fails: the failure is
+  // logged, and that job keeps its progress, Cancel, boat and stream.
+  const seq = _attachSeq;
   authFetch(API + '/routes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2564,6 +2567,7 @@ document.getElementById('findRoute').addEventListener('click', /** @this {HTMLBu
       loadRouteHistory();
     })
     .catch(err => {
+      if (_attachSeq !== seq) { appendLog('Could not start the route calculation: ' + err.message, 'error'); return; }
       showModal();
       appendLog('Could not start the route calculation: ' + err.message, 'error');
       statusEl.textContent = 'Error: ' + err.message;
