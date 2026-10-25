@@ -34,6 +34,8 @@ export class Coastline {
   private run: { promise: Promise<string | null>; signal: AbortSignal } | null = null;
   /** Wakes a start waiting to retry the download. */
   private wake: (() => void) | null = null;
+  /** Ends the held wait early (internetChanged). */
+  private recheck: (() => void) | null = null;
   /** Cancels the download (and its retry wait) on stop. */
   private ctrl: AbortController | null = null;
   /** Cancels a download started from the config panel, on stop. */
@@ -91,7 +93,7 @@ export class Coastline {
             `no coastline configured: the GSHHG download ({dataSize:149000000}) waits, ${held}; press Download coastline in the plugin config to download it now`
           )
         );
-        const woke = await this.wait(ctrl.signal, INTERNET_HOLD_RETRY_MS);
+        const woke = await this.wait(ctrl.signal, INTERNET_HOLD_RETRY_MS, true);
         this.held = null;
         if (woke === 'stopped' || !current()) return false;
         pressed = woke === 'pressed';
@@ -117,8 +119,13 @@ export class Coastline {
     }
   }
 
-  /** Wait `ms`, a Download press (wakes it) or a stop, whichever comes first. */
-  private wait(signal: AbortSignal, ms: number): Promise<'timer' | 'pressed' | 'stopped'> {
+  /** A held download looks at the internet state again at once (internet.ts `watch`). */
+  internetChanged(): void {
+    this.recheck?.();
+  }
+
+  /** Wait `ms`, a Download press (wakes it) or a stop, whichever comes first; `held`: a change of the internet state ends it too, as the timer would. */
+  private wait(signal: AbortSignal, ms: number, held = false): Promise<'timer' | 'pressed' | 'stopped'> {
     return new Promise(resolve => {
       // Stopped already (a status callback can stop the plugin): the abort event has passed.
       if (signal.aborted) {
@@ -133,9 +140,12 @@ export class Coastline {
         // One signal serves every wait: the listener must not pile up.
         signal.removeEventListener('abort', onAbort);
         if (this.wake === wake) this.wake = null;
+        if (this.recheck === recheck) this.recheck = null;
         resolve(v);
       };
+      const recheck = (): void => done('timer');
       this.wake = wake;
+      if (held) this.recheck = recheck;
       signal.addEventListener('abort', onAbort, { once: true });
     });
   }

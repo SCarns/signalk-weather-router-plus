@@ -47,6 +47,7 @@ export function internetHold(getSelfPath: ((path: string) => unknown) | undefine
 
 export interface InternetApp {
   getSelfPath?: (path: string) => unknown;
+  streambundle?: { getSelfStream: (path: string) => { onValue: (cb: (value: unknown) => void) => () => void } };
   getFeatures?: (onlyEnabled?: boolean) => Promise<{ plugins: { id: string; enabled: boolean }[] }>;
 }
 
@@ -133,6 +134,31 @@ export class InternetGate implements DownloadHold {
     }
     await this.firstState;
     return current();
+  }
+
+  /**
+   * Call `onChange` whenever signalk-internet publishes a different state;
+   * the same state published again is not a change. The callers look at
+   * the hold themselves (`hold`, `holdNow`), so a change that holds nothing
+   * (the plugin not enabled) leaves them as they are. Answers the
+   * unsubscribe. A server without a stream bundle has nothing to watch.
+   */
+  watch(onChange: () => void): () => void {
+    // The raw state, not the hold: the plugin lookup may not have answered yet, and the next state must still count.
+    let last = internetState(p => this.app.getSelfPath?.(p));
+    try {
+      const stream = this.app.streambundle?.getSelfStream(INTERNET_STATE_PATH);
+      return (
+        stream?.onValue(value => {
+          const now = value !== null && typeof value === 'object' ? (value as { value?: unknown }).value : value;
+          if (now === last) return;
+          last = now;
+          onChange();
+        }) ?? (() => undefined)
+      );
+    } catch {
+      return () => undefined;
+    }
   }
 
   /** Stop: the next start waits for a first state again (signalk-internet may have been enabled meanwhile). */

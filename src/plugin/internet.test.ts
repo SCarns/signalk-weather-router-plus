@@ -124,3 +124,44 @@ test('InternetGate.reset: a lookup from before the reset does not speak for the 
   assert.equal(gate.pending, false);
   assert.match(gate.hold() ?? '', /metered/);
 });
+
+test('InternetGate.watch: called when the state changes, also before the plugin lookup has answered; not for the same state again', async () => {
+  const state = { value: 'online' as unknown };
+  const listeners: ((v: unknown) => void)[] = [];
+  const stream = {
+    getSelfStream: (p: string) => {
+      assert.equal(p, INTERNET_STATE_PATH);
+      return {
+        onValue: (cb: (v: unknown) => void) => {
+          listeners.push(cb);
+          return () => listeners.splice(listeners.indexOf(cb), 1);
+        },
+      };
+    },
+  };
+  const publish = (v: unknown): void => {
+    state.value = v;
+    for (const l of [...listeners]) l(v);
+  };
+  state.value = 'metered';
+  const gate = new InternetGate({ ...gateApp([{ id: INTERNET_PLUGIN_ID, enabled: true }], state), streambundle: stream });
+  let changes = 0;
+  // Watched before the lookup (index.ts start), while the state is already metered.
+  const unwatch = gate.watch(() => changes++);
+  await gate.check();
+  publish('online');
+  assert.equal(changes, 1, 'metered to online counts');
+  changes = 0;
+  publish('online');
+  assert.equal(changes, 0, 'the same state again');
+  publish('metered');
+  publish('metered');
+  assert.equal(changes, 1, 'starts holding');
+  publish('offline');
+  assert.equal(changes, 2, 'another reason');
+  publish('online');
+  assert.equal(changes, 3, 'clears');
+  unwatch();
+  assert.equal(listeners.length, 0);
+  assert.doesNotThrow(() => new InternetGate(gateApp([], state)).watch(() => undefined)(), 'no stream bundle: nothing to watch');
+});

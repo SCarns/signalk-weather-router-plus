@@ -498,6 +498,8 @@ export class MeshManager {
 
   /** How often a daily pass looks at the internet state while it downloads. */
   protected holdCheckMs = HOLD_CHECK_MS;
+  /** What a change of the internet state does now (internetChanged): look at it during a pass, end a held wait. */
+  private recheck: (() => void) | null = null;
   /** Counts the owner's requests (refresh): a pass with one since the last pass ended is not stopped by the internet state. */
   private ownerAsks = 0;
   /** Owner refreshes still reading the catalogue: their pass has not started yet, but it is theirs. */
@@ -526,42 +528,47 @@ export class MeshManager {
           // from before it, so the watcher spares it.
           if (this.reconciling?.signal !== signal && this.refreshesReading === 0) asksSeen = this.ownerAsks;
           const internet = this.internet;
-          const watch = internet?.active
-            ? setInterval(() => {
-                void internet.holdNow().then(why => {
-                  if (!why || this.ownerAsks !== asksSeen || signal.aborted) return;
-                  clearInterval(watch);
-                  this.run();
-                });
-              }, this.holdCheckMs)
-            : undefined;
+          const look = (): void => {
+            if (!internet) return;
+            void internet.holdNow().then(why => {
+              if (!why || this.ownerAsks !== asksSeen || signal.aborted) return;
+              clearInterval(watch);
+              this.run();
+            });
+          };
+          const watch = internet?.active ? setInterval(look, this.holdCheckMs) : undefined;
+          this.recheck = look;
           try {
             await this.reconcile(signal);
           } finally {
             clearInterval(watch);
+            if (this.recheck === look) this.recheck = null;
           }
         }
         // A stop during the pass has already aborted: no timer then, or it would hold the process a day.
         if (signal.aborted) break;
         await new Promise<void>(resolve => {
-          const onAbort = (): void => {
+          const end = (): void => {
             if (this.timer) clearTimeout(this.timer);
             this.timer = null;
+            // One signal serves every wait: the listener must not pile up.
+            signal.removeEventListener('abort', end);
+            if (this.recheck === end) this.recheck = null;
             resolve();
           };
-          this.timer = setTimeout(
-            () => {
-              // One signal serves every wait: the listener must not pile up.
-              signal.removeEventListener('abort', onAbort);
-              resolve();
-            },
-            held ? INTERNET_HOLD_RETRY_MS : CATALOG_REFRESH_MS
-          );
-          signal.addEventListener('abort', onAbort, { once: true });
+          this.timer = setTimeout(end, held ? INTERNET_HOLD_RETRY_MS : CATALOG_REFRESH_MS);
+          signal.addEventListener('abort', end, { once: true });
+          // Held: a change of the internet state ends the wait, as the timer would.
+          if (held) this.recheck = end;
         });
       }
     };
     void loop();
+  }
+
+  /** The internet state changed (internet.ts `watch`): a held pass looks again at once, a running one checks it. */
+  internetChanged(): void {
+    this.recheck?.();
   }
 
   /**

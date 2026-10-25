@@ -940,3 +940,67 @@ test('MeshManager: a refresh still reading the catalogue configured before is no
     for (const d of [oldRoot, newRoot, store]) fs.rmSync(d, { recursive: true, force: true });
   }
 });
+
+test('MeshManager.run: a held pass starts as soon as the internet state changes, not only after 15 minutes', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshsrv-'));
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshstore-'));
+  publish(root, '2026-10-09T06:43:40Z', 500);
+  const hits = { catalog: 0 };
+  const { url, close } = await serve(root, undefined, undefined, hits);
+  let state: string | null = 'the internet connection is metered (network.internet.state)';
+  const mgr = new MeshManager(
+    () => undefined,
+    () => undefined,
+    { active: true, holdNow: async () => state }
+  );
+  try {
+    mgr.configure(url + 'charts/mesh/index.json', ['01CGD'], store);
+    mgr.run();
+    await new Promise(r => setTimeout(r, 50));
+    assert.equal(hits.catalog, 0, 'held');
+    state = null;
+    mgr.internetChanged();
+    const ready = (): boolean => mgr.status().meshes.find(r => r.name === '01CGD')?.state === 'ready';
+    for (let i = 0; i < 200 && !ready(); i++) await new Promise(r => setTimeout(r, 10));
+    assert.ok(ready(), 'online again: the pass ran');
+  } finally {
+    mgr.stop();
+    close();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});
+
+test('MeshManager.run: a running pass stops as soon as the internet state starts holding, not only at its next look', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshsrv-'));
+  const store = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-meshstore-'));
+  publish(root, '2026-10-09T06:43:40Z', 500);
+  let release!: () => void;
+  const gate = new Promise<void>(r => (release = r));
+  let archives = 0;
+  const { url, close } = await serve(root, () => (++archives === 1 ? gate : Promise.resolve()));
+  let state: string | null = null;
+  const mgr = new MeshManager(
+    () => undefined,
+    () => undefined,
+    { active: true, holdNow: async () => state }
+  );
+  try {
+    mgr.configure(url + 'charts/mesh/index.json', ['01CGD'], store);
+    mgr.run();
+    for (let i = 0; i < 200 && archives < 1; i++) await new Promise(r => setTimeout(r, 10));
+    assert.equal(archives, 1, 'the download started');
+    state = 'the internet connection is metered (network.internet.state)';
+    mgr.internetChanged();
+    await new Promise(r => setTimeout(r, 50));
+    release();
+    await new Promise(r => setTimeout(r, 200));
+    assert.notEqual(mgr.status().meshes.find(r => r.name === '01CGD')!.state, 'ready', 'stopped without waiting for the 60 s look');
+  } finally {
+    release();
+    mgr.stop();
+    close();
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(store, { recursive: true, force: true });
+  }
+});

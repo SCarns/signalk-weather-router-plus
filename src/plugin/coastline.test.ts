@@ -138,3 +138,38 @@ test('a stopped start whose lookup ends late leaves the new start its Download p
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test('a held start looks at the internet state again as soon as it changes, not only after 15 minutes', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-coast-'));
+  const statuses: string[] = [];
+  const app = {
+    setPluginStatus: (s: string) => {
+      statuses.push(s);
+      // Stopped as the download starts: the aborted signal ends it before any request is made.
+      if (s.includes('downloading GSHHG')) coast.abort();
+    },
+    setPluginError: () => undefined,
+    getDataDirPath: () => dataDir,
+  };
+  let state: string | null = 'the internet connection is metered (network.internet.state)';
+  const coast: Coastline = new Coastline(app, () => undefined, { active: true, holdNow: async () => state });
+  try {
+    const done = coast.download(dataDir, () => true);
+    await new Promise(r => setImmediate(r));
+    assert.match(coast.held ?? '', /metered/);
+    coast.internetChanged();
+    await new Promise(r => setImmediate(r));
+    assert.match(coast.held ?? '', /metered/, 'still metered: it waits again');
+    assert.ok(!statuses.some(s => s.includes('downloading GSHHG')));
+    state = null;
+    coast.internetChanged();
+    assert.equal(await done, false);
+    assert.ok(
+      statuses.some(s => s.includes('downloading GSHHG')),
+      'online again: the download starts'
+    );
+  } finally {
+    coast.abort();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+  }
+});

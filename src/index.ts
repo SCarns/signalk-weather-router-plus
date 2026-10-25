@@ -55,7 +55,7 @@ import { WorkerPool, type MainRole } from './plugin/workerpool';
 import { BUNDLED_DEFAULT_POLAR, BUNDLED_POLARS_DIR } from './plugin/polars';
 import { openApiDocument } from './plugin/openapi';
 import { registerWeatherProvider } from './plugin/weather';
-import { InternetGate } from './plugin/internet';
+import { InternetGate, type InternetApp } from './plugin/internet';
 import type {
   DataStatus,
   ForecastLoading,
@@ -103,6 +103,7 @@ interface SkApp {
   savePluginOptions?: (configuration: object, cb: (err: Error | null) => void) => void;
   getSelfPath?: (path: string) => unknown;
   getFeatures?: (onlyEnabled?: boolean) => Promise<{ plugins: { id: string; enabled: boolean }[] }>;
+  streambundle?: InternetApp['streambundle'];
   handleMessage?: (id: string, delta: unknown) => void;
   registerWeatherProvider?: (provider: unknown) => void;
   registerResourceProvider?: (provider: {
@@ -180,6 +181,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let refreshHeld = false;
   /** The internet hold the data worker was last told ('internet-hold'); undefined: not told since it started. */
   let holdSent: string | null | undefined;
+  let unwatchInternet: () => void = () => undefined;
   /** Map overlay tiles on disk (null before start). */
   let tiles: TileService | null = null;
   /** Tiles built ahead of time (null before start or when off). */
@@ -600,6 +602,23 @@ export = function plugin(app: SkApp): SignalKPlugin {
     if (hold) refreshHeld = true;
     holdSent = hold;
     pool.post('data', { type: 'internet-hold', hold });
+  }
+
+  /**
+   * The internet hold changed (internet.ts `watch`): the data worker, the
+   * coastline and the meshes hear it at once instead of at their next look,
+   * and a round held by it runs as soon as it clears.
+   */
+  function onInternetChange(): void {
+    if (stopped) return;
+    coast.internetChanged();
+    meshes.internetChanged();
+    if (!config || internet.settling) return;
+    syncHold();
+    if (refreshHeld && !internetHeld()) {
+      log('the internet connection is usable again; refreshing');
+      requestRefresh(false);
+    }
   }
 
   /**
@@ -1120,6 +1139,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     }
     const gen = ++startGen;
     const dataDir = app.getDataDirPath();
+    unwatchInternet = internet.watch(onInternetChange);
     // Before the first download, so a backup taken meanwhile already skips them.
     for (const p of tagCacheDirs(dataDir)) app.error(`cache directory tag: ${p}`);
     if (config.landShapefiles.length > 0) {
@@ -1216,6 +1236,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
   async function stop(): Promise<void> {
     stopped = true;
     startGen++;
+    unwatchInternet();
+    unwatchInternet = () => undefined;
     internet.reset();
     coast.abort();
     meshes.stop();
