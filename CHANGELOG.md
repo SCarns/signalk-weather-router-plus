@@ -39,10 +39,68 @@ uses [Semantic Versioning](https://semver.org/).
   dependency, `typebox` ^1.4.3): the TypeScript types and the OpenAPI document
   come from it, so a field can no longer be in one and missing from the other
   (issue #76). Requests, answers and error texts are unchanged.
+- **A route that cannot be made says why in plain words.** When every move
+  is over the wind or wave limit, the message names the value against the
+  limit, where, when it eases, and what to do: "Forecast at the start: waves
+  4.6 m against your 3.0 m limit. It comes under the limit about 26 Oct
+  09:00 UTC. Raise the limit or depart after that." The coast, a dead-upwind
+  start and a boat that makes no way get their own sentences. The counts of
+  candidates tried stay in the job's progress log. One module writes these
+  sentences (the engine's `refusal.ts`), so the other route errors convert
+  to it one by one.
 - `npm run typecheck` also type-checks the web app's scripts
   (`tsconfig.public.json`, `checkJs`). The scripts gained JSDoc types, and
   six date checks and subtractions now go through `getTime()` (same
   results); the page behaves as before.
+
+### Fixed
+
+- Saved current tiles are drawn again when a tidal-harmonic file in the
+  configured folder is added, replaced or removed (picked up at the next
+  start). They were filed by the folder's path, so tiles from the old files
+  were served until the next SMOC or RTOFS run. Saved current tiles are
+  drawn again once after this update. A tile builder reads the folder only
+  while its files are as the plugin read them at start: one changed since
+  keeps no current tiles until the plugin restarts (it would have saved
+  tiles from the new files as the old ones').
+- **Signal K's memory no longer jumps when the map tiles are built ahead.**
+  Each tile builder was sent the currents (SMOC, RTOFS, tidal harmonics) as
+  copies made on Signal K's main thread, twice per builder. Glibc kept that
+  memory after it was freed. When the two builders started, Signal K grew
+  by 609 MB, and a trim left 477 MB of it held (brain). That happened with
+  every new forecast cycle, currents or tide run, new map view, or boat
+  move of over 1 km. A builder is now told where the currents are on disk
+  and reads them itself, as the chart-mesh process already did. Signal K
+  grew by 0.4 MB when the builders started, and the tiles are byte for byte
+  the same. A builder that cannot read a current source (an RTOFS product
+  or a tidal-harmonic file) keeps none of the current layers' tiles it
+  builds until it can, and reads the source again with the next update:
+  such tiles, saved as the new run's, would have been served without that
+  source (or from the run before) until the next run. A builder or the
+  chart-mesh leg finding an RTOFS file missing from the cache gives up at
+  once: it was retried as a download that could not happen, about 62 s per
+  product.
+- **The coastline is read in 0.5° tiles, never a whole continent.** GSHHG
+  keeps each continent as one record: North America is 14.0 MB, Eurasia
+  18.6 MB. Any land question near a coast decoded the whole record and
+  dropped it: the map's land pictures (twice each), the land point test,
+  every route's land mask and every snapped start or end. On brain, a map
+  area nobody had viewed yet added 80 MB that Signal K kept. At start the
+  plugin now cuts the coastline into tiles once per coastline, in its own
+  process: 13.6 s for GSHHG full resolution on brain, 188 MB on disk in
+  `coast-tiles/`. Each question then reads only the tiles near it. A new
+  map area added 12.5 MB, and a box's coastline loads in 3–16 ms instead of
+  68–95 ms. The answers are the same. On real GSHHG, 18 land rasters showed
+  0 cells changed. Thousands of point, leg and keep-off-distance checks
+  near coasts and on tile borders showed 0 differences. A water-grid
+  region rebuild and a route rerun were identical too.
+  The map's land pictures and the water grid build are drawn straight from
+  the tiles' bytes, with no piece decoded and nothing cached. On brain, the
+  map's 16 land tiles of the whole world, none saved yet, grew Signal K by
+  333 MB (still held 30 s later) and took 37.8 s; drawn from the bytes they
+  grew it by 18 MB and took 14.6 s, and the 16 tiles and 16 land rasters
+  were byte for byte the same. Routes and the land point test still decode
+  the pieces near them.
 
 ## [0.2.0-beta.3] - 2026-10-22
 

@@ -1,6 +1,6 @@
 /**
  * Worker thread that rebuilds the global water grid from the configured
- * coastline shapefiles and writes it (atomically) to the given file.
+ * coastline (its tiles, coasttiles.ts) and writes it (atomically) to the given file.
  * Spawned by the route worker when no grid matching the configured
  * coastline exists; about a minute on a desktop, several on a Raspberry
  * Pi, a few hundred MB of memory while it runs.
@@ -8,9 +8,12 @@
 
 import { parentPort, workerData } from 'node:worker_threads';
 import { buildWaterGrid } from '../geo/watergrid_build';
+import { CoastTiles } from '../geo/coasttiles';
 
 export interface GridBuilderData {
   shapefiles: string[];
+  /** The plugin's data directory, where the coastline's tiles are (coasttiles.ts). */
+  tilesRoot: string;
   outFile: string;
 }
 
@@ -25,7 +28,7 @@ const data = workerData as GridBuilderData;
 try {
   const t0 = Date.now();
   let last = 0;
-  const grid = buildWaterGrid(data.shapefiles, {
+  const grid = buildWaterGrid(CoastTiles.open(data.shapefiles, data.tilesRoot), {
     onProgress: (done, total, message) => {
       if (Date.now() - last > 10_000 || done === total) {
         last = Date.now();

@@ -28,6 +28,7 @@ import {
   shareRtofsSteps,
 } from '../../currents/rtofs';
 import { type CurrentSourceLike } from '../../currents/types';
+import { type BuilderCurrentsRef, harmonicFromDir, harmonicSignature, rtofsFromCache } from '../../currents/fromcache';
 import {
   alignedSteps,
   loadResident,
@@ -318,7 +319,99 @@ export function loadHarmonic(st: WorkerState, dir: string | null): void {
   }
 }
 
-/** data worker → main → route and tiles workers: the RTOFS products (shared memory, no copy), with the setting they were loaded under. */
+/** The tidal-harmonic folder the tiles worker's sources were read from, and its signature then (adoptCurrentsRef); one per process. */
+let harmonicFrom: string | null = null;
+let harmonicSigFrom: string | null = null;
+/** The horizon and step the tiles worker's RTOFS sources were read with (adoptCurrentsRef); null when none are. */
+let rtofsReadWith: { horizonS: number; stepS: number } | null = null;
+/** The RTOFS products and tidal-harmonic files the tiles worker could not read (adoptCurrentsRef). */
+let rtofsUnread: string[] = [];
+let harmonicUnread: string[] = [];
+
+const sameSteps = (a: readonly number[], b: readonly number[]): boolean => a.length === b.length && a.every((t, i) => t === b[i]);
+
+/**
+ * Tiles worker (a separate process): the data worker's currents read back from the disk caches it writes, from the
+ * reference the main thread sends (currents/fromcache.ts) instead of copies of its shared memory. Each part is read
+ * only when it differs from what is loaded. SMOC's resident area is loaded as the data worker loaded it (the same
+ * region and steps, so the same chunks); RTOFS whole, as the data worker holds it.
+ *
+ * A source that cannot be read is not marked as read, so the next reference reads it again, and until then the
+ * current layers' tiles are not kept (st.currentsUnread, buildTile). Their directory is named after the data worker's
+ * sources (tiles.ts tileGenerationKeys): a tile built without one, or from the run before, would be saved there as
+ * that run's and served until the next run.
+ */
+export async function adoptCurrentsRef(st: WorkerState, ref: BuilderCurrentsRef): Promise<void> {
+  const { config: cfg } = requireInit(st);
+  const s = ref.smoc;
+  if (!s || !cfg.currents.smocEnabled || !st.smocClient) st.smoc = null;
+  else if (
+    !st.smoc ||
+    st.smoc.run.key !== s.run.key ||
+    st.smoc.run.settled !== s.run.settled ||
+    JSON.stringify(st.smoc.settings) !== JSON.stringify(s.settings) ||
+    JSON.stringify(st.smoc.residentCentre) !== JSON.stringify(s.centre) ||
+    !sameSteps(st.smoc.resident?.stepMs ?? [], s.steps)
+  ) {
+    const src = new SmocCurrentSource(s.run, s.settings, st.smocClient, m => st.log('info', m));
+    if (s.centre && s.steps.length) {
+      try {
+        const res = await loadResident(st.smocClient, s.run, s.settings, s.centre, s.steps);
+        if (res) src.setResident(res.area, s.centre);
+      } catch (err) {
+        st.log('error', `smoc: resident area of run ${s.run.key} not read from the cache: ${(err as Error).message}`);
+      }
+    }
+    st.smoc = src;
+  }
+  const runsKey = (runs: { product: string; runMs: number }[]): string => runs.map(r => `${r.product}@${r.runMs}`).join(',');
+  const rtofs = cfg.currents.rtofsEnabled ? ref.rtofs : null;
+  if (
+    runsKey(st.rtofs) !== runsKey(rtofs?.runs ?? []) ||
+    rtofs?.horizonS !== rtofsReadWith?.horizonS ||
+    rtofs?.stepS !== rtofsReadWith?.stepS
+  ) {
+    rtofsReadWith = rtofs ? { horizonS: rtofs.horizonS, stepS: rtofs.stepS } : null;
+    st.rtofs = [];
+    rtofsUnread = [];
+    // A product missing from st.rtofs differs from the reference's runs: the next reference reads it again.
+    for (const r of rtofs ? await rtofsFromCache(rtofs, null) : []) {
+      if (r.source) st.rtofs.push(r.source);
+      else {
+        rtofsUnread.push(`rtofs ${r.product}`);
+        st.log('error', `rtofs ${r.product}: not read from the cache: ${r.error ?? 'no steps'}`);
+      }
+    }
+  }
+  // Read again when the folder or its files changed, and while a file of it could not be read.
+  const dir = ref.harmonicDir;
+  const sig = dir ? ref.harmonicSig : null;
+  if (dir !== harmonicFrom || sig !== harmonicSigFrom || harmonicUnread.length) {
+    harmonicFrom = dir;
+    harmonicSigFrom = sig;
+    st.harmonic = [];
+    harmonicUnread = [];
+    // The data worker read the folder once, at its start, and the tiles' generation is named after the files then. A
+    // file added or replaced since would be read here and not there: its tiles would be saved as the old files'.
+    if (dir && harmonicSignature(dir) !== sig) {
+      harmonicUnread.push(`harmonic folder ${dir} (its files changed since the data worker read them; restart the plugin)`);
+    } else
+      for (const h of dir ? harmonicFromDir(dir) : []) {
+        if (h.source) st.harmonic.push(h.source);
+        else {
+          harmonicUnread.push(`harmonic ${h.file ?? dir}`);
+          st.log('error', `currents: harmonic ${h.file ?? dir} not read: ${h.error}`);
+        }
+      }
+  }
+  const unread = [...rtofsUnread, ...harmonicUnread];
+  if (unread.length && unread.join() !== st.currentsUnread.join())
+    st.log('error', `currents: tiles of the current layers are not kept until ${unread.join(', ')} can be read`);
+  st.currentsUnread = unread;
+  rebuildStack(st);
+}
+
+/** data worker → main → route worker: the RTOFS products (shared memory, no copy), with the setting they were loaded under. */
 export function sendRtofs(st: WorkerState): void {
   if (st.role !== 'data') return;
   const cfg = st.config;

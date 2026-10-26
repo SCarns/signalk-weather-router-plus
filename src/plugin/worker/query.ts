@@ -28,7 +28,7 @@ import {
 } from '../overlays';
 import { POINT_FORECAST_PARAMS, pointForecasts } from '../weather';
 import { type DataStatus, type QueryArgs, type TrackConditions, type TrackConditionsRow } from '../protocol';
-import { encodeTile, tileQuery, type TileId } from '../tiles';
+import { encodeTile, tileGroup, tileQuery, type TileId } from '../tiles';
 import { readWindow, releaseWindow } from './forecast';
 import { regionalRunsFor, type RegionalRun } from './regionalwind';
 import { currentsStatus, prepareSmocForQuery } from './currents';
@@ -155,7 +155,8 @@ export async function buildTile(st: WorkerState, id: number, tile: TileId, tmp: 
   try {
     const { kind, args } = tileQuery(tile);
     const { result, complete } = await answer(st, kind, args);
-    if (!complete) {
+    // A current source this builder could not read: the tile lacks it (adoptCurrentsRef), so it is not kept.
+    if (!complete || (tileGroup(tile.layer) === 'cur' && st.currentsUnread.length)) {
       st.send({ type: 'tile-built', id, bytes: 0, complete: false });
       return;
     }

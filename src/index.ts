@@ -46,6 +46,7 @@ import { localMeshes, MeshManager, meshesToOpen, readyMeshDirs } from './plugin/
 import { coarseFile, coarseKey, coarseRulesOf, joinsFile, meshesMeet, pruneCoarse, withBuildLock } from './plugin/meshcoarse';
 import * as fs from 'node:fs';
 import { runChildTask } from './plugin/childtask';
+import { coastTilesReady } from './geo/coasttiles';
 import { ChartsProvider } from './plugin/charts';
 import { makePlotterExtension } from './plugin/plotterext';
 import { refreshPublicFileDates } from './plugin/webfiles';
@@ -81,6 +82,7 @@ import { SMOC_NAME } from './currents/smoc';
 import { SL_NAME } from './tides/sealevel';
 import type { SerializedSmoc } from './currents/smoc';
 import { chooseRtofsProduct, readRtofsExtents, rtofsSetForConfig, type SerializedRtofsSet } from './currents/rtofs';
+import { harmonicSignature } from './currents/fromcache';
 import type { SerializedHarmonic } from './currents/harmonic';
 
 const PLUGIN_ID = 'signalk-weather-router-plus';
@@ -147,10 +149,12 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let routeForecastMemory: ForecastMemory | null = null;
   /** The data worker's CMEMS SMOC run + resident area (shared memory), relayed to the route worker. */
   let smocShared: SerializedSmoc | null = null;
-  /** The data worker's RTOFS products (shared memory), relayed to the route and tiles workers. */
+  /** The data worker's RTOFS products (shared memory), relayed to the route worker (tile builders: builderCurrentsRef). */
   let rtofsShared: SerializedRtofsSet | null = null;
   /** The data worker's tidal-harmonic sources (shared constituent blocks), relayed to the route worker. */
   let harmonicShared: SerializedHarmonic[] | null = null;
+  /** The tidal-harmonic files as they were when the data worker read them (harmonicSignature); null before it has. */
+  let harmonicSig: string | null = null;
   /** Raw Signal K plugin options from start(). */
   let pluginOptions: PluginConfig | undefined;
   let settings: SettingsStore | null = null;
@@ -193,11 +197,17 @@ export = function plugin(app: SkApp): SignalKPlugin {
   /** The job last sent to the route worker: only it can be cancelled through the worker's flag (see cancelRunning). */
   let routeAtWorker: string | null = null;
 
+  /** The coastline's cut into tiles (geo/coasttiles.ts), once per coastline before the services start. */
+  const coastCut: { running: boolean; error: string | null } = { running: false, error: null };
+  let coastCutCtrl: AbortController | null = null;
+
   /** Why the services are not up yet, for API answers and the status (`starting`). */
   function notStartedReason(): string {
     if (stopped) return 'plugin not started';
     if (coast.held)
       return `starting: the coastline download waits (${coast.held}); press Download coastline in the plugin configuration to download it now`;
+    if (coastCut.running) return 'starting: cutting the coastline into tiles (once per coastline, seconds)';
+    if (coastCut.error) return `starting: the coastline could not be cut into tiles (${coastCut.error}); fix it and restart the plugin`;
     if (coast.state.downloading) {
       const m = (coast.state.message ?? '').replace(/^coastline:\s*/, '');
       return `starting: downloading the coastline${m ? ` (${m})` : ' (GSHHG, {dataSize:149000000}, once)'}`;
@@ -491,7 +501,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     error: m => app.error(m),
   });
 
-  /** The data worker's shared data a (re)started route or tiles worker must learn: the decoded run, SMOC memory, harmonic blocks. */
+  /** The data worker's shared data a (re)started route worker must learn: the decoded run, SMOC memory, harmonic blocks. */
   function sharedDataMessages(): MainToWorker[] {
     const m: MainToWorker[] = [];
     if (forecastRun) m.push({ type: 'forecast', run: forecastRun });
@@ -499,6 +509,34 @@ export = function plugin(app: SkApp): SignalKPlugin {
     if (rtofsShared) m.push({ type: 'rtofs', rtofs: rtofsShared });
     if (harmonicShared) m.push({ type: 'harmonic', sources: harmonicShared });
     return m;
+  }
+
+  /**
+   * The data worker's currents for the tile builders: where they are on disk, not the data. A builder is a separate
+   * process, so shared memory sent to it was copied here on the main thread, twice per builder (brain, 2026-10-25:
+   * 609 MB when two builders started, which glibc kept after it was freed); each loads them itself
+   * (currents/fromcache.ts).
+   */
+  function builderCurrentsRef(): MainToWorker {
+    const dataDir = app.getDataDirPath();
+    const s = smocShared;
+    return {
+      type: 'currents-ref',
+      ref: {
+        smoc: s ? { run: s.run, settings: s.settings, centre: s.centre, steps: s.resident ? [...s.resident.stepMs] : [] } : null,
+        rtofs:
+          rtofsShared?.runs.length && config
+            ? {
+                cacheDir: path.join(dataDir, 'rtofs'),
+                runs: rtofsShared.runs.map(r => ({ product: r.product, runMs: r.runMs, bbox: r.bbox })),
+                horizonS: config.currents.rtofsHorizonS,
+                stepS: config.currents.rtofsStepS,
+              }
+            : null,
+        harmonicDir: harmonicShared?.length ? (config?.currents.harmonicDir ?? null) : null,
+        harmonicSig,
+      },
+    };
   }
 
   function query<K extends QueryKind>(kind: K, args: QueryArgs[K], signal?: AbortSignal): Promise<unknown> {
@@ -541,16 +579,19 @@ export = function plugin(app: SkApp): SignalKPlugin {
                 lastValidMs: steps[steps.length - 1].validMs,
               }
             : null,
-        currents: dataStatus
-          ? {
-              sources: currentsKey,
-              smoc: smocShared ? `${smocShared.run.key}|${smocShared.run.settled}` : 'off',
-              harmonicDir: cfg.currents.harmonicDir ?? '',
-              smocStepS: cfg.currents.smocStepS,
-              rtofsStepS: cfg.currents.rtofsStepS,
-              rtofsHorizonS: cfg.currents.rtofsHorizonS,
-            }
-          : null,
+        // Unknown (nothing removed) until the data worker has read the harmonic files.
+        currents:
+          dataStatus && harmonicSig !== null
+            ? {
+                sources: currentsKey,
+                smoc: smocShared ? `${smocShared.run.key}|${smocShared.run.settled}` : 'off',
+                harmonicDir: cfg.currents.harmonicDir ?? '',
+                harmonic: harmonicSig,
+                smocStepS: cfg.currents.smocStepS,
+                rtofsStepS: cfg.currents.rtofsStepS,
+                rtofsHorizonS: cfg.currents.rtofsHorizonS,
+              }
+            : null,
         tides: !cfg.tides.enabled ? 'off' : dataStatus?.tides ? { run: dataStatus.tides.run, settled: dataStatus.tides.settled } : null,
       })
     );
@@ -926,8 +967,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (role === 'data') {
           // Shared constituent blocks: the route worker adopts the same memory.
           harmonicShared = msg.sources;
+          // The data worker reads the folder once, at its start (worker.ts init), just before this message.
+          harmonicSig = harmonicSignature(config?.currents.harmonicDir ?? null);
+          updateTileGenerations();
           pool.post('route', { type: 'harmonic', sources: msg.sources });
-          prebuilder?.broadcast({ type: 'harmonic', sources: msg.sources });
+          prebuilder?.broadcast(builderCurrentsRef());
         }
         return;
       case 'rtofs':
@@ -936,7 +980,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           if (msg.rtofs && !(config && rtofsSetForConfig(msg.rtofs, config.currents.rtofsEnabled, config.currents.rtofsExtra))) return;
           rtofsShared = msg.rtofs;
           pool.post('route', { type: 'rtofs', rtofs: msg.rtofs });
-          prebuilder?.broadcast({ type: 'rtofs', rtofs: msg.rtofs });
+          prebuilder?.broadcast(builderCurrentsRef());
         }
         return;
       case 'smoc':
@@ -944,7 +988,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           // SharedArrayBuffer views: the route worker gets the same memory.
           smocShared = msg.smoc;
           pool.post('route', { type: 'smoc', smoc: msg.smoc });
-          prebuilder?.broadcast({ type: 'smoc', smoc: msg.smoc });
+          prebuilder?.broadcast(builderCurrentsRef());
           updateTileGenerations();
         }
         return;
@@ -1079,7 +1123,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
         execArgv,
         initMessage: () => ({ type: 'init', role: 'tiles', config: config as ResolvedConfig, cacheDir: dataDir }),
         replayMessages: () => {
-          const m = sharedDataMessages();
+          const m: MainToWorker[] = forecastRun ? [{ type: 'forecast', run: forecastRun }] : [];
+          m.push(builderCurrentsRef());
           m.push({ type: 'tides-run', run: tidesRun });
           m.push({ type: 'refresh', force: false });
           return m;
@@ -1147,7 +1192,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         );
         return;
       }
-      startServices(dataDir);
+      void cutCoastThenStart(dataDir, gen);
       return;
     }
     // None configured: download GSHHG (minutes), then start. Not awaited, so the server's start-up is not held up.
@@ -1156,8 +1201,52 @@ export = function plugin(app: SkApp): SignalKPlugin {
       .then(ok => {
         if (!ok || !settings || gen !== startGen || stopped) return;
         config = resolve(options, settings.values);
-        startServices(dataDir);
+        void cutCoastThenStart(dataDir, gen);
       });
+  }
+
+  /**
+   * The services, once the coastline is cut into its tiles (geo/coasttiles.ts): every land question reads the tiles.
+   * The cut runs once per coastline (a new download, another file), in a child process: it reads every record, the
+   * continents included, and that memory goes with the process.
+   */
+  async function cutCoastThenStart(dataDir: string, gen: number): Promise<void> {
+    if (!config) return;
+    const paths = config.landShapefiles;
+    try {
+      // Inside the try: an incomplete GSHHG hierarchy throws here (shorelinePaths).
+      if (!coastTilesReady(dataDir, paths)) {
+        coastCut.running = true;
+        coastCut.error = null;
+        app.setPluginStatus('starting: cutting the coastline into tiles (once per coastline)');
+        coastCutCtrl = new AbortController();
+        try {
+          const r = await runChildTask({ task: 'coast-cut', paths, root: dataDir }, null, coastCutCtrl.signal);
+          log(
+            `coastline cut into tiles: ${r.tiles} tiles, ${r.pieces} pieces, ${(r.bytes / 1e6).toFixed(1)} MB, ${(r.ms / 1000).toFixed(1)} s`
+          );
+        } finally {
+          coastCut.running = false;
+          coastCutCtrl = null;
+        }
+      }
+    } catch (err) {
+      if (gen !== startGen || stopped) return;
+      coastCut.error = (err as Error).message;
+      app.setPluginError(`the coastline could not be cut into tiles: ${coastCut.error}`);
+      return;
+    }
+    if (gen !== startGen || stopped) return;
+    // Never rejects (both callers start it with `void`): what startServices had started is stopped again, and the
+    // failure reported, rather than left running half set up.
+    try {
+      startServices(dataDir);
+    } catch (err) {
+      stopServices('the plugin could not start');
+      void tiles?.store.flushTotals();
+      tiles = null;
+      app.setPluginError(`the plugin could not start: ${(err as Error).message}`);
+    }
   }
 
   /** Workers, jobs, tiles and timers, once the coastline is known. */
@@ -1217,32 +1306,39 @@ export = function plugin(app: SkApp): SignalKPlugin {
     log(`${PLUGIN_ID} started; data dir ${dataDir}`);
   }
 
-  async function stop(): Promise<void> {
-    stopped = true;
-    startGen++;
-    internet.stop();
-    coast.abort();
+  /** What startServices starts, all of it or as far as it got: meshes, rough cuts, timers, workers, windows, jobs, tile builders. */
+  function stopServices(why: string): void {
     meshes.stop();
     roughCutCtrl?.abort();
     if (refreshTimer) clearInterval(refreshTimer);
     if (positionTimer) clearInterval(positionTimer);
     if (failedRefreshTimer) clearTimeout(failedRefreshTimer);
     refreshTimer = failedRefreshTimer = positionTimer = null;
-    refreshPosition = null;
-    positionRefreshFor = null;
-    refreshHeld = false;
-    holdSent = undefined;
     pool.stopAll();
-    pool.rejectPending('plugin stopped');
+    pool.rejectPending(why);
     // The windows first: failing the running job must not start a window's next departure.
     windows?.close();
     windows = null;
-    jobs?.failRunning('plugin stopped');
+    jobs?.failRunning(why);
     waitingForForecast = null;
     routeAtWorker = null;
     jobs = null;
     prebuilder?.stop();
     prebuilder = null;
+  }
+
+  async function stop(): Promise<void> {
+    stopped = true;
+    startGen++;
+    internet.stop();
+    coast.abort();
+    coastCutCtrl?.abort();
+    coastCut.error = null;
+    stopServices('plugin stopped');
+    refreshPosition = null;
+    positionRefreshFor = null;
+    refreshHeld = false;
+    holdSent = undefined;
     tidesRun = null;
     // Awaited: Signal K waits for stop() before a restart's start(), whose store reads the saved totals.
     await tiles?.store.flushTotals();
@@ -1253,6 +1349,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     smocShared = null;
     rtofsShared = null;
     harmonicShared = null;
+    harmonicSig = null;
     routeCurrents = null;
     currentsKey = '';
     dataStatus = null;

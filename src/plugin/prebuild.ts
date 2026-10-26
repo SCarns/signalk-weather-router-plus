@@ -36,8 +36,11 @@
  * gives all of it back when it exits (brain, 2026-10-06: the two tile
  * threads held 95–110 MB of buffers each and kept them after the walk; a
  * map session added 350 MB that stayed). Shared memory does not cross
- * processes, so the current, tide and harmonic data relayed to a builder
- * are copies (unshared()), freed with the process.
+ * processes, so a builder is told where the currents are on disk and reads
+ * them itself ('currents-ref', currents/fromcache.ts), as it reads the tides:
+ * copies of them made on the main thread for two builders took 609 MB of
+ * Signal K's memory, which glibc kept after they were freed (brain,
+ * 2026-10-25).
  */
 
 import * as fs from 'node:fs';
@@ -411,9 +414,10 @@ export class TilePrebuilder {
     if (i >= 0) this.workers.splice(i, 1);
   }
 
-  /** Forward a message to every builder (forecast, SMOC, harmonics, RTOFS, tide run, config, refresh). */
+  /** Forward a message to every builder (forecast, where the currents are, tide run, config, refresh). */
   broadcast(msg: MainToWorker): void {
-    if (msg.type !== 'config' && msg.type !== 'refresh') this.broadcastLog.set(msg.type, msg);
+    // A new builder gets the currents from replayMessages, made at its start: a kept one could be older.
+    if (msg.type !== 'config' && msg.type !== 'refresh' && msg.type !== 'currents-ref') this.broadcastLog.set(msg.type, msg);
     for (const w of this.workers) if (w.ready) this.post(w, msg);
   }
 

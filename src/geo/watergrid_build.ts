@@ -22,13 +22,12 @@
  * tree would never report.
  */
 
-import { shorelinePaths } from './shapefile';
 import type { BBox } from './geodesy';
 import { lonOffset, unwrapLonNear } from './angles';
 import { M_PER_DEG } from '../geo/units';
 import { DEG, wrapLon } from './geodesy';
-import { LandMask } from './landmask';
-import { ShapefileIndex } from './shapefile';
+import type { CoastTiles } from './coasttiles';
+import { rasterFromTiles } from './rawraster';
 import { CANALS, type CanalDef } from './watergrid_canals';
 import {
   Chokepoints,
@@ -590,10 +589,10 @@ function setBit(plane: Uint8Array, idx: number): void {
 }
 
 /**
- * Build the global grid from coastline shapefiles (union of their land).
+ * Build the global grid from the coastline (union of its land), read from its tiles (coasttiles.ts).
  * Deterministic for the same inputs.
  */
-export function buildWaterGrid(shapefiles: string[], opts: BuildOptions = {}): WaterGrid {
+export function buildWaterGrid(coast: CoastTiles, opts: BuildOptions = {}): WaterGrid {
   const t0 = Date.now();
   const TILE = opts.tileDeg ?? 10;
   const K = WG_FINE_PER_CELL;
@@ -608,8 +607,6 @@ export function buildWaterGrid(shapefiles: string[], opts: BuildOptions = {}): W
   if (MARGIN_C > HALO_C) throw new Error('halo must be at least the chokepoint window margin (1°)');
   const params = opts.chokepoints ?? DEFAULT_CHOKEPOINT_PARAMS;
   const capM = Math.max(params.maxClearanceM * 3, 60_000);
-  shapefiles = shorelinePaths(shapefiles);
-  const indexes = shapefiles.map(p => ShapefileIndex.open(p));
   const grid = WaterGrid.empty();
   const { water, east, north } = grid;
   const cpLat: number[] = [];
@@ -643,14 +640,7 @@ export function buildWaterGrid(shapefiles: string[], opts: BuildOptions = {}): W
     const south = lat0 - haloS * FINE;
     const north_ = lat0 + TILE + haloN * FINE;
     const bbox: BBox = { west: wrapLon(lon0 - HALO_F * FINE), east: wrapLon(lon0 + TILE + HALO_F * FINE), south, north: north_ };
-    const mask = LandMask.rasterStreamed(
-      bbox,
-      FINE,
-      add => {
-        for (const ix of indexes) ix.forEach(bbox, add);
-      },
-      { edgeCells: false, nx: fnx, ny: fny }
-    );
+    const { mask } = rasterFromTiles(coast, bbox, FINE, { edgeCells: false, nx: fnx, ny: fny });
     const fine = mask.raster;
     let land = 0;
     for (let i = 0; i < fine.length; i++) land += fine[i];
@@ -765,7 +755,7 @@ export function buildWaterGrid(shapefiles: string[], opts: BuildOptions = {}): W
     fineRes: FINE,
     fineRule: 'centre-sampled: a fine cell is water when its centre is outside every land polygon',
     edgeRule: 'edge open when a 4-connected path of fine water cells inside the two coarse cells crosses it',
-    sources: sourceFingerprints(shapefiles),
+    sources: sourceFingerprints(coast.paths),
     builtAt: new Date().toISOString(),
     canals: [],
     chokepointRule: `windowed merge tree (2° cores, 1° margin): clearance ≤ ${params.maxClearanceM} m, basins ≥ ${params.ratio}× and ≥ +${params.minDiffM} m and ≥ ${params.minBasinClearanceM} m`,

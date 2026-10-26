@@ -8,6 +8,7 @@ import { WaterGrid } from './watergrid';
 import { shippedWaterGridPath } from './watergrid_store';
 import { LandMask } from './landmask';
 import { OnDemandLand } from './landcache';
+import { CoastTiles } from './coasttiles';
 
 const stJoe = [-86.55, 42.1] as const;
 const holland = [-86.3, 42.8] as const;
@@ -50,21 +51,27 @@ test('bundled global grid opens Lake Michigan and keeps Michigan landmass blocke
 
 const source = process.env.WRP_GSHHG_L1;
 test('actual GSHHG geometry: Lake Michigan bulk, refined and exact checks agree', { skip: !source }, () => {
-  const mask = LandMask.fromShapefiles([source!], { west: -88, south: 41.7, east: -82, north: 44.2 }, { resolutionDeg: 0.005 });
-  const overlay = new OnDemandLand([source!]);
-  for (const point of [stJoe, holland, chicago, huron]) {
-    assert.equal(mask.isLandExact(point[0], point[1]), false);
-    assert.equal(overlay.isLandAt(point[0], point[1]), false);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-lake-tiles-'));
+  try {
+    const coast = CoastTiles.build([source!], dir);
+    const mask = LandMask.fromCoastline(coast, { west: -88, south: 41.7, east: -82, north: 44.2 }, { resolutionDeg: 0.005 });
+    const overlay = new OnDemandLand(coast);
+    for (const point of [stJoe, holland, chicago, huron]) {
+      assert.equal(mask.isLandExact(point[0], point[1]), false);
+      assert.equal(overlay.isLandAt(point[0], point[1]), false);
+    }
+    assert.equal(mask.isLandExact(-85.6, 43.2), true);
+    for (const start of [stJoe, holland]) {
+      assert.equal(mask.legCrossesRaster(start[0], start[1], chicago[0], chicago[1]), false);
+      assert.equal(mask.legCrossesLandExact(start[0], start[1], chicago[0], chicago[1]), false);
+    }
+    assert.equal(mask.legCrossesRaster(...holland, ...huron), true);
+    assert.equal(mask.legCrossesLandExact(...holland, ...huron), true);
+    mask.refine({ west: -86.6, south: 42, east: -86.2, north: 43 }, 0.001);
+    assert.equal(mask.isLandExact(...holland), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
-  assert.equal(mask.isLandExact(-85.6, 43.2), true);
-  for (const start of [stJoe, holland]) {
-    assert.equal(mask.legCrossesRaster(start[0], start[1], chicago[0], chicago[1]), false);
-    assert.equal(mask.legCrossesLandExact(start[0], start[1], chicago[0], chicago[1]), false);
-  }
-  assert.equal(mask.legCrossesRaster(...holland, ...huron), true);
-  assert.equal(mask.legCrossesLandExact(...holland, ...huron), true);
-  mask.refine({ west: -86.6, south: 42, east: -86.2, north: 43 }, 0.001);
-  assert.equal(mask.isLandExact(...holland), false);
 });
 
 test('wrp-route full pipeline crosses Lake Michigan using the bundled global grid', { skip: !source }, () => {
@@ -108,7 +115,8 @@ test('wrp-route full pipeline crosses Lake Michigan using the bundled global gri
     const points = line.geometry.coordinates;
     assert.deepEqual(points[0], [...holland]);
     assert.deepEqual(points[points.length - 1], [...chicago]);
-    const mask = LandMask.fromShapefiles([source!], { west: -88, south: 41.7, east: -82, north: 44.2 }, { resolutionDeg: 0.005 });
+    const coast = CoastTiles.build([source!], path.join(dir, 'tiles'));
+    const mask = LandMask.fromCoastline(coast, { west: -88, south: 41.7, east: -82, north: 44.2 }, { resolutionDeg: 0.005 });
     for (let i = 1; i < points.length; i++) {
       const a = points[i - 1],
         b = points[i];

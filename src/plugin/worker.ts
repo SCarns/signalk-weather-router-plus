@@ -34,6 +34,7 @@ import * as path from 'node:path';
 import { ECMWF_MIRRORS, EcmwfClient } from '../data/ecmwf';
 import { DecodedRun } from '../data/decoded';
 import { OnDemandLand } from '../geo/landcache';
+import { CoastTiles } from '../geo/coasttiles';
 import { PolarDiagram } from '../vessel/polar';
 import { HarmonicCurrentSource } from '../currents/harmonic';
 import { CurrentStack } from '../currents/stack';
@@ -47,6 +48,7 @@ import { noteNetwork, requireInit } from './worker/state';
 import { refreshForecast } from './worker/forecast';
 import { prepareWaterGrid } from './worker/landgrid';
 import {
+  adoptCurrentsRef,
   loadHarmonic,
   makeSmocClient,
   rebuildStack,
@@ -131,6 +133,7 @@ const st: WorkerState = {
   internetHold: null,
   backgroundRound: false,
   harmonicErrors: [],
+  currentsUnread: [],
   decodeAbort: null,
 };
 // The data worker's requests say whether there is a connection (status, and a refresh round stops asking servers).
@@ -201,7 +204,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       if (st.config.landShapefiles.length === 0) throw new Error('no land shapefile configured');
       st.overlayLand =
         st.role === 'data' || st.role === 'tiles'
-          ? new OnDemandLand(st.config.landShapefiles, {
+          ? new OnDemandLand(CoastTiles.open(st.config.landShapefiles, st.cacheRoot), {
               log: m => st.log('debug', m),
               // Rasters saved on disk: a map box seen once is never rasterised again.
               cacheDir: st.cacheRoot ? path.join(st.cacheRoot, 'overlay-land') : undefined,
@@ -330,7 +333,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       await buildTile(st, msg.id, msg.tile, msg.tmp);
       return;
     case 'harmonic': {
-      // Route / tiles worker: the data worker's tidal-harmonic sources (shared constituent blocks).
+      // Route worker: the data worker's tidal-harmonic sources (shared constituent blocks; tiles workers: 'currents-ref').
       if (st.role === 'data') return;
       st.harmonic = msg.sources.map(s => new HarmonicCurrentSource(s));
       rebuildStack(st);
@@ -342,7 +345,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       return;
     }
     case 'rtofs': {
-      // Route / tiles worker: the data worker's RTOFS products (shared memory).
+      // Route worker: the data worker's RTOFS products (shared memory; tiles workers: 'currents-ref').
       if (st.role === 'data') return;
       const cur = requireInit(st).config.currents;
       const set = rtofsSetForConfig(msg.rtofs, cur.rtofsEnabled, cur.rtofsExtra);
@@ -352,7 +355,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       return;
     }
     case 'smoc': {
-      // Route / tiles worker: the data worker's run and resident area (shared memory).
+      // Route worker: the data worker's run and resident area (shared memory; tiles workers: 'currents-ref').
       if (st.role === 'data') return;
       const s = msg.smoc;
       const cfgNow = requireInit(st).config;
@@ -374,6 +377,11 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
         );
       return;
     }
+    case 'currents-ref':
+      // Tiles worker: the data worker's currents, read from its disk caches (no shared memory across processes).
+      if (st.role !== 'tiles') return;
+      await adoptCurrentsRef(st, msg.ref);
+      return;
     case 'tides-run': {
       // Tiles worker: open the data worker's tide run (areas load on demand from the shared disk cache).
       if (st.role !== 'tiles') return;

@@ -4,22 +4,20 @@
  * With a global forecast there is no "region" to pre-rasterise, and a
  * global raster at routing resolution is far too large. Instead each
  * overlay request gets a raster over its own bbox at a resolution
- * matched to the request's sample spacing, built from the configured
- * coastline shapefiles through an in-memory record index (so only the
- * polygons touching the bbox are read). Recent rasters are kept in an
- * in-memory LRU and, when a cache directory is given, saved to disk
- * (gzip) so a box seen before is never rasterised again, even after a
- * restart: the coastline does not change. The polygons themselves are
- * dropped after rasterising.
+ * matched to the request's sample spacing, built from the coastline's
+ * tiles (coasttiles.ts: only the coast in the tiles the bbox meets is
+ * read). Recent rasters are kept in an in-memory LRU and, when a cache
+ * directory is given, saved to disk (gzip) so a box seen before is never
+ * rasterised again, even after a restart: the coastline does not change.
+ * The raster is drawn straight from the tiles' bytes (rawraster.ts): no
+ * piece is decoded.
  * Point queries (conditions `is_land`) use the exact even-odd
- * point-in-polygon test on the few records whose box holds the point.
+ * point-in-polygon test on the pieces of the point's tile.
  *
  * Routing does not use this: it builds its own per-route mask at the
  * routing resolution (worker.ts landMaskFor).
  */
 
-import { shorelinePaths, shorelineLevel } from './shapefile';
-import * as crypto from 'node:crypto';
 import { wrapLon, lonOffset } from './angles';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -27,8 +25,8 @@ import * as zlib from 'node:zlib';
 import type { BBox } from './geodesy';
 import { bboxWidth } from './geodesy';
 import { LandMask } from './landmask';
-import { ShapefileIndex } from './shapefile';
-import { polygonCache } from './polygoncache';
+import type { CoastTiles } from './coasttiles';
+import { rasterFromTiles } from './rawraster';
 
 export interface LandLookup {
   isLand(lon: number, lat: number): boolean;
@@ -131,12 +129,11 @@ function bboxWithin(inner: BBox, outer: BBox): boolean {
 }
 
 export class OnDemandLand implements OverlayLand {
-  readonly paths: string[];
+  readonly coast: CoastTiles;
   private readonly maxEntries: number;
   private readonly maxCells: number;
   private readonly log: (msg: string) => void;
   private entries: Entry[] = [];
-  private indexes: ShapefileIndex[] | null = null;
   /** Disk cache directory for this coastline (fingerprinted), or null. */
   private readonly diskDir: string | null;
   private readonly diskBudgetBytes: number;
@@ -150,14 +147,13 @@ export class OnDemandLand implements OverlayLand {
   diskHits = 0;
   diskWrites = 0;
 
-  constructor(paths: string[], opts: OnDemandLandOptions = {}) {
-    paths = shorelinePaths(paths);
-    this.paths = paths;
+  constructor(coast: CoastTiles, opts: OnDemandLandOptions = {}) {
+    this.coast = coast;
     this.maxEntries = opts.maxEntries ?? 8;
     this.maxCells = opts.maxCells ?? 4_000_000;
     this.diskBudgetBytes = opts.diskBudgetBytes ?? 256e6;
     this.log = opts.log ?? (() => undefined);
-    this.diskDir = opts.cacheDir ? path.join(opts.cacheDir, coastlineFingerprint(paths)) : null;
+    this.diskDir = opts.cacheDir ? path.join(opts.cacheDir, coast.fingerprint) : null;
   }
 
   private diskFile(res: number, b: BBox): string {
@@ -256,17 +252,6 @@ export class OnDemandLand implements OverlayLand {
     return { dir: this.diskDir, files: this.diskTotals?.files ?? 0, bytes: this.diskTotals?.bytes ?? 0 };
   }
 
-  private index(): ShapefileIndex[] {
-    if (!this.indexes) {
-      const t = Date.now();
-      this.indexes = this.paths.map(p => ShapefileIndex.open(p));
-      const n = this.indexes.reduce((a, i) => a + i.count, 0);
-      const kb = this.indexes.reduce((a, i) => a + i.bytes(), 0) / 1024;
-      this.log(`land index: ${n} records from ${this.paths.length} file(s), ${kb.toFixed(0)} kB, ${Date.now() - t} ms`);
-    }
-    return this.indexes;
-  }
-
   forBBox(bbox: BBox, spacingDeg: number): LandMask {
     const res = chooseOverlayResolution(bbox, spacingDeg, this.maxCells);
     const need = overlayNeed(bbox, res);
@@ -292,19 +277,13 @@ export class OnDemandLand implements OverlayLand {
       return fromDisk;
     }
     const t = Date.now();
-    // Stream the polygons into the raster one at a time and keep only the
-    // raster. They come from the thread's polygon cache (polygoncache.ts),
-    // so the rasters of nearby boxes and other resolutions reuse the same
-    // decoded records; a whole-world view (~180 k GSHHG records, 150 MB of
-    // coordinates) exceeds the cache budget and streams through it.
-    let polygons = 0;
-    const mask = LandMask.rasterStreamed(snapped, res, add => {
-      for (const p of this.paths) polygons += polygonCache.forEach(p, snapped, add);
-    });
+    // Drawn from the bytes of the box's tiles, nothing decoded or cached: a whole-world view decoded kept hundreds of
+    // MB in Signal K's process (rawraster.ts).
+    const { mask, pieces } = rasterFromTiles(this.coast, snapped, res);
     this.lastBuildMs = Date.now() - t;
     this.builds++;
     this.log(
-      `overlay land raster ${snapped.west}..${snapped.east} × ${snapped.south}..${snapped.north} at ${res}°: ${mask.nx}x${mask.ny}, ${polygons} polygons, ${this.lastBuildMs} ms`
+      `overlay land raster ${snapped.west}..${snapped.east} × ${snapped.south}..${snapped.north} at ${res}°: ${mask.nx}x${mask.ny}, ${pieces} pieces, ${this.lastBuildMs} ms`
     );
     this.entries.push({ bbox: snapped, res, mask });
     while (this.entries.length > this.maxEntries) this.entries.shift();
@@ -313,13 +292,7 @@ export class OnDemandLand implements OverlayLand {
   }
 
   isLandAt(lon: number, lat: number): boolean {
-    const l = wrapLon(lon);
-    let level = 0;
-    for (const ix of this.index()) {
-      const n = shorelineLevel(ix.path);
-      if (n > level && [l, l + 360, l - 360].some(x => ix.containsPoint(x, lat))) level = n;
-    }
-    return level % 2 === 1;
+    return this.coast.containsPoint(lon, lat);
   }
 
   /** Cache state for api/status. */
@@ -334,7 +307,7 @@ export class OnDemandLand implements OverlayLand {
     disk_hits: number;
     disk_writes: number;
     disk: { dir: string | null; files: number; bytes: number };
-    /** The thread's decoded-polygon cache (polygoncache.ts). */
+    /** The thread's cache of coastline tiles read (coasttiles.ts; `decodes`: tiles read from disk). */
     polygons: { entries: number; bytes: number; budget_bytes: number; hits: number; decodes: number; evictions: number };
   } {
     const cells = this.entries.reduce((a, e) => a + e.mask.nx * e.mask.ny, 0);
@@ -342,33 +315,14 @@ export class OnDemandLand implements OverlayLand {
       disk_hits: this.diskHits,
       disk_writes: this.diskWrites,
       disk: this.diskStats(),
-      polygons: polygonCache.stats(),
+      polygons: this.coast.cacheStats(),
       entries: this.entries.length,
       cells,
       bytes: cells,
-      index_bytes: this.indexes ? this.indexes.reduce((a, i) => a + i.bytes(), 0) : 0,
+      index_bytes: this.coast.indexBytes(),
       builds: this.builds,
       hits: this.hits,
       last_build_ms: this.lastBuildMs,
     };
   }
-}
-
-/**
- * Folder name for one coastline: a hash of the shapefile paths, sizes and
- * modification times, so a changed coastline never reuses saved rasters.
- */
-function coastlineFingerprint(paths: string[]): string {
-  const h = crypto.createHash('sha256');
-  h.update('hierarchy-v1');
-  for (const p of paths) {
-    h.update(p);
-    try {
-      const st = fs.statSync(p);
-      h.update(`|${st.size}|${Math.floor(st.mtimeMs)}`);
-    } catch {
-      h.update('|missing');
-    }
-  }
-  return `coast-${h.digest('hex').slice(0, 16)}`;
 }

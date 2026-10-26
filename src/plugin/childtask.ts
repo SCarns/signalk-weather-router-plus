@@ -43,7 +43,11 @@
  *              every mesh's water as land for the coastline parts (part 5);
  *  - forecast-decode: one ECMWF cycle downloaded and decoded to disk
  *              (plugin/forecastdecodetask.ts), so the data worker keeps
- *              answering map queries meanwhile; streams its progress.
+ *              answering map queries meanwhile; streams its progress;
+ *  - coast-cut: the coastline cut into its tiles (geo/coasttiles.ts), once
+ *              per coastline: every record read, the continents included
+ *              (about 750 MB at its peak for GSHHG full resolution, brain
+ *              2026-10-25).
  */
 
 import { fork } from 'node:child_process';
@@ -68,6 +72,14 @@ import type { MeshTransferTask, MeshTransferTaskResult } from './meshtransfer';
 import type { MeshWatersTask, MeshWatersTaskResult } from './meshwaters';
 import type { MeshDownloadResult, MeshDownloadTask } from './mesharchive';
 import type { ForecastDecodeEvent, ForecastDecodeResult, ForecastDecodeTask } from './forecastdecodetask';
+import type { CutResult } from '../geo/coasttiles';
+
+/** Cut the coastline `paths` into its tile store under `root` (geo/coasttiles.ts). */
+export interface CoastCutTask {
+  task: 'coast-cut';
+  paths: string[];
+  root: string;
+}
 
 export type ChildTask =
   | { task: 'rmtree'; dir: string }
@@ -82,7 +94,8 @@ export type ChildTask =
   | MeshJoinsTask
   | MeshWatersTask
   | MeshDownloadTask
-  | ForecastDecodeTask;
+  | ForecastDecodeTask
+  | CoastCutTask;
 
 /** A message a task sends before its answer (the mesh leg's progress and stage fronts, the forecast decode's steps). */
 export type ChildEvent = MeshLegEvent | ForecastDecodeEvent;
@@ -117,7 +130,9 @@ export type ChildTaskResult<T extends ChildTask> = T extends { task: 'rmtree' }
                       ? MeshDownloadResult
                       : T extends { task: 'forecast-decode' }
                         ? ForecastDecodeResult
-                        : RegionalDecodeResult;
+                        : T extends { task: 'coast-cut' }
+                          ? CutResult
+                          : RegionalDecodeResult;
 
 const isTs = __filename.endsWith('.ts');
 
@@ -287,6 +302,11 @@ async function runTask(t: ChildTask): Promise<unknown> {
     case 'forecast-decode': {
       const { runForecastDecodeTask } = await import('./forecastdecodetask');
       return runForecastDecodeTask(t, event => process.send!({ event }));
+    }
+    case 'coast-cut': {
+      const { cutCoastline } = await import('../geo/coasttiles');
+      // The plugin's own cut: other coastlines' stores under its data directory are no longer used.
+      return cutCoastline(t.paths, t.root, undefined, true);
     }
   }
 }

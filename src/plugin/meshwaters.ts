@@ -9,6 +9,7 @@
 
 import type { BBox } from '../geo/geodesy';
 import { type CellMask, LandMask } from '../geo/landmask';
+import { CoastTiles } from '../geo/coasttiles';
 import type { MeshRules } from '../engine/mesh/route';
 import { MeshStore } from '../engine/mesh/store';
 import { planWaters, type WaterMesh, type WaterStretch } from '../engine/mesh/waters';
@@ -24,8 +25,8 @@ export interface MeshWatersTask {
   start: [number, number];
   end: [number, number];
   names: { start: string; end: string };
-  /** The coastline search's land for the leg's area: its polygons, box, cell budget and land buffer. */
-  land: { shapefiles: string[]; bbox: BBox; maxCells: number; bufferM: number };
+  /** The coastline search's land for the leg's area: its coastline (and where its tiles are), box, cell budget and land buffer. */
+  land: { shapefiles: string[]; tilesRoot: string; bbox: BBox; maxCells: number; bufferM: number };
 }
 
 export type MeshWatersTaskResult =
@@ -66,7 +67,7 @@ export function runMeshWatersTask(t: MeshWatersTask): MeshWatersTaskResult {
       });
     });
   const landFor = (): LandMask =>
-    LandMask.fromShapefiles(t.land.shapefiles, t.land.bbox, {
+    LandMask.fromCoastline(CoastTiles.open(t.land.shapefiles, t.land.tilesRoot), t.land.bbox, {
       resolutionDeg: LandMask.chooseResolution(t.land.bbox, t.land.maxCells),
     }).withBuffer(t.land.bufferM);
   const r = planWaters(meshes, t.rules, t.why, landFor, t.start, t.end, t.names);

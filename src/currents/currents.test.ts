@@ -78,13 +78,7 @@ const rtofsFile = process.env.WRP_RTOFS_FILE;
 test('RTOFS GRIB2 daily file decodes into a current source', { skip: !rtofsFile ? 'WRP_RTOFS_FILE not set' : false }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-rtofs-'));
   const run = rtofsRunFor(new Date());
-  const client = new RtofsClient({
-    cacheDir: dir,
-    region: 'west_atl',
-    fetchImpl: (async () => {
-      throw new Error('no network in test');
-    }) as unknown as typeof fetch,
-  });
+  const client = new RtofsClient({ cacheDir: dir, region: 'west_atl', cacheOnly: true });
   fs.mkdirSync(path.dirname(client.cachePath(run, 'f024')), { recursive: true });
   fs.copyFileSync(rtofsFile!, client.cachePath(run, 'f024'));
   const bbox = { west: -75, south: 36, east: -65, north: 44 };
@@ -359,4 +353,36 @@ test('rtofs: a file whose body stalls after the headers is given up at the timeo
   const t0 = Date.now();
   await assert.rejects(() => client.fetchExtent(rtofsRunFor(new Date())), /not a GRIB message|no grid definition|edition/);
   assert.ok(Date.now() - t0 < 5000, `gave up after ${Date.now() - t0} ms`);
+});
+
+test('rtofs: a cache-only read of a file not in the cache fails at once, without the network', async () => {
+  const { rtofsFromCache } = await import('./fromcache');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-rtofs-cacheonly-'));
+  let asked = 0;
+  const fetchImpl = (async () => {
+    asked++;
+    throw new Error('the network was asked');
+  }) as unknown as typeof fetch;
+  const client = new RtofsClient({ cacheDir: dir, region: 'west_atl', cacheOnly: true, fetchImpl });
+  const t0 = Date.now();
+  await assert.rejects(
+    () => client.fetchFile(rtofsRunFor(new Date(Date.UTC(2026, 9, 26))), 'f024'),
+    /west_atl run 20261026 f024 is not in the cache/
+  );
+  // As the tile builders and the chart-mesh leg read it (fromcache.ts): an error at once, not 62 s of retries.
+  const r = await rtofsFromCache(
+    {
+      cacheDir: dir,
+      runs: [{ product: 'west_atl', runMs: Date.UTC(2026, 9, 26), bbox: { south: 10, west: -100, north: 44.72, east: -54.08 } }],
+      horizonS: 72 * HOUR_S,
+      stepS: 3 * HOUR_S,
+    },
+    null
+  );
+  assert.equal(r.length, 1);
+  assert.equal(r[0].source, null);
+  assert.match(r[0].error!, /not in the cache/);
+  assert.equal(asked, 0, 'the network is never asked');
+  assert.ok(Date.now() - t0 < 2000, `failed after ${Date.now() - t0} ms`);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

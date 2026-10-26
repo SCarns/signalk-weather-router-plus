@@ -11,6 +11,7 @@ import * as path from 'node:path';
 import { checkWaterGridBuildMemory } from '../memguard';
 import { type BBox } from '../../geo/geodesy';
 import { LandMask } from '../../geo/landmask';
+import { CoastTiles } from '../../geo/coasttiles';
 import { WaterGrid } from '../../geo/watergrid';
 import { chooseWaterGrid } from '../../geo/watergrid_store';
 import { type GridBuilderData, type GridBuilderMessage } from '../gridbuilder';
@@ -26,7 +27,7 @@ export function landMaskFor(st: WorkerState, bbox: BBox, maxCells: number, shape
     return st.landCache.mask;
   }
   const t = Date.now();
-  const mask = LandMask.fromShapefiles(shapefiles, bbox, { resolutionDeg: res });
+  const mask = LandMask.fromCoastline(CoastTiles.open(shapefiles, st.cacheRoot), bbox, { resolutionDeg: res });
   st.log(
     'info',
     `land mask: ${mask.shapes.length} polygons, ${mask.nx}x${mask.ny} cells at ${res}° (${((mask.nx * mask.ny) / 1e6).toFixed(1)}M), ${Date.now() - t} ms`
@@ -67,7 +68,7 @@ export function startGridRebuild(st: WorkerState, cfg: ResolvedConfig, outFile: 
     return;
   }
   st.log('info', `water grid: rebuilding from ${cfg.landShapefiles.join(', ')} into ${outFile} (${mem.message}); this takes a few minutes`);
-  const data: GridBuilderData = { shapefiles: cfg.landShapefiles, outFile };
+  const data: GridBuilderData = { shapefiles: cfg.landShapefiles, tilesRoot: st.cacheRoot, outFile };
   const isTs = __filename.endsWith('.ts');
   const w = new Worker(gridBuilderEntry(), {
     workerData: data,
