@@ -22,6 +22,9 @@ const windy: WindSource = {
   wavesAt: () => null,
 };
 
+/** 5 m/s everywhere: under the 15 m/s limit. */
+const light: WindSource = { ...windy, at: () => [5, 270] };
+
 /** A candidate of the front, `h` hours out. */
 function cand(lon: number, lat: number, h: number): Candidate {
   return {
@@ -42,10 +45,10 @@ function cand(lon: number, lat: number, h: number): Candidate {
 }
 
 /** The parts of a search refuseDeadEnd reads; the counts of the last try as given. */
-function ctx(counts: Partial<TryStats>, forecastEndMs?: number): SearchContext {
+function ctx(counts: Partial<TryStats>, forecastEndMs?: number, wind: WindSource = windy): SearchContext {
   return {
     args: { start: [-71, 41], end: [-70, 41], departureTime: new Date(T0), vessel: {} as never, maxWindMs: 15, forecastEndMs },
-    wind: windy,
+    wind,
     lastTry: { tried: 0, land: 0, limited: 0, noGo: 0, stuck: 0, latestMs: 0, ...counts },
     goals: [{ lon: -70, lat: 41, radiusM: 0 }],
     sLon: -71,
@@ -131,4 +134,13 @@ test('refuseDeadEnd: over the limit past the forecast end, it stays over to the 
   assert.equal(r.untilMs, end);
   assert.equal(r.untilForecastEnd, true);
   assert.equal(r.easesMs, null);
+});
+
+test('refuseDeadEnd: the limit tied with another cause but no reading over it is mixed, the limit among the reasons', () => {
+  const c = cand(-70.5, 41.1, 3);
+  const r = refusal(ctx({ tried: 40, limited: 20, land: 20 }, undefined, light), [c]);
+  assert.equal(r.kind, 'mixed');
+  assert.ok(r.kind === 'mixed');
+  assert.deepEqual(r.reasons, ['land', 'limit']);
+  assert.deepEqual(r.at, { lon: c.lon, lat: c.lat });
 });

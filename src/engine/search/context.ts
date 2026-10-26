@@ -7,12 +7,11 @@
  * arithmetic is unchanged; the golden routes hold that.
  */
 
-import { haversineDistanceM } from '../../geo/geodesy';
+import { haversineBearing, haversineDistanceM, projectAlongBearing } from '../../geo/geodesy';
 import { HOUR_MS } from '../../geo/units';
 import { NoCurrent, NoWind } from '../environment';
 import type { EngineErrorCode } from '../errors';
 import { fmtUtc, limitsAt, limitsEaseAt, type RefusalPlace, RouteRefused, type RouteRefusal } from '../refusal';
-import { haversineBearing, projectAlongBearing } from '../../geo/geodesy';
 import type { Waypoint } from '../route';
 import {
   RouteCancelled,
@@ -129,7 +128,9 @@ export function refuseDeadEnd(ctx: SearchContext, stuck: Candidate[], code: Engi
       untilMs,
       untilForecastEnd: args.forecastEndMs !== undefined,
     };
-    return new RouteRefused(refusal, detail, code, suffix);
+    // Only when a reading is over a limit: the moves the limit stopped can be on other headings than the two readings,
+    // and "over your limits on every heading" would then be false. Else the reasons are listed, the limit among them.
+    if (worstL.wind || worstL.waves) return new RouteRefused(refusal, detail, code, suffix);
   }
   // One cause is named only when every move tried failed for it (then it held at every candidate, `first` among
   // them); otherwise the reasons are listed, at `first` only when it was the one candidate.
