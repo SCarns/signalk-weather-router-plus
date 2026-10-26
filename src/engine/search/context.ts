@@ -115,7 +115,7 @@ export function refuseDeadEnd(ctx: SearchContext, stuck: Candidate[], code: Engi
       }
     }
     // Up to the forecast's end when it is known: past it the last step is held, so nothing can ease there (a reading past
-    // it stays over to the end; forecastNote says the search went past it).
+    // it is told as past the forecast's end, refusalText).
     const untilMs = args.forecastEndMs ?? worst.timeMs + EASE_LOOKAHEAD_MS;
     const refusal: RouteRefusal = {
       kind: 'over_limit',

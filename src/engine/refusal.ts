@@ -98,7 +98,9 @@ export function refusalText(r: RouteRefusal): string {
       const ease =
         r.easesMs !== null
           ? `${they} come${parts.length > 1 ? '' : 's'} under ${limits} about ${fmtUtc(r.easesMs)}.`
-          : `${they} stay${parts.length > 1 ? '' : 's'} over ${limits} to ${fmtUtc(r.untilMs)}, ${r.untilForecastEnd ? 'as far as the forecast goes' : 'as far ahead as was checked'}.`;
+          : r.untilForecastEnd && r.atMs > r.untilMs
+            ? `This is past the forecast's end, ${fmtUtc(r.untilMs)}: the search went beyond the forecast, on its last step held.`
+            : `${they} stay${parts.length > 1 ? '' : 's'} over ${limits} to ${fmtUtc(r.untilMs)}, ${r.untilForecastEnd ? 'as far as the forecast goes' : 'as far ahead as was checked'}.`;
       return `Forecast ${where}: ${parts.join(' and ')}. ${ease} ${advice(r.at, r.easesMs !== null)}`;
     }
     case 'coast':
@@ -156,8 +158,12 @@ export function limitsEaseAt(
   maxSwhM: number | undefined
 ): number | null {
   for (let t = Math.ceil(fromMs / HOUR_MS) * HOUR_MS; t <= untilMs; t += HOUR_MS) {
-    const l = limitsAt(wind, lon, lat, t, maxWindMs, maxSwhM);
-    if (!l.wind && !l.waves) return t;
+    // Eased only on a reading under every limit set: a missing wind or wave value (NaN) is no sign that it eased. The
+    // wave limit, as in the search (legsim.ts), only where the forecast has waves.
+    const at = new Date(t);
+    const windOk = maxWindMs === undefined || wind.at(lon, lat, at)[0] <= maxWindMs;
+    const wavesOk = maxSwhM === undefined || !wind.hasWaves || (wind.wavesAt(lon, lat, at)?.swh ?? NaN) <= maxSwhM;
+    if (windOk && wavesOk) return t;
   }
   return null;
 }

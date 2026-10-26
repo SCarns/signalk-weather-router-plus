@@ -264,9 +264,10 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
       progress(stage + 1, Math.max(kEff, stage + 1), `${stalled}; ${tryNote(ctx)}`);
       // Moves stopped by a limit, the coast, the wind or no boat speed: the user is told that reason, then the stall.
       if (lastTry.limited || lastTry.land || lastTry.noGo || lastTry.stuck)
+        // The parents: the candidates whose moves lastTry counted.
         throw refuseDeadEnd(
           ctx,
-          retained,
+          parents,
           'boxed_in',
           ` The front made no progress for ${stagesWithoutGain} stages.${atGoal}${forecastNote(ctx)}`
         );

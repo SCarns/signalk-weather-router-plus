@@ -1236,7 +1236,16 @@ export = function plugin(app: SkApp): SignalKPlugin {
       return;
     }
     if (gen !== startGen || stopped) return;
-    startServices(dataDir);
+    // Never rejects (both callers start it with `void`): what startServices had started is stopped again, and the
+    // failure reported, rather than left running half set up.
+    try {
+      startServices(dataDir);
+    } catch (err) {
+      stopServices('the plugin could not start');
+      void tiles?.store.flushTotals();
+      tiles = null;
+      app.setPluginError(`the plugin could not start: ${(err as Error).message}`);
+    }
   }
 
   /** Workers, jobs, tiles and timers, once the coastline is known. */
@@ -1296,6 +1305,27 @@ export = function plugin(app: SkApp): SignalKPlugin {
     log(`${PLUGIN_ID} started; data dir ${dataDir}`);
   }
 
+  /** What startServices starts, all of it or as far as it got: meshes, rough cuts, timers, workers, windows, jobs, tile builders. */
+  function stopServices(why: string): void {
+    meshes.stop();
+    roughCutCtrl?.abort();
+    if (refreshTimer) clearInterval(refreshTimer);
+    if (positionTimer) clearInterval(positionTimer);
+    if (failedRefreshTimer) clearTimeout(failedRefreshTimer);
+    refreshTimer = failedRefreshTimer = positionTimer = null;
+    pool.stopAll();
+    pool.rejectPending(why);
+    // The windows first: failing the running job must not start a window's next departure.
+    windows?.close();
+    windows = null;
+    jobs?.failRunning(why);
+    waitingForForecast = null;
+    routeAtWorker = null;
+    jobs = null;
+    prebuilder?.stop();
+    prebuilder = null;
+  }
+
   async function stop(): Promise<void> {
     stopped = true;
     startGen++;
@@ -1303,27 +1333,11 @@ export = function plugin(app: SkApp): SignalKPlugin {
     coast.abort();
     coastCutCtrl?.abort();
     coastCut.error = null;
-    meshes.stop();
-    roughCutCtrl?.abort();
-    if (refreshTimer) clearInterval(refreshTimer);
-    if (positionTimer) clearInterval(positionTimer);
-    if (failedRefreshTimer) clearTimeout(failedRefreshTimer);
-    refreshTimer = failedRefreshTimer = positionTimer = null;
+    stopServices('plugin stopped');
     refreshPosition = null;
     positionRefreshFor = null;
     refreshHeld = false;
     holdSent = undefined;
-    pool.stopAll();
-    pool.rejectPending('plugin stopped');
-    // The windows first: failing the running job must not start a window's next departure.
-    windows?.close();
-    windows = null;
-    jobs?.failRunning('plugin stopped');
-    waitingForForecast = null;
-    routeAtWorker = null;
-    jobs = null;
-    prebuilder?.stop();
-    prebuilder = null;
     tidesRun = null;
     // Awaited: Signal K waits for stop() before a restart's start(), whose store reads the saved totals.
     await tiles?.store.flushTotals();

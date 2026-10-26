@@ -95,6 +95,29 @@ test('limitsAt and limitsEaseAt: the values against the limits, and the first wh
   // No wave limit, or no wave data: only the wind counts.
   assert.equal(limitsEaseAt(easing, 0, 0, t0, t0 + 72 * H, 8, undefined), t0 + 2 * H);
   assert.equal(limitsAt({ ...easing, hasWaves: false }, 0, 0, t0, undefined, 3.05).waves, null);
+  assert.equal(limitsEaseAt({ ...easing, hasWaves: false }, 0, 0, t0, t0 + 72 * H, 8, 3.05), t0 + 2 * H);
+});
+
+test('limitsEaseAt: a missing wind or wave reading is not easing', () => {
+  const noWind: WindSource = { ...easing, at: () => [NaN, NaN] };
+  assert.equal(limitsEaseAt(noWind, 0, 0, t0, t0 + 72 * H, 8, undefined), null);
+  const noWaves: WindSource = { ...easing, wavesAt: () => null };
+  assert.equal(limitsEaseAt(noWaves, 0, 0, t0, t0 + 72 * H, 8, 3.05), null);
+});
+
+test('refusal text: a reading past the forecast end says the search went beyond it', () => {
+  const text = refusalText({
+    kind: 'over_limit',
+    at: null,
+    atMs: t0 + 5 * H,
+    wind: { seen: 15.2, limit: 12.86 },
+    waves: null,
+    easesMs: null,
+    untilMs: t0 + 2 * H,
+    untilForecastEnd: true,
+  });
+  assert.match(text, new RegExp(`This is past the forecast's end, ${fmtUtc(t0 + 2 * H)}: the search went beyond the forecast`));
+  assert.doesNotMatch(text, /stays over/);
 });
 
 test('RouteRefused: the sentence plus the suffix is the message; the counts stay on the error', () => {
