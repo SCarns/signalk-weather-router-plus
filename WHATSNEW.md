@@ -1,6 +1,37 @@
 # What's new
 
-## Unreleased
+## 0.2.0-beta.4
+
+- **Signal K keeps much less memory.** Drawing the map tiles ahead of time,
+  zooming the map out, and looking at a part of the map not seen before
+  each left memory with Signal K that it never gave back. On the test box:
+  starting the tile drawing kept 609 MB, now 0.4 MB; a new part of the map
+  80 MB, now 12.5 MB; the whole world zoomed out 333 MB, now 18 MB, and
+  drawn in 15 s instead of 38 s. Routes and the map look exactly the same.
+- **A short wait at the first start after updating.** The plugin now cuts
+  the coastline into small tiles once, so it reads only the coast near what
+  you look at, never a whole continent: about 15 seconds on a Raspberry Pi 5
+  and about 200 MB of disk. The status says *cutting the coastline into
+  tiles* meanwhile. The current tiles on the map are also drawn again once.
+- **A route that cannot be made says why, in plain words.** For example:
+  "Forecast at the start: waves 4.6 m against your 3.0 m limit. It comes
+  under the limit about 26 Oct 09:00 UTC. Raise the limit or depart after
+  that." The coast, wind dead ahead, a boat that makes no way, or several
+  reasons together get their own sentences.
+- **No downloads on your own over a metered link.** With the
+  signalk-internet plugin installed, while it says the connection is
+  metered, offline or behind a captive portal, the forecast, currents,
+  tides, chart and coastline downloads wait and no map tiles are drawn
+  ahead; they carry on when the connection clears. What you ask for
+  (Refresh, a route, the map you look at) still downloads.
+- **Watch the search.** While a route computes, a small boat on the map
+  sits at the head of the best path found so far and moves on with each
+  stage.
+- **Fixes:** current tiles are drawn again when you add or replace a tidal
+  harmonics file (at the next start); a current source that cannot be
+  read no longer leaves map tiles without it for a day.
+
+## 0.2.0-beta.3
 
 - **RTOFS currents for where you are.** The NOAA RTOFS currents now come from
   the regional product your boat is in (for example Samoa around Fiji,
@@ -15,9 +46,6 @@
   to drag, step or play through the days ahead, all layers at the same hour;
   and how fresh the data on the map is, with the same coloured dots, late
   warnings and online line as the web page.
-
-## 0.2.0-beta.3
-
 - **See at a glance how fresh your data is.** The top of the panel shows a
   coloured dot for each source (wind, waves, currents, tides): green while
   it is the latest, orange when a newer run is due about now, red when the

@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0-beta.4] - 2026-10-26
+
 ### Added
 
 - The OpenAPI document describes the job document in full: `window_id`, the
@@ -87,7 +89,7 @@ uses [Semantic Versioning](https://semver.org/).
   every route's land mask and every snapped start or end. On brain, a map
   area nobody had viewed yet added 80 MB that Signal K kept. At start the
   plugin now cuts the coastline into tiles once per coastline, in its own
-  process: 13.6 s for GSHHG full resolution on brain, 188 MB on disk in
+  process: 14.6 s for GSHHG full resolution on brain, 196 MB on disk in
   `coast-tiles/`. Each question then reads only the tiles near it. A new
   map area added 12.5 MB, and a box's coastline loads in 3–16 ms instead of
   68–95 ms. The answers are the same. On real GSHHG, 18 land rasters showed
@@ -2279,7 +2281,8 @@ builds before this release, with their measurements, is in
   loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.3...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.4...HEAD
+[0.2.0-beta.4]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.3...v0.2.0-beta.4
 [0.2.0-beta.3]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.2...v0.2.0-beta.3
 [0.2.0-beta.2]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.1...v0.2.0-beta.2
 [0.2.0-beta.1]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.1.2-beta.1...v0.2.0-beta.1
