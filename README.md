@@ -9,8 +9,9 @@ TypeScript, reads Copernicus Marine SMOC ocean currents (worldwide,
 including tides) and the Copernicus Marine hourly sea level (tide
 height, total water level, surge) from their Zarr stores with an
 in-process Blosc/LZ4 decoder, avoids land with GSHHG coastline polygons, and runs an
-isochrone router against the vessel's polar in a worker thread. No
-runtime npm dependencies.
+isochrone router against the vessel's polar in a worker thread. One
+runtime npm dependency: TypeBox, which describes the API's requests and
+answers.
 
 The "plus" is the overlays: wind, temperature, tide, current and more,
 drawn from the same data the routing uses.
@@ -25,7 +26,7 @@ channels or bridges.
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
 
-**Status: beta** (0.2.0-beta.3). Please report
+**Status: beta** (0.2.0-beta.4). Please report
 problems at https://github.com/motamman/signalk-weather-router-plus/issues.
 
 What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
@@ -143,12 +144,17 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   measured).
 - **Land:** GSHHG shorelines as shapefiles (`GSHHS_f_L1.shp` for full
   resolution, automatically including L2–L4 siblings; add `GSHHS_f_L6.shp` for Antarctica) or the OSM
-  land-polygons export. Overlay land flags use a raster built on demand
-  for each requested bbox at a resolution matched to the request's
-  sample spacing (a quarter of it, 0.002° to 0.25°, at most 4 M cells),
-  from an in-memory index of the shapefile records; the last 8 rasters
-  are kept. Conditions `is_land` uses the exact polygons. For routing,
-  land is loaded for the box around the route's corridor (see [Global
+  land-polygons export. At start the plugin cuts the coastline into
+  0.5° tiles once per coastline, in a child process (`coast-tiles/` in
+  the plugin data directory; GSHHG full resolution: 196 MB, 14.6 s on a
+  Pi 5), and every land question then reads only the tiles near it,
+  never a whole continent's record. Overlay land flags use a raster built
+  on demand for each requested bbox at a resolution matched to the
+  request's sample spacing (a quarter of it, 0.002° to 0.25°, at most 4 M
+  cells), drawn straight from the tiles' bytes; the last 8 rasters are
+  kept, and each is saved on disk so a box is drawn once. Conditions
+  `is_land` uses the exact polygons of the point's tile. For routing,
+  land is loaded from the tiles for the box around the route's corridor (see [Global
   water grid](#global-water-grid)) plus 1° and rasterised at
   the finest resolution that fits the configured cell budget (0.5 m
   arc-seconds to 0.01°). The raster is conservative: cells crossed by a
@@ -1310,10 +1316,14 @@ stages plus half the configured count; progress is measured towards the
 deepest branch's next via, or the destination once every via is crossed)
 fails with "the search is boxed in" (or, with a via still uncrossed, the
 vias-not-crossed error that makes the router retry without automatic
-vias), counting how many of
-the last stage's candidates were over the wind/wave limit, crossed land
-or had no boat speed, and naming the forecast end when the search had
-run past it. Each stage's progress line also carries those counts.
+vias). The message says why in plain words: over the wind or wave
+limit (the value against the limit, where, when it comes under, or that
+it does not before the forecast ends), every heading on land, dead
+upwind, no boat speed, or the reasons together; and it names the
+forecast end when the search had run past it. Each stage's progress
+line in the job's log counts the candidates over the limit, on land and
+dead upwind; the dead-end and boxed-in lines there also count those with
+no boat speed.
 
 ### Global water grid
 
@@ -1399,8 +1409,9 @@ resolution levels 1–4 (`GSHHS_f_L1.shp` through `GSHHS_f_L4.shp`):
   [Metered or no internet](#metered-or-no-internet-signalk-internet).
 - Disk in the Signal K data directory: the decoded forecast (about
   1.35 GB for 72 h with the extra fields, 4.6 GB at 360 h), the GRIB files
-  of the cached cycles, the coastline (about 156 MB when downloaded),
-  current and tide caches, and the saved map tiles (up to the configured
+  of the cached cycles, the coastline (about 156 MB when downloaded, and
+  about 196 MB more once cut into tiles at start), current and tide
+  caches, and the saved map tiles (up to the configured
   cap, 20 GB by default). Each cache directory holds a
   [cache directory tag](https://bford.info/cachedir/) (`CACHEDIR.TAG`),
   so backups leave the caches out: Kopia by default, restic, Borg and
@@ -1449,7 +1460,12 @@ is used as is. The download does not hold up the server's start-up; if
 it fails (offline, server error, short file) the plugin status says why
 and it is tried again every 10 minutes (or at once with **Download
 coastline** in the plugin's configuration panel); stopping the plugin
-cancels it.
+cancels it. Once the coastline is there, the plugin cuts it into 0.5°
+tiles before anything else starts (once per coastline, in a child
+process: 14.6 s for GSHHG full resolution on a Pi 5; the status says
+*starting: cutting the coastline into tiles*); a coastline whose path,
+size or modification time changes, or a tile store from an older
+version, is cut again.
 To use another coastline, or an existing GSHHG copy, set its path in the
 plugin configuration. A standard GSHHS layer path automatically includes all four
 sibling layers at the same resolution; missing siblings are an error. An older
@@ -1532,8 +1548,12 @@ and Signal K's own process only moves the file into place (a tile built
 while its data changed is deleted). They are
 started when the walk has a tile to build and exit when it is complete,
 so the memory they used goes back to the system (a thread's memory stays
-with Signal K until it restarts). While they run, each holds its own copy
-of the current, tide and RTOFS data (every RTOFS product loaded). Folders of tiles made obsolete by a
+with Signal K until it restarts). While they run, each reads the current,
+tide and RTOFS data from the disk caches the data worker writes and holds
+its own copy (every RTOFS product loaded, whole: about 350 MB per builder
+at its peak on the test box, given back when it exits). A builder that
+cannot read a current source keeps none of the current layers' tiles
+until it can. Folders of tiles made obsolete by a
 new forecast, currents run or tide run are normally deleted by a
 short-lived child process; if that process cannot run, the deletion
 falls back to Signal K's own process. The boat's last position is kept in `last-position.json` in
@@ -2469,9 +2489,9 @@ Plugin, forecast, currents, tides and queue status. Access: readonly.
 | `tides` | Copernicus Marine sea-level source status (run, resident and on-demand areas, point cache, memory, downloads), or null when off or not loaded |
 | `tides_enabled` | the tides setting, or null before start |
 | `tides_error` | last tide source error, or null |
-| `overlay_land` | overlay land-raster cache: `{entries, cells, bytes, index_bytes, builds, hits, last_build_ms, disk_hits, disk_writes, disk, polygons}`, or null; `polygons`: the data worker's decoded-coastline cache `{entries, bytes, budget_bytes, hits, decodes, evictions}` |
+| `overlay_land` | overlay land-raster cache: `{entries, cells, bytes, index_bytes, builds, hits, last_build_ms, disk_hits, disk_writes, disk, polygons}`, or null; `polygons`: the data worker's cache of coastline tiles read (for the point test) `{entries, bytes, budget_bytes, hits, decodes, evictions}` |
 | `overlay_tiles` | saved map tiles: `{dir, cap_bytes, files, bytes, hits, misses, writes, not_kept, generations, inflight}` (`files`/`bytes` from the totals saved in `.totals.json` in the tile folder, counted once when missing or a day old; `not_kept`: answered but not saved because an on-demand current or tide load was late or failed; `generations`: the data each layer group was built from; `inflight`: tile queries waiting or running), or null before start |
-| `starting` | while the plugin is starting and not answering yet, why (e.g. `"starting: downloading the coastline (40 %)"`); null once started. 503 answers carry the same text |
+| `starting` | while the plugin is starting and not answering yet, why (e.g. `"starting: downloading the coastline (40 %)"`, `"starting: cutting the coastline into tiles (once per coastline, seconds)"`); null once started. 503 answers carry the same text |
 | `overlay_prebuild` | tiles built ahead of time: `{enabled, workers, workers_ready, paused, areas, window, max_zoom, walk_started_at, seen, built, skipped, not_kept, errors, last_error, at, complete, built_total, build_ms_avg}`; `areas`: `[{kind: "view" or "boat", lat, lon, radius_m}]`; `at`: `{area, hour, z}` of the last tile started; `complete`: every tile of the window is saved. Null before start |
 | `weather_provider_registered` | the Weather API provider is registered |
 | `jobs` | `{running: id or null, queued, total}`, or null before start |
