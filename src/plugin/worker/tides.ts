@@ -67,8 +67,10 @@ export async function refreshTides(st: WorkerState, offline: string | null = nul
     st.tidesError = null;
     checked = { outcome: 'newest', reason: run.settled ? null : `run ${run.key} is still being written by Copernicus Marine` };
   } catch (err) {
-    st.tidesError = `cannot reach the Copernicus Marine sea-level store: ${(err as Error).message}`;
-    if (!offline) st.log('error', `tides: ${st.tidesError}`);
+    const why = `cannot reach the Copernicus Marine sea-level store: ${(err as Error).message}`;
+    // A round the internet state holds asked nothing of the store: no error to show for it.
+    if (!backgroundHold(st)) st.tidesError = why;
+    if (!offline) st.log('error', `tides: ${why}`);
     run = st.tides?.run ?? st.seaLevelClient.cachedRuns()[0] ?? null;
     if (run && !st.tides) st.log('info', `tides: using cached run ${run.key} (offline)`);
     checked = { outcome: 'could-not-check', reason: (err as Error).message };

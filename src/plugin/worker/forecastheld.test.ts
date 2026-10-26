@@ -273,6 +273,7 @@ test('tides: a held background round loads no resident area; a hold that starts 
     await refreshTides(st, `skipped: ${metered}`);
     assert.equal(total(), before, 'no request while held');
     assert.equal(st.checks.tides?.reason, `skipped: ${metered}`);
+    assert.equal(st.tidesError, null, 'a held round is no error');
 
     st.internetHold = null;
     st.vesselPos = { lat: 30, lon: -150 };

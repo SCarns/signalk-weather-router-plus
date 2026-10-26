@@ -941,7 +941,8 @@ test('MeshManager: a refresh still reading the catalogue configured before is no
     for (let i = 0; i < 200 && row()?.state !== 'ready'; i++) await new Promise(r => setTimeout(r, 10));
     releaseOld();
     await asked;
-    assert.equal(row()?.state, 'ready');
+    // The row in full: a download error says why (Windows CI, 2026-10-26: 'error' once, after 7 passing runs).
+    assert.equal(row()?.state, 'ready', JSON.stringify(row()));
     assert.equal(row()?.catalog_build_date, '2026-10-09T06:43:40Z', 'the new catalogue is the one used');
     const passes = mgr as unknown as { reconciling: { done: Promise<void> } | null };
     while (passes.reconciling) await passes.reconciling.done.catch(() => undefined);
