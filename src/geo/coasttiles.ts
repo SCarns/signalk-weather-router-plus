@@ -363,13 +363,27 @@ export function cutCoastline(paths: string[], root: string, log: (m: string) => 
   );
   fs.rmSync(dir, { recursive: true, force: true });
   fs.renameSync(tmp, dir);
-  // Another coastline's store, or a cut that did not finish: no longer used.
+  // Another coastline's store, or a cut that did not finish: no longer used. A cut still running in another process
+  // keeps its staging folder.
   const parent = path.dirname(dir);
   for (const name of fs.readdirSync(parent)) {
-    if (name !== path.basename(dir) && name.startsWith('coast-')) fs.rmSync(path.join(parent, name), { recursive: true, force: true });
+    if (name === path.basename(dir) || !name.startsWith('coast-')) continue;
+    const owner = /\.tmp-(\d+)$/.exec(name);
+    if (owner && processAlive(Number(owner[1]))) continue;
+    fs.rmSync(path.join(parent, name), { recursive: true, force: true });
   }
   log(`coastline tiles: ${keys.length} tiles, ${pieces} pieces, ${(pos / 1e6).toFixed(1)} MB in ${(ms / 1000).toFixed(1)} s`);
   return { dir, tiles: keys.length, pieces, bytes: pos, ms };
+}
+
+/** Is process `pid` running (EPERM: running, owned by another user)? */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }
 
 // ─────────────── reading ───────────────

@@ -81,7 +81,7 @@ export function refusalText(r: RouteRefusal): string {
       r.at === 'front'
         ? `From the search's front, reached ${fmtUtc(r.atMs)},`
         : r.at
-          ? `From ${whereText(r.at, r.atMs).slice(3)}`
+          ? `From ${whereText(r.at, r.atMs).slice(3)},`
           : 'At the start';
     const why = r.reasons.length ? `: its moves were stopped by ${r.reasons.map(k => REASON_TEXT[k]).join(', ')}` : '';
     return `${lead} the search found no way on${why}. Add a waypoint or choose another departure.`;
@@ -106,9 +106,9 @@ export function refusalText(r: RouteRefusal): string {
         r.at ? 'Add a waypoint in open water round it.' : 'Move the start into open water.'
       }`;
     case 'dead_upwind':
-      return `${r.at ? `From ${where.slice(3)}` : 'At the start'} the wind is dead ahead for this polar and the boat does not motor, so it cannot make way. Allow motoring (Min sail speed) or choose another departure.`;
+      return `${r.at ? `From ${where.slice(3)},` : 'At the start'} the wind is dead ahead for this polar and the boat does not motor, so it cannot make way. Allow motoring (Min sail speed) or choose another departure.`;
     case 'stopped':
-      return `${r.at ? `From ${where.slice(3)}` : 'At the start'} the boat makes no way: no boat speed in this wind, or a current stronger than the boat. Allow motoring or choose another departure.`;
+      return `${r.at ? `From ${where.slice(3)},` : 'At the start'} the boat makes no way: no boat speed in this wind, or a current stronger than the boat. Allow motoring or choose another departure.`;
   }
 }
 
