@@ -1,7 +1,8 @@
 /**
  * A refresh round held by the internet state (internet.ts) with no forecast on disk yet: the forecast is
  * missing, not failed, so a route waiting for the first forecast is not released (index.ts asks for a round of
- * the owner's for it). An unheld round that cannot reach ECMWF reports the error as before.
+ * the owner's for it). An unheld round that cannot reach ECMWF reports the error as before. A decode, and a SMOC
+ * resident area, that the hold stops are skipped, not failed, and download nothing more.
  */
 
 import { test } from 'node:test';
@@ -9,10 +10,14 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { SmocClient } from '../../currents/smoc';
+import { H, T0, URLS, makeMock } from '../../currents/smoc.mock.test';
 import { CurrentStack } from '../../currents/stack';
+import { HOUR_S } from '../../geo/units';
 import { latestExpectedCycle, type EcmwfClient } from '../../data/ecmwf';
 import type { ResolvedConfig } from '../config';
 import type { WorkerToMain } from '../protocol';
+import { refreshSmoc } from './currents';
 import { refreshForecast } from './forecast';
 import type { WorkerState } from './state';
 
@@ -159,4 +164,65 @@ test('a hold that began while the cycle was looked up stops the decode before it
   const check = sent.find(m => m.type === 'forecast-check');
   assert.ok(check && check.type === 'forecast-check');
   assert.equal(check.check.reason, `skipped: ${metered}`);
+});
+
+test('SMOC: a held background round loads no resident area; a hold that starts during a load stops it between chunks', async t => {
+  // Inside the mock store's time axis (smoc.mock.test.ts), so the resident area has steps to load.
+  t.mock.timers.enable({ apis: ['Date'], now: T0 + 5 * H });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-held-'));
+  const metered = 'the internet connection is metered (network.internet.state)';
+  try {
+    const mock = makeMock();
+    let onFetch: (url: string) => void = () => undefined;
+    const chunk = (url: string): boolean => /\/(utotal|vtotal)\//.test(url);
+    const chunks = (): number => [...mock.counts].filter(([u]) => chunk(u)).reduce((a, [, n]) => a + n, 0);
+    const errors: string[] = [];
+    const st = state([], dir);
+    const log: WorkerState['log'] = (level, m) => {
+      if (level === 'error') errors.push(m);
+    };
+    Object.assign(st, { log });
+    st.config = {
+      forecast: { horizonS: 72 * 3600, extraFields: false, energyFields: false },
+      currents: { smocEnabled: true, smocStepS: 3 * HOUR_S, smocHorizonS: 24 * HOUR_S, smocHalfWidthDeg: 10 },
+    } as unknown as ResolvedConfig;
+    st.smocClient = new SmocClient({
+      cacheDir: dir,
+      urls: URLS,
+      fetchImpl: ((input: string | URL | Request, init?: RequestInit) => {
+        onFetch(String(input));
+        return mock.fetch(input, init);
+      }) as typeof fetch,
+      sleepImpl: async () => undefined,
+    });
+    st.vesselPos = { lat: 0, lon: 0 };
+    await refreshSmoc(st);
+    assert.ok(st.smoc?.resident, 'an unheld round loads the resident area');
+    const full = chunks();
+    assert.ok(full > 2, `it took several chunks (${full})`);
+
+    // The vessel moved: a new resident area is due. Held, a background round asks for none of it.
+    st.vesselPos = { lat: 30, lon: 60 };
+    st.backgroundRound = true;
+    st.internetHold = metered;
+    const before = mock.total();
+    await refreshSmoc(st, `skipped: ${metered}`);
+    assert.equal(mock.total(), before, 'no request while held');
+    assert.equal(st.checks.smoc?.reason, `skipped: ${metered}`);
+
+    // Unheld when the round starts, held after its first chunk: the load stops there.
+    st.internetHold = null;
+    st.vesselPos = { lat: -30, lon: -60 };
+    const start = chunks();
+    onFetch = url => {
+      if (chunk(url)) st.internetHold = metered;
+    };
+    await refreshSmoc(st);
+    const fetched = chunks() - start;
+    assert.ok(fetched >= 1 && fetched < full, `stopped between chunks: ${fetched} of about ${full}`);
+    assert.equal(st.checks.smoc?.reason, `skipped: ${metered}`);
+    assert.deepEqual(errors, [], 'a stop by the hold is not an error');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

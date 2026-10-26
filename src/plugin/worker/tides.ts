@@ -16,7 +16,7 @@ import { type ConditionsTide } from '../overlays';
 import { type ResolvedConfig } from '../config';
 import { type CheckOutcome, type QueryArgs, type TideSeriesResult } from '../protocol';
 import { noteCheck } from './currents';
-import { requireInit } from './state';
+import { backgroundHold, requireInit } from './state';
 import type { WorkerState } from './state';
 
 /** Map / conditions queries wait at most this long for a tide download. */
@@ -86,9 +86,17 @@ export async function refreshTides(st: WorkerState, offline: string | null = nul
   const steps = src.windowSteps(now);
   const pos = st.vesselPos;
   if (pos && (newRun || src.residentStale(pos, steps))) {
+    // As for SMOC (currents.ts): no resident area loads while the internet state holds a background round, and one
+    // under way stops between chunks once it starts holding.
+    let hold = backgroundHold(st);
     try {
       const t = Date.now();
-      const res = await loadTideResident(st.seaLevelClient, run, settings, pos, steps, { log: m => st.log('info', m) });
+      const res = hold
+        ? null
+        : await loadTideResident(st.seaLevelClient, run, settings, pos, steps, {
+            log: m => st.log('info', m),
+            shouldCancel: () => backgroundHold(st) !== null,
+          });
       if (res) {
         src.setResident(res.area, pos);
         src.noteDownload('resident tide area', res.stats);
@@ -98,11 +106,23 @@ export async function refreshTides(st: WorkerState, offline: string | null = nul
         );
       }
     } catch (err) {
-      st.tidesError = `resident tide area load failed: ${(err as Error).message}`;
-      st.log('error', `tides: ${st.tidesError}`);
+      hold = backgroundHold(st);
+      if (!hold) {
+        st.tidesError = `resident tide area load failed: ${(err as Error).message}`;
+        st.log('error', `tides: ${st.tidesError}`);
+        if (newRun && st.tides) {
+          // Keep serving the previous run.
+          noteCheck(st, 'tides', isOffline(err) ? 'could-not-check' : 'failed', `run ${run.key}: ${(err as Error).message}`);
+          return;
+        }
+      }
+    }
+    if (hold) {
+      st.log('info', `tides: run ${run.key}: the resident area is not loaded: ${hold}`);
+      checked = { outcome: 'could-not-check', reason: `skipped: ${hold}` };
+      // As after a failed load: the previous run keeps serving.
       if (newRun && st.tides) {
-        // Keep serving the previous run.
-        noteCheck(st, 'tides', isOffline(err) ? 'could-not-check' : 'failed', `run ${run.key}: ${(err as Error).message}`);
+        noteCheck(st, 'tides', checked.outcome, checked.reason);
         return;
       }
     }

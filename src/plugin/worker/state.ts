@@ -115,6 +115,11 @@ export function noteNetwork(st: WorkerState, state: 'ok' | 'offline', reason: st
   }
 }
 
+/** Why a background refresh round (not the owner's) must not download now (the main thread's 'internet-hold'), or null. */
+export function backgroundHold(st: WorkerState): string | null {
+  return st.backgroundRound ? st.internetHold : null;
+}
+
 export function requireInit(st: WorkerState): { config: ResolvedConfig; client: EcmwfClient } {
   if (!st.config || !st.client) throw new Error('worker not initialised');
   return { config: st.config, client: st.client };
