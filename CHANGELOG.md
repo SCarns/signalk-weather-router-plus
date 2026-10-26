@@ -79,6 +79,13 @@ uses [Semantic Versioning](https://semver.org/).
   0 cells changed. Thousands of point, leg and keep-off-distance checks
   near coasts and on tile borders showed 0 differences. A water-grid
   region rebuild and a route rerun were identical too.
+  The map's land pictures and the water grid build are drawn straight from
+  the tiles' bytes, with no piece decoded and nothing cached. On brain, the
+  map's 16 land tiles of the whole world, none saved yet, grew Signal K by
+  333 MB (still held 30 s later) and took 37.8 s; drawn from the bytes they
+  grew it by 18 MB and took 14.6 s, and the 16 tiles and 16 land rasters
+  were byte for byte the same. Routes and the land point test still decode
+  the pieces near them.
 
 ## [0.2.0-beta.3] - 2026-10-22
 

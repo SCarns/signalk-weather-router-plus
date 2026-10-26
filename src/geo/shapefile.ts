@@ -33,8 +33,25 @@ export interface Ring {
    * record read from the shapefile).
    */
   real?: Uint8Array;
-  /** For each edge k with real[k] = 2: the whole coastline edge, [x0, y0, x1, y1] at 4k. */
+  /** The whole coastline edges of the edges with real[k] = 2, [x0, y0, x1, y1] each, in `wholeEdges` order. */
   whole?: Float64Array;
+  /** Which edge each of `whole`'s edges is, ascending. */
+  wholeEdges?: Uint32Array;
+}
+
+/** Where edge k's whole coastline edge starts in `ring.whole`, or -1 when the edge stands as it is. */
+export function wholeAt(ring: Ring, k: number): number {
+  const e = ring.wholeEdges;
+  if (!e) return -1;
+  let lo = 0;
+  let hi = e.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (e[mid] === k) return 4 * mid;
+    if (e[mid] < k) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
 }
 
 export interface ShapePolygon {

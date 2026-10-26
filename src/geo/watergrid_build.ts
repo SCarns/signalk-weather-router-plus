@@ -26,8 +26,8 @@ import type { BBox } from './geodesy';
 import { lonOffset, unwrapLonNear } from './angles';
 import { M_PER_DEG } from '../geo/units';
 import { DEG, wrapLon } from './geodesy';
-import { LandMask } from './landmask';
 import type { CoastTiles } from './coasttiles';
+import { rasterFromTiles } from './rawraster';
 import { CANALS, type CanalDef } from './watergrid_canals';
 import {
   Chokepoints,
@@ -640,14 +640,7 @@ export function buildWaterGrid(coast: CoastTiles, opts: BuildOptions = {}): Wate
     const south = lat0 - haloS * FINE;
     const north_ = lat0 + TILE + haloN * FINE;
     const bbox: BBox = { west: wrapLon(lon0 - HALO_F * FINE), east: wrapLon(lon0 + TILE + HALO_F * FINE), south, north: north_ };
-    const mask = LandMask.rasterStreamed(
-      bbox,
-      FINE,
-      add => {
-        coast.forEach(bbox, add);
-      },
-      { edgeCells: false, nx: fnx, ny: fny }
-    );
+    const { mask } = rasterFromTiles(coast, bbox, FINE, { edgeCells: false, nx: fnx, ny: fny });
     const fine = mask.raster;
     let land = 0;
     for (let i = 0; i < fine.length; i++) land += fine[i];

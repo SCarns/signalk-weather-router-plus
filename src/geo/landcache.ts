@@ -9,7 +9,8 @@
  * read). Recent rasters are kept in an in-memory LRU and, when a cache
  * directory is given, saved to disk (gzip) so a box seen before is never
  * rasterised again, even after a restart: the coastline does not change.
- * The pieces themselves are dropped after rasterising.
+ * The raster is drawn straight from the tiles' bytes (rawraster.ts): no
+ * piece is decoded.
  * Point queries (conditions `is_land`) use the exact even-odd
  * point-in-polygon test on the pieces of the point's tile.
  *
@@ -25,6 +26,7 @@ import type { BBox } from './geodesy';
 import { bboxWidth } from './geodesy';
 import { LandMask } from './landmask';
 import type { CoastTiles } from './coasttiles';
+import { rasterFromTiles } from './rawraster';
 
 export interface LandLookup {
   isLand(lon: number, lat: number): boolean;
@@ -275,16 +277,13 @@ export class OnDemandLand implements OverlayLand {
       return fromDisk;
     }
     const t = Date.now();
-    // Stream the coastline pieces of the box's tiles into the raster and keep only the raster. Recently read tiles
-    // stay in the tile store's cache, so nearby boxes and other resolutions read them once.
-    let polygons = 0;
-    const mask = LandMask.rasterStreamed(snapped, res, add => {
-      polygons += this.coast.forEach(snapped, add);
-    });
+    // Drawn from the bytes of the box's tiles, nothing decoded or cached: a whole-world view decoded kept hundreds of
+    // MB in Signal K's process (rawraster.ts).
+    const { mask, pieces } = rasterFromTiles(this.coast, snapped, res);
     this.lastBuildMs = Date.now() - t;
     this.builds++;
     this.log(
-      `overlay land raster ${snapped.west}..${snapped.east} × ${snapped.south}..${snapped.north} at ${res}°: ${mask.nx}x${mask.ny}, ${polygons} polygons, ${this.lastBuildMs} ms`
+      `overlay land raster ${snapped.west}..${snapped.east} × ${snapped.south}..${snapped.north} at ${res}°: ${mask.nx}x${mask.ny}, ${pieces} pieces, ${this.lastBuildMs} ms`
     );
     this.entries.push({ bbox: snapped, res, mask });
     while (this.entries.length > this.maxEntries) this.entries.shift();

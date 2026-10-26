@@ -35,10 +35,17 @@ import { pointInShape, shorelineLevel, shorelinePaths, ShapefileIndex, type Shap
 export const COAST_TILE_DEG = 0.5;
 /** The tile stores' folder under the plugin's data directory. */
 export const COAST_TILES_DIR = 'coast-tiles';
-const VERSION = 2;
+const VERSION = 3;
 const N_LON = Math.round(360 / COAST_TILE_DEG);
 const N_LAT = Math.round(180 / COAST_TILE_DEG);
 const INDEX_MAGIC = 0x43505257; // 'WRPC'
+/** The one buffer forEachRaw reads a tile into (per thread), its views, and where each piece starts in it. */
+function rawBuffer(bytes: number): { u8: Uint8Array; u32: Uint32Array; f64: Float64Array; starts: Int32Array } {
+  const ab = new ArrayBuffer(bytes);
+  return { u8: new Uint8Array(ab), u32: new Uint32Array(ab), f64: new Float64Array(ab), starts: new Int32Array(64) };
+}
+let raw = rawBuffer(1 << 20);
+
 /** Recently read tiles kept per thread. A tile is at most a few hundred kB (287 kB in GSHHG full resolution). */
 export const COAST_TILE_CACHE_BYTES = 24 * 1024 * 1024;
 
@@ -67,9 +74,14 @@ export function coastTilesDir(root: string, paths: string[]): string {
   return path.join(root, COAST_TILES_DIR, coastlineFingerprint(shorelinePaths(paths)));
 }
 
-/** Is the tile store for this coastline complete under `root`? */
+/** Is the tile store for this coastline complete under `root`, in this version's format? */
 export function coastTilesReady(root: string, paths: string[]): boolean {
-  return fs.existsSync(path.join(coastTilesDir(root, paths), 'complete.json'));
+  try {
+    const done = JSON.parse(fs.readFileSync(path.join(coastTilesDir(root, paths), 'complete.json'), 'utf8')) as { version?: number };
+    return done.version === VERSION;
+  } catch {
+    return false;
+  }
 }
 
 // ─────────────── the cut ───────────────
@@ -159,33 +171,49 @@ function edgeKind(r: CutRing, k: number): number {
   return o[0] === r.x[k] && o[1] === r.y[k] && o[2] === r.x[k1] && o[3] === r.y[k1] ? EDGE_REAL : EDGE_SHORTENED;
 }
 
+const align8 = (o: number): number => (o + 7) & ~7;
+
 /**
- * A piece as stored: [bytes u32][level u8][record i32][rings u32], per ring [points u32][x,y f64 × n][flag u8 × n]
- * [whole edge x0,y0,x1,y1 f64 × 4, for each shortened edge in order].
+ * A piece as stored, laid out so a reader takes its arrays as views on the bytes read (no copy): every block of
+ * doubles starts on a multiple of 8 from the piece's start (a piece is read into its own buffer, or at a multiple of
+ * 8 into a shared one).
+ *   [bytes u32][level u8][pad 3][record i32][rings u32]                                       16 bytes
+ *   per ring, from a multiple of 8:
+ *     [vertices u32: the closed ring, the first vertex repeated][shortened edges u32]          8 bytes
+ *     [x,y f64 × vertices]                                                                     the ring, closed
+ *     [x0,y0,x1,y1 f64 × shortened]                                                            each shortened edge whole
+ *     [edge index u32 × shortened]                                                             which edge each one is
+ *     [flag u8 × vertices]                                                                     EDGE_*, the closing one cut
+ *     padding to a multiple of 8
  */
 function encodePiece(level: number, rec: number, rings: CutRing[]): Buffer {
-  let bytes = 13;
-  for (const r of rings) {
-    bytes += 4 + r.x.length * 17;
-    for (let k = 0; k < r.x.length; k++) if (edgeKind(r, k) === EDGE_SHORTENED) bytes += 32;
-  }
-  const b = Buffer.alloc(bytes);
-  let o = 0;
-  o = b.writeUInt32LE(bytes, o);
-  o = b.writeUInt8(level, o);
-  o = b.writeInt32LE(rec, o);
-  o = b.writeUInt32LE(rings.length, o);
-  for (const r of rings) {
-    o = b.writeUInt32LE(r.x.length, o);
-    for (let i = 0; i < r.x.length; i++) {
-      o = b.writeDoubleLE(r.x[i], o);
-      o = b.writeDoubleLE(r.y[i], o);
-    }
+  const layout = rings.map(r => {
     const kinds = r.x.map((_x, k) => edgeKind(r, k));
+    const short = kinds.flatMap((kd, k) => (kd === EDGE_SHORTENED ? [k] : []));
+    const n = r.x.length + 1;
+    return { r, kinds, short, n, size: align8(8 + 16 * n + 32 * short.length + 4 * short.length + n) };
+  });
+  const bytes = 16 + layout.reduce((a, l) => a + l.size, 0);
+  const b = Buffer.alloc(bytes);
+  b.writeUInt32LE(bytes, 0);
+  b.writeUInt8(level, 4);
+  b.writeInt32LE(rec, 8);
+  b.writeUInt32LE(rings.length, 12);
+  let o = 16;
+  for (const { r, kinds, short, n, size } of layout) {
+    const start = o;
+    b.writeUInt32LE(n, o);
+    b.writeUInt32LE(short.length, o + 4);
+    o += 8;
+    for (let i = 0; i < n; i++) {
+      o = b.writeDoubleLE(r.x[i % r.x.length], o);
+      o = b.writeDoubleLE(r.y[i % r.x.length], o);
+    }
+    for (const k of short) for (const v of r.o[k]!) o = b.writeDoubleLE(v, o);
+    for (const k of short) o = b.writeUInt32LE(k, o);
     for (const kd of kinds) o = b.writeUInt8(kd, o);
-    kinds.forEach((kd, k) => {
-      if (kd === EDGE_SHORTENED) for (const v of r.o[k]!) o = b.writeDoubleLE(v, o);
-    });
+    b.writeUInt8(EDGE_CUT, o); // the closing vertex repeats the first: a zero-length edge, not coastline
+    o = start + size;
   }
   return b;
 }
@@ -415,19 +443,7 @@ export class CoastTiles {
       this.hits++;
       return c.shapes;
     }
-    // Binary search of the sorted tile keys.
-    let lo = 0;
-    let hi = this.keys.length - 1;
-    let at = -1;
-    while (lo <= hi) {
-      const mid = (lo + hi) >> 1;
-      if (this.keys[mid] === key) {
-        at = mid;
-        break;
-      }
-      if (this.keys[mid] < key) lo = mid + 1;
-      else hi = mid - 1;
-    }
+    const at = this.find(key);
     // A tile without pieces (open sea): nothing to read, nothing to cache.
     if (at < 0) return [];
     const shapes: ShapePolygon[] = [];
@@ -455,25 +471,85 @@ export class CoastTiles {
     return shapes;
   }
 
-  /**
-   * Every piece in the tiles meeting `box` (across the antimeridian too), lowest level first and in the files'
-   * order within a level, as the rasteriser needs them. Returns how many.
-   */
-  forEach(box: BBox, fn: (s: ShapePolygon) => void): number {
+  /** The index position of a tile (binary search of the sorted keys), or -1 when it has no pieces. */
+  private find(key: number): number {
+    let lo = 0;
+    let hi = this.keys.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.keys[mid] === key) return mid;
+      if (this.keys[mid] < key) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return -1;
+  }
+
+  /** The tiles meeting `box` (across the antimeridian too): the first column, how many more, and the rows. */
+  private span(box: BBox): { i0: number; span: number; j0: number; j1: number } {
     const width = bboxWidth(box);
     const i0 = Math.floor((wrapLon(box.west) + 180) / COAST_TILE_DEG);
     const span = width >= 360 ? N_LON - 1 : Math.min(N_LON - 1, Math.floor((wrapLon(box.west) + 180 + width) / COAST_TILE_DEG) - i0);
     const j0 = Math.max(0, Math.floor((box.south + 90) / COAST_TILE_DEG));
     const j1 = Math.min(N_LAT - 1, Math.floor((box.north + 90) / COAST_TILE_DEG));
-    const all: ShapePolygon[] = [];
+    return { i0, span, j0, j1 };
+  }
+
+  /**
+   * Every piece in the tiles meeting `box`, as its byte offset in one reused buffer (`f64`, `u32`, `u8` are views on
+   * it; rawraster.ts reads the pieces there): no object per piece, nothing cached. Drawing land this way kept 18 MB
+   * of a whole-world map view where decoding the pieces kept 381 MB (brain, 2026-10-26). Returns how many.
+   */
+  forEachRaw(box: BBox, fn: (f64: Float64Array, u32: Uint32Array, u8: Uint8Array, piece: number) => void): number {
+    const { i0, span, j0, j1 } = this.span(box);
+    let count = 0;
+    const fd = fs.openSync(path.join(this.dir, 'tiles.bin'), 'r');
+    try {
+      for (let j = j0; j <= j1; j++)
+        for (let k = 0; k <= span; k++) {
+          const at = this.find(j * N_LON + ((i0 + k) % N_LON));
+          if (at < 0) continue;
+          const c0 = this.first[at];
+          const c1 = this.first[at + 1];
+          let total = 0;
+          for (let c = c0; c < c1; c++) total += align8(this.length[c]);
+          if (raw.u8.length < total) raw = rawBuffer(Math.max(total, 2 * raw.u8.length));
+          if (raw.starts.length < c1 - c0) raw.starts = new Int32Array(2 * (c1 - c0));
+          let o = 0;
+          for (let c = c0; c < c1; c++) {
+            if (fs.readSync(fd, raw.u8, o, this.length[c], this.offset[c]) !== this.length[c])
+              throw new Error(`${this.dir}: truncated tile data`);
+            raw.starts[c - c0] = o;
+            o += align8(this.length[c]);
+          }
+          for (let q = 0; q < c1 - c0; q++) {
+            fn(raw.f64, raw.u32, raw.u8, raw.starts[q]);
+            count++;
+          }
+        }
+    } finally {
+      fs.closeSync(fd);
+    }
+    return count;
+  }
+
+  /**
+   * Every piece in the tiles meeting `box` (across the antimeridian too), tile by tile as each is read: only the
+   * tile cache is held, never the whole box (a whole-world view gathered first held 741 MB, brain 2026-10-26).
+   * Within a tile the pieces are in level order (the cut reads the files lowest level first), which is all the
+   * rasteriser needs: pieces of different tiles never fill the same cell, and the exact tests take the deepest
+   * level whatever the order. Returns how many.
+   */
+  forEach(box: BBox, fn: (s: ShapePolygon) => void): number {
+    const { i0, span, j0, j1 } = this.span(box);
+    let count = 0;
     for (let j = j0; j <= j1; j++)
       for (let k = 0; k <= span; k++) {
-        for (const s of this.tile(j * N_LON + ((i0 + k) % N_LON))) all.push(s);
+        for (const s of this.tile(j * N_LON + ((i0 + k) % N_LON))) {
+          fn(s);
+          count++;
+        }
       }
-    // Stable: tile order kept within a level.
-    all.sort((a, b) => (a.level ?? 1) - (b.level ?? 1));
-    for (const s of all) fn(s);
-    return all.length;
+    return count;
   }
 
   /** The pieces meeting `box`, as forEach lists them. */
@@ -514,12 +590,15 @@ export class CoastTiles {
   }
 }
 
-/** A stored piece as a polygon: each ring closed (the first vertex repeated), `real` per edge, the closing one 0. */
+/**
+ * A stored piece as a polygon whose arrays are views on `b` (no copy): each ring closed, `real` per edge (the closing
+ * one cut), the shortened edges' whole edges in `whole` with their edge indices in `wholeEdges`.
+ */
 function decodePiece(b: Buffer): ShapePolygon {
   const level = b.readUInt8(4);
-  const recordNumber = b.readInt32LE(5);
-  const nRings = b.readUInt32LE(9);
-  let o = 13;
+  const recordNumber = b.readInt32LE(8);
+  const nRings = b.readUInt32LE(12);
+  let o = 16;
   let minLon = Infinity;
   let minLat = Infinity;
   let maxLon = -Infinity;
@@ -527,39 +606,29 @@ function decodePiece(b: Buffer): ShapePolygon {
   const rings: ShapePolygon['rings'] = [];
   for (let r = 0; r < nRings; r++) {
     const n = b.readUInt32LE(o);
-    o += 4;
-    const coords = new Float64Array(2 * n + 2);
+    const nShort = b.readUInt32LE(o + 4);
+    o += 8;
+    const coords = new Float64Array(b.buffer, b.byteOffset + o, 2 * n);
+    o += 16 * n;
     let rMinLon = Infinity;
     let rMinLat = Infinity;
     let rMaxLon = -Infinity;
     let rMaxLat = -Infinity;
-    for (let i = 0; i < n; i++, o += 16) {
-      const x = b.readDoubleLE(o);
-      const y = b.readDoubleLE(o + 8);
-      coords[2 * i] = x;
-      coords[2 * i + 1] = y;
+    for (let i = 0; i < n; i++) {
+      const x = coords[2 * i];
+      const y = coords[2 * i + 1];
       if (x < rMinLon) rMinLon = x;
       if (x > rMaxLon) rMaxLon = x;
       if (y < rMinLat) rMinLat = y;
       if (y > rMaxLat) rMaxLat = y;
     }
-    coords[2 * n] = coords[0];
-    coords[2 * n + 1] = coords[1];
-    const real = new Uint8Array(n + 1);
-    let shortened = 0;
-    for (let i = 0; i < n; i++) {
-      real[i] = b.readUInt8(o++);
-      if (real[i] === EDGE_SHORTENED) shortened++;
-    }
-    let whole: Float64Array | undefined;
-    if (shortened) {
-      whole = new Float64Array(4 * (n + 1));
-      for (let i = 0; i < n; i++) {
-        if (real[i] !== EDGE_SHORTENED) continue;
-        for (let q = 0; q < 4; q++, o += 8) whole[4 * i + q] = b.readDoubleLE(o);
-      }
-    }
-    rings.push({ coords, minLon: rMinLon, minLat: rMinLat, maxLon: rMaxLon, maxLat: rMaxLat, real, whole });
+    const whole = nShort ? new Float64Array(b.buffer, b.byteOffset + o, 4 * nShort) : undefined;
+    o += 32 * nShort;
+    const wholeEdges = nShort ? new Uint32Array(b.buffer, b.byteOffset + o, nShort) : undefined;
+    o += 4 * nShort;
+    const real = new Uint8Array(b.buffer, b.byteOffset + o, n);
+    o = align8(o + n);
+    rings.push({ coords, minLon: rMinLon, minLat: rMinLat, maxLon: rMaxLon, maxLat: rMaxLat, real, whole, wholeEdges });
     minLon = Math.min(minLon, rMinLon);
     minLat = Math.min(minLat, rMinLat);
     maxLon = Math.max(maxLon, rMaxLon);

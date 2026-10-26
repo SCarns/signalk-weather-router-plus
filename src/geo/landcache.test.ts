@@ -7,6 +7,7 @@ import { pointInShape, readShapefilePolygons, ShapefileIndex, type ShapePolygon 
 import { LandMask } from './landmask';
 import { chooseOverlayResolution, OnDemandLand, snapBBox } from './landcache';
 import { CoastTiles, COAST_TILE_DEG } from './coasttiles';
+import { rasterFromTiles } from './rawraster';
 
 /** Write a minimal polygon shapefile (type 5); each polygon is a list of rings of [lon, lat]. */
 function writeShp(file: string, polys: number[][][][]): void {
@@ -346,6 +347,32 @@ test('coastline tiles: rasters equal rasterising the whole records, conservative
       assert.ok(whole.landFraction() > 0);
     }
   }
+});
+
+test('coastline tiles: the raster drawn from the bytes equals the one drawn from the decoded pieces', () => {
+  const files = crossingFixture();
+  const coast = coastOf(files);
+  for (const [b, res] of [
+    [{ west: -72.5, south: 39.0, east: -67.5, north: 43.5 }, 0.01],
+    [{ west: -71.23, south: 40.11, east: -69.07, north: 42.93 }, 0.005],
+    [{ west: 4.5, south: 43.5, east: 8.0, north: 46.5 }, 0.002],
+    [{ west: 9.5, south: 49.5, east: 12.5, north: 52.5 }, 0.01],
+    [{ west: 178.5, south: -11, east: -178.5, north: -8 }, 0.01],
+    [{ west: -180, south: -90, east: 180, north: 90 }, 0.25],
+  ] as const) {
+    for (const edgeCells of [true, false]) {
+      const decoded = LandMask.rasterStreamed(b, res, add => coast.forEach(b, add), { edgeCells });
+      const raw = rasterFromTiles(coast, b, res, { edgeCells });
+      assert.deepEqual(raw.mask.raster, decoded.raster, `${JSON.stringify(b)} at ${res}, edge cells ${edgeCells}`);
+      assert.equal(raw.mask.nx, decoded.nx);
+    }
+  }
+  // An explicit size, as the water grid build asks for.
+  const b = { west: 9.5, south: 49.5, east: 12.5, north: 52.5 };
+  const decoded = LandMask.rasterStreamed(b, 0.01, add => coast.forEach(b, add), { edgeCells: false, nx: 310, ny: 305 });
+  const raw = rasterFromTiles(coast, b, 0.01, { edgeCells: false, nx: 310, ny: 305 });
+  assert.deepEqual(raw.mask.raster, decoded.raster);
+  assert.deepEqual([raw.mask.nx, raw.mask.ny], [310, 305]);
 });
 
 test('coastline tiles: exact tests equal the whole records, on tile borders too', () => {
