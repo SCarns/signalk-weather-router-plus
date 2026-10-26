@@ -89,6 +89,10 @@ export interface WorkerState {
   connectivity: Connectivity;
   /** When a request last found no connection (ms; 0 = never): a refresh round stops asking servers after it. */
   lastOfflineMs: number;
+  /** Why background downloads wait now (the main thread's 'internet-hold'), or null (data worker). */
+  internetHold: string | null;
+  /** A refresh round the owner did not ask for is under way: the internet state starting to hold stops its decode (data worker). */
+  backgroundRound: boolean;
   /** Tidal-harmonic files that failed to load (data worker). */
   harmonicErrors: string[];
   /** Kills the forecast decode child process (plugin stopped). */
@@ -109,6 +113,11 @@ export function noteNetwork(st: WorkerState, state: 'ok' | 'offline', reason: st
     c.reason = reason;
     st.lastOfflineMs = now.getTime();
   }
+}
+
+/** Why a background refresh round (not the owner's) must not download now (the main thread's 'internet-hold'), or null. */
+export function backgroundHold(st: WorkerState): string | null {
+  return st.backgroundRound ? st.internetHold : null;
 }
 
 export function requireInit(st: WorkerState): { config: ResolvedConfig; client: EcmwfClient } {

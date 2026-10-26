@@ -34,6 +34,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { runChildTask } from './childtask';
+import type { InternetHold } from './internet';
 import { DOWNLOAD_PROGRESS_FILE, downloadWorkDir, type MeshDownloadProgress } from './mesharchive';
 
 /** One mesh as the catalogue lists it (s57Work build-mesh.yml, "Write charts/mesh/index.json"). */
@@ -432,14 +433,16 @@ export class MeshManager {
    * of a newer one's. Its signal is kept so a read aborted by `stop` is not
    * shared with the next `run`.
    */
-  private catalogRead: { signal: AbortSignal; done: Promise<void> } | null = null;
+  private catalogRead: { signal: AbortSignal; url: string; done: Promise<void> } | null = null;
   /** Counts catalogue reads; a read superseded by a newer one writes nothing. */
   private catalogSeq = 0;
 
   constructor(
     private readonly log: (m: string) => void,
     /** A mesh was downloaded or updated and is in place (its rough cuts are rebuilt then: index.ts). */
-    private readonly onReady: (name: string) => void = () => undefined
+    private readonly onReady: (name: string) => void = () => undefined,
+    /** Holds the daily pass (internet.ts); the panel's buttons do not wait. */
+    private readonly internet?: InternetHold
   ) {}
 
   /** Apply a configuration; the next `run` reconciles the store with it. */
@@ -491,27 +494,63 @@ export class MeshManager {
     return true;
   }
 
-  /** Read the catalogue, download what is ticked and missing or stale, delete what is unticked; then again daily. */
+  /** Counts the owner's requests (refresh): a pass with one since the last pass ended is not stopped by the internet state. */
+  private ownerAsks = 0;
+  /** Owner refreshes still reading the catalogue: their pass has not started yet, but it is theirs. */
+  private refreshesReading = 0;
+
+  /**
+   * Read the catalogue, download what is ticked and missing or stale, delete what is unticked; then again daily.
+   * While the internet state holds downloads (internet.ts) the pass waits until it clears; a pass under way when it
+   * starts holding is stopped (the downloads resume from their parts later), unless the owner asked for something
+   * meanwhile.
+   */
   run(): void {
-    this.stop();
+    this.stopLoop();
     this.ctrl = new AbortController();
     const loop = async (): Promise<void> => {
       const signal = this.ctrl!.signal;
+      let wasHeld: string | null = null;
+      let asksSeen = this.ownerAsks;
       while (!signal.aborted) {
-        await this.reconcile(signal);
+        const held = this.internet?.hold() ?? null;
+        if (held) {
+          if (held !== wasHeld) this.log(`catalogue and downloads wait: ${held}`);
+          wasHeld = held;
+          // No timer: the pass runs as soon as the state clears.
+          await this.internet!.whenClear(signal);
+          continue;
+        }
+        wasHeld = null;
+        // Joining a pass the owner's refresh started (or is about to, once its catalogue read ends) keeps the count
+        // from before it, so it is spared.
+        if (this.reconciling?.signal !== signal && this.refreshesReading === 0) asksSeen = this.ownerAsks;
+        const internet = this.internet;
+        const unwatch = internet
+          ? internet.onChange(() => {
+              if (!internet.hold() || this.ownerAsks !== asksSeen || signal.aborted) return;
+              unwatch();
+              // Stops this pass (its downloads included); the new loop waits for the state to clear.
+              this.run();
+            })
+          : () => undefined;
+        try {
+          await this.reconcile(signal);
+        } finally {
+          unwatch();
+        }
         // A stop during the pass has already aborted: no timer then, or it would hold the process a day.
         if (signal.aborted) break;
         await new Promise<void>(resolve => {
-          this.timer = setTimeout(resolve, CATALOG_REFRESH_MS);
-          signal.addEventListener(
-            'abort',
-            () => {
-              if (this.timer) clearTimeout(this.timer);
-              this.timer = null;
-              resolve();
-            },
-            { once: true }
-          );
+          const end = (): void => {
+            if (this.timer) clearTimeout(this.timer);
+            this.timer = null;
+            // One signal serves every wait: the listener must not pile up.
+            signal.removeEventListener('abort', end);
+            resolve();
+          };
+          this.timer = setTimeout(end, CATALOG_REFRESH_MS);
+          signal.addEventListener('abort', end, { once: true });
         });
       }
     };
@@ -530,20 +569,31 @@ export class MeshManager {
    * loop's.
    */
   async refresh(): Promise<void> {
+    this.ownerAsks++;
     const signal = this.ctrl?.signal ?? (this.refreshCtrl ??= new AbortController()).signal;
     // A running pass on this same signal is shared, not followed by one of its own, and may be past the name
     // just changed: it runs once more when it ends. (A refresh before `run` gets a pass of its own anyway.)
     if (this.reconciling && this.reconciling.signal === signal) this.again = true;
-    await this.readCatalog(signal);
-    if (signal.aborted) return;
-    void this.reconcile(signal).catch(() => undefined);
+    this.refreshesReading++;
+    try {
+      await this.readCatalog(signal);
+      if (signal.aborted) return;
+      void this.reconcile(signal).catch(() => undefined);
+    } finally {
+      this.refreshesReading--;
+    }
   }
 
   stop(): void {
-    this.ctrl?.abort();
-    this.ctrl = null;
+    this.stopLoop();
     this.refreshCtrl?.abort();
     this.refreshCtrl = null;
+  }
+
+  /** The daily loop only: a refresh pressed before `run` (its own controller) carries on. */
+  private stopLoop(): void {
+    this.ctrl?.abort();
+    this.ctrl = null;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
   }
@@ -640,18 +690,20 @@ export class MeshManager {
    */
   private readCatalog(signal: AbortSignal): Promise<void> {
     const active = this.catalogRead;
-    if (active && !active.signal.aborted) return active.done;
-    const done = this.fetchCatalog(signal).finally(() => {
+    // A read of the catalogue configured before (a refresh pressed before `configure`) is not shared: the newer read wins.
+    if (active && !active.signal.aborted && active.url === this.catalogUrl) return active.done;
+    const url = this.catalogUrl;
+    const done = this.fetchCatalog(signal, url).finally(() => {
       if (this.catalogRead?.done === done) this.catalogRead = null;
     });
-    this.catalogRead = { signal, done };
+    this.catalogRead = { signal, url, done };
     return done;
   }
 
-  private async fetchCatalog(signal: AbortSignal): Promise<void> {
+  private async fetchCatalog(signal: AbortSignal, url: string): Promise<void> {
     const seq = ++this.catalogSeq;
     try {
-      const res = await fetch(this.catalogUrl, { signal: AbortSignal.any([signal, AbortSignal.timeout(CATALOG_TIMEOUT_MS)]) });
+      const res = await fetch(url, { signal: AbortSignal.any([signal, AbortSignal.timeout(CATALOG_TIMEOUT_MS)]) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const c = (await res.json()) as Catalog;
       if (!c || !Array.isArray(c.meshes)) throw new Error('not a mesh catalogue (no meshes[])');
@@ -672,8 +724,8 @@ export class MeshManager {
       });
       // A name with a usable row is served by it, whether an unusable row of the same name comes before or after.
       for (const m of meshes) problems.delete(m.name);
-      for (const [n, p] of problems) this.log(`mesh catalogue ${this.catalogUrl}: ${n}: unusable entry (${p}); not downloaded`);
-      for (const u of unnamed) this.log(`mesh catalogue ${this.catalogUrl}: ${u}; skipped`);
+      for (const [n, p] of problems) this.log(`mesh catalogue ${url}: ${n}: unusable entry (${p}); not downloaded`);
+      for (const u of unnamed) this.log(`mesh catalogue ${url}: ${u}; skipped`);
       this.catalog = { ...c, meshes };
       this.catalogProblems = problems;
       this.catalogUnnamed = unnamed;
@@ -681,7 +733,7 @@ export class MeshManager {
     } catch (err) {
       if (seq !== this.catalogSeq) return;
       this.catalogError = (err as Error).message;
-      this.log(`mesh catalogue ${this.catalogUrl}: ${this.catalogError}`);
+      this.log(`mesh catalogue ${url}: ${this.catalogError}`);
     }
   }
 

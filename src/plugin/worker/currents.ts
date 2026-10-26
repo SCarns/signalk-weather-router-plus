@@ -41,7 +41,7 @@ import {
 import { isOffline, OfflineError } from '../../data/http';
 import { type ResolvedConfig } from '../config';
 import { type CheckedSource, type CheckOutcome, type DataStatus, type QueryArgs } from '../protocol';
-import { requireInit } from './state';
+import { backgroundHold, requireInit } from './state';
 import type { WorkerState } from './state';
 
 /** Overlay / conditions queries wait at most this long for an on-demand SMOC load. */
@@ -173,9 +173,17 @@ export async function refreshSmoc(st: WorkerState, offline: string | null = null
   const pos = st.vesselPos;
   let changed = newRun;
   if (pos && (newRun || residentStale(src, pos, steps))) {
+    // A background round loads no resident area while the internet state holds (its missing chunks would be
+    // downloaded), and stops one under way between chunks once it starts holding (worker.ts 'internet-hold').
+    let hold = backgroundHold(st);
     try {
       const t = Date.now();
-      const res = await loadResident(st.smocClient, run, settings, pos, steps, { log: m => st.log('info', m) });
+      const res = hold
+        ? null
+        : await loadResident(st.smocClient, run, settings, pos, steps, {
+            log: m => st.log('info', m),
+            shouldCancel: () => backgroundHold(st) !== null,
+          });
       if (res) {
         src.setResident(res.area, pos);
         src.noteDownload('resident area', res.stats);
@@ -186,10 +194,22 @@ export async function refreshSmoc(st: WorkerState, offline: string | null = null
         );
       }
     } catch (err) {
-      st.log('error', `smoc: resident area load failed: ${(err as Error).message}`);
+      hold = backgroundHold(st);
+      if (!hold) {
+        st.log('error', `smoc: resident area load failed: ${(err as Error).message}`);
+        if (newRun && st.smoc) {
+          // Keep serving the previous run.
+          noteCheck(st, 'smoc', isOffline(err) ? 'could-not-check' : 'failed', `run ${run.key}: ${(err as Error).message}`);
+          return;
+        }
+      }
+    }
+    if (hold) {
+      st.log('info', `smoc: run ${run.key}: the resident area is not loaded: ${hold}`);
+      checked = { outcome: 'could-not-check', reason: `skipped: ${hold}` };
+      // As after a failed load: the previous run keeps serving.
       if (newRun && st.smoc) {
-        // Keep serving the previous run.
-        noteCheck(st, 'smoc', isOffline(err) ? 'could-not-check' : 'failed', `run ${run.key}: ${(err as Error).message}`);
+        noteCheck(st, 'smoc', checked.outcome, checked.reason);
         return;
       }
     }

@@ -555,7 +555,7 @@ export async function loadTideResident(
   settings: TideSettings,
   pos: { lat: number; lon: number },
   steps: number[],
-  opts: { log?: (m: string) => void } = {}
+  opts: { log?: (m: string) => void; shouldCancel?: () => boolean } = {}
 ): Promise<{ area: ArcoArea; stats: DownloadStats } | null> {
   const region = regionForBBox(run.levels.time.grid, residentBBox(pos.lat, pos.lon, settings.halfWidthDeg), TIDE_MARGIN_CELLS);
   if (!region || steps.length === 0) return null;
@@ -563,6 +563,7 @@ export async function loadTideResident(
   return loadArcoArea(client, run, 'full', region, steps, TIDE_FIELD_VARS, {
     reason: `resident tide area around ${pos.lat.toFixed(2)},${pos.lon.toFixed(2)} ±${settings.halfWidthDeg}°`,
     log: opts.log,
+    shouldCancel: opts.shouldCancel,
     layout: chooseLayout(run, region, tIdx),
   });
 }
