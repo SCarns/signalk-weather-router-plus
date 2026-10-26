@@ -66,11 +66,7 @@ export async function rtofsFromCache(
     // A product the box is outside has nothing for it.
     if (box && !extentMeets(r.bbox, box)) continue;
     try {
-      const client = new RtofsClient({
-        cacheDir: ref.cacheDir,
-        region: r.product,
-        fetchImpl: () => Promise.reject(new Error('RTOFS is read from the cache only here')),
-      });
+      const client = new RtofsClient({ cacheDir: ref.cacheDir, region: r.product, cacheOnly: true });
       const steps = await loadRtofsSteps(client, rtofsRunFor(new Date(r.runMs)), box, ref.horizonS, ref.stepS);
       out.push({
         product: r.product,

@@ -95,6 +95,11 @@ export interface WorkerState {
   backgroundRound: boolean;
   /** Tidal-harmonic files that failed to load (data worker). */
   harmonicErrors: string[];
+  /**
+   * Tiles worker: the current sources of the last currents reference that could not be read from the disk caches
+   * (adoptCurrentsRef). While any are, the current layers' tiles it builds are not kept (buildTile).
+   */
+  currentsUnread: string[];
   /** Kills the forecast decode child process (plugin stopped). */
   decodeAbort: AbortController | null;
 }

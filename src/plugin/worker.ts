@@ -133,6 +133,7 @@ const st: WorkerState = {
   internetHold: null,
   backgroundRound: false,
   harmonicErrors: [],
+  currentsUnread: [],
   decodeAbort: null,
 };
 // The data worker's requests say whether there is a connection (status, and a refresh round stops asking servers).

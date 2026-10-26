@@ -323,6 +323,9 @@ export function loadHarmonic(st: WorkerState, dir: string | null): void {
 let harmonicFrom: string | null = null;
 /** The horizon and step the tiles worker's RTOFS sources were read with (adoptCurrentsRef); null when none are. */
 let rtofsReadWith: { horizonS: number; stepS: number } | null = null;
+/** The RTOFS products and tidal-harmonic files the tiles worker could not read (adoptCurrentsRef). */
+let rtofsUnread: string[] = [];
+let harmonicUnread: string[] = [];
 
 const sameSteps = (a: readonly number[], b: readonly number[]): boolean => a.length === b.length && a.every((t, i) => t === b[i]);
 
@@ -331,6 +334,11 @@ const sameSteps = (a: readonly number[], b: readonly number[]): boolean => a.len
  * reference the main thread sends (currents/fromcache.ts) instead of copies of its shared memory. Each part is read
  * only when it differs from what is loaded. SMOC's resident area is loaded as the data worker loaded it (the same
  * region and steps, so the same chunks); RTOFS whole, as the data worker holds it.
+ *
+ * A source that cannot be read is not marked as read, so the next reference reads it again, and until then the
+ * current layers' tiles are not kept (st.currentsUnread, buildTile). Their directory is named after the data worker's
+ * sources (tiles.ts tileGenerationKeys): a tile built without one, or from the run before, would be saved there as
+ * that run's and served until the next run.
  */
 export async function adoptCurrentsRef(st: WorkerState, ref: BuilderCurrentsRef): Promise<void> {
   const { config: cfg } = requireInit(st);
@@ -364,19 +372,33 @@ export async function adoptCurrentsRef(st: WorkerState, ref: BuilderCurrentsRef)
   ) {
     rtofsReadWith = rtofs ? { horizonS: rtofs.horizonS, stepS: rtofs.stepS } : null;
     st.rtofs = [];
+    rtofsUnread = [];
+    // A product missing from st.rtofs differs from the reference's runs: the next reference reads it again.
     for (const r of rtofs ? await rtofsFromCache(rtofs, null) : []) {
       if (r.source) st.rtofs.push(r.source);
-      else if (r.error) st.log('error', `rtofs ${r.product}: not read from the cache: ${r.error}`);
+      else {
+        rtofsUnread.push(`rtofs ${r.product}`);
+        st.log('error', `rtofs ${r.product}: not read from the cache: ${r.error ?? 'no steps'}`);
+      }
     }
   }
-  if (ref.harmonicDir !== harmonicFrom) {
+  // Read again while a file of it could not be read.
+  if (ref.harmonicDir !== harmonicFrom || harmonicUnread.length) {
     harmonicFrom = ref.harmonicDir;
     st.harmonic = [];
+    harmonicUnread = [];
     for (const h of ref.harmonicDir ? harmonicFromDir(ref.harmonicDir) : []) {
       if (h.source) st.harmonic.push(h.source);
-      else st.log('error', `currents: harmonic ${h.file ?? ref.harmonicDir} not read: ${h.error}`);
+      else {
+        harmonicUnread.push(`harmonic ${h.file ?? ref.harmonicDir}`);
+        st.log('error', `currents: harmonic ${h.file ?? ref.harmonicDir} not read: ${h.error}`);
+      }
     }
   }
+  const unread = [...rtofsUnread, ...harmonicUnread];
+  if (unread.length && unread.join() !== st.currentsUnread.join())
+    st.log('error', `currents: tiles of the current layers are not kept until ${unread.join(', ')} can be read`);
+  st.currentsUnread = unread;
   rebuildStack(st);
 }
 

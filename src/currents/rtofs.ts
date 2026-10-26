@@ -239,6 +239,11 @@ export interface RtofsClientOptions {
   log?: (msg: string) => void;
   fetchImpl?: typeof fetch;
   sleepImpl?: (ms: number) => Promise<void>;
+  /**
+   * Read the cache only, never the network: a file not in it fails at once (another process reading what the data
+   * worker downloaded, currents/fromcache.ts). Without it, a missing file is downloaded.
+   */
+  cacheOnly?: boolean;
 }
 
 export class RtofsClient {
@@ -250,6 +255,7 @@ export class RtofsClient {
   private readonly log: (msg: string) => void;
   private readonly fetchImpl: typeof fetch;
   private readonly sleepImpl: (ms: number) => Promise<void>;
+  private readonly cacheOnly: boolean;
 
   constructor(opts: RtofsClientOptions) {
     this.cacheDir = opts.cacheDir;
@@ -260,6 +266,7 @@ export class RtofsClient {
     this.log = opts.log ?? (() => undefined);
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.sleepImpl = opts.sleepImpl ?? sleep;
+    this.cacheOnly = opts.cacheOnly ?? false;
     fs.mkdirSync(this.cacheDir, { recursive: true });
   }
 
@@ -414,6 +421,7 @@ export class RtofsClient {
   async fetchFile(run: RtofsRun, file: string): Promise<Uint8Array> {
     const cached = this.cachePath(run, file);
     if (this.hasCached(run, file)) return new Uint8Array(fs.readFileSync(cached));
+    if (this.cacheOnly) throw new Error(`${this.region} run ${run.yyyymmdd} ${file} is not in the cache`);
     const url = this.fileUrl(run, file);
     const t = Date.now();
     const res = await this.request(url);

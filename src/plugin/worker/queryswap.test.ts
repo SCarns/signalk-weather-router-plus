@@ -80,6 +80,7 @@ function state(sent: WorkerToMain[]): WorkerState {
     internetHold: null,
     backgroundRound: false,
     harmonicErrors: [],
+    currentsUnread: [],
     decodeAbort: null,
   };
 }

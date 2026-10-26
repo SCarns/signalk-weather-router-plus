@@ -68,6 +68,7 @@ function state(sent: WorkerToMain[], cacheRoot: string): WorkerState {
     internetHold: null,
     backgroundRound: false,
     harmonicErrors: [],
+    currentsUnread: [],
     decodeAbort: null,
   };
 }

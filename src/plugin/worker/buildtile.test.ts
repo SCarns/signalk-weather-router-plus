@@ -13,7 +13,10 @@ import { CurrentStack } from '../../currents/stack';
 import type { CurrentSourceLike } from '../../currents/types';
 import type { WorkerToMain } from '../protocol';
 import { encodeTile, tileQuery, TileStore, type TileId } from '../tiles';
+import { defaultSettings } from '../settings';
+import { resolveConfig } from '../config';
 import { buildTile, query } from './query';
+import { adoptCurrentsRef } from './currents';
 import type { WorkerState } from './state';
 
 /** A current of 0.5 m/s east everywhere in a box. */
@@ -71,6 +74,7 @@ function state(sent: WorkerToMain[]): WorkerState {
     internetHold: null,
     backgroundRound: false,
     harmonicErrors: [],
+    currentsUnread: [],
     decodeAbort: null,
   };
 }
@@ -140,4 +144,53 @@ test('tile store: a tile built while its data changed is removed, not adopted; t
   assert.equal(fs.existsSync(c.tmp), false, 'the stale file is removed');
   assert.equal(await store.has({ ...T, x: 20 }), false, 'not in the new generation');
   fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('buildTile keeps no current-layer tile while a current source could not be read, and keeps it once read', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-unread-'));
+  const store = new TileStore({ root, capBytes: 1e9 });
+  store.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
+  for (const layer of ['current', 'arrows'] as const) {
+    for (const unread of [['rtofs west_atl'], []]) {
+      const sent: WorkerToMain[] = [];
+      const st = state(sent);
+      st.currentsUnread = unread;
+      const t: TileId = { layer, z: 8, x: 75, y: 95, hourMs: HOUR };
+      const tmp = store.tmpFile(t)!;
+      await buildTile(st, 1, t, tmp);
+      const done = sent.find(m => m.type === 'tile-built');
+      const kept = unread.length === 0;
+      assert.ok(done && done.type === 'tile-built', `${layer}: answered`);
+      assert.equal(done.complete, kept, `${layer}, unread ${unread.join() || 'none'}: kept ${kept}`);
+      assert.equal(fs.existsSync(tmp), kept, `${layer}, unread ${unread.join() || 'none'}: written ${kept}`);
+      fs.rmSync(tmp, { force: true });
+    }
+  }
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('adoptCurrentsRef: an RTOFS product or harmonic file not read is marked unread, and read again by the next reference', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-harmonic-'));
+  fs.writeFileSync(path.join(dir, 'broken.npz'), 'not a zip');
+  const st = state([]);
+  st.config = resolveConfig({}, defaultSettings());
+  st.client = {} as WorkerState['client'];
+  const rtofs = {
+    cacheDir: path.join(dir, 'empty-rtofs-cache'),
+    runs: [{ product: 'west_atl', runMs: HOUR, bbox: { south: 30, west: -80, north: 50, east: -60 } }],
+    horizonS: 72 * 3600,
+    stepS: 3 * 3600,
+  };
+  await adoptCurrentsRef(st, { smoc: null, rtofs, harmonicDir: dir });
+  assert.deepEqual(st.currentsUnread, ['rtofs west_atl', 'harmonic broken.npz']);
+  assert.equal(st.rtofs.length, 0);
+  assert.equal(st.harmonic.length, 0);
+  // The same reference after the file is gone: the folder is read again (it was not marked as read).
+  fs.rmSync(path.join(dir, 'broken.npz'));
+  await adoptCurrentsRef(st, { smoc: null, rtofs, harmonicDir: dir });
+  assert.deepEqual(st.currentsUnread, ['rtofs west_atl'], 'the harmonic folder read again; RTOFS still missing');
+  // RTOFS no longer in the reference: nothing unread.
+  await adoptCurrentsRef(st, { smoc: null, rtofs: null, harmonicDir: dir });
+  assert.deepEqual(st.currentsUnread, []);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

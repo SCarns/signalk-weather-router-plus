@@ -64,7 +64,14 @@ uses [Semantic Versioning](https://semver.org/).
   move of over 1 km. A builder is now told where the currents are on disk
   and reads them itself, as the chart-mesh process already did. Signal K
   grew by 0.4 MB when the builders started, and the tiles are byte for byte
-  the same.
+  the same. A builder that cannot read a current source (an RTOFS product
+  or a tidal-harmonic file) keeps none of the current layers' tiles it
+  builds until it can, and reads the source again with the next update:
+  such tiles, saved as the new run's, would have been served without that
+  source (or from the run before) until the next run. A builder or the
+  chart-mesh leg finding an RTOFS file missing from the cache gives up at
+  once: it was retried as a download that could not happen, about 62 s per
+  product.
 - **The coastline is read in 0.5° tiles, never a whole continent.** GSHHG
   keeps each continent as one record: North America is 14.0 MB, Eurasia
   18.6 MB. Any land question near a coast decoded the whole record and
