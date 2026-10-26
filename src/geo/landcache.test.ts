@@ -375,6 +375,32 @@ test('coastline tiles: the raster drawn from the bytes equals the one drawn from
   assert.deepEqual([raw.mask.nx, raw.mask.ny], [310, 305]);
 });
 
+test('coastline tiles: a piece with more crossing edges than the scratch holds draws as the decoded one', () => {
+  // A star of 40000 points inside one tile: most of its zig-zag edges cross a scanline at 0.005°, more than the
+  // 1 << 14 edges rasterFromTiles first allocates for, so the edge arrays grow while the piece is being drawn.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-bigpiece-'));
+  const file = path.join(dir, 'land.shp');
+  const star: number[][] = [];
+  const n = 40000;
+  for (let k = 0; k < n; k++) {
+    const a = (k / n) * 2 * Math.PI;
+    const r = k % 2 ? 0.1 : 0.2;
+    star.push([10.25 + r * Math.cos(a), 50.25 + r * Math.sin(a)]);
+  }
+  star.push(star[0]);
+  writeShp(file, [[star]]);
+  const coast = coastOf([file]);
+  const b = { west: 10, south: 50, east: 10.5, north: 50.5 };
+  for (const edgeCells of [true, false]) {
+    const decoded = LandMask.rasterStreamed(b, 0.005, add => coast.forEach(b, add), { edgeCells });
+    const raw = rasterFromTiles(coast, b, 0.005, { edgeCells });
+    let differ = 0;
+    for (let i = 0; i < decoded.raster.length; i++) if (raw.mask.raster[i] !== decoded.raster[i]) differ++;
+    assert.equal(differ, 0, `cells differing, edge cells ${edgeCells}`);
+    assert.ok(decoded.landFraction() > 0);
+  }
+});
+
 test('coastline tiles: exact tests equal the whole records, on tile borders too', () => {
   const files = crossingFixture();
   const coast = coastOf(files);

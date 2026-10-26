@@ -117,7 +117,7 @@ export function refuseDeadEnd(ctx: SearchContext, stuck: Candidate[], code: Engi
       waves: worstL.waves,
       easesMs: limitsEaseAt(wind, worst.lon, worst.lat, worst.timeMs, untilMs, args.maxWindMs, args.maxSwhM),
       untilMs,
-      untilForecastEnd: args.forecastEndMs !== undefined,
+      untilForecastEnd: args.forecastEndMs !== undefined && untilMs === args.forecastEndMs,
     };
     return new RouteRefused(refusal, detail, code, suffix);
   }

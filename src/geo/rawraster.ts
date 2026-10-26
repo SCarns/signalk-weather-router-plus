@@ -41,12 +41,19 @@ let xsRow: Float64Array = new Float64Array(1 << 12);
 let rowCount: Int32Array = new Int32Array(1 << 12);
 const SHIFTS = [-360, 0, 360];
 
-function growF(a: Float64Array, n: number): Float64Array {
-  return a.length >= n ? a : new Float64Array(Math.max(n, 2 * a.length));
+/** `a`, or a larger array holding its first `keep` entries. */
+function growF(a: Float64Array, n: number, keep = 0): Float64Array {
+  if (a.length >= n) return a;
+  const b = new Float64Array(Math.max(n, 2 * a.length));
+  if (keep > 0) b.set(a.subarray(0, keep));
+  return b;
 }
 
-function growI(a: Int32Array, n: number): Int32Array {
-  return a.length >= n ? a : new Int32Array(Math.max(n, 2 * a.length));
+function growI(a: Int32Array, n: number, keep = 0): Int32Array {
+  if (a.length >= n) return a;
+  const b = new Int32Array(Math.max(n, 2 * a.length));
+  if (keep > 0) b.set(a.subarray(0, keep));
+  return b;
 }
 
 function markCell(raster: Uint8Array, nx: number, ny: number, j: number, i: number): void {
@@ -239,12 +246,12 @@ export function rasterFromTiles(
             if (rowEnd > rowHi) rowEnd = rowHi;
             if (rowStart > rowEnd) continue;
             if (E >= ex0.length) {
-              ex0 = growF(ex0, E + 1);
-              ey0 = growF(ey0, E + 1);
-              ex1 = growF(ex1, E + 1);
-              ey1 = growF(ey1, E + 1);
-              eRowStart = growI(eRowStart, E + 1);
-              eRowEnd = growI(eRowEnd, E + 1);
+              ex0 = growF(ex0, E + 1, E);
+              ey0 = growF(ey0, E + 1, E);
+              ex1 = growF(ex1, E + 1, E);
+              ey1 = growF(ey1, E + 1, E);
+              eRowStart = growI(eRowStart, E + 1, E);
+              eRowEnd = growI(eRowEnd, E + 1, E);
             }
             ex0[E] = xa;
             ey0[E] = ya;
