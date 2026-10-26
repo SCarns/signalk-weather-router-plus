@@ -1320,9 +1320,10 @@ vias). The message says why in plain words: over the wind or wave
 limit (the value against the limit, where, when it comes under, or that
 it does not before the forecast ends), every heading on land, dead
 upwind, no boat speed, or the reasons together; and it names the
-forecast end when the search had run past it. The counts of the last
-stage's candidates (over the limit, crossing land, no boat speed) are
-in each stage's progress line in the job's log.
+forecast end when the search had run past it. Each stage's progress
+line in the job's log counts the candidates over the limit, on land and
+dead upwind; the dead-end and boxed-in lines there also count those with
+no boat speed.
 
 ### Global water grid
 
@@ -1409,7 +1410,8 @@ resolution levels 1–4 (`GSHHS_f_L1.shp` through `GSHHS_f_L4.shp`):
 - Disk in the Signal K data directory: the decoded forecast (about
   1.35 GB for 72 h with the extra fields, 4.6 GB at 360 h), the GRIB files
   of the cached cycles, the coastline (about 156 MB when downloaded, and
-  about 196 MB more once cut into tiles at start), current and tide caches, and the saved map tiles (up to the configured
+  about 196 MB more once cut into tiles at start), current and tide
+  caches, and the saved map tiles (up to the configured
   cap, 20 GB by default). Each cache directory holds a
   [cache directory tag](https://bford.info/cachedir/) (`CACHEDIR.TAG`),
   so backups leave the caches out: Kopia by default, restic, Borg and
@@ -1461,8 +1463,9 @@ coastline** in the plugin's configuration panel); stopping the plugin
 cancels it. Once the coastline is there, the plugin cuts it into 0.5°
 tiles before anything else starts (once per coastline, in a child
 process: 14.6 s for GSHHG full resolution on a Pi 5; the status says
-*starting: cutting the coastline into tiles*); a coastline that changes,
-or a tile store from an older version, is cut again.
+*starting: cutting the coastline into tiles*); a coastline whose path,
+size or modification time changes, or a tile store from an older
+version, is cut again.
 To use another coastline, or an existing GSHHG copy, set its path in the
 plugin configuration. A standard GSHHS layer path automatically includes all four
 sibling layers at the same resolution; missing siblings are an error. An older
