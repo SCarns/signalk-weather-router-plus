@@ -33,6 +33,33 @@ export interface BuilderCurrentsRef {
   harmonicDir: string | null;
 }
 
+/**
+ * What the tidal-harmonic folder holds: each `.npz` file's name, size and modification time, so a file added, replaced
+ * or removed changes it (the current tiles' generation, tiles.ts). 'none' without a folder.
+ */
+export function harmonicSignature(dir: string | null): string {
+  if (!dir) return 'none';
+  let files: string[];
+  try {
+    files = fs
+      .readdirSync(dir)
+      .filter(f => f.toLowerCase().endsWith('.npz'))
+      .sort();
+  } catch (err) {
+    return `unreadable: ${(err as Error).message}`;
+  }
+  return files
+    .map(f => {
+      try {
+        const st = fs.statSync(path.join(dir, f));
+        return `${f}:${st.size}:${Math.floor(st.mtimeMs)}`;
+      } catch {
+        return `${f}:gone`;
+      }
+    })
+    .join(',');
+}
+
 /** Every `.npz` source in the folder, in name order; `file` null: the folder itself could not be read. */
 export function harmonicFromDir(dir: string): { file: string | null; source: HarmonicCurrentSource | null; error: string | null }[] {
   let files: string[];

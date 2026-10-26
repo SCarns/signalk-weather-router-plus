@@ -74,10 +74,12 @@ export interface GenerationInputs {
   forecast: { cycleTimeMs: number; params: readonly string[]; lastValidMs: number } | null;
   /**
    * The current sources (null before the data worker's first status): their names and runs, the SMOC run, the
-   * harmonics folder, and the settings that change a value at a given hour: the SMOC and RTOFS steps (hours between
-   * steps are interpolated) and the RTOFS horizon (past it RTOFS has no data and a lower source answers).
+   * tidal-harmonic files loaded (their names, sizes and modification times: currents/fromcache.ts harmonicSignature;
+   * the folder's path alone kept tiles of files since replaced), and the settings that change a value at a given hour:
+   * the SMOC and RTOFS steps (hours between steps are interpolated) and the RTOFS horizon (past it RTOFS has no data
+   * and a lower source answers).
    */
-  currents: { sources: string; smoc: string; harmonicDir: string; smocStepS: number; rtofsStepS: number; rtofsHorizonS: number } | null;
+  currents: { sources: string; smoc: string; harmonic: string; smocStepS: number; rtofsStepS: number; rtofsHorizonS: number } | null;
   /** The tide run, 'off', or null while none is loaded. */
   tides: { run: string; settled: boolean } | 'off' | null;
 }
@@ -108,7 +110,7 @@ export function tileGenerationKeys(d: GenerationInputs): Record<TileGroup, strin
   const wx = f ? `${d.coast}|${f.cycleTimeMs}|${f.params.join(',')}|${f.lastValidMs}` : null;
   const c = d.currents;
   const cur =
-    wx && c ? `${wx}|${c.sources}|${c.smoc}|${c.harmonicDir}|${c.smocStepS}|${c.rtofsStepS}|${c.rtofsHorizonS}|ss${SEA_STATE_REV}` : null;
+    wx && c ? `${wx}|${c.sources}|${c.smoc}|${c.harmonic}|${c.smocStepS}|${c.rtofsStepS}|${c.rtofsHorizonS}|ss${SEA_STATE_REV}` : null;
   const t = d.tides;
   const tide = t === 'off' ? `${d.coast}|off` : t ? `${d.coast}|${t.run}|${t.settled}` : null;
   const pt = cur && tide ? `${cur}|${tide}|rev${POINT_ANSWER_REV}` : null;

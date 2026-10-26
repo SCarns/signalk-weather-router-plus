@@ -74,14 +74,19 @@ export function coastTilesDir(root: string, paths: string[]): string {
   return path.join(root, COAST_TILES_DIR, coastlineFingerprint(shorelinePaths(paths)));
 }
 
-/** Is the tile store for this coastline complete under `root`, in this version's format? */
+/**
+ * Is the tile store for this coastline complete under `root`, in this version's format? Throws for an incomplete GSHHG
+ * hierarchy (shorelinePaths), before any cut starts.
+ */
 export function coastTilesReady(root: string, paths: string[]): boolean {
+  const file = path.join(coastTilesDir(root, paths), 'complete.json');
+  let done: { version?: number };
   try {
-    const done = JSON.parse(fs.readFileSync(path.join(coastTilesDir(root, paths), 'complete.json'), 'utf8')) as { version?: number };
-    return done.version === VERSION;
+    done = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: number };
   } catch {
-    return false;
+    return false; // not cut yet, or a cut that did not finish
   }
+  return done.version === VERSION;
 }
 
 // ─────────────── the cut ───────────────

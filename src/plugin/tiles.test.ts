@@ -269,7 +269,7 @@ test('tile generations: each group changes only with what its tiles are made fro
     currents: {
       sources: 'CMEMS-SMOC+RTOFS-west_atl|west_atl 2026-10-21',
       smoc: '2026103123|true',
-      harmonicDir: '',
+      harmonic: 'none',
       smocStepS: 10800,
       rtofsStepS: 10800,
       rtofsHorizonS: 414000,
@@ -290,6 +290,8 @@ test('tile generations: each group changes only with what its tiles are made fro
   // A step or the RTOFS horizon changes the values at some hours: the same.
   assert.deepEqual(changed({ ...base, currents: { ...base.currents, smocStepS: 3600 } }), ['cur', 'pt']);
   assert.deepEqual(changed({ ...base, currents: { ...base.currents, rtofsHorizonS: 259200 } }), ['cur', 'pt']);
+  // A tidal-harmonic file added or replaced in the same folder: the same.
+  assert.deepEqual(changed({ ...base, currents: { ...base.currents, harmonic: 'gom3.npz:35000000:1761400000000' } }), ['cur', 'pt']);
   // A new tide run: tides and point answers.
   assert.deepEqual(changed({ ...base, tides: { run: '2026102923', settled: true } }), ['pt', 'tide']);
   // A new forecast cycle, other fields, or another horizon (the run's last hour): everything drawn from the forecast.
@@ -301,4 +303,25 @@ test('tile generations: each group changes only with what its tiles are made fro
   assert.equal(tileGenerationKeys({ ...base, forecast: null }).wx, null);
   assert.equal(tileGenerationKeys({ ...base, currents: null }).cur, null);
   assert.equal(tileGenerationKeys({ ...base, tides: 'off' }).tide, '/gshhg/L1.shp|off');
+});
+
+test('harmonicSignature: a file added, replaced or removed in the folder changes it', async () => {
+  const { harmonicSignature } = await import('../currents/fromcache');
+  const dir = tmp();
+  assert.equal(harmonicSignature(null), 'none');
+  assert.equal(harmonicSignature(dir), '', 'an empty folder');
+  fs.writeFileSync(path.join(dir, 'a.npz'), 'one');
+  fs.writeFileSync(path.join(dir, 'notes.txt'), 'not a source');
+  const one = harmonicSignature(dir);
+  assert.match(one, /^a\.npz:3:\d+$/);
+  assert.equal(harmonicSignature(dir), one, 'unchanged folder: the same');
+  fs.writeFileSync(path.join(dir, 'b.npz'), 'two');
+  const two = harmonicSignature(dir);
+  assert.match(two, /^a\.npz:3:\d+,b\.npz:3:\d+$/, 'added');
+  fs.writeFileSync(path.join(dir, 'a.npz'), 'replaced');
+  assert.notEqual(harmonicSignature(dir), two, 'replaced (another size)');
+  fs.rmSync(path.join(dir, 'b.npz'));
+  assert.doesNotMatch(harmonicSignature(dir), /b\.npz/, 'removed');
+  assert.match(harmonicSignature(path.join(dir, 'missing')), /^unreadable: /);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

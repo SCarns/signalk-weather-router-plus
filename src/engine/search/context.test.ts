@@ -42,9 +42,9 @@ function cand(lon: number, lat: number, h: number): Candidate {
 }
 
 /** The parts of a search refuseDeadEnd reads; the counts of the last try as given. */
-function ctx(counts: Partial<TryStats>): SearchContext {
+function ctx(counts: Partial<TryStats>, forecastEndMs?: number): SearchContext {
   return {
-    args: { start: [-71, 41], end: [-70, 41], departureTime: new Date(T0), vessel: {} as never, maxWindMs: 15 },
+    args: { start: [-71, 41], end: [-70, 41], departureTime: new Date(T0), vessel: {} as never, maxWindMs: 15, forecastEndMs },
     wind: windy,
     lastTry: { tried: 0, land: 0, limited: 0, noGo: 0, stuck: 0, latestMs: 0, ...counts },
     goals: [{ lon: -70, lat: 41, radiusM: 0 }],
@@ -116,4 +116,15 @@ test('refuseDeadEnd: with no candidate past the start, the refusal is at the sta
   assert.equal(r.kind, 'coast');
   assert.equal(r.at, null);
   assert.equal(r.atMs, T0);
+});
+
+test('refuseDeadEnd: over the limit past the forecast end, it stays over to the end, as far as the forecast goes', () => {
+  // The candidate is 5 h out, the forecast ends 2 h out: the search went on past it on the last step held.
+  const end = T0 + 2 * H;
+  const r = refusal(ctx({ tried: 40, limited: 40 }, end), [cand(-70.5, 41.1, 5)]);
+  assert.equal(r.kind, 'over_limit');
+  assert.ok(r.kind === 'over_limit');
+  assert.equal(r.untilMs, end);
+  assert.equal(r.untilForecastEnd, true);
+  assert.equal(r.easesMs, null);
 });

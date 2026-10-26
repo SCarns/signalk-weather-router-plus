@@ -107,7 +107,9 @@ export function refuseDeadEnd(ctx: SearchContext, stuck: Candidate[], code: Engi
         }
       }
     }
-    const untilMs = args.forecastEndMs !== undefined ? Math.max(args.forecastEndMs, worst.timeMs) : worst.timeMs + EASE_LOOKAHEAD_MS;
+    // Up to the forecast's end when it is known: past it the last step is held, so nothing can ease there (a reading past
+    // it stays over to the end; forecastNote says the search went past it).
+    const untilMs = args.forecastEndMs ?? worst.timeMs + EASE_LOOKAHEAD_MS;
     const refusal: RouteRefusal = {
       kind: 'over_limit',
       // The start keeps its name even when the reading one step ahead of it is the worst.
@@ -117,7 +119,7 @@ export function refuseDeadEnd(ctx: SearchContext, stuck: Candidate[], code: Engi
       waves: worstL.waves,
       easesMs: limitsEaseAt(wind, worst.lon, worst.lat, worst.timeMs, untilMs, args.maxWindMs, args.maxSwhM),
       untilMs,
-      untilForecastEnd: args.forecastEndMs !== undefined && untilMs === args.forecastEndMs,
+      untilForecastEnd: args.forecastEndMs !== undefined,
     };
     return new RouteRefused(refusal, detail, code, suffix);
   }

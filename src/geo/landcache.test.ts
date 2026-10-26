@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { pointInShape, readShapefilePolygons, ShapefileIndex, type ShapePolygon } from './shapefile';
 import { LandMask } from './landmask';
 import { chooseOverlayResolution, OnDemandLand, snapBBox } from './landcache';
-import { CoastTiles, COAST_TILE_DEG } from './coasttiles';
+import { CoastTiles, COAST_TILE_DEG, coastTilesDir, coastTilesReady } from './coasttiles';
 import { rasterFromTiles } from './rawraster';
 
 /** Write a minimal polygon shapefile (type 5); each polygon is a list of rings of [lon, lat]. */
@@ -481,4 +481,24 @@ test('shorelinePaths keeps the case of the .shp suffix when it adds levels 2–4
     ['GSHHS_f_L1.SHP', 'GSHHS_f_L2.SHP', 'GSHHS_f_L3.SHP', 'GSHHS_f_L4.SHP']
   );
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('coastTilesReady: an incomplete GSHHG hierarchy throws before any cut; a store of another version is not ready', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-ready-'));
+  const root = path.join(dir, 'data');
+  try {
+    for (let l = 1; l <= 4; l++) writeShp(path.join(dir, `GSHHS_f_L${l}.shp`), [[sq(1, 1, 2, 2)]]);
+    const files = [path.join(dir, 'GSHHS_f_L1.shp')];
+    assert.equal(coastTilesReady(root, files), false, 'not cut yet');
+    CoastTiles.build(files, root);
+    assert.equal(coastTilesReady(root, files), true);
+    // A store from another version of the format: cut again.
+    const done = path.join(coastTilesDir(root, files), 'complete.json');
+    fs.writeFileSync(done, JSON.stringify({ ...JSON.parse(fs.readFileSync(done, 'utf8')), version: 2 }));
+    assert.equal(coastTilesReady(root, files), false);
+    fs.unlinkSync(path.join(dir, 'GSHHS_f_L3.shp'));
+    assert.throws(() => coastTilesReady(root, files), /Incomplete GSHHG hierarchy/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

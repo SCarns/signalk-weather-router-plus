@@ -82,6 +82,7 @@ import { SMOC_NAME } from './currents/smoc';
 import { SL_NAME } from './tides/sealevel';
 import type { SerializedSmoc } from './currents/smoc';
 import { chooseRtofsProduct, readRtofsExtents, rtofsSetForConfig, type SerializedRtofsSet } from './currents/rtofs';
+import { harmonicSignature } from './currents/fromcache';
 import type { SerializedHarmonic } from './currents/harmonic';
 
 const PLUGIN_ID = 'signalk-weather-router-plus';
@@ -152,6 +153,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
   let rtofsShared: SerializedRtofsSet | null = null;
   /** The data worker's tidal-harmonic sources (shared constituent blocks), relayed to the route worker. */
   let harmonicShared: SerializedHarmonic[] | null = null;
+  /** The tidal-harmonic files as they were when the data worker read them (harmonicSignature); null before it has. */
+  let harmonicSig: string | null = null;
   /** Raw Signal K plugin options from start(). */
   let pluginOptions: PluginConfig | undefined;
   let settings: SettingsStore | null = null;
@@ -575,16 +578,18 @@ export = function plugin(app: SkApp): SignalKPlugin {
                 lastValidMs: steps[steps.length - 1].validMs,
               }
             : null,
-        currents: dataStatus
-          ? {
-              sources: currentsKey,
-              smoc: smocShared ? `${smocShared.run.key}|${smocShared.run.settled}` : 'off',
-              harmonicDir: cfg.currents.harmonicDir ?? '',
-              smocStepS: cfg.currents.smocStepS,
-              rtofsStepS: cfg.currents.rtofsStepS,
-              rtofsHorizonS: cfg.currents.rtofsHorizonS,
-            }
-          : null,
+        // Unknown (nothing removed) until the data worker has read the harmonic files.
+        currents:
+          dataStatus && harmonicSig !== null
+            ? {
+                sources: currentsKey,
+                smoc: smocShared ? `${smocShared.run.key}|${smocShared.run.settled}` : 'off',
+                harmonic: harmonicSig,
+                smocStepS: cfg.currents.smocStepS,
+                rtofsStepS: cfg.currents.rtofsStepS,
+                rtofsHorizonS: cfg.currents.rtofsHorizonS,
+              }
+            : null,
         tides: !cfg.tides.enabled ? 'off' : dataStatus?.tides ? { run: dataStatus.tides.run, settled: dataStatus.tides.settled } : null,
       })
     );
@@ -960,6 +965,9 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (role === 'data') {
           // Shared constituent blocks: the route worker adopts the same memory.
           harmonicShared = msg.sources;
+          // The data worker reads the folder once, at its start (worker.ts init), just before this message.
+          harmonicSig = harmonicSignature(config?.currents.harmonicDir ?? null);
+          updateTileGenerations();
           pool.post('route', { type: 'harmonic', sources: msg.sources });
           prebuilder?.broadcast(builderCurrentsRef());
         }
@@ -1325,6 +1333,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     smocShared = null;
     rtofsShared = null;
     harmonicShared = null;
+    harmonicSig = null;
     routeCurrents = null;
     currentsKey = '';
     dataStatus = null;

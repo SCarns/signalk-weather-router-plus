@@ -55,6 +55,11 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Saved current tiles are drawn again when a tidal-harmonic file in the
+  configured folder is added, replaced or removed (picked up at the next
+  start). They were filed by the folder's path, so tiles from the old files
+  were served until the next SMOC or RTOFS run. Saved current tiles are
+  drawn again once after this update.
 - **Signal K's memory no longer jumps when the map tiles are built ahead.**
   Each tile builder was sent the currents (SMOC, RTOFS, tidal harmonics) as
   copies made on Signal K's main thread, twice per builder. Glibc kept that
