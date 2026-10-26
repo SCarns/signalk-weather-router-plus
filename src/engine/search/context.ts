@@ -95,21 +95,23 @@ export function refuseDeadEnd(ctx: SearchContext, stuck: Candidate[], code: Engi
   const top = Math.max(lastTry.limited, lastTry.land, lastTry.noGo, lastTry.stuck);
   if (top > 0 && lastTry.limited === top) {
     let worst = first;
+    let worstAhead = false;
     let worstOver = -Infinity;
     let worstL = limitsAt(wind, first.lon, first.lat, first.timeMs, args.maxWindMs, args.maxSwhM);
     const aheadS = ctx.budget.candStepM / ctx.cruise;
     for (const c of stuck.length ? stuck : [first]) {
       const g = goals[Math.min(c.viaCount, goals.length - 1)];
       const [aLon, aLat] = projectAlongBearing(c.lon, c.lat, haversineBearing(c.lon, c.lat, g.lon, g.lat), ctx.budget.candStepM);
-      for (const [lon, lat, t] of [
-        [c.lon, c.lat, c.timeMs],
-        [aLon, aLat, c.timeMs + aheadS * 1000],
-      ]) {
+      for (const [lon, lat, t, ahead] of [
+        [c.lon, c.lat, c.timeMs, false],
+        [aLon, aLat, c.timeMs + aheadS * 1000, true],
+      ] as const) {
         const l = limitsAt(wind, lon, lat, t, args.maxWindMs, args.maxSwhM);
         const over = Math.max(l.wind ? l.wind.seen / l.wind.limit : 0, l.waves ? l.waves.seen / l.waves.limit : 0);
         if (over > worstOver) {
           worstOver = over;
           worst = { ...c, lon, lat, timeMs: t };
+          worstAhead = ahead;
           worstL = l;
         }
       }
@@ -127,6 +129,8 @@ export function refuseDeadEnd(ctx: SearchContext, stuck: Candidate[], code: Engi
       easesMs: limitsEaseAt(wind, worst.lon, worst.lat, worst.timeMs, untilMs, args.maxWindMs, args.maxSwhM),
       untilMs,
       untilForecastEnd: args.forecastEndMs !== undefined,
+      // Where a refused move would arrive: never reached (refusalText says "one step ahead of the front").
+      ahead: worstAhead,
     };
     // Only when a reading is over a limit: the moves the limit stopped can be on other headings than the two readings,
     // and "over your limits on every heading" would then be false. Else the reasons are listed, the limit among them.

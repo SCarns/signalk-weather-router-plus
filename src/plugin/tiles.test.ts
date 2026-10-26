@@ -269,6 +269,7 @@ test('tile generations: each group changes only with what its tiles are made fro
     currents: {
       sources: 'CMEMS-SMOC+RTOFS-west_atl|west_atl 2026-10-21',
       smoc: '2026103123|true',
+      harmonicDir: '',
       harmonic: 'none',
       smocStepS: 10800,
       rtofsStepS: 10800,
@@ -292,6 +293,8 @@ test('tile generations: each group changes only with what its tiles are made fro
   assert.deepEqual(changed({ ...base, currents: { ...base.currents, rtofsHorizonS: 259200 } }), ['cur', 'pt']);
   // A tidal-harmonic file added or replaced in the same folder: the same.
   assert.deepEqual(changed({ ...base, currents: { ...base.currents, harmonic: 'gom3.npz:35000000:1761400000000' } }), ['cur', 'pt']);
+  // Another folder holding files of the same names, sizes and times: the same.
+  assert.deepEqual(changed({ ...base, currents: { ...base.currents, harmonicDir: '/tides/other' } }), ['cur', 'pt']);
   // A new tide run: tides and point answers.
   assert.deepEqual(changed({ ...base, tides: { run: '2026102923', settled: true } }), ['pt', 'tide']);
   // A new forecast cycle, other fields, or another horizon (the run's last hour): everything drawn from the forecast.

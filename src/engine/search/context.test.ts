@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { WindSource } from '../environment';
-import { RouteRefused } from '../refusal';
+import { RouteRefused, refusalText } from '../refusal';
 import { refuseDeadEnd } from './context';
 import type { Candidate, SearchContext, TryStats } from './types';
 
@@ -143,4 +143,21 @@ test('refuseDeadEnd: the limit tied with another cause but no reading over it is
   assert.ok(r.kind === 'mixed');
   assert.deepEqual(r.reasons, ['land', 'limit']);
   assert.deepEqual(r.at, { lon: c.lon, lat: c.lat });
+});
+
+test('refuseDeadEnd: the worst reading one step ahead of a candidate is not told as reached', () => {
+  // Over the limit only east of -70.45 (the goal is east): the candidate's own reading is under, the one ahead over.
+  const eastWind: WindSource = { ...windy, at: lon => [lon > -70.45 ? 20 : 5, 270] };
+  const c = cand(-70.5, 41.0, 3);
+  const x = ctx({ tried: 40, limited: 40 }, undefined, eastWind);
+  x.budget = { ...x.budget, candStepM: 10_000 }; // one stage step: 10 km towards the goal
+  const r = refusal(x, [c]);
+  assert.equal(r.kind, 'over_limit');
+  assert.ok(r.kind === 'over_limit');
+  assert.equal(r.ahead, true);
+  assert.ok(r.at && r.at.lon > c.lon, 'the reading ahead, east of the candidate');
+  assert.ok(r.atMs > c.timeMs);
+  const text = refusalText(r);
+  assert.match(text, /one step ahead of the front, about /);
+  assert.doesNotMatch(text, /reached/);
 });

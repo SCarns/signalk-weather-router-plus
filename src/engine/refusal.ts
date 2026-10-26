@@ -40,6 +40,8 @@ export type RouteRefusal =
       untilMs: number;
       /** true: `untilMs` comes from the forecast's end; false: the forecast's end is not known and `untilMs` ends a fixed look ahead. */
       untilForecastEnd: boolean;
+      /** true: `at` and `atMs` are a reading one step ahead of the front (where a refused move would arrive), not a place reached. */
+      ahead?: boolean;
     }
   /** Every heading from `at` crosses land. */
   | { kind: 'coast'; at: RefusalPlace; atMs: number }
@@ -86,7 +88,10 @@ export function refusalText(r: RouteRefusal): string {
     const why = r.reasons.length ? `: its moves were stopped by ${r.reasons.map(k => REASON_TEXT[k]).join(', ')}` : '';
     return `${lead} the search could not make progress${why}. Add a waypoint or choose another departure.`;
   }
-  const where = whereText(r.at, r.atMs);
+  const where =
+    r.kind === 'over_limit' && r.ahead && r.at
+      ? `at ${latLonText(r.at.lat, r.at.lon)}, one step ahead of the front, about ${fmtUtc(r.atMs)}`
+      : whereText(r.at, r.atMs);
   switch (r.kind) {
     case 'over_limit': {
       const parts: string[] = [];

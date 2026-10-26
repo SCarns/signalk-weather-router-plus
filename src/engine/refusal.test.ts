@@ -77,11 +77,11 @@ test('refusal text: without a known forecast end the window is the one checked; 
   assert.doesNotMatch(ahead, /forecast goes/);
   assert.equal(
     refusalText({ kind: 'mixed', at: 'front', atMs: t0, reasons: ['land', 'no_go'] }),
-    `From the search's front, reached ${fmtUtc(t0)}, the search found no way on: its moves were stopped by land, the wind dead ahead for this polar. Add a waypoint or choose another departure.`
+    `From the search's front, reached ${fmtUtc(t0)}, the search could not make progress: its moves were stopped by land, the wind dead ahead for this polar. Add a waypoint or choose another departure.`
   );
   assert.match(
     refusalText({ kind: 'mixed', at: null, atMs: t0, reasons: ['stopped'] }),
-    /^At the start the search found no way on: its moves were stopped by no boat speed/
+    /^At the start the search could not make progress: its moves were stopped by no boat speed/
   );
 });
 

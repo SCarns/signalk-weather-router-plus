@@ -585,6 +585,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
             ? {
                 sources: currentsKey,
                 smoc: smocShared ? `${smocShared.run.key}|${smocShared.run.settled}` : 'off',
+                harmonicDir: cfg.currents.harmonicDir ?? '',
                 harmonic: harmonicSig,
                 smocStepS: cfg.currents.smocStepS,
                 rtofsStepS: cfg.currents.rtofsStepS,
