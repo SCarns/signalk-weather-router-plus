@@ -79,7 +79,12 @@ export function coastTilesDir(root: string, paths: string[]): string {
  * hierarchy (shorelinePaths), before any cut starts.
  */
 export function coastTilesReady(root: string, paths: string[]): boolean {
-  const file = path.join(coastTilesDir(root, paths), 'complete.json');
+  return storeComplete(coastTilesDir(root, paths));
+}
+
+/** Is the tile store in `dir` complete, in this version's format? */
+function storeComplete(dir: string): boolean {
+  const file = path.join(dir, 'complete.json');
   let done: { version?: number } | null;
   try {
     done = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: number } | null;
@@ -233,10 +238,11 @@ export interface CutResult {
 }
 
 /**
- * Cut the coastline into the tile store under `root` (replacing any other coastline's store there). Reads every
- * record, the continents included: run it in its own process, whose memory goes when it exits (childtask.ts).
+ * Cut the coastline into the tile store under `root`; with `pruneOthers` (the plugin's own cut), any other
+ * coastline's store there is removed. Reads every record, the continents included: run it in its own process, whose
+ * memory goes when it exits (childtask.ts).
  */
-export function cutCoastline(paths: string[], root: string, log: (m: string) => void = () => undefined): CutResult {
+export function cutCoastline(paths: string[], root: string, log: (m: string) => void = () => undefined, pruneOthers = false): CutResult {
   const t0 = Date.now();
   const files = shorelinePaths(paths);
   const dir = coastTilesDir(root, files);
@@ -361,17 +367,23 @@ export function cutCoastline(paths: string[], root: string, log: (m: string) => 
     path.join(tmp, 'complete.json'),
     JSON.stringify({ version: VERSION, tileDeg: COAST_TILE_DEG, sources: files, tiles: keys.length, pieces, bytes: pos, ms })
   );
-  fs.rmSync(dir, { recursive: true, force: true });
-  fs.renameSync(tmp, dir);
+  // A complete store there is another cut's, finished first, which readers may have open: it stays, this one goes.
+  // Otherwise (none, or one that did not finish or is of an older version, which no reader opens) this one replaces it.
+  if (storeComplete(dir)) fs.rmSync(tmp, { recursive: true, force: true });
+  else {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.renameSync(tmp, dir);
+  }
   // Another coastline's store, or a cut that did not finish: no longer used. A cut still running in another process
   // keeps its staging folder.
   const parent = path.dirname(dir);
-  for (const name of fs.readdirSync(parent)) {
-    if (name === path.basename(dir) || !name.startsWith('coast-')) continue;
-    const owner = /\.tmp-(\d+)$/.exec(name);
-    if (owner && processAlive(Number(owner[1]))) continue;
-    fs.rmSync(path.join(parent, name), { recursive: true, force: true });
-  }
+  if (pruneOthers)
+    for (const name of fs.readdirSync(parent)) {
+      if (name === path.basename(dir) || !name.startsWith('coast-')) continue;
+      const owner = /\.tmp-(\d+)$/.exec(name);
+      if (owner && processAlive(Number(owner[1]))) continue;
+      fs.rmSync(path.join(parent, name), { recursive: true, force: true });
+    }
   log(`coastline tiles: ${keys.length} tiles, ${pieces} pieces, ${(pos / 1e6).toFixed(1)} MB in ${(ms / 1000).toFixed(1)} s`);
   return { dir, tiles: keys.length, pieces, bytes: pos, ms };
 }

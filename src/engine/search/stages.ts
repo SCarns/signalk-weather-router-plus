@@ -262,8 +262,10 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
           : '';
       const stalled = `the search is boxed in: for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(1)} km to the destination`;
       progress(stage + 1, Math.max(kEff, stage + 1), `${stalled}; ${tryNote(ctx)}`);
-      // Moves stopped by a limit, the coast, the wind or no boat speed: the user is told that reason, then the stall.
-      if (lastTry.limited || lastTry.land || lastTry.noGo || lastTry.stuck)
+      // Moves stopped by a limit, the coast, the wind or no boat speed: when they are at least half the moves tried, the
+      // user is told that reason, then the stall; fewer, and the stall is told on its own.
+      const stopped = lastTry.limited + lastTry.land + lastTry.noGo + lastTry.stuck;
+      if (lastTry.tried > 0 && 2 * stopped >= lastTry.tried)
         // The parents: the candidates whose moves lastTry counted.
         throw refuseDeadEnd(
           ctx,

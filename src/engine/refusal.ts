@@ -84,7 +84,7 @@ export function refusalText(r: RouteRefusal): string {
           ? `From ${whereText(r.at, r.atMs).slice(3)},`
           : 'At the start';
     const why = r.reasons.length ? `: its moves were stopped by ${r.reasons.map(k => REASON_TEXT[k]).join(', ')}` : '';
-    return `${lead} the search found no way on${why}. Add a waypoint or choose another departure.`;
+    return `${lead} the search could not make progress${why}. Add a waypoint or choose another departure.`;
   }
   const where = whereText(r.at, r.atMs);
   switch (r.kind) {

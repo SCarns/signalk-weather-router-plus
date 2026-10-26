@@ -305,7 +305,8 @@ async function runTask(t: ChildTask): Promise<unknown> {
     }
     case 'coast-cut': {
       const { cutCoastline } = await import('../geo/coasttiles');
-      return cutCoastline(t.paths, t.root);
+      // The plugin's own cut: other coastlines' stores under its data directory are no longer used.
+      return cutCoastline(t.paths, t.root, undefined, true);
     }
   }
 }
