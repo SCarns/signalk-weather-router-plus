@@ -2,7 +2,7 @@
  * A refresh round held by the internet state (internet.ts) with no forecast on disk yet: the forecast is
  * missing, not failed, so a route waiting for the first forecast is not released (index.ts asks for a round of
  * the owner's for it). An unheld round that cannot reach ECMWF reports the error as before. A decode, and a SMOC
- * resident area, that the hold stops are skipped, not failed, and download nothing more.
+ * or tide resident area, that the hold stops are skipped, not failed, and download nothing more.
  */
 
 import { test } from 'node:test';
@@ -14,10 +14,13 @@ import { SmocClient } from '../../currents/smoc';
 import { H, T0, URLS, makeMock } from '../../currents/smoc.mock.test';
 import { CurrentStack } from '../../currents/stack';
 import { HOUR_S } from '../../geo/units';
+import { SeaLevelClient } from '../../tides/sealevel';
+import { T0 as TIDE_T0, URLS as TIDE_URLS, mockFetch as tideFetch } from '../../tides/sealevel.mock.test';
 import { latestExpectedCycle, type EcmwfClient } from '../../data/ecmwf';
 import type { ResolvedConfig } from '../config';
 import type { WorkerToMain } from '../protocol';
 import { refreshSmoc } from './currents';
+import { refreshTides } from './tides';
 import { refreshForecast } from './forecast';
 import type { WorkerState } from './state';
 
@@ -221,6 +224,66 @@ test('SMOC: a held background round loads no resident area; a hold that starts d
     const fetched = chunks() - start;
     assert.ok(fetched >= 1 && fetched < full, `stopped between chunks: ${fetched} of about ${full}`);
     assert.equal(st.checks.smoc?.reason, `skipped: ${metered}`);
+    assert.deepEqual(errors, [], 'a stop by the hold is not an error');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('tides: a held background round loads no resident area; a hold that starts during a load stops it between chunks', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: TIDE_T0 + 5 * H });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-held-'));
+  const metered = 'the internet connection is metered (network.internet.state)';
+  try {
+    const counts = new Map<string, number>();
+    const mock = tideFetch(counts);
+    let onFetch: (url: string) => void = () => undefined;
+    const chunk = (url: string): boolean => /\/(ocean_tide|total_sea_level)\//.test(url);
+    const chunks = (): number => [...counts].filter(([u]) => chunk(u)).reduce((a, [, n]) => a + n, 0);
+    const total = (): number => [...counts.values()].reduce((a, n) => a + n, 0);
+    const errors: string[] = [];
+    const st = state([], dir);
+    const log: WorkerState['log'] = (level, m) => {
+      if (level === 'error') errors.push(m);
+    };
+    Object.assign(st, { log });
+    st.config = {
+      forecast: { horizonS: 72 * 3600, extraFields: false, energyFields: false },
+      tides: { enabled: true, halfWidthDeg: 5, horizonS: 24 * HOUR_S },
+    } as unknown as ResolvedConfig;
+    st.seaLevelClient = new SeaLevelClient({
+      cacheDir: dir,
+      urls: TIDE_URLS,
+      fetchImpl: ((input: string | URL | Request, init?: RequestInit) => {
+        onFetch(String(input));
+        return mock(input, init);
+      }) as typeof fetch,
+      sleepImpl: async () => undefined,
+    });
+    st.vesselPos = { lat: 10, lon: 30 };
+    await refreshTides(st);
+    assert.ok(st.tides?.status().resident, 'an unheld round loads the resident area');
+    const full = chunks();
+    assert.ok(full > 2, `it took several chunks (${full})`);
+
+    st.vesselPos = { lat: -30, lon: 100 };
+    st.backgroundRound = true;
+    st.internetHold = metered;
+    const before = total();
+    await refreshTides(st, `skipped: ${metered}`);
+    assert.equal(total(), before, 'no request while held');
+    assert.equal(st.checks.tides?.reason, `skipped: ${metered}`);
+
+    st.internetHold = null;
+    st.vesselPos = { lat: 30, lon: -150 };
+    const start = chunks();
+    onFetch = url => {
+      if (chunk(url)) st.internetHold = metered;
+    };
+    await refreshTides(st);
+    const fetched = chunks() - start;
+    assert.ok(fetched >= 1 && fetched < full, `stopped between chunks: ${fetched} of about ${full}`);
+    assert.equal(st.checks.tides?.reason, `skipped: ${metered}`);
     assert.deepEqual(errors, [], 'a stop by the hold is not an error');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
