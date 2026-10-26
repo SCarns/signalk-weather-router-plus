@@ -50,6 +50,7 @@ function ctx(counts: Partial<TryStats>, forecastEndMs?: number): SearchContext {
     goals: [{ lon: -70, lat: 41, radiusM: 0 }],
     sLon: -71,
     sLat: 41,
+    startViaCount: 0,
     budget: { budgetDistM: 0, dtS: 0, deltaD: 0, candStepM: 2000 },
     cruise: 3,
   } as unknown as SearchContext;
@@ -116,6 +117,9 @@ test('refuseDeadEnd: with no candidate past the start, the refusal is at the sta
   assert.equal(r.kind, 'coast');
   assert.equal(r.at, null);
   assert.equal(r.atMs, T0);
+  const limited = refusal(ctx({ tried: 40, limited: 40 }), []);
+  assert.equal(limited.kind, 'over_limit');
+  assert.equal(limited.at, null);
 });
 
 test('refuseDeadEnd: over the limit past the forecast end, it stays over to the end, as far as the forecast goes', () => {

@@ -82,7 +82,15 @@ const EASE_LOOKAHEAD_MS = 72 * HOUR_MS;
 export function refuseDeadEnd(ctx: SearchContext, stuck: Candidate[], code: EngineErrorCode = 'route', suffix = ''): RouteRefused {
   const { args, wind, lastTry, goals } = ctx;
   const detail = tryNote(ctx);
-  const start: Candidate = { ...stuck[0], lon: ctx.sLon, lat: ctx.sLat, timeMs: args.departureTime.getTime(), parentIdx: -1, elapsedS: 0 };
+  const start: Candidate = {
+    ...stuck[0],
+    lon: ctx.sLon,
+    lat: ctx.sLat,
+    timeMs: args.departureTime.getTime(),
+    parentIdx: -1,
+    elapsedS: 0,
+    viaCount: stuck[0]?.viaCount ?? ctx.startViaCount,
+  };
   const first = stuck[0] ?? start;
   const place = (c: Candidate): RefusalPlace => (c.parentIdx < 0 && c.elapsedS === 0 ? null : { lon: c.lon, lat: c.lat });
   const top = Math.max(lastTry.limited, lastTry.land, lastTry.noGo, lastTry.stuck);
