@@ -303,6 +303,7 @@ export class RtofsClient {
    * published.
    */
   async fetchExtent(run: RtofsRun): Promise<RtofsExtent | null> {
+    if (this.cacheOnly) throw new Error(`${this.region}: a cache-only client cannot read the extent of run ${run.yyyymmdd}`);
     const url = this.fileUrl(run, 'f024');
     const r = await fetchWithRetry(
       url,
@@ -352,6 +353,8 @@ export class RtofsClient {
   static readonly HEAD_BYTES = 4096;
 
   async filePublished(run: RtofsRun, file: string): Promise<boolean> {
+    if (this.cacheOnly)
+      throw new Error(`${this.region}: a cache-only client cannot check whether run ${run.yyyymmdd} ${file} is published`);
     const res = await this.request(this.fileUrl(run, file), { method: 'HEAD' });
     if (res.status === 200) return true;
     if (res.status === 404 || res.status === 403) return false;
