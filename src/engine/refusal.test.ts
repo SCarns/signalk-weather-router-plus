@@ -51,7 +51,7 @@ test('refusal text: both limits mid-route, never easing within the forecast; the
   );
   assert.match(
     both,
-    /They stay over the limits to 2026-10-27 17:00 UTC, as far as the forecast goes\. Raise the limit, or change the departure/
+    /Conditions there do not meet all your limits again before 2026-10-27 17:00 UTC, as far as the forecast goes\. Raise the limit, or change the departure/
   );
   assert.match(
     refusalText({ kind: 'coast', at, atMs: t0 }),
@@ -73,7 +73,7 @@ test('refusal text: without a known forecast end the window is the one checked; 
     untilMs: t0 + 72 * H,
     untilForecastEnd: false,
   });
-  assert.match(ahead, /It stays over the limit to 2026-10-28 17:00 UTC, as far ahead as was checked\./);
+  assert.match(ahead, /Conditions there do not meet all your limits again before 2026-10-28 17:00 UTC, as far ahead as was checked\./);
   assert.doesNotMatch(ahead, /forecast goes/);
   assert.equal(
     refusalText({ kind: 'mixed', at: 'front', atMs: t0, reasons: ['land', 'no_go'] }),
@@ -117,7 +117,7 @@ test('refusal text: a reading past the forecast end says the search went beyond 
     untilForecastEnd: true,
   });
   assert.match(text, new RegExp(`This is past the forecast's end, ${fmtUtc(t0 + 2 * H)}: the search went beyond the forecast`));
-  assert.doesNotMatch(text, /stays over/);
+  assert.doesNotMatch(text, /do not meet all your limits/);
 });
 
 test('RouteRefused: the sentence plus the suffix is the message; the counts stay on the error', () => {

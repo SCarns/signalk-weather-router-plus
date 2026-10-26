@@ -100,7 +100,8 @@ export function refusalText(r: RouteRefusal): string {
           ? `${they} come${parts.length > 1 ? '' : 's'} under ${limits} about ${fmtUtc(r.easesMs)}.`
           : r.untilForecastEnd && r.atMs > r.untilMs
             ? `This is past the forecast's end, ${fmtUtc(r.untilMs)}: the search went beyond the forecast, on its last step held.`
-            : `${they} stay${parts.length > 1 ? '' : 's'} over ${limits} to ${fmtUtc(r.untilMs)}, ${r.untilForecastEnd ? 'as far as the forecast goes' : 'as far ahead as was checked'}.`;
+            : // No hour with every limit met (limitsEaseAt): one value can ease while another stays over or rises.
+              `Conditions there do not meet all your limits again before ${fmtUtc(r.untilMs)}, ${r.untilForecastEnd ? 'as far as the forecast goes' : 'as far ahead as was checked'}.`;
       return `Forecast ${where}: ${parts.join(' and ')}. ${ease} ${advice(r.at, r.easesMs !== null)}`;
     }
     case 'coast':
