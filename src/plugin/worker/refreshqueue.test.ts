@@ -16,22 +16,25 @@ function harness(runGate?: Promise<void>): {
   pos: () => VesselPosition | null;
   setPos: (p: VesselPosition | null) => void;
   runs: { force: boolean; pos: VesselPosition | null }[];
+  users: boolean[];
 } {
   let chain: Promise<void> = Promise.resolve();
   let vesselPos: VesselPosition | null = null;
   const runs: { force: boolean; pos: VesselPosition | null }[] = [];
+  const users: boolean[] = [];
   const background = (fn: () => Promise<void>): void => {
     chain = chain.then(fn);
   };
   const queue = refreshQueue({
     inBackground: background,
     setPosition: p => (vesselPos = p),
-    run: async force => {
+    run: async (force, user) => {
       runs.push({ force, pos: vesselPos });
+      users.push(user);
       await runGate;
     },
   });
-  return { queue, background, drain: () => chain, pos: () => vesselPos, setPos: p => (vesselPos = p), runs };
+  return { queue, background, drain: () => chain, pos: () => vesselPos, setPos: p => (vesselPos = p), runs, users };
 }
 
 const OLD = { lat: 41.6, lon: -70.7 };
@@ -80,4 +83,20 @@ test('a request made while a refresh runs is done once more after it, with its o
     { force: false, pos: OLD },
     { force: true, pos: NEW },
   ]);
+});
+
+test("a joined round is the owner's when any request was (it downloads whatever the internet state)", async () => {
+  const h = harness();
+  let release!: () => void;
+  const gate = new Promise<void>(r => (release = r));
+  h.background(() => gate);
+  h.queue({});
+  h.queue({ user: true });
+  h.queue({});
+  release();
+  await h.drain();
+  assert.deepEqual(h.users, [true]);
+  h.queue({});
+  await h.drain();
+  assert.deepEqual(h.users, [true, false], 'a round of its own afterwards is a background one');
 });

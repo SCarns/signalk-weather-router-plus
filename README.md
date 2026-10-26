@@ -1395,7 +1395,8 @@ resolution levels 1–4 (`GSHHS_f_L1.shp` through `GSHHS_f_L4.shp`):
   needs 22): the chart mesh archives are zstd, which Node's own zlib
   unpacks from 22.15 on.
 - Internet access for the forecast, current, tide and coastline
-  downloads.
+  downloads. On a metered link, see
+  [Metered or no internet](#metered-or-no-internet-signalk-internet).
 - Disk in the Signal K data directory: the decoded forecast (about
   1.35 GB for 72 h with the extra fields, 4.6 GB at 360 h), the GRIB files
   of the cached cycles, the coastline (about 156 MB when downloaded),
@@ -3022,6 +3023,40 @@ its departures' route jobs send none ([Departure windows](#departure-windows)).
 The value is `{state, method: [], message, timestamp}`. Cancelled jobs
 send no notification, nor does a window that ends other than done
 (cancelled, or failed by a restart). The plugin emits no other deltas.
+
+#### Metered or no internet (signalk-internet)
+
+With the [signalk-internet](https://www.npmjs.com/package/@meri-imperiumi/signalk-internet)
+plugin installed (recommended in the App Store), the plugin follows its
+`network.internet.state` on the vessel with one subscription: it asks for
+nothing, waits for nothing at start and keeps no timers for it. The
+server sends the last state when the subscription starts; at a server
+start the first round may download in the seconds before signalk-internet
+publishes its first state. While the state is `metered`, `offline` or
+`captive`, nothing is downloaded on its own:
+
+- the forecast, current and tide refresh rounds use what is on disk
+  (`checks` in `/api/status` says `skipped: the internet connection is
+  metered …`), and one runs as soon as the state clears; a round under
+  way when the state turns skips the sources it has not reached yet, and
+  its forecast decode stops (a SMOC, RTOFS or tide request already under
+  way finishes);
+- the coastline download at first start and the chart meshes' daily
+  catalogue read and downloads wait, and start as soon as the state
+  clears; a coastline or mesh download under way stops (a mesh download
+  resumes from its parts later);
+- map tiles are not built ahead of time (`overlay_prebuild.paused` in
+  `/api/status`).
+
+What you ask for still downloads: **Refresh forecast**, **Download
+coastline**, the mesh panel's buttons, routes and departure windows
+(a route with no forecast on disk yet downloads the forecast first),
+and the map and conditions you look at. The plugin status says why it
+waits. Without signalk-internet, or in any other state, downloads run as
+before. signalk-internet 0.7.1 and older leave their last state behind
+when disabled, and Signal K keeps it until it restarts; that state then
+still holds (clearing it on stop is
+[signalk-internet#4](https://github.com/meri-imperiumi/signalk-internet/pull/4)).
 
 #### OpenAPI
 

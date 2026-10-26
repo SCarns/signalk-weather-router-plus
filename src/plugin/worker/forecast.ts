@@ -140,12 +140,21 @@ export function pruneForecastCaches(st: WorkerState, cfg: ResolvedConfig, cl: Ec
  * The run in use keeps answering until the new one is complete. Every check
  * ends with what it found (SourceCheck), sent as 'forecast-check'.
  * `offline`: this refresh round already found no connection; the server is
- * not asked again (the reason is reported).
+ * not asked again (the reason is reported). `held`: why the internet state
+ * holds this round now (internet.ts), or null: no forecast yet is then not
+ * an error, so a route waiting for the first forecast keeps waiting
+ * (index.ts asks for a round of the owner's for it), and a decode it stops
+ * (worker.ts 'internet-hold') is skipped, not failed.
  */
-export async function refreshForecast(st: WorkerState, force: boolean, offline: string | null = null): Promise<void> {
+export async function refreshForecast(
+  st: WorkerState,
+  force: boolean,
+  offline: string | null = null,
+  held: () => string | null = () => null
+): Promise<void> {
   let check: SourceCheck;
   try {
-    check = await refreshForecastInner(st, force, offline);
+    check = await refreshForecastInner(st, force, offline, held);
   } catch (err) {
     check = { outcome: isOffline(err) ? 'could-not-check' : 'failed', at: '', reason: (err as Error).message };
   } finally {
@@ -160,7 +169,12 @@ export async function refreshForecast(st: WorkerState, force: boolean, offline: 
 const newest = (reason: string | null = null): SourceCheck => ({ outcome: 'newest', at: '', reason });
 const newRun = (reason: string): SourceCheck => ({ outcome: 'new-run', at: '', reason });
 
-async function refreshForecastInner(st: WorkerState, force: boolean, offline: string | null): Promise<SourceCheck> {
+async function refreshForecastInner(
+  st: WorkerState,
+  force: boolean,
+  offline: string | null,
+  held: () => string | null
+): Promise<SourceCheck> {
   const { config: cfg, client: cl } = requireInit(st);
   const startedAt = new Date().toISOString();
   // Why a decode would be needed, for the user waiting on it.
@@ -197,7 +211,7 @@ async function refreshForecastInner(st: WorkerState, force: boolean, offline: st
       return { outcome, at: '', reason: `${(err as Error).message}; using the decoded run ${path.basename(fallback.dir)} on disk` };
     }
     // No run in use at all: the error the page shows instead of a forecast.
-    if (!st.run) st.send({ type: 'refresh-error', message: (err as Error).message });
+    if (!st.run && !held()) st.send({ type: 'refresh-error', message: (err as Error).message });
     return { outcome, at: '', reason: (err as Error).message };
   }
   const cycle = resolved.cycle;
@@ -250,6 +264,9 @@ async function refreshForecastInner(st: WorkerState, force: boolean, offline: st
     });
   decoding(0, null);
   st.decodeAbort = new AbortController();
+  // A hold that began while the cycle was looked up found no decode to stop: stop it before it downloads (worker.ts
+  // 'internet-hold'). A cycle fully in the GRIB cache decodes without the network and goes on.
+  if (!resolved.fromCache && held()) st.decodeAbort.abort();
   try {
     // The one-step block lives in the child process; shown in the status while it runs.
     st.decodingBlockBytes = res.needBytes;
@@ -286,6 +303,12 @@ async function refreshForecastInner(st: WorkerState, force: boolean, offline: st
     pruneForecastCaches(st, cfg, cl, cycle);
     return resolved.fallback ? notChecked() : newRun(`cycle ${cycleName(cycle.time)} decoded (${out.downloaded} fields downloaded)`);
   } catch (err) {
+    // Stopped by the internet state starting to hold (worker.ts 'internet-hold'): skipped, as the sources after it are.
+    const h = held();
+    if (h && st.decodeAbort?.signal.aborted) {
+      st.log('info', `forecast: the decode of cycle ${cycleName(cycle.time)} stops: ${h}`);
+      return { outcome: 'could-not-check', at: '', reason: `skipped: ${h}` };
+    }
     const offlineNow = isOffline(err);
     // The child's requests are not this thread's: what it found about the connection is recorded here.
     if (offlineNow) noteNetwork(st, 'offline', (err as Error).message);

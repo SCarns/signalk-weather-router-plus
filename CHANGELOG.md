@@ -20,6 +20,17 @@ uses [Semantic Versioning](https://semver.org/).
   on. It comes with the first stage, as the start as drawn can be on
   land, and goes when the job ends; a repair detour after the search
   does not move it.
+- **No background downloads on a metered link.** With the signalk-internet
+  plugin installed, while its `network.internet.state` is `metered`,
+  `offline` or `captive`, the forecast, current and tide refresh rounds use
+  what is on disk, the coastline download at first start and the chart
+  meshes' daily pass wait, and map tiles are not built ahead; work of theirs
+  under way when the state turns stops, and held work resumes as soon as it
+  clears. The plugin follows the state with one subscription: no lookups, no
+  wait at start, no timers. Refresh, Download coastline, the mesh panel's
+  buttons, routes and the map still download. Without signalk-internet
+  nothing changes. signalk-internet is recommended in the App Store
+  (`signalk.recommends`).
 
 ### Changed
 
