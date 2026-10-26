@@ -534,6 +534,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
               }
             : null,
         harmonicDir: harmonicShared?.length ? (config?.currents.harmonicDir ?? null) : null,
+        harmonicSig,
       },
     };
   }

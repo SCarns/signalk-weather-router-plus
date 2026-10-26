@@ -28,7 +28,7 @@ import {
   shareRtofsSteps,
 } from '../../currents/rtofs';
 import { type CurrentSourceLike } from '../../currents/types';
-import { type BuilderCurrentsRef, harmonicFromDir, rtofsFromCache } from '../../currents/fromcache';
+import { type BuilderCurrentsRef, harmonicFromDir, harmonicSignature, rtofsFromCache } from '../../currents/fromcache';
 import {
   alignedSteps,
   loadResident,
@@ -319,8 +319,9 @@ export function loadHarmonic(st: WorkerState, dir: string | null): void {
   }
 }
 
-/** The tidal-harmonic folder the tiles worker's sources were read from (adoptCurrentsRef); one per process. */
+/** The tidal-harmonic folder the tiles worker's sources were read from, and its signature then (adoptCurrentsRef); one per process. */
 let harmonicFrom: string | null = null;
+let harmonicSigFrom: string | null = null;
 /** The horizon and step the tiles worker's RTOFS sources were read with (adoptCurrentsRef); null when none are. */
 let rtofsReadWith: { horizonS: number; stepS: number } | null = null;
 /** The RTOFS products and tidal-harmonic files the tiles worker could not read (adoptCurrentsRef). */
@@ -382,18 +383,26 @@ export async function adoptCurrentsRef(st: WorkerState, ref: BuilderCurrentsRef)
       }
     }
   }
-  // Read again while a file of it could not be read.
-  if (ref.harmonicDir !== harmonicFrom || harmonicUnread.length) {
-    harmonicFrom = ref.harmonicDir;
+  // Read again when the folder or its files changed, and while a file of it could not be read.
+  const dir = ref.harmonicDir;
+  const sig = dir ? ref.harmonicSig : null;
+  if (dir !== harmonicFrom || sig !== harmonicSigFrom || harmonicUnread.length) {
+    harmonicFrom = dir;
+    harmonicSigFrom = sig;
     st.harmonic = [];
     harmonicUnread = [];
-    for (const h of ref.harmonicDir ? harmonicFromDir(ref.harmonicDir) : []) {
-      if (h.source) st.harmonic.push(h.source);
-      else {
-        harmonicUnread.push(`harmonic ${h.file ?? ref.harmonicDir}`);
-        st.log('error', `currents: harmonic ${h.file ?? ref.harmonicDir} not read: ${h.error}`);
+    // The data worker read the folder once, at its start, and the tiles' generation is named after the files then. A
+    // file added or replaced since would be read here and not there: its tiles would be saved as the old files'.
+    if (dir && harmonicSignature(dir) !== sig) {
+      harmonicUnread.push(`harmonic folder ${dir} (its files changed since the data worker read them; restart the plugin)`);
+    } else
+      for (const h of dir ? harmonicFromDir(dir) : []) {
+        if (h.source) st.harmonic.push(h.source);
+        else {
+          harmonicUnread.push(`harmonic ${h.file ?? dir}`);
+          st.log('error', `currents: harmonic ${h.file ?? dir} not read: ${h.error}`);
+        }
       }
-    }
   }
   const unread = [...rtofsUnread, ...harmonicUnread];
   if (unread.length && unread.join() !== st.currentsUnread.join())

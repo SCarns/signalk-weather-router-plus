@@ -494,7 +494,11 @@ test('coastTilesReady: an incomplete GSHHG hierarchy throws before any cut; a st
     assert.equal(coastTilesReady(root, files), true);
     // A store from another version of the format: cut again.
     const done = path.join(coastTilesDir(root, files), 'complete.json');
-    fs.writeFileSync(done, JSON.stringify({ ...JSON.parse(fs.readFileSync(done, 'utf8')), version: 2 }));
+    const marker = fs.readFileSync(done, 'utf8');
+    fs.writeFileSync(done, JSON.stringify({ ...JSON.parse(marker), version: 2 }));
+    assert.equal(coastTilesReady(root, files), false);
+    // A damaged marker that is valid JSON but no object: not ready, not a throw.
+    fs.writeFileSync(done, 'null');
     assert.equal(coastTilesReady(root, files), false);
     fs.unlinkSync(path.join(dir, 'GSHHS_f_L3.shp'));
     assert.throws(() => coastTilesReady(root, files), /Incomplete GSHHG hierarchy/);

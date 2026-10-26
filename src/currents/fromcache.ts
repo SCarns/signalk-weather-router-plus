@@ -31,6 +31,8 @@ export interface BuilderCurrentsRef {
   smoc: { run: SmocRun; settings: SmocSettings; centre: { lat: number; lon: number } | null; steps: number[] } | null;
   rtofs: RtofsCacheRef | null;
   harmonicDir: string | null;
+  /** The folder as the data worker read it (harmonicSignature): a builder reads it only while it still is. */
+  harmonicSig: string | null;
 }
 
 /**

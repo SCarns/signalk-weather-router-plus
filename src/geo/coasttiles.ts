@@ -80,13 +80,14 @@ export function coastTilesDir(root: string, paths: string[]): string {
  */
 export function coastTilesReady(root: string, paths: string[]): boolean {
   const file = path.join(coastTilesDir(root, paths), 'complete.json');
-  let done: { version?: number };
+  let done: { version?: number } | null;
   try {
-    done = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: number };
+    done = JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: number } | null;
   } catch {
     return false; // not cut yet, or a cut that did not finish
   }
-  return done.version === VERSION;
+  // A marker that is not an object (a damaged file: `null`) is not ready either.
+  return done?.version === VERSION;
 }
 
 // ─────────────── the cut ───────────────

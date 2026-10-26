@@ -59,7 +59,10 @@ uses [Semantic Versioning](https://semver.org/).
   configured folder is added, replaced or removed (picked up at the next
   start). They were filed by the folder's path, so tiles from the old files
   were served until the next SMOC or RTOFS run. Saved current tiles are
-  drawn again once after this update.
+  drawn again once after this update. A tile builder reads the folder only
+  while its files are as the plugin read them at start: one changed since
+  keeps no current tiles until the plugin restarts (it would have saved
+  tiles from the new files as the old ones').
 - **Signal K's memory no longer jumps when the map tiles are built ahead.**
   Each tile builder was sent the currents (SMOC, RTOFS, tidal harmonics) as
   copies made on Signal K's main thread, twice per builder. Glibc kept that

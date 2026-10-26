@@ -17,6 +17,7 @@ import { defaultSettings } from '../settings';
 import { resolveConfig } from '../config';
 import { buildTile, query } from './query';
 import { adoptCurrentsRef } from './currents';
+import { harmonicSignature } from '../../currents/fromcache';
 import type { WorkerState } from './state';
 
 /** A current of 0.5 m/s east everywhere in a box. */
@@ -181,16 +182,38 @@ test('adoptCurrentsRef: an RTOFS product or harmonic file not read is marked unr
     horizonS: 72 * 3600,
     stepS: 3 * 3600,
   };
-  await adoptCurrentsRef(st, { smoc: null, rtofs, harmonicDir: dir });
+  await adoptCurrentsRef(st, { smoc: null, rtofs, harmonicDir: dir, harmonicSig: harmonicSignature(dir) });
   assert.deepEqual(st.currentsUnread, ['rtofs west_atl', 'harmonic broken.npz']);
   assert.equal(st.rtofs.length, 0);
   assert.equal(st.harmonic.length, 0);
   // The same reference after the file is gone: the folder is read again (it was not marked as read).
   fs.rmSync(path.join(dir, 'broken.npz'));
-  await adoptCurrentsRef(st, { smoc: null, rtofs, harmonicDir: dir });
+  await adoptCurrentsRef(st, { smoc: null, rtofs, harmonicDir: dir, harmonicSig: harmonicSignature(dir) });
   assert.deepEqual(st.currentsUnread, ['rtofs west_atl'], 'the harmonic folder read again; RTOFS still missing');
   // RTOFS no longer in the reference: nothing unread.
-  await adoptCurrentsRef(st, { smoc: null, rtofs: null, harmonicDir: dir });
+  await adoptCurrentsRef(st, { smoc: null, rtofs: null, harmonicDir: dir, harmonicSig: harmonicSignature(dir) });
+  assert.deepEqual(st.currentsUnread, []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('adoptCurrentsRef: a harmonic folder changed since the data worker read it is not read, and is read once it matches', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-harmonic-sig-'));
+  fs.writeFileSync(path.join(dir, 'broken.npz'), 'not a zip');
+  const st = state([]);
+  st.config = resolveConfig({}, defaultSettings());
+  st.client = {} as WorkerState['client'];
+  // As the data worker read it: read here too (the broken file fails, which shows it was read).
+  const asRead = harmonicSignature(dir);
+  await adoptCurrentsRef(st, { smoc: null, rtofs: null, harmonicDir: dir, harmonicSig: asRead });
+  assert.deepEqual(st.currentsUnread, ['harmonic broken.npz']);
+  // A file replaced since the data worker read the folder: nothing read, the current tiles not kept.
+  fs.rmSync(path.join(dir, 'broken.npz'));
+  await adoptCurrentsRef(st, { smoc: null, rtofs: null, harmonicDir: dir, harmonicSig: asRead });
+  assert.equal(st.currentsUnread.length, 1);
+  assert.match(st.currentsUnread[0], /changed since the data worker read them; restart the plugin/);
+  assert.equal(st.harmonic.length, 0);
+  // The data worker restarted and read the folder as it is now: read, nothing unread.
+  await adoptCurrentsRef(st, { smoc: null, rtofs: null, harmonicDir: dir, harmonicSig: harmonicSignature(dir) });
   assert.deepEqual(st.currentsUnread, []);
   fs.rmSync(dir, { recursive: true, force: true });
 });
