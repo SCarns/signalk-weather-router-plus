@@ -2596,6 +2596,114 @@ const popup = new ol.Overlay({
   autoPan: true
 });
 map.addOverlay(popup);
+
+// A small screen (index.html's phone and landscape layouts): the conditions show in a card docked at the top of the
+// screen (#condCard) instead of the popup anchored to the spot, which ran off a phone's screen with its 500 px chart;
+// the marker stays on the spot, the panel folds (rp-panel.js) and the map pans the spot into the band between the
+// card and the panel (2026-10-27).
+/** A small screen: index.html's layout script decides, rp-panel.js keeps it current and announces 'rp:layout'. */
+function _smallScreen() {
+  return document.documentElement.getAttribute('data-panel-mode') !== 'desktop';
+}
+const _condCard = (() => {
+  const el = document.createElement('div');
+  el.id = 'condCard';
+  el.hidden = true;
+  document.body.appendChild(el);
+  return el;
+})();
+/** Where the conditions render: the docked card on a small screen, else the popup's element. */
+function _condHost() {
+  return _smallScreen() ? _condCard : popup.getElement();
+}
+/** Close the conditions (and any popup) wherever they are shown; the card's marker goes with it. */
+function _condDismiss() {
+  // Nothing current: a desktop pan still running when the popup was dismissed must not anchor it again (its callback
+  // checks the opening it was started for; PR #4 review).
+  _cond = null;
+  popup.setPosition(undefined);
+  if (!_condCard.hidden) {
+    _condCard.hidden = true;
+    document.body.classList.remove('conditions-open');
+    condMarkerFeature.setGeometry(null);
+  }
+}
+/** The card's content width (inside its padding), measured even while it is still hidden. */
+function _condCardContentWidth() {
+  const wasHidden = _condCard.hidden;
+  _condCard.hidden = false;
+  const cs = window.getComputedStyle(_condCard);
+  const w = _condCard.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  _condCard.hidden = wasHidden;
+  return w;
+}
+/** After the fold has laid out: the spot into the middle of the map left between the card (across the top, or down
+    the left side sideways) and the panel (a sheet at the bottom, or a rail at the right). */
+function _condCenterOnSpot(at) {
+  requestAnimationFrame(() => {
+    const size = map.getSize();
+    if (!size) return;
+    const W = window.innerWidth;
+    const H = window.innerHeight;
+    const card = _condCard.getBoundingClientRect();
+    let x0 = 0;
+    let x1 = W;
+    let y0 = 0;
+    let y1 = H;
+    if (card.width < W * 0.9) x0 = card.right;
+    else y0 = card.bottom;
+    for (const id of ['panel', 'panelRail']) {
+      const e = document.getElementById(id);
+      if (!e || !e.offsetParent) continue;
+      const r = e.getBoundingClientRect();
+      if (r.width >= W * 0.9 && r.top > H * 0.3) y1 = Math.min(y1, r.top);
+      else if (r.left > W * 0.3 && r.height > H * 0.5) x1 = Math.min(x1, r.left);
+    }
+    if (x1 <= x0 || y1 <= y0) return;
+    map.getView().centerOn(at, size, [(x0 + x1) / 2, (y0 + y1) / 2]);
+  });
+}
+// Crossing the small-screen breakpoint (a rotation, a resized window) with the conditions open moves them to the
+// other host: the card hides and the popup anchors on the marker again, or the popup closes and the card shows.
+// Between the phone and landscape layouts (both small) the card and panel move, so the spot is centred again.
+let _condWasMode = document.documentElement.getAttribute('data-panel-mode');
+window.addEventListener('rp:layout', () => {
+  const mode = document.documentElement.getAttribute('data-panel-mode');
+  if (mode === _condWasMode) return;
+  const wasSmall = _condWasMode !== 'desktop';
+  _condWasMode = mode;
+  const small = _smallScreen();
+  const g = condMarkerFeature.getGeometry();
+  if (!_cond || !g) return;
+  const at = g.getCoordinates();
+  if (small && wasSmall) {
+    if (!_condCard.hidden) _condCenterOnSpot(at);
+  } else if (small) {
+    popup.setPosition(undefined); // drops the marker (popup's change:position); put it back
+    condMarkerFeature.setGeometry(new ol.geom.Point(at));
+    _condCard.hidden = false;
+    document.body.classList.add('conditions-open');
+    window.dispatchEvent(new CustomEvent('rp:panel-fold'));
+    _renderConditionsPopup();
+    _condCenterOnSpot(at);
+  } else {
+    _condCard.hidden = true;
+    _condCard.innerHTML = '';
+    document.body.classList.remove('conditions-open');
+    _renderConditionsPopup();
+    popup.setPosition(at);
+  }
+});
+// A resize inside the small-screen layouts (a rotation, a resized window) changes the card's width: the chart is
+// drawn again to fit, once per frame, while the card is open (PR #4 review).
+let _condResizeRaf = 0;
+window.addEventListener('resize', () => {
+  if (!_cond || _condCard.hidden || _condResizeRaf) return;
+  _condResizeRaf = requestAnimationFrame(() => {
+    _condResizeRaf = 0;
+    if (_cond && !_condCard.hidden) _renderConditionsPopup();
+  });
+});
 // OpenLayers gives its overlay container an inline z-index of 0 inside
 // #map, so popups sat under the panel (z-index 100) and under the
 // streamline canvases (z-index 5, appended to #map). Lift the container
@@ -2724,11 +2832,11 @@ map.on('singleclick', function(e) {
     const p = f.getProperties();
 
     // Skip LineString features (route line)
-    if (!p.sog_ms && p.sog_ms !== 0) { popup.setPosition(undefined); return; }
+    if (!p.sog_ms && p.sog_ms !== 0) { _condDismiss(); return; }
 
     _showPopupForFeature(f);
   } else {
-    popup.setPosition(undefined);
+    _condDismiss();
     if (selectedRouteFeature()) {
       setSelectedRouteFeature(null);
       routeLayer.changed();
@@ -3229,7 +3337,9 @@ function _renderConditionsPopup() {
   if (!_cond) return;
   const { lon, lat, hourIso, instant, series, note } = _cond;
   const tabs = _condVisibleTabs(series);
-  const el = popup.getElement();
+  const el = _condHost();
+  // The chart as wide as the card's content allows (across the top, or the narrower card sideways); 500 px on a desktop.
+  _CH.w = el === _condCard ? Math.max(260, Math.min(500, _condCardContentWidth())) : 500;
   let html = _condHeaderHtml(lon, lat, tabs);
   let tab = tabs.find(t => t.id === _condTab) || tabs[0];
   const sub = _condResolveSubTab(tab);
@@ -3239,7 +3349,7 @@ function _renderConditionsPopup() {
   html += _condBodyHtml(tab, series, instant, hourIso);
   if (note) html += '<div style="color:#666;margin-top:4px;font-size:11px;">' + note + '</div>';
   el.innerHTML = html;
-  el.style.maxWidth = (_CH.w + 20) + 'px';
+  if (el !== _condCard) el.style.maxWidth = (_CH.w + 20) + 'px';
   _bindConditionsPopup(el, tab, series, instant, hourIso);
 }
 
@@ -3349,7 +3459,7 @@ function _condBodyHtml(tab, series, instant, hourIso) {
 
 // Close, tab and pill clicks, row clicks, and the chart's hover / click.
 function _bindConditionsPopup(el, tab, series, instant, hourIso) {
-  el.querySelector('#condClose').onclick = () => { popup.setPosition(undefined); el.style.maxWidth = '300px'; };
+  el.querySelector('#condClose').onclick = () => { _condDismiss(); if (el !== _condCard) el.style.maxWidth = '300px'; };
   el.querySelectorAll('#condTabs span').forEach(sp => {
     sp.onclick = () => { _condTab = sp.dataset.tab; _renderConditionsPopup(); };
   });
@@ -3397,7 +3507,20 @@ function openConditionsAt(coordinate, pixel) {
   // Centre the map on the clicked spot, then anchor the popup there
   // (autoPan nudges it into view afterwards if it still overflows).
   const _at = coordinate;
-  map.getView().animate({ center: _at, duration: 250 }, () => popup.setPosition(_at));
+  if (_smallScreen()) {
+    popup.setPosition(undefined);
+    _condCard.hidden = false;
+    document.body.classList.add('conditions-open');
+    window.dispatchEvent(new CustomEvent('rp:panel-fold'));
+    _condCenterOnSpot(_at);
+  } else {
+    // A rotation into a small layout, or a newer click, before the pan ends must not bring the popup back.
+    const opening = _cond;
+    map.getView().animate({ center: _at, duration: 250 }, () => {
+      if (_smallScreen() || _cond !== opening) return;
+      popup.setPosition(_at);
+    });
+  }
   const mine = _cond;
   authFetch(API + '/conditions?lon=' + lon.toFixed(5) + '&lat=' + lat.toFixed(5)
             + '&from=' + encodeURIComponent(hourIso) + '&hours=72&step_h=1', {}, 'conditions')

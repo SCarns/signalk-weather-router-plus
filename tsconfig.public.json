@@ -3,7 +3,11 @@
     "target": "ES2022",
     "module": "esnext",
     "moduleResolution": "bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "allowJs": true,
     "checkJs": true,
     "noEmit": true,
@@ -18,6 +22,7 @@
     "public/rp-settings.js",
     "public/rp-core.js",
     "public/rp-layers.js",
-    "public/rp-plan.js"
+    "public/rp-plan.js",
+    "public/rp-panel.js"
   ]
 }

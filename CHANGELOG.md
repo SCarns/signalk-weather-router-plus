@@ -6,6 +6,23 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The map comes first on a phone.** The panel is a bottom sheet with
+  three heights: folded to its tab bar, half, or open; drag its grip, or
+  tap a tab to open it and the same tab again to fold it. Find Route stays
+  pinned at the sheet's bottom. The legend folds to one line naming its
+  rows and sits just above the sheet; the map credits fold to their
+  button, with the OpenStreetMap credit kept visible beside it. A phone
+  held sideways gets a drawer on the right that folds to a rail of the
+  tab names. On a desktop a chevron in the title row folds the panel to
+  its header. Each layout remembers its last state. The conditions at a
+  tapped spot open in a card across the top of a small screen, the chart
+  as wide as the screen, with the panel folded; the popup anchored to the
+  spot ran off the screen. The layout is read from the screen itself, so
+  the on-screen keyboard does not turn a phone's sheet into the sideways
+  drawer while typing. From zeddisplay-router (its PR #4), 2026-10-27.
+
 ## [0.2.0-beta.4] - 2026-10-26
 
 ### Added
