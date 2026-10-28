@@ -26,7 +26,7 @@ channels or bridges.
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
 
-**Status: beta** (0.2.0-beta.4). Please report
+**Status: beta** (0.2.0). Please report
 problems at https://github.com/motamman/signalk-weather-router-plus/issues.
 
 What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
@@ -396,6 +396,29 @@ computed with what that request says, not with the user's saved Setup.
 
 ## Using the webapp
 
+- **Screen layout.** The layout follows the screen:
+  - **Desktop** (a window wider than 768 px, unless it is a phone held
+    sideways): the panel at the top right; the chevron (⌄) in its title
+    row folds it to its header.
+  - **A window up to 768 px wide** (a phone held upright): a bottom sheet
+    with three heights: folded to its tab bar, half, or open. Drag it by
+    its grip or header, or tap the grip to fold or open it. Tapping a tab
+    opens a folded sheet; tapping the active tab again folds it. Find
+    Route stays pinned at the bottom of the sheet while the form scrolls
+    above it.
+  - **A phone held sideways** (the screen in landscape, its short side
+    500 px or less): a drawer on the right, folded with its › button.
+    Folded, a rail of the tab names stays at the edge and opens the drawer
+    at that tab.
+
+  Each layout remembers its last state in the browser; on a first visit
+  the sheet is half open and the others are open. The sideways test comes
+  first and reads the screen, not the window, so the on-screen keyboard,
+  which shrinks the window to a wide, short box, does not turn the sheet
+  into the drawer; the other two read the window's width. On a phone,
+  upright or sideways, the legend folds to one line naming its rows (tap
+  to open; remembered), and the map credits fold to their button with the
+  OpenStreetMap credit beside it. Upright, both sit just above the sheet.
 - **Planning.** Click the map for the menu: set or move the start, set or
   move the destination, **Add waypoint here** (the clicked point becomes
   the destination and the old destination becomes the last waypoint, so
@@ -517,12 +540,11 @@ computed with what that request says, not with the user's saved Setup.
   keyboard each chart is a slider: Tab to it, the arrow keys (Home, End)
   step through the passage, Enter sets the hour. The
   route is fitted into the map above the meteogram when it opens. On a
-  screen up to 768 px wide (a phone held upright; a phone on its side is
-  wider and gets the desktop layout) the meteogram is at the top and the
-  bottom sheet takes at most
-  35 % of the height while it is open (65 % otherwise), so the route is
-  fitted between them, and the zoom and locate buttons move from the top
-  left to just below the meteogram. The
+  phone held upright (or a window up to 768 px wide) the meteogram is at
+  the top, and while it is open the sheet at half takes 35 % of the height
+  instead of 48 %, so the route is fitted between them. The zoom and
+  locate buttons move from the top left to just below the meteogram. On a
+  phone held sideways the meteogram sits to the left of the drawer. The
   conditions come from the forecast loaded now; the wind is the route's:
   where it was computed with a regional model (AROME, ICON-EU, …) that
   model is layered over ECMWF as the router layers it, and the note names
@@ -644,7 +666,12 @@ computed with what that request says, not with the user's saved Setup.
   (tide height, total water level and surge on the left axis; current
   speed as a filled area on the right axis; the current's set as arrows;
   high and low water marked), Pressure, Temp, Precip, and a Raw table.
-  Click the chart to move every map layer to that hour.
+  Click the chart to move every map layer to that hour. On a phone the
+  conditions open in a card instead: across the top of the screen when
+  upright, down the left side when sideways. The chart is as wide as the
+  card (up to 500 px) and the panel folds. The marker stays on the spot,
+  centred in the map between the card and the panel. Sideways, opening
+  the drawer hides the card until the drawer folds again.
 
   ![Conditions popup, Tide & current tab: tide height, total water level and surge against current speed and set, with high and low waters](public/screenshots/04-conditions.jpg)
 

@@ -447,7 +447,16 @@ const meteoMarkerLayer = new ol.layer.Vector({
 // document's origin-only referrer meta keeps OSM happy behind Signal K's
 // no-referrer policy).
 const osmLayer = new ol.layer.Tile({
-  source: new ol.source.OSM(),
+  // OSM's tiles as an XYZ source with OSM's own settings (url, credit, crossOrigin, zoom, opaque): ol.source.OSM
+  // hard-codes a credits line that never folds, and on a small screen it folds to its button (set below).
+  source: new ol.source.XYZ({
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attributions: ol.source.OSM.ATTRIBUTION,
+    attributionsCollapsible: true,
+    crossOrigin: 'anonymous',
+    maxZoom: 19,
+    opaque: true,
+  }),
   opacity: 0.6,
   zIndex: 0,
   visible: true,
@@ -1918,6 +1927,26 @@ export const map = new ol.Map({
   })
 });
 
+// A small screen (a phone, or one held sideways; index.html's layout script, kept current by rp-panel.js, which
+// announces a change as 'rp:layout'): the legend folds and the data credits fold to their button.
+function _smallScreen() {
+  return document.documentElement.getAttribute('data-panel-mode') !== 'desktop';
+}
+
+// The data credits (Copernicus, NOAA) fold to the attribution button on a small screen and stay open on a desktop,
+// where there is room; OSM's credit stays visible beside the button, as OSM's tile policy asks (2026-10-27).
+(function () {
+  const ctl = map.getControls().getArray().find(c => c instanceof ol.control.Attribution);
+  if (!ctl) return;
+  const credit = document.createElement('span');
+  credit.className = 'osm-credit';
+  credit.innerHTML = '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>';
+  ctl.element.appendChild(credit);
+  const apply = () => ctl.setCollapsed(_smallScreen());
+  window.addEventListener('rp:layout', apply);
+  apply();
+})();
+
 // Keep the side panel clear of the map's attribution line: its height
 // changes with the window width and the visible layers, so measure it.
 (function () {
@@ -2139,7 +2168,45 @@ function updateLegends() {
   }
   if (_on('pressureToggle')) rows.push('<div class="lg-row"><div class="lg-title">Pressure <span>(' + unitDesc('pressure').u + ')</span></div><div class="lg-note">isobars every ' + fmtPressure(400) + ' · bold every ' + fmtPressure(2000) + ' · <b style="color:#1565C0">H</b> / <b style="color:#C62828">L</b> centres</div>' + _noteRow('pressureToggle') + '</div>');
   box.innerHTML = rows.join('');
+  _foldLegend(box, rows.length);
 }
+let _legendFolded = true;
+try {
+  _legendFolded = localStorage.getItem('rp:legend') !== 'open';
+} catch (_) {}
+/**
+ * On a small screen the legend folds to one line naming its rows, so the map shows between it and the sheet; a tap
+ * opens it, and the choice is remembered in this browser. A desktop shows the rows as before. The state lives here;
+ * storage only remembers it (a browser that blocks storage still toggles). 2026-10-27.
+ * @param {HTMLElement} box
+ * @param {number} n
+ */
+function _foldLegend(box, n) {
+  if (!n || !_smallScreen()) {
+    box.classList.remove('folded');
+    return;
+  }
+  const folded = _legendFolded;
+  const names = [...box.querySelectorAll('.lg-row .lg-title')]
+    .map(t => (t.firstChild && t.firstChild.nodeType === 3 ? t.firstChild.textContent : t.textContent).trim())
+    .filter(Boolean);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'lg-toggle';
+  btn.setAttribute('aria-expanded', String(!folded));
+  btn.title = folded ? 'Open the legend' : 'Fold the legend to one line';
+  btn.textContent = (folded ? '\u25B8 ' : '\u25BE ') + (names.length ? names.join(' \u00B7 ') : 'Legend');
+  btn.addEventListener('click', () => {
+    _legendFolded = !folded;
+    try {
+      localStorage.setItem('rp:legend', _legendFolded ? 'folded' : 'open');
+    } catch (_) {}
+    updateLegends();
+  });
+  box.prepend(btn);
+  box.classList.toggle('folded', folded);
+}
+window.addEventListener('rp:layout', () => updateLegends());
 // Any layer toggle change (user click, or the saved-state restore that
 // dispatches bubbling change events) refreshes the box.
 const _layersSec = document.getElementById('layersSection');

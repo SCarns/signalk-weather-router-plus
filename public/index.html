@@ -16,6 +16,25 @@
   document.write('<base href="' + dir.replace(/"/g, '') + '">');
 })();
 </script>
+<!-- The page's layout on this screen, decided once here (before the first paint) and read by the styles below
+     (html[data-panel-mode]) and by the modules (rp-panel.js keeps it current): desktop (the panel at the top right),
+     phone (a bottom sheet) or landscape (a phone held sideways: a drawer). The screen's own orientation and short
+     side decide "a phone held sideways", not the viewport, which the on-screen keyboard shrinks to a wide, short box
+     while the user types. A narrow window on a desktop gets the sheet too. (2026-10-27.) -->
+<script>
+(function () {
+  function mode() {
+    var o = window.screen && window.screen.orientation && window.screen.orientation.type;
+    var sideways = o ? o.indexOf('landscape') === 0 : window.screen.width > window.screen.height;
+    var shortSide = Math.min(window.screen.width, window.screen.height);
+    if (sideways && shortSide <= 500) return 'landscape';
+    if (window.innerWidth <= 768) return 'phone';
+    return 'desktop';
+  }
+  window.rpLayout = { mode: mode, small: function () { return mode() !== 'desktop'; } };
+  document.documentElement.setAttribute('data-panel-mode', mode());
+})();
+</script>
 <title>Weather Router Plus</title>
 <link rel="icon" type="image/png" sizes="64x64" href="favicon.png">
 <link rel="stylesheet" href="ol.css">
@@ -120,6 +139,35 @@
      (route inputs included) scrolls below them. */
   #panelHead { flex: none; }
   #tabBody { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  /* ------------------------------------------------------------
+     The panel's size on the screen (rp-panel.js). html[data-panel-mode]
+     is desktop (the panel at the top right), phone (a bottom sheet) or
+     landscape (a phone held sideways: a drawer on the right);
+     html[data-panel] is peek (the header alone, the map in full), half
+     (phone only) or open. 2026-10-27.
+     ------------------------------------------------------------ */
+  #panelGrip { display: none; }
+  #panelTitleRow { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+  #panelToggle {
+    flex: none; border: 0; background: transparent; color: var(--text-2);
+    font: inherit; font-size: 15px; line-height: 1; cursor: pointer;
+    padding: 2px 6px; border-radius: var(--r-sm); align-self: flex-start;
+  }
+  #panelToggle:hover { background: var(--surface-2); color: var(--text); }
+  html[data-panel="peek"] #tabBody { display: none; }
+  html[data-panel="peek"] #panel { max-height: none; }
+  #panelRail { display: none; }
+  /* The conditions on a small screen (rp-plan.js): a card docked at the top, the marker left on the map. */
+  #condCard {
+    position: absolute; top: 10px; left: 10px; right: 10px; z-index: 150; box-sizing: border-box;
+    background: #fff; padding: 8px; border-radius: var(--r-md); border: 1px solid #ccc;
+    box-shadow: var(--shadow-panel); font: 12px sans-serif; max-height: 50vh; overflow: auto;
+  }
+  #condCard[hidden] { display: none; }
+  /* The credits folded to their button on a small screen (rp-layers.js): OSM's credit stays visible beside it. */
+  .ol-attribution .osm-credit { display: none; font-size: 11px; padding: 0 6px; white-space: nowrap; }
+  .ol-attribution.ol-collapsed .osm-credit { display: inline-block; }
+  .ol-attribution .osm-credit a { color: inherit; }
   /* Tab bar */
   #tabBar {
     display: flex; gap: 2px; margin: var(--s-2) 0 var(--s-2);
@@ -205,12 +253,13 @@
   .note-card input[type="text"], .note-card textarea, .note-card input[type="number"] { width: 100%; box-sizing: border-box; font: inherit; }
   .note-card .note-avoid-row { display: flex; align-items: center; gap: 6px; font-size: var(--f-xs); }
   .note-card .note-avoid-row input[type="number"] { width: 80px; }
-  @media (max-width: 768px) {
-    #legendBox {
-      left: 10px; bottom: auto; top: 80px; max-width: 58vw;
-      max-height: calc(100vh - 100px); overflow-y: auto;
-    }
+  /* Folded to one line naming its rows on a small screen (rp-layers.js _foldLegend); tap to open. */
+  .lg-toggle {
+    display: block; width: 100%; border: 0; background: transparent; text-align: left;
+    font: inherit; font-size: var(--f-xs); font-weight: 600; color: var(--text); padding: 2px 0; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  #legendBox.folded > :not(.lg-toggle) { display: none; }
   .tab-pane.active { display: block; }
   .tab-pane .section-body { padding: var(--s-2) var(--s-1); }
   /* Result strip — one line of what the route is, plus a badge. */
@@ -313,29 +362,82 @@
   #meteogram .mg-label { font-weight: 600; color: var(--text-2); }
   #meteogram .mg-legend { font-weight: 400; margin-left: var(--s-2); }
   #meteogram .mg-note { color: var(--text-2); margin-top: 4px; }
-  /* Mobile bottom sheet. */
-  @media (max-width: 768px) {
-    #meteogram { top: 10px; bottom: auto; left: 10px; right: 10px; max-height: 32vh; }
-    #panel {
-      top: auto; right: 0; left: 0; bottom: 0;
-      width: 100%; padding: var(--s-3) var(--s-4);
-      border-radius: var(--r-lg) var(--r-lg) 0 0;
-      max-height: 65vh;
-      padding-bottom: max(var(--s-3), env(safe-area-inset-bottom));
-    }
-    /* The meteogram open at the top: the sheet takes less, so the route shows between them (at 390×844 the two
-       left about 15 px of map at the sheet's 65vh). */
-    body.meteogram-open #panel { max-height: 35vh; }
-    /* The zoom and locate buttons (top left) would sit on the meteogram's title: below it, on the map between the
-       two. 10px + 32vh is the meteogram's bottom at its cap, which its charts reach. */
-    body.meteogram-open .ol-zoom { top: calc(10px + 32vh + 8px); }
-    #panel::before {
-      content: "";
-      display: block; margin: 0 auto var(--s-2);
-      width: 44px; height: 4px;
-      background: var(--border-hard); border-radius: 999px;
-    }
+  /* Phone (upright): a bottom sheet with three heights, dragged by its grip (rp-panel.js). */
+  html[data-panel-mode="phone"] #meteogram { top: 10px; bottom: auto; left: 10px; right: 10px; max-height: 32vh; max-height: 32dvh; }
+  html[data-panel-mode="phone"] #panel {
+    top: auto; right: 0; left: 0; bottom: 0;
+    width: 100%; padding: 0 var(--s-4) var(--s-3);
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
+    max-height: none; height: 48vh; height: 48dvh;
+    padding-bottom: max(var(--s-3), env(safe-area-inset-bottom));
   }
+  html[data-panel-mode="phone"][data-panel="peek"] #panel { height: auto; }
+  html[data-panel-mode="phone"][data-panel="open"] #panel { height: calc(100vh - 12px); height: calc(100dvh - 12px); }
+  html[data-panel-mode="phone"] #panel.dragging { user-select: none; -webkit-user-select: none; }
+  /* The grip: the drag handle, and a tap opens or closes the sheet. */
+  html[data-panel-mode="phone"] #panelGrip { display: block; flex: none; padding: 8px 0 2px; touch-action: none; cursor: grab; }
+  html[data-panel-mode="phone"] #panelGrip::before {
+    content: ""; display: block; margin: 0 auto;
+    width: 44px; height: 4px; background: var(--border-hard); border-radius: 999px;
+  }
+  html[data-panel-mode="phone"] #panelHead { touch-action: none; }
+  html[data-panel-mode="phone"] #panelToggle { display: none; }
+  /* Peek: the tab bar alone; the title and status lines show once the sheet is opened. */
+  html[data-panel-mode="phone"][data-panel="peek"] #panelTitleRow, html[data-panel-mode="phone"][data-panel="peek"] #dataStatus, html[data-panel-mode="phone"][data-panel="peek"] #loadingBanner, html[data-panel-mode="phone"][data-panel="peek"] #legacyChoicesBanner { display: none; }
+  html[data-panel-mode="phone"] #tabBar { margin-top: var(--s-1); }
+  /* Touch targets: 44 px tabs, roomier sub-tabs. */
+  html[data-panel-mode="phone"] #tabBar button { padding: 12px 2px; min-height: 44px; }
+  html[data-panel-mode="phone"] .subtab-row button { padding: 6px 12px; }
+  /* Find Route stays in reach: pinned to the sheet's bottom while the form scrolls above it. */
+  html[data-panel-mode="phone"] #findRoute { position: sticky; bottom: 0; z-index: 2; box-shadow: 0 -8px 12px -8px rgba(15, 23, 42, 0.35); }
+  /* The legend sits on the map just above the sheet (--sheet-top: the sheet's height, rp-panel.js). */
+  html[data-panel-mode="phone"] #legendBox {
+    left: 10px; top: auto; bottom: calc(var(--sheet-top, 0px) + 8px);
+    max-width: min(72vw, 320px); max-height: 40vh; overflow-y: auto;
+  }
+  /* The conditions card across the top: the zoom buttons would sit under it. */
+  html[data-panel-mode="phone"] body.conditions-open .ol-zoom { display: none; }
+  /* The credits button (rp-layers.js: folded on a small screen) sits on the map above the sheet, at the right. */
+  html[data-panel-mode="phone"] .ol-attribution { bottom: calc(var(--sheet-top, 0px) + 8px); }
+  /* The meteogram open at the top: the half sheet takes less, so the route shows between them. */
+  html[data-panel-mode="phone"][data-panel="half"] body.meteogram-open #panel { height: 35vh; height: 35dvh; }
+  /* The zoom and locate buttons (top left) would sit on the meteogram's title: below it, on the map between the
+     two. 10px + 32vh is the meteogram's bottom at its cap, which its charts reach. */
+  html[data-panel-mode="phone"] body.meteogram-open .ol-zoom { top: calc(10px + 32vh + 8px); top: calc(10px + 32dvh + 8px); }
+  
+  /* A phone held sideways: the panel is a drawer on the right; closed, a rail of the tab names stays at the edge. */
+  html[data-panel-mode="landscape"] #panel {
+    top: 0; right: 0; bottom: 0; left: auto;
+    width: min(400px, 60vw); height: 100%; max-height: none;
+    border-radius: 0; padding-top: var(--s-2);
+  }
+  html[data-panel-mode="landscape"][data-panel="peek"] #panel { display: none; }
+  html[data-panel-mode="landscape"][data-panel="peek"] #panelRail { display: flex; }
+  html[data-panel-mode="landscape"] #panelRail {
+    position: absolute; top: 0; right: 0; bottom: 0; z-index: 100;
+    flex-direction: column; background: var(--surface);
+    box-shadow: var(--shadow-panel); border-radius: var(--r-md) 0 0 var(--r-md);
+  }
+  html[data-panel-mode="landscape"] #panelRail button {
+    flex: 1; writing-mode: vertical-rl; transform: rotate(180deg);
+    border: 0; background: transparent; font: inherit; font-size: var(--f-sm); font-weight: 600;
+    color: var(--text-2); padding: 10px 12px; cursor: pointer; min-width: 44px;
+  }
+  html[data-panel-mode="landscape"] #panelRail button.active { color: var(--go); background: var(--surface-2); }
+  html[data-panel-mode="landscape"] #meteogram { left: 10px; right: calc(min(400px, 60vw) + 20px); max-height: 60vh; }
+  html[data-panel-mode="landscape"][data-panel="peek"] #meteogram { right: 56px; }
+  /* The credits button keeps clear of the drawer and of the rail. */
+  html[data-panel-mode="landscape"] .ol-attribution { right: calc(min(400px, 60vw) + 8px); }
+  html[data-panel-mode="landscape"][data-panel="peek"] .ol-attribution { right: 52px; }
+  html[data-panel-mode="landscape"] #legendBox { max-height: 60vh; overflow-y: auto; max-width: min(50vw, 320px); }
+  html[data-panel-mode="landscape"] #tabBar button { min-height: 40px; }
+  /* The conditions card down the left side, the map to its right. */
+  html[data-panel-mode="landscape"] #condCard { right: auto; width: min(52vw, 520px); max-height: calc(100vh - 20px); }
+  /* The drawer open covers the card's side of the screen too (52vw + 60vw): the card waits, folded with the drawer
+     it comes back; the conditions stay loaded and the marker on the map. */
+  html[data-panel-mode="landscape"][data-panel="open"] #condCard { display: none; }
+  html[data-panel-mode="landscape"] body.conditions-open .ol-zoom { display: none; }
+  
   #panel h3 {
     margin: 0 0 var(--s-2) 0; font-size: var(--f-lg); font-weight: 600;
     letter-spacing: -0.01em;
@@ -668,14 +770,18 @@
   </div>
 </div>
 <div id="panel">
+  <!-- The sheet's grip on a phone (rp-panel.js): drag, or tap to open and close. -->
+  <div id="panelGrip" aria-hidden="true"></div>
   <div id="panelHead">
-  <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">
+  <div id="panelTitleRow">
     <div>
       <h3 style="margin:0;">Weather Router Plus</h3>
       <!-- The connection (rp-core.js _netLine): blue online, grey offline. -->
       <div id="netStatus"></div>
     </div>
     <div id="dataStatus">loading status…</div>
+    <!-- Desktop and landscape: fold the panel to its header (rp-panel.js). -->
+    <button id="panelToggle" type="button" aria-label="Collapse the panel" title="Collapse the panel">&#8964;</button>
   </div>
   <!-- While the server gets its first forecast (or the coastline): one calm notice instead of failing layers (rp-core.js). -->
   <div id="loadingBanner" role="status" aria-live="polite" hidden>
@@ -1067,6 +1173,8 @@
 
   </div><!-- /tabBody -->
 </div>
+<!-- A phone held sideways, the drawer closed: the tab names along the right edge (rp-panel.js). -->
+<div id="panelRail" role="tablist" aria-label="Panel tabs"></div>
 
 <!-- Vessel/polar specs form (POST /api/polar-from-specs) ------------- -->
 <!-- The routers explained (public/routers.html), opened from the (i) beside the Router choice. -->
@@ -1136,6 +1244,7 @@
 
 <!-- ES modules: rp-plan.js imports rp-layers.js and rp-core.js; rp-settings.js imports rp-core.js. -->
 <script type="module" src="rp-plan.js"></script>
+<script type="module" src="rp-panel.js"></script>
 <script type="module" src="rp-settings.js"></script>
 </body>
 </html>

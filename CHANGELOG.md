@@ -6,6 +6,31 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-28
+
+### Changed
+
+- **The map comes first on a phone.** The panel is a bottom sheet with
+  three heights: folded to its tab bar, half, or open; drag its grip, or
+  tap a tab to open it and the same tab again to fold it. Find Route stays
+  pinned at the sheet's bottom. The legend folds to one line naming its
+  rows and sits just above the sheet; the map credits fold to their
+  button, with the OpenStreetMap credit kept visible beside it. A phone
+  held sideways gets a drawer on the right that folds to a rail of the
+  tab names. On a desktop a chevron in the title row folds the panel to
+  its header. Each layout remembers its last state. The conditions at a
+  tapped spot open in a card, across the top of an upright phone and down
+  the left side of one held sideways, the chart as wide as the card up to
+  500 px, with the panel folded; the popup anchored to the spot ran off
+  the screen. The sideways drawer is chosen from the screen itself, so
+  the on-screen keyboard does not turn a phone's sheet into the drawer
+  while typing.
+
+  On a phone the sheet's heights, the meteogram's cap and the zoom
+  buttons below it are shares of the visible screen (CSS `dvh`), not of
+  the full viewport, so they follow the browser's address and tool bars
+  as they show and hide; a browser without `dvh` keeps the `vh` heights.
+
 ## [0.2.0-beta.4] - 2026-10-26
 
 ### Added
@@ -2281,7 +2306,8 @@ builds before this release, with their measurements, is in
   loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.4...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.4...v0.2.0
 [0.2.0-beta.4]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.3...v0.2.0-beta.4
 [0.2.0-beta.3]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.2...v0.2.0-beta.3
 [0.2.0-beta.2]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.1...v0.2.0-beta.2

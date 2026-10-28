@@ -18,6 +18,7 @@
     "public/rp-settings.js",
     "public/rp-core.js",
     "public/rp-layers.js",
-    "public/rp-plan.js"
+    "public/rp-plan.js",
+    "public/rp-panel.js"
   ]
 }
