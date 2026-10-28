@@ -67,6 +67,9 @@ function _mapFitPadding() {
   const r = panel.getBoundingClientRect(), w = window.innerWidth, h = window.innerHeight;
   if (r.width >= w * 0.9 && r.top > h * 0.3) pad[2] = Math.round(h - r.top) + 20;
   else if (r.left > w * 0.3) pad[1] = Math.round(w - r.left) + 20;
+  // The folded drawer's rail (a phone held sideways) at the right edge.
+  const rail = document.getElementById('panelRail');
+  if (rail && rail.offsetParent) pad[1] = Math.max(pad[1], Math.round(w - rail.getBoundingClientRect().left) + 20);
   // The meteogram across the bottom (the top on a phone) covers the map too. Which edge it is on is told by its
   // centre: at its 62vh cap its top edge is at 0.38 h less the attribution's height, above 0.3 h in a short
   // window (PR #50 review).
