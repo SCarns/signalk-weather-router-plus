@@ -19,9 +19,10 @@ uses [Semantic Versioning](https://semver.org/).
   held sideways gets a drawer on the right that folds to a rail of the
   tab names. On a desktop a chevron in the title row folds the panel to
   its header. Each layout remembers its last state. The conditions at a
-  tapped spot open in a card across the top of a small screen, the chart
-  as wide as the screen, with the panel folded; the popup anchored to the
-  spot ran off the screen. The layout is read from the screen itself, so
+  tapped spot open in a card, across the top of an upright phone and down
+  the left side of one held sideways, the chart as wide as the card up to
+  500 px, with the panel folded; the popup anchored to the spot ran off
+  the screen. The layout is read from the screen itself, so
   the on-screen keyboard does not turn a phone's sheet into the sideways
   drawer while typing.
 

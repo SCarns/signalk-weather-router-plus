@@ -7,9 +7,10 @@
   full screen, or tap a tab to open it and tap it again to fold it. Find
   Route stays at the bottom of the sheet. Held sideways, the panel is a
   drawer on the right that folds to a strip of tab names. The legend and
-  the map credits fold to one line. The conditions at a spot now open
-  across the top of the screen instead of in a popup that ran off it. On
-  a desktop, the arrow in the title row folds the panel to its header.
+  the map credits fold to one line. The conditions at a spot now open in
+  a card across the top of the screen (down the left side when the phone
+  is held sideways) instead of in a popup that ran off it. On a desktop,
+  the arrow in the title row folds the panel to its header.
 
 ## 0.2.0-beta.4
 
