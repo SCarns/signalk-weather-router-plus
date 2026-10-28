@@ -2170,6 +2170,10 @@ function updateLegends() {
   box.innerHTML = rows.join('');
   _foldLegend(box, rows.length);
 }
+let _legendFolded = true;
+try {
+  _legendFolded = localStorage.getItem('rp:legend') !== 'open';
+} catch (_) {}
 /**
  * On a small screen the legend folds to one line naming its rows, so the map shows between it and the sheet; a tap
  * opens it, and the choice is remembered in this browser. A desktop shows the rows as before. The state lives here;
@@ -2177,10 +2181,6 @@ function updateLegends() {
  * @param {HTMLElement} box
  * @param {number} n
  */
-let _legendFolded = true;
-try {
-  _legendFolded = localStorage.getItem('rp:legend') !== 'open';
-} catch (_) {}
 function _foldLegend(box, n) {
   if (!n || !_smallScreen()) {
     box.classList.remove('folded');
