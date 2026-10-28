@@ -1934,8 +1934,7 @@ function _smallScreen() {
 }
 
 // The data credits (Copernicus, NOAA) fold to the attribution button on a small screen and stay open on a desktop,
-// where there is room; OSM's credit stays visible beside the button, as OSM's tile policy asks (zeddisplay-router,
-// 2026-10-27).
+// where there is room; OSM's credit stays visible beside the button, as OSM's tile policy asks (2026-10-27).
 (function () {
   const ctl = map.getControls().getArray().find(c => c instanceof ol.control.Attribution);
   if (!ctl) return;
@@ -2174,7 +2173,7 @@ function updateLegends() {
 /**
  * On a small screen the legend folds to one line naming its rows, so the map shows between it and the sheet; a tap
  * opens it, and the choice is remembered in this browser. A desktop shows the rows as before. The state lives here;
- * storage only remembers it (a browser that blocks storage still toggles). zeddisplay-router, 2026-10-27.
+ * storage only remembers it (a browser that blocks storage still toggles). 2026-10-27.
  * @param {HTMLElement} box
  * @param {number} n
  */

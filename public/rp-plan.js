@@ -2619,7 +2619,7 @@ function _condHost() {
 /** Close the conditions (and any popup) wherever they are shown; the card's marker goes with it. */
 function _condDismiss() {
   // Nothing current: a desktop pan still running when the popup was dismissed must not anchor it again (its callback
-  // checks the opening it was started for; PR #4 review).
+  // checks the opening it was started for).
   _cond = null;
   popup.setPosition(undefined);
   if (!_condCard.hidden) {
@@ -2695,7 +2695,7 @@ window.addEventListener('rp:layout', () => {
   }
 });
 // A resize inside the small-screen layouts (a rotation, a resized window) changes the card's width: the chart is
-// drawn again to fit, once per frame, while the card is open (PR #4 review).
+// drawn again to fit, once per frame, while the card is open.
 let _condResizeRaf = 0;
 window.addEventListener('resize', () => {
   if (!_cond || _condCard.hidden || _condResizeRaf) return;

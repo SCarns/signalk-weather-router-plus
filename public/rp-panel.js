@@ -225,7 +225,7 @@ if (panel && grip && head) {
 
 // ---- Something else needs the map (the conditions card, rp-plan.js): a small screen's panel folds. ----
 window.addEventListener('rp:panel-fold', () => {
-  // Not remembered: the user did not fold it (PR #4 review).
+  // Not remembered: the user did not fold it.
   if (mode !== 'desktop' && state !== 'peek') setState('peek', false);
 });
 

@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-28
+
 ### Changed
 
 - **The map comes first on a phone.** The panel is a bottom sheet with
@@ -21,7 +23,7 @@ uses [Semantic Versioning](https://semver.org/).
   as wide as the screen, with the panel folded; the popup anchored to the
   spot ran off the screen. The layout is read from the screen itself, so
   the on-screen keyboard does not turn a phone's sheet into the sideways
-  drawer while typing. From zeddisplay-router (its PR #4), 2026-10-27.
+  drawer while typing.
 
 ## [0.2.0-beta.4] - 2026-10-26
 
@@ -2298,7 +2300,8 @@ builds before this release, with their measurements, is in
   loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.4...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.4...v0.2.0
 [0.2.0-beta.4]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.3...v0.2.0-beta.4
 [0.2.0-beta.3]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.2...v0.2.0-beta.3
 [0.2.0-beta.2]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.1...v0.2.0-beta.2
