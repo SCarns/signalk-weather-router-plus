@@ -2677,7 +2677,10 @@ window.addEventListener('rp:layout', () => {
   if (!_cond || !g) return;
   const at = g.getCoordinates();
   if (small && wasSmall) {
-    if (!_condCard.hidden) _condCenterOnSpot(at);
+    if (!_condCard.hidden) {
+      window.dispatchEvent(new CustomEvent('rp:panel-fold'));
+      _condCenterOnSpot(at);
+    }
   } else if (small) {
     popup.setPosition(undefined); // drops the marker (popup's change:position); put it back
     condMarkerFeature.setGeometry(new ol.geom.Point(at));
