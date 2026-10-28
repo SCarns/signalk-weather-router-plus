@@ -25,6 +25,11 @@ uses [Semantic Versioning](https://semver.org/).
   the on-screen keyboard does not turn a phone's sheet into the sideways
   drawer while typing.
 
+  On a phone the sheet's heights, the meteogram's cap and the zoom
+  buttons below it are shares of the visible screen (CSS `dvh`), not of
+  the full viewport, so they follow the browser's address and tool bars
+  as they show and hide; a browser without `dvh` keeps the `vh` heights.
+
 ## [0.2.0-beta.4] - 2026-10-26
 
 ### Added
