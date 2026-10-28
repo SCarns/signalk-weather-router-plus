@@ -22,9 +22,9 @@ uses [Semantic Versioning](https://semver.org/).
   tapped spot open in a card, across the top of an upright phone and down
   the left side of one held sideways, the chart as wide as the card up to
   500 px, with the panel folded; the popup anchored to the spot ran off
-  the screen. The layout is read from the screen itself, so
-  the on-screen keyboard does not turn a phone's sheet into the sideways
-  drawer while typing.
+  the screen. The sideways drawer is chosen from the screen itself, so
+  the on-screen keyboard does not turn a phone's sheet into the drawer
+  while typing.
 
   On a phone the sheet's heights, the meteogram's cap and the zoom
   buttons below it are shares of the visible screen (CSS `dvh`), not of

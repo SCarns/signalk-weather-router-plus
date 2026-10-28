@@ -397,24 +397,27 @@ computed with what that request says, not with the user's saved Setup.
 ## Using the webapp
 
 - **Screen layout.** The layout follows the screen:
-  - **Desktop:** the panel at the top right; the chevron (⌄) in its
-    title row folds it to its header.
-  - **Phone held upright, or a window up to 768 px wide:** a bottom sheet
+  - **Desktop** (a window wider than 768 px, unless it is a phone held
+    sideways): the panel at the top right; the chevron (⌄) in its title
+    row folds it to its header.
+  - **A window up to 768 px wide** (a phone held upright): a bottom sheet
     with three heights: folded to its tab bar, half, or open. Drag it by
     its grip or header, or tap the grip to fold or open it. Tapping a tab
     opens a folded sheet; tapping the active tab again folds it. Find
     Route stays pinned at the bottom of the sheet while the form scrolls
     above it.
-  - **Phone held sideways (short side 500 px or less):** a drawer on the
-    right, folded with its › button. Folded, a rail of the tab names
-    stays at the edge and opens the drawer at that tab.
+  - **A phone held sideways** (the screen in landscape, its short side
+    500 px or less): a drawer on the right, folded with its › button.
+    Folded, a rail of the tab names stays at the edge and opens the drawer
+    at that tab.
 
   Each layout remembers its last state in the browser; on a first visit
-  the sheet is half open and the others are open. The layout is read from
-  the screen's orientation and size, not the window's, so the on-screen
-  keyboard does not turn the sheet into the drawer. On a phone, upright or
-  sideways, the legend folds to one line naming its rows (tap to open;
-  remembered), and the map credits fold to their button with the
+  the sheet is half open and the others are open. The sideways test comes
+  first and reads the screen, not the window, so the on-screen keyboard,
+  which shrinks the window to a wide, short box, does not turn the sheet
+  into the drawer; the other two read the window's width. On a phone,
+  upright or sideways, the legend folds to one line naming its rows (tap
+  to open; remembered), and the map credits fold to their button with the
   OpenStreetMap credit beside it. Upright, both sit just above the sheet.
 - **Planning.** Click the map for the menu: set or move the start, set or
   move the destination, **Add waypoint here** (the clicked point becomes
