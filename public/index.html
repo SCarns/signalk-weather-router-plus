@@ -363,16 +363,16 @@
   #meteogram .mg-legend { font-weight: 400; margin-left: var(--s-2); }
   #meteogram .mg-note { color: var(--text-2); margin-top: 4px; }
   /* Phone (upright): a bottom sheet with three heights, dragged by its grip (rp-panel.js). */
-  html[data-panel-mode="phone"] #meteogram { top: 10px; bottom: auto; left: 10px; right: 10px; max-height: 32vh; }
+  html[data-panel-mode="phone"] #meteogram { top: 10px; bottom: auto; left: 10px; right: 10px; max-height: 32vh; max-height: 32dvh; }
   html[data-panel-mode="phone"] #panel {
     top: auto; right: 0; left: 0; bottom: 0;
     width: 100%; padding: 0 var(--s-4) var(--s-3);
     border-radius: var(--r-lg) var(--r-lg) 0 0;
-    max-height: none; height: 48vh;
+    max-height: none; height: 48vh; height: 48dvh;
     padding-bottom: max(var(--s-3), env(safe-area-inset-bottom));
   }
   html[data-panel-mode="phone"][data-panel="peek"] #panel { height: auto; }
-  html[data-panel-mode="phone"][data-panel="open"] #panel { height: calc(100vh - 12px); }
+  html[data-panel-mode="phone"][data-panel="open"] #panel { height: calc(100vh - 12px); height: calc(100dvh - 12px); }
   html[data-panel-mode="phone"] #panel.dragging { user-select: none; -webkit-user-select: none; }
   /* The grip: the drag handle, and a tap opens or closes the sheet. */
   html[data-panel-mode="phone"] #panelGrip { display: block; flex: none; padding: 8px 0 2px; touch-action: none; cursor: grab; }
@@ -400,10 +400,10 @@
   /* The credits button (rp-layers.js: folded on a small screen) sits on the map above the sheet, at the right. */
   html[data-panel-mode="phone"] .ol-attribution { bottom: calc(var(--sheet-top, 0px) + 8px); }
   /* The meteogram open at the top: the half sheet takes less, so the route shows between them. */
-  html[data-panel-mode="phone"][data-panel="half"] body.meteogram-open #panel { height: 35vh; }
+  html[data-panel-mode="phone"][data-panel="half"] body.meteogram-open #panel { height: 35vh; height: 35dvh; }
   /* The zoom and locate buttons (top left) would sit on the meteogram's title: below it, on the map between the
      two. 10px + 32vh is the meteogram's bottom at its cap, which its charts reach. */
-  html[data-panel-mode="phone"] body.meteogram-open .ol-zoom { top: calc(10px + 32vh + 8px); }
+  html[data-panel-mode="phone"] body.meteogram-open .ol-zoom { top: calc(10px + 32vh + 8px); top: calc(10px + 32dvh + 8px); }
   
   /* A phone held sideways: the panel is a drawer on the right; closed, a rail of the tab names stays at the edge. */
   html[data-panel-mode="landscape"] #panel {
