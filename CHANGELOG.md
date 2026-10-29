@@ -6,6 +6,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1-beta.1] - 2026-10-29
+
 ### Fixed
 
 - Point answers and overlay tiles are never served, or saved, from data that was replaced while they were being answered (issue #47). Every query answer and tile built by a worker now carries a stamp naming the data it was computed from: the forecast cycle and parameters actually read (a window whose run was pruned mid-read is retried against the run now current, and the stamp and the window's step indices name that one), the SMOC run and settled flag, the RTOFS products' runs, and the tide run and settled flag. The main thread serves and saves an answer only when its stamp names exactly the data it holds now; on a mismatch it asks the worker again, and the loop ends when they match — no attempt count. The stamp names only the sources the answer read, so answers that read no forecast (the current and arrows layers, the Weather API tide series) are accepted while one is loaded. An answer computed from the data now held is served even when its generation changed while the query ran (the worker's refresh runs beside its queries, so this is the common case, not the exception). The saved-answer read stays generation-checked: a file lives under the generation directory it was written with, so a swap while reading is exact. A tile built ahead of time is adopted only when its stamp names the data held (settings changes, and a tide run the builders learn through `tides-run`). Previously a query that straddled a run swap (a decode finishing mid-request) served and, before the swap's message landed, cached answers computed from the replaced run. A mismatch is asked again only once the data the plugin holds has moved since the check (`dataChanged`, called wherever that data changes): while the main thread's stamp has moved but the worker still answers from the old data — a settings change reloads it behind any query in flight — the request waits out the change instead of sending identical queries until the worker catches up.
@@ -40,6 +42,9 @@ uses [Semantic Versioning](https://semver.org/).
   saved. **Restore drawn route** is gone: there is nothing to restore. The
   point descriptions say "moved N m to water the boat can use" instead of
   "the drawn point was on land", which was wrong for a shoal.
+- **The Itinerary tab's route bar fits a narrow panel.** The route name
+  kept its width and the last buttons (Delete among them) ran off the
+  panel's edge; the buttons now go to a second line.
 - **A stretch the router could not search, and a beat it had to motor,
   are warnings on the route.** Both were only a WARNING line in the job
   log: the route showed 0 warnings and "validated", while a chart-mesh
@@ -2354,7 +2359,8 @@ builds before this release, with their measurements, is in
   loads the current scripts.
 - The configuration panel has been tested on Signal K server 2.33.0.
 
-[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.1-beta.1...HEAD
+[0.2.1-beta.1]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0...v0.2.1-beta.1
 [0.2.0]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.4...v0.2.0
 [0.2.0-beta.4]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.3...v0.2.0-beta.4
 [0.2.0-beta.3]: https://github.com/motamman/signalk-weather-router-plus/compare/v0.2.0-beta.2...v0.2.0-beta.3
