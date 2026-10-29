@@ -176,7 +176,6 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   <div id="routeInfo" class="muted small"></div>
   <div class="row">
     <button id="routeIt" type="button" class="primary" disabled>Weather-route it</button>
-    <button id="restore" type="button" hidden>Restore drawn route</button>
   </div>
 </section>
 
@@ -272,10 +271,12 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
  *  - A route on the chart (the main way): the user draws it with the host's
  *    own tool (map taps: start, waypoints, end) or shows a saved one; the
  *    panel lists the host's visible routes (`route.list`, kept in sync from
- *    the `route.*` events) and "Weather-route it" rewrites the chosen route's
- *    geometry in place (`route.replace`): first point = start, last =
- *    destination, the others = precise waypoints. The route stays the host's
- *    draft (or an unsaved edit of a saved route) until the user saves it.
+ *    the `route.*` events) and "Weather-route it" routes through the chosen
+ *    route's points (first point = start, last = destination, the others =
+ *    precise waypoints) and shows the result as a new route of its own
+ *    (`route.create`), named after the drawn one. The drawn route is never
+ *    changed: pressed again, the button routes through its points as drawn.
+ *    The result is a draft until the user saves it under a name of their own.
  *  - From the boat to a position: start = the vessel (editable), end = typed,
  *    the map centre or a saved waypoint; the result becomes a new draft
  *    (`route.create`).
@@ -485,7 +486,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   var units = null;
   var vessel = null;        // {lat, lon}
   var job = null;           // {id, links, es, onDone}
-  var result = null;        // {routeId, created: bool, original: points|null, props, href?}
+  var result = null;        // {routeId, created: bool, props, href?}
   var course = null;        // Signal K navigation.course.activeRoute (href, pointIndex, pointTotal, reverse) or null
   var courseRoute = null;   // {href, first: [lon, lat], last: [lon, lat], n} of the active route, fetched once per href
   var visible = [];         // the host's visible routes: {routeId, name, pointCount, saved, dirty}
@@ -880,9 +881,19 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       f.source + (f.run ? ', run ' + f.run : ''),
       f.published_at ? 'published ' + clockText(f.published_at) : '',
       f.next_due_at ? 'next run due ' + clockText(f.next_due_at) : '',
+      f.pending_since ? 'a newer run appeared ' + clockText(f.pending_since) + ', still being written' : '',
       f.reason || '',
     ].filter(Boolean).join(' · ');
     return '<span class="fresh fresh-' + esc(f.state) + '" title="' + esc(tip) + '">● ' + esc(f.source) + ' ' + esc(text) + '</span>';
+  }
+  // Why a red source is late, as the web page says it (rp-core.js _lateText): the run in use by when it was published,
+  // and a newer run Copernicus Marine is still writing, when there is one.
+  function lateText(f) {
+    if (f.reason) return f.reason;
+    var using = f.published_at ? 'still using the run published ' + clockText(f.published_at) : 'still on ' + f.run;
+    return f.pending_since
+      ? 'a newer run appeared ' + clockText(f.pending_since) + ', but Copernicus Marine has not finished writing it; ' + using
+      : 'next run was due ' + clockText(f.next_due_at) + '; ' + using;
   }
   function weatherStatus(s) {
     wx.status = s || {};
@@ -933,7 +944,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var html = esc(f.model || 'Forecast') + ' · run ' + esc(run) + ' · until ' + esc(until);
     if (fresh.length) html += '<br>' + fresh.map(freshPill).join(' ');
     fresh.filter(function (x) { return x.state === 'red'; }).forEach(function (x) {
-      html += '<br><b>Late: ' + esc(x.source) + ' ' + esc(x.reason || 'next run was due ' + clockText(x.next_due_at) + ', still on ' + x.run) + '</b>';
+      html += '<br><b>Late: ' + esc(x.source) + ' ' + esc(lateText(x)) + '</b>';
     });
     // What a check could not do while online; offline, the connection line says it.
     var online = !(c && c.online === false);
@@ -1133,7 +1144,6 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     $('itinerary').innerHTML = '';
     $('save').hidden = true;
     $('discard').hidden = true;
-    $('restore').hidden = !(result && result.original);
   }
   function startJob(body, onDone) {
     $('progress').textContent = 'Calculating the route…';
@@ -1427,7 +1437,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   // One line per point, for the chartplotter's point descriptions (Info and Points views).
   function legText(feats, i) {
     var l = leg(feats, i);
-    var head = fmtTime(l.time) + ' · ' + (l.mode || '—') + (l.tack ? ' (' + l.tack + ')' : '') + (l.beyond ? ' · beyond the forecast (conditions held at its last step)' : '') + (l.movedM ? ' · the drawn point was on land; moved ' + (fmtQ('length', l.movedM) || '—') + ' into the water' : '');
+    var head = fmtTime(l.time) + ' · ' + (l.mode || '—') + (l.tack ? ' (' + l.tack + ')' : '') + (l.beyond ? ' · beyond the forecast (conditions held at its last step)' : '') + (l.movedM ? ' · moved ' + (fmtQ('length', l.movedM) || '—') + ' to water the boat can use' : '');
     return [head].concat(legFields(l).map(function (r) { return r[0] + ' ' + r[1]; })).join(' · ');
   }
   // One line for the route's own description.
@@ -1637,13 +1647,12 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         }).catch(function () {}).then(function () { return angles; }).then(function (a) {
           if (job || (result && !result.viewOnly && !result.saved)) return;
           routeAngles = a;
-          result = { routeId: routeId, created: false, original: null, props: legs.props, saved: true, href: r.href, n: legs.points.length, points: legs.points, viewOnly: true };
+          result = { routeId: routeId, created: false, props: legs.props, saved: true, href: r.href, n: legs.points.length, points: legs.points, viewOnly: true };
           // The route dropdown names the route whose legs are shown.
           if (visible.some(function (x) { return x.routeId === routeId; })) { $('routeSelect').value = routeId; autoSelected = false; renderRoutes(); }
           showResult(legs.props, legs.points.length);
           $('save').hidden = true;
           $('discard').hidden = true;
-          $('restore').hidden = true;
           renderItinerary(legs.feats, legs.points);
           followCourse();
         });
@@ -1652,6 +1661,9 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   }
 
   // ---- weather-route a route on the chart ---------------------------------
+  // The drawn route is read, never written: its points as drawn are the request, and the result is a new route of
+  // its own, named after it. Pressed again (with points added in the chartplotter, say), the result shown is
+  // replaced while it is not saved, whichever route it came from (the panel follows one result); a saved one stays.
   function routeIt() {
     var routeId = $('routeSelect').value;
     if (!routeId || job) return;
@@ -1660,26 +1672,23 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       if (pts.length < 2) { $('progress').textContent = 'The route needs at least two points.'; return; }
       var start = pts[0].position, end = pts[pts.length - 1].position;
       var vias = pts.slice(1, -1).map(function (p) { return p.position; });
-      return startJob(requestBody(start, end, vias, r.name || 'Weather route'), function (geojson) {
+      var drawnName = r.name || 'Weather route';
+      return startJob(requestBody(start, end, vias, drawnName), function (geojson) {
         var out = resultPoints(geojson, pts);
         if (out.points.length < 2) { finishJob('The result has no waypoints'); return; }
-        host.call('route.replace', { routeId: routeId, points: out.points }).then(function () {
-          result = { routeId: routeId, created: false, original: pts, props: out.props, saved: r.saved, n: out.points.length, points: out.points, hasDescription: !!(r.description && String(r.description).trim()) };
+        var name = drawnName + ' · weather ' + fmtTime(out.props.departure || new Date().toISOString());
+        host.call('route.create', { points: out.points, name: name }).then(function (c) {
+          // The previous unsaved result goes only once the new one exists; read before it is replaced.
+          var prev = result && result.created && !result.saved ? result.routeId : null;
+          result = { routeId: c.routeId, created: true, props: out.props, saved: false, n: out.points.length, points: out.points, hasDescription: false };
           finishJob('');
           showResult(out.props, out.points.length);
           renderItinerary(out.feats, out.points);
-          $('restore').hidden = false;
           fitTo(out.points);
+          if (prev) host.call('route.hide', { routeId: prev }).catch(function (e) { $('progress').textContent = 'The previous unsaved result is still on the chart: ' + e.message; });
         }).catch(function (e) { finishJob('The chartplotter refused the route: ' + e.message); });
       });
     }).catch(function (e) { $('progress').textContent = 'Could not read the route: ' + e.message; });
-  }
-  function restore() {
-    if (!result || !result.original) return;
-    host.call('route.replace', { routeId: result.routeId, points: result.original }).then(function () {
-      clearResult();
-      $('progress').textContent = 'The drawn route is back.';
-    }).catch(function (e) { $('progress').textContent = 'Could not restore: ' + e.message; });
   }
 
   // ---- from the boat to a position ----------------------------------------
@@ -1716,12 +1725,13 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       if (out.points.length < 2) { finishJob('The result has no waypoints'); return; }
       var name = 'Weather route, ' + fmtTime(out.props.departure || new Date().toISOString());
       host.call('route.create', { points: out.points, name: name }).then(function (r) {
-        result = { routeId: r.routeId, created: true, original: null, props: out.props, saved: false, n: out.points.length, points: out.points, hasDescription: false };
+        var prev = result && result.created && !result.saved ? result.routeId : null;
+        result = { routeId: r.routeId, created: true, props: out.props, saved: false, n: out.points.length, points: out.points, hasDescription: false };
         finishJob('');
         showResult(out.props, out.points.length);
         renderItinerary(out.feats, out.points);
-        $('restore').hidden = true;
         fitTo(out.points);
+        if (prev) host.call('route.hide', { routeId: prev }).catch(function (e) { $('progress').textContent = 'The previous unsaved result is still on the chart: ' + e.message; });
       }).catch(function (e) { finishJob('The chartplotter refused the route: ' + e.message); });
     });
   }
@@ -1805,7 +1815,6 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   function discardResult() {
     if (!result) return;
     if (result.created) host.call('route.hide', { routeId: result.routeId }).catch(function () {});
-    else if (result.original) { restore(); return; }
     clearResult();
   }
   function clearResult() {
@@ -1813,13 +1822,11 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     $('result').hidden = true;
     $('sumBody').innerHTML = '';
     $('saved').textContent = '';
-    $('restore').hidden = true;
     refreshRouteIt(); refreshFind();
   }
 
   // ---- start --------------------------------------------------------------
   $('routeIt').addEventListener('click', routeIt);
-  $('restore').addEventListener('click', restore);
   $('find').addEventListener('click', findRoute);
   $('cancel').addEventListener('click', cancelJob);
   $('save').addEventListener('click', saveResult);
@@ -1867,7 +1874,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         if (ev.saved && !ev.dirty) showWeatherRoute(ev.routeId);
       }
       else if (name === 'route.hidden') { removeVisible(ev.routeId); if (result && result.routeId === ev.routeId) clearResult(); }
-      else if (name === 'route.saved') { upsertVisible({ routeId: ev.routeId, name: ev.name, saved: true, dirty: false }); if (result && result.routeId === ev.routeId && ev.href) { result.href = ev.href; followCourse(); } }
+      else if (name === 'route.saved') { upsertVisible({ routeId: ev.routeId, name: ev.name, saved: true, dirty: false }); if (result && result.routeId === ev.routeId) { result.saved = true; if (ev.href) { result.href = ev.href; followCourse(); } } }
       else if (name === 'route.dirty') upsertVisible({ routeId: ev.routeId, dirty: true });
       renderRoutes();
     }).then(function () { return host.call('route.list'); }).then(function (r) {

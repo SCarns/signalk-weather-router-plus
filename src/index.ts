@@ -777,7 +777,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     for (const c of currents) {
       if (c.smoc) {
         smoc = true;
-        out.push(arcoFreshness(c.name, ['currents'], c.smoc.run, c.smoc.metadata_modified, nowMs));
+        out.push(arcoFreshness(c.name, ['currents'], c.smoc.run, c.smoc.metadata_modified, nowMs, c.smoc.pending?.appeared_at ?? null));
       } else if (c.name.startsWith('RTOFS-')) {
         const run = rtofsShared?.runs.find(r => `RTOFS-${r.product}` === c.name);
         out.push(rtofsFreshness(c.name, run?.runMs ?? null, cfg.currents.rtofsHorizonS, nowMs));
@@ -792,7 +792,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
     for (const e of dataStatus?.harmonicErrors ?? []) out.push(harmonicFailure(e));
     if (cfg.tides.enabled) {
       const t = dataStatus?.tides ?? null;
-      out.push(arcoFreshness(SL_NAME, ['tides'], t?.run ?? null, t?.metadata_modified ?? null, nowMs));
+      out.push(arcoFreshness(SL_NAME, ['tides'], t?.run ?? null, t?.metadata_modified ?? null, nowMs, t?.pending?.appeared_at ?? null));
     }
     return out;
   }

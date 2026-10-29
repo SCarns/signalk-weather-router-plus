@@ -46,6 +46,11 @@ export interface Freshness {
   state: FreshnessState;
   /** Why it is red when the times do not say it (nothing loaded, a file that failed). */
   reason: string | null;
+  /**
+   * CMEMS SMOC and sea level: when a newer run appeared in the store that Copernicus Marine has not finished
+   * writing, ISO; the run in use stays until it has. Null otherwise, and for the other sources.
+   */
+  pending_since: string | null;
 }
 
 /** Orange from this long before the next run is due. */
@@ -72,11 +77,12 @@ function timed(source: string, rows: FreshnessRow[], run: string, publishedMs: n
     next_due_at: iso(nextDueMs),
     state: freshnessState(nowMs, nextDueMs),
     reason: null,
+    pending_since: null,
   };
 }
 
 function missing(source: string, rows: FreshnessRow[], reason: string): Freshness {
-  return { source, rows, run: null, published_at: null, next_due_at: null, state: 'red', reason };
+  return { source, rows, run: null, published_at: null, next_due_at: null, state: 'red', reason, pending_since: null };
 }
 
 /** ECMWF wind (and waves when the run has them): the cycle in use against the next one the horizon can use. */
@@ -103,18 +109,25 @@ export function rtofsFreshness(name: string, runMs: number | null, horizonS: num
   return timed(name, ['currents'], iso(runMs).slice(0, 10), runMs + lagMs, runMs + DAY_MS + lagMs, nowMs);
 }
 
-/** CMEMS SMOC or sea level: the run in use, published when it appeared in the store, against the next daily update. */
+/**
+ * CMEMS SMOC or sea level: the run in use, published when it appeared in the store, against the next daily update.
+ * The run is named by the day it was published (UTC, yyyy-mm-dd, as RTOFS's): the store's own key is its last data
+ * hour (2026110623), which reads as a date days ahead. `pendingIso`: when a newer run appeared that Copernicus Marine
+ * is still writing (the worker keeps the run in use until it has finished).
+ */
 export function arcoFreshness(
   name: string,
   rows: FreshnessRow[],
   run: string | null,
   appearedIso: string | null,
-  nowMs: number
+  nowMs: number,
+  pendingIso: string | null = null
 ): Freshness {
   if (run === null) return missing(name, rows, 'no run loaded');
   const appeared = appearedIso ? Date.parse(appearedIso) : NaN;
-  if (Number.isNaN(appeared)) return { ...missing(name, rows, `run ${run}: the store gave no publication time`), run };
-  return timed(name, rows, run, appeared, appeared + DAY_MS, nowMs);
+  if (Number.isNaN(appeared))
+    return { ...missing(name, rows, `run ${run}: the store gave no publication time`), run, pending_since: pendingIso };
+  return { ...timed(name, rows, iso(appeared).slice(0, 10), appeared, appeared + DAY_MS, nowMs), pending_since: pendingIso };
 }
 
 /**
@@ -176,7 +189,16 @@ export function regionalFreshness(name: string, model: string, decodedCycle: str
 
 /** Tidal harmonics: fixed tables, green when loaded. */
 export function harmonicFreshness(name: string): Freshness {
-  return { source: name, rows: ['currents'], run: null, published_at: null, next_due_at: null, state: 'green', reason: null };
+  return {
+    source: name,
+    rows: ['currents'],
+    run: null,
+    published_at: null,
+    next_due_at: null,
+    state: 'green',
+    reason: null,
+    pending_since: null,
+  };
 }
 
 /** A harmonic file that failed to load ("file: reason"). */

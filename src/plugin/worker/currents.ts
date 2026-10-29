@@ -133,9 +133,16 @@ export async function refreshSmoc(st: WorkerState, offline: string | null = null
   const settings = smocSettings(cfg);
   let run: SmocRun | null;
   let checked: { outcome: CheckOutcome; reason: string | null };
+  // A newer run Copernicus Marine is still writing, kept as the source's `pending` (status, freshness); undefined when
+  // this round could not ask the store, which leaves it as it was.
+  let pending: SmocCurrentSource['pending'] | undefined;
+  // An update in progress while the store still holds the run in use (no newer run to name yet); undefined as `pending`.
+  let updating: boolean | undefined;
   try {
     if (offline) throw new OfflineError(offline);
     const probed = await st.smocClient.probe(st.smoc?.run ?? null);
+    pending = null;
+    updating = false;
     if (probed.settled || !st.smoc) {
       run = probed;
       if (!probed.settled)
@@ -143,14 +150,32 @@ export async function refreshSmoc(st: WorkerState, offline: string | null = null
           'info',
           `smoc: the store update is still being written (STAC updated ${probed.stacUpdated ?? '?'}, metadata ${probed.metadataModified ?? '?'}); using run ${probed.key} provisionally`
         );
-    } else {
+    } else if (probed.key !== st.smoc.run.key) {
       st.log(
         'info',
         `smoc: store update in progress (STAC updated ${probed.stacUpdated ?? '?'}, metadata ${probed.metadataModified ?? '?'}); keeping run ${st.smoc.run.key}`
       );
       run = st.smoc.run;
+      pending = { key: probed.key, appearedAt: probed.metadataModified };
+    } else {
+      st.log(
+        'info',
+        `smoc: store update in progress (STAC updated ${probed.stacUpdated ?? '?'}, metadata ${probed.metadataModified ?? '?'}); the store still holds run ${st.smoc.run.key}, kept`
+      );
+      run = st.smoc.run;
+      updating = true;
     }
-    checked = { outcome: 'newest', reason: run.settled ? null : `run ${run.key} is still being written by Copernicus Marine` };
+    // The reason names what was found: the run kept is settled, so built from it alone it said nothing.
+    checked = {
+      outcome: 'newest',
+      reason: pending
+        ? `a newer run appeared in the store ${pending.appearedAt ?? '(time not known)'} and Copernicus Marine is still writing it; the previous run stays in use until it is finished`
+        : !run.settled
+          ? `run ${run.key} is still being written by Copernicus Marine`
+          : updating
+            ? `Copernicus Marine has started an update; no newer run is in the store yet; run ${run.key} stays in use`
+            : null,
+    };
   } catch (err) {
     if (!offline) st.log('error', `smoc: cannot reach the Copernicus Marine store: ${(err as Error).message}`);
     run = st.smoc?.run ?? st.smocClient.cachedRuns()[0] ?? null;
@@ -169,6 +194,8 @@ export async function refreshSmoc(st: WorkerState, offline: string | null = null
   const now = Date.now();
   const steps = alignedSteps(run, now, now + settings.horizonS * 1000, settings.stepS / HOUR_S);
   const src = newRun ? new SmocCurrentSource(run, settings, st.smocClient, m => st.log('info', m)) : st.smoc!;
+  if (pending !== undefined) src.pending = pending;
+  if (updating !== undefined) src.updating = updating;
   if (!newRun) src.expire(now);
   if (newRun) st.smocClient.saveRun(run);
   const pos = st.vesselPos;
@@ -199,7 +226,9 @@ export async function refreshSmoc(st: WorkerState, offline: string | null = null
       if (!hold) {
         st.log('error', `smoc: resident area load failed: ${(err as Error).message}`);
         if (newRun && st.smoc) {
-          // Keep serving the previous run.
+          // Keep serving the previous run; the new one is written (it failed to load), so nothing is pending or updating.
+          st.smoc.pending = null;
+          st.smoc.updating = false;
           noteCheck(st, 'smoc', isOffline(err) ? 'could-not-check' : 'failed', `run ${run.key}: ${(err as Error).message}`);
           return;
         }
@@ -210,6 +239,8 @@ export async function refreshSmoc(st: WorkerState, offline: string | null = null
       checked = { outcome: 'could-not-check', reason: `skipped: ${hold}` };
       // As after a failed load: the previous run keeps serving.
       if (newRun && st.smoc) {
+        st.smoc.pending = null;
+        st.smoc.updating = false;
         noteCheck(st, 'smoc', checked.outcome, checked.reason);
         return;
       }

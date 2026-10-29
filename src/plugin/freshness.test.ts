@@ -87,6 +87,32 @@ test('SMOC and sea level: a day after the run appeared in the store', () => {
   assert.match(unknown.reason ?? '', /no publication time/);
 });
 
+test('SMOC and sea level: the run is named by the day it was published, not the store key (its last data hour)', () => {
+  // brain, 2026-10-29: the run in use appeared 10-28 08:09Z; its key, 2026110623, read as "Nov 6" in the Late line.
+  const f = arcoFreshness('CMEMS-SMOC', ['currents'], '2026110623', '2026-10-28T08:09:37.000Z', at('2026-10-29T10:18:00Z'));
+  assert.equal(f.run, '2026-10-28');
+  assert.equal(f.published_at, '2026-10-28T08:09:37.000Z');
+  assert.equal(f.pending_since, null);
+});
+
+test('SMOC and sea level: a newer run Copernicus Marine is still writing is reported; the run in use stays red past due', () => {
+  // brain, 2026-10-29: today's run appeared 08:40:09Z, its STAC record still marking the update in progress.
+  const f = arcoFreshness(
+    'CMEMS-SMOC',
+    ['currents'],
+    '2026110623',
+    '2026-10-28T08:09:37.000Z',
+    at('2026-10-29T10:18:00Z'),
+    '2026-10-29T08:40:09.000Z'
+  );
+  assert.equal(f.pending_since, '2026-10-29T08:40:09.000Z');
+  assert.equal(f.state, 'red');
+  assert.equal(f.run, '2026-10-28');
+  // The other sources never have one.
+  assert.equal(rtofsFreshness('RTOFS-west_atl', at('2026-10-29T00:00:00Z'), 72 * HOUR_S, at('2026-10-29T12:00:00Z')).pending_since, null);
+  assert.equal(harmonicFreshness('necofs_gom').pending_since, null);
+});
+
 test('regional wind: AROME by its measured per-run lag, the other models by the downloader schedule', () => {
   // brain, 2026-10-19 10:13Z: the 03z run in use (published 05:47Z), the 06z not out yet; it is due at 11:36Z
   // (336 min after 06z), not 08:45Z as a flat 2.75 h would have it.

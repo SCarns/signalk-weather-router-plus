@@ -53,6 +53,11 @@ export interface Waypoint {
   /** A tack or gybe point the router placed when it split a beat into its two legs (experimental router). */
   tack?: true;
   /**
+   * The leg arriving here is a beat no tack fitted in, motored straight (experimental router, layTacks): turned into
+   * a `beat_motored` warning once the route is final (copies made by the polish keep it), then removed.
+   */
+  motoredBeat?: true;
+  /**
    * Sailing and motoring seconds of the leg arriving here, set when the
    * shortcut smoother merged several legs into one (mixed modes); totals
    * use it in place of the binary `mode`.
@@ -62,12 +67,17 @@ export interface Waypoint {
 
 export interface RouteWarning {
   leg_index: number;
-  /** `detour_motored`: a chart-mesh repair detour (worker/route.ts repairViolations) that had to motor because sailing could not move the boat there. */
-  violation: 'leg_crosses_land' | 'wind_over_limit' | 'waves_over_limit' | 'detour_motored';
+  /**
+   * `detour_motored`: a chart-mesh repair detour (worker/route.ts repairViolations) that had to motor because sailing
+   * could not move the boat there. `search_failed`: the search on an open stretch of a chart-mesh leg failed and the
+   * stretch follows the mesh route instead (mesh/legrun.ts), which can be slower, with many short tacks; from and to
+   * are the stretch's ends. `beat_motored`: a beat no tack fitted in, motored straight (experimental/propagator.ts).
+   */
+  violation: 'leg_crosses_land' | 'wind_over_limit' | 'waves_over_limit' | 'detour_motored' | 'search_failed' | 'beat_motored';
   from: [number, number];
   to: [number, number];
   repaired: boolean;
-  /** detour_motored: the motoring time, seconds. */
+  /** detour_motored and beat_motored: the motoring time, seconds. search_failed: why the search failed. */
   detail?: string;
 }
 

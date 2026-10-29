@@ -50,9 +50,15 @@ export async function refreshTides(st: WorkerState, offline: string | null = nul
   const settings = tideSettings(cfg);
   let run: ArcoRun | null;
   let checked: { outcome: CheckOutcome; reason: string | null };
+  // As SMOC's (currents.ts refreshSmoc): a newer run Copernicus Marine is still writing; undefined when the store
+  // could not be asked this round, which leaves it as it was.
+  let pending: TideSource['pending'] | undefined;
+  let updating: boolean | undefined;
   try {
     if (offline) throw new OfflineError(offline);
     const probed = await st.seaLevelClient.probe(st.tides?.run ?? null);
+    pending = null;
+    updating = false;
     if (probed.settled || !st.tides) {
       run = probed;
       if (!probed.settled)
@@ -60,12 +66,29 @@ export async function refreshTides(st: WorkerState, offline: string | null = nul
           'info',
           `tides: the store update is still being written (STAC updated ${probed.stacUpdated ?? '?'}); using run ${probed.key} provisionally`
         );
-    } else {
+    } else if (probed.key !== st.tides.run.key) {
       st.log('info', `tides: store update in progress (STAC updated ${probed.stacUpdated ?? '?'}); keeping run ${st.tides.run.key}`);
       run = st.tides.run;
+      pending = { key: probed.key, appearedAt: probed.metadataModified };
+    } else {
+      st.log(
+        'info',
+        `tides: store update in progress (STAC updated ${probed.stacUpdated ?? '?'}); the store still holds run ${st.tides.run.key}, kept`
+      );
+      run = st.tides.run;
+      updating = true;
     }
     st.tidesError = null;
-    checked = { outcome: 'newest', reason: run.settled ? null : `run ${run.key} is still being written by Copernicus Marine` };
+    checked = {
+      outcome: 'newest',
+      reason: pending
+        ? `a newer run appeared in the store ${pending.appearedAt ?? '(time not known)'} and Copernicus Marine is still writing it; the previous run stays in use until it is finished`
+        : !run.settled
+          ? `run ${run.key} is still being written by Copernicus Marine`
+          : updating
+            ? `Copernicus Marine has started an update; no newer run is in the store yet; run ${run.key} stays in use`
+            : null,
+    };
   } catch (err) {
     const why = `cannot reach the Copernicus Marine sea-level store: ${(err as Error).message}`;
     // A round the internet state holds asked nothing of the store: no error to show for it.
@@ -83,6 +106,8 @@ export async function refreshTides(st: WorkerState, offline: string | null = nul
   const newRun = !st.tides || st.tides.run.key !== run.key || provisionalReplaced;
   const now = Date.now();
   const src = newRun ? new TideSource(run, settings, st.seaLevelClient, m => st.log('info', m)) : st.tides!;
+  if (pending !== undefined) src.pending = pending;
+  if (updating !== undefined) src.updating = updating;
   if (!newRun) src.expire(now);
   if (newRun) st.seaLevelClient.saveRun(run);
   const steps = src.windowSteps(now);
@@ -113,7 +138,9 @@ export async function refreshTides(st: WorkerState, offline: string | null = nul
         st.tidesError = `resident tide area load failed: ${(err as Error).message}`;
         st.log('error', `tides: ${st.tidesError}`);
         if (newRun && st.tides) {
-          // Keep serving the previous run.
+          // Keep serving the previous run; the new one is written (it failed to load), so nothing is pending or updating.
+          st.tides.pending = null;
+          st.tides.updating = false;
           noteCheck(st, 'tides', isOffline(err) ? 'could-not-check' : 'failed', `run ${run.key}: ${(err as Error).message}`);
           return;
         }
@@ -124,6 +151,8 @@ export async function refreshTides(st: WorkerState, offline: string | null = nul
       checked = { outcome: 'could-not-check', reason: `skipped: ${hold}` };
       // As after a failed load: the previous run keeps serving.
       if (newRun && st.tides) {
+        st.tides.pending = null;
+        st.tides.updating = false;
         noteCheck(st, 'tides', checked.outcome, checked.reason);
         return;
       }

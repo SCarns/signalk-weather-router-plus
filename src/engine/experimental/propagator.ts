@@ -105,6 +105,7 @@ export class ExperimentalPropagator {
     const before = route.waypoints[route.waypoints.length - 1].time.getTime();
     const pr = crossTrackPolish(route.waypoints, this.land, (a, b) => this.tryTimeLeg(a, b, env));
     this.finish(route, env);
+    motoredBeatWarnings(route);
     args.onProgress?.(
       0,
       0,
@@ -152,6 +153,7 @@ export class ExperimentalPropagator {
       args.who,
       args.advice
     );
+    motoredBeatWarnings(route);
     return route;
   }
 
@@ -191,7 +193,11 @@ export class ExperimentalPropagator {
       if (b.mode === 'sailing') {
         const a = out[out.length - 1];
         const pts = this.layOut(a, b, cp, env);
-        if (pts === null) motored.push(a);
+        if (pts === null) {
+          motored.push(a);
+          // The leg a → b is timed straight below, motoring where it cannot sail: reported on the route.
+          b.motoredBeat = true;
+        }
         const n = (pts ?? []).filter(p => p.tack).length;
         if (n) split++;
         tacks += n;
@@ -428,5 +434,31 @@ export class ExperimentalPropagator {
   private sailable(from: Waypoint, toLon: number, toLat: number, env: Env): LegSimResult | null {
     const r = simulateLegTime(from.lon, from.lat, from.time, toLon, toLat, env.vessel, env.polar, env.wind, env.current, env.sim);
     return Number.isFinite(r.seconds) && r.seconds > 0 ? r : null;
+  }
+}
+
+/**
+ * The beats motored straight (layTacks marks the waypoint each arrives at) as `beat_motored` warnings on the route,
+ * from the route as it is now (after the polish, which moves and copies waypoints), with the leg's motoring seconds;
+ * the marks go. A leg the final timing sails all the way (no motoring seconds) gets no warning. The log line stays:
+ * the route's warnings are what the web page and the chartplotter show.
+ */
+function motoredBeatWarnings(route: Route): void {
+  const wps = route.waypoints;
+  for (let i = 1; i < wps.length; i++) {
+    const b = wps[i];
+    if (!b.motoredBeat) continue;
+    delete b.motoredBeat;
+    const a = wps[i - 1];
+    const motoringS = b.arrivingSplit ? b.arrivingSplit[1] : b.mode === 'motoring' ? (b.time.getTime() - a.time.getTime()) / 1000 : 0;
+    if (!(motoringS > 0)) continue;
+    (route.warnings ??= []).push({
+      leg_index: i - 1,
+      violation: 'beat_motored',
+      from: [a.lon, a.lat],
+      to: [b.lon, b.lat],
+      repaired: false,
+      detail: String(Math.round(motoringS)),
+    });
   }
 }

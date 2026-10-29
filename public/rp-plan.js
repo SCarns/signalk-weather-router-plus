@@ -1686,12 +1686,12 @@ function renderResultStrip(p, navWarns) {
   if (warns.length) {
     html += '<div class="rs-warnlist" id="rsWarnList" hidden>' + warns.map(w => {
       if (typeof w !== 'object' || w === null) return '<div>' + String(w) + '</div>';
-      const kind = String(w.violation || 'warning').replace(/_/g, ' ');
+      const kind = _warningKind(w);
       const where = Array.isArray(w.to) ? ' at ' + w.to[1].toFixed(4) + ', ' + w.to[0].toFixed(4) : '';
       const li = w.leg_index;
       const leg = li != null ? ' (leg ' + (li + 1) + ')' : '';
       const fixed = w.repaired ? ' · repaired' : '';
-      return '<div class="' + (w.violation === 'leg_crosses_land' ? 'land' : '') + '">' + kind + leg + where + fixed + '</div>';
+      return '<div class="' + (w.violation === 'leg_crosses_land' ? 'land' : '') + '">' + kind + leg + where + fixed + _warningDetail(w) + '</div>';
     }).join('') + '</div>';
   }
   el.innerHTML = html;
@@ -1787,9 +1787,27 @@ function _warningCardIndex(w, lonlats) {
   });
   return Math.sqrt(bestD) * 111000 < 300 ? best : -1;   // within 300 m
 }
+// A warning's kind in words. The two the router reports about its own work say what they mean: a stretch whose
+// search failed and that follows the chart's route instead, and a beat with no room to tack, motored.
+function _warningKind(w) {
+  if (w.violation === 'search_failed')
+    return "search failed: this stretch follows the chart's route instead, so it may be slower, with many short tacks";
+  if (w.violation === 'beat_motored') {
+    const s = Number(w.detail);
+    return 'motored a beat: no room to tack there' + (s > 0 && fmtTime(s) ? ', ' + fmtTime(s) + ' under motor' : '');
+  }
+  return escapeHtml(String(w.violation || 'warning').replace(/_/g, ' '));
+}
+// The search's own reason, as a line under the row's text (a long sentence, with quantities as unit tokens): shown,
+// not a tooltip, so touch screens and screen readers get it too.
+function _warningDetail(w) {
+  return w.violation === 'search_failed' && w.detail
+    ? '<div class="warn-detail" style="font-size:11px;opacity:0.8;">' + escapeHtml(unitText(String(w.detail))) + '</div>'
+    : '';
+}
 function _warningText(w) {
   if (typeof w !== 'object' || w === null) return String(w);
-  const kind = String(w.violation || 'warning').replace(/_/g, ' ');
+  const kind = _warningKind(w);
   const at = Array.isArray(w.to) ? ' at ' + w.to[1].toFixed(4) + ', ' + w.to[0].toFixed(4) : '';
   return kind + at + (w.repaired ? ' · repaired' : '');
 }
@@ -1848,7 +1866,8 @@ function _legDescription(p, isArrival) {
   const tack = !isArrival && mode === 'sailing' ? tackSide(cogDeg, p.next_wind_dir_deg) : null;
   if (mode) parts.push(mode + (tack ? ' (' + tack + ')' : ''));
   if (isArrival ? p.beyond_forecast : p.next_beyond_forecast) parts.push('beyond the forecast (conditions held at its last step)');
-  if (p.snap_distance_m > 0) parts.push('the drawn point was on land; moved ' + Math.round(p.snap_distance_m) + ' m into the water');
+  // Moved off the shore, or away from water the boat cannot use on the chart (a shoal, a rock, a mark): not always land.
+  if (p.snap_distance_m > 0) parts.push('moved ' + _fmt(p.snap_distance_m, 'short_distance') + ' to water the boat can use');
   const add = (label, v) => { if (v != null && v !== '') parts.push(label + ' ' + v); };
   if (!isArrival) {
     add('Distance', p.leg_distance_m != null ? fmtDist(p.leg_distance_m) : null);
@@ -1978,7 +1997,7 @@ function _itineraryWarnings(lonlats) {
     const ci = _warningCardIndex(w, lonlats);
     const land = w && w.violation === 'leg_crosses_land';
     if (ci >= 0) { const cur = cardWarn.get(ci) || { land: false, n: 0 }; cur.n += 1; cur.land = cur.land || land; cardWarn.set(ci, cur); }
-    return { wi, ci, land, text: _warningText(w) + (ci >= 0 ? ' (leg ' + (ci + 1) + ')' : '') };
+    return { wi, ci, land, detail: _warningDetail(w), text: _warningText(w) + (ci >= 0 ? ' (leg ' + (ci + 1) + ')' : '') };
   });
   return { warnRows, cardWarn };
 }
@@ -2113,7 +2132,7 @@ function _legCardHtml(f, i, cw) {
   const beyond = isArrival ? !!p.beyond_forecast : !!p.next_beyond_forecast;
   const beyondCls = beyond ? ' beyond-forecast' : '';
   const beyondChip = beyond ? '<span class="leg-beyond-chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '';
-  const snapChip = p.snap_distance_m > 0 ? '<span class="leg-warn-chip" title="The drawn point was on land according to the coastline data; the route uses the nearest water">moved ' + Math.round(p.snap_distance_m) + ' m</span>' : '';
+  const snapChip = p.snap_distance_m > 0 ? '<span class="leg-warn-chip" title="The drawn point was on land or in water the boat cannot use; the route uses the nearest water it can">moved ' + escapeHtml(_fmt(p.snap_distance_m, 'short_distance')) + '</span>' : '';
   return `<div class="leg-card ${modeCls} ${tackCls}${warnCls}${beyondCls}" data-idx="${i}">`
     + `<div class="leg-head">`
     + `  <span><span class="leg-num">${i + 1}.</span> <span class="leg-time">${t}</span>${warnChip}${beyondChip}${snapChip}</span>`
@@ -2131,7 +2150,7 @@ function _itineraryWarnBlockHtml(warnRows) {
     const nLand = warnRows.filter(r => r.land).length;
     warnBlock = `<div id="itinWarnings" class="${nLand ? '' : 'warn-only'}">`
       + `<div class="iw-head">${nLand ? nLand + ' land crossing' + (nLand > 1 ? 's' : '') + ' · ' : ''}${warnRows.length} warning${warnRows.length > 1 ? 's' : ''} — click one to see it on the map</div>`
-      + warnRows.map(r => `<div class="iw-row${r.land ? ' land' : ''}" data-wi="${r.wi}" data-ci="${r.ci}">${r.text}</div>`).join('')
+      + warnRows.map(r => `<div class="iw-row${r.land ? ' land' : ''}" data-wi="${r.wi}" data-ci="${r.ci}">${r.text}${r.detail}</div>`).join('')
       + `</div>`;
   }
   return warnBlock;

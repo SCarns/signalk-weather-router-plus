@@ -216,10 +216,16 @@ export function recomputeTotals(route: Route): void {
   route.motoringTimeS = motor;
 }
 
-/** Exact-polygon land check of every leg (the propagator's final validation), after simplification. */
+/**
+ * Exact-polygon land check of every leg (the propagator's final validation), after simplification. The land warnings
+ * are found afresh; a failed search's and a motored beat's (mesh/legrun.ts, experimental/propagator.ts) stay, placed
+ * by their from and to.
+ */
 export function revalidateLand(route: Route, land: LandTest): void {
   const wps = route.waypoints;
-  const warns: NonNullable<Route['warnings']> = [];
+  const warns: NonNullable<Route['warnings']> = (route.warnings ?? []).filter(
+    w => w.violation === 'search_failed' || w.violation === 'beat_motored'
+  );
   for (let i = 0; i + 1 < wps.length; i++) {
     const a = wps[i];
     const b = wps[i + 1];

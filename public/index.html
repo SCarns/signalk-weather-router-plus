@@ -1138,9 +1138,11 @@
 
   <section class="tab-pane data-pane" id="itinerarySection">
   <div class="section-body">
-    <div id="routeNameBar" style="padding:var(--s-2) var(--s-3);border-bottom:1px solid var(--ink-border);display:flex;gap:var(--s-2);align-items:center;font-size:var(--f-xs);background:var(--ink-bg-2);">
+    <!-- Wraps: the name keeps a usable width and the buttons go to a second line in a narrow panel, instead of the
+         last ones running off its edge. -->
+    <div id="routeNameBar" style="padding:var(--s-2) var(--s-3);border-bottom:1px solid var(--ink-border);display:flex;flex-wrap:wrap;gap:var(--s-2);align-items:center;font-size:var(--f-xs);background:var(--ink-bg-2);">
       <label for="routeNameInput" style="color:var(--ink-text-muted);margin:0;">Route:</label>
-      <input type="text" id="routeNameInput" placeholder="(untitled)" readonly style="flex:1;padding:4px 6px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);margin:0;">
+      <input type="text" id="routeNameInput" placeholder="(untitled)" readonly style="flex:1 1 140px;min-width:0;padding:4px 6px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);margin:0;">
       <button id="routePublish" type="button" title="Save this route to the Signal K Resources API" style="padding:4px 10px;font-size:var(--f-xs);background:var(--go);color:#fff;border:0;border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Publish</button>
       <button id="routeMeteogram" type="button" title="Weather along the route: wind, boat speed and wind angle, waves, pressure and rain where the boat is at each hour of the passage" style="padding:4px 10px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);cursor:pointer;font-weight:600;">Meteogram</button>
       <button id="routeGpx" type="button" title="Download this route as a GPX file (route points with their times and legs), for plotters that import GPX" style="padding:4px 10px;font-size:var(--f-xs);background:var(--ink-bg);color:var(--ink-text);border:1px solid var(--ink-border);border-radius:var(--r-sm);cursor:pointer;font-weight:600;">GPX</button>
