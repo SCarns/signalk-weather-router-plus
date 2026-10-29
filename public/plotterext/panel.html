@@ -1622,9 +1622,12 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var m = /^Drawn at (-?\d+(?:\.\d+)?), (-?\d+(?:\.\d+)?)/.exec(p.description || '');
     return m ? [+m[2], +m[1]] : null;
   }
-  // Is the point still where the router put it (`placed`: this session's result)? Unknown after a reload (null).
+  // Is the point still where the router put it (`placed`: this session's result points)? Unknown after a reload
+  // (null). Only against its own result point, found by its description: one dragged onto another is the user's.
   function atPlaced(p, placed) {
-    return !!placed && placed.some(function (q) { return Math.abs(q[0] - p.position[0]) < 1e-7 && Math.abs(q[1] - p.position[1]) < 1e-7; });
+    return !!placed && placed.some(function (q) {
+      return q.description === p.description && Math.abs(q.position[0] - p.position[0]) < 1e-7 && Math.abs(q.position[1] - p.position[1]) < 1e-7;
+    });
   }
   // The position to ask for: where a moved stop was drawn, unless the user has dragged the point since (known while
   // the panel stays open); otherwise the point itself.
@@ -1657,7 +1660,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       return { type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: Object.assign({}, meta[i], { lat: c[1], lon: c[0] }) };
     });
     var hostPts = (hostRoute && hostRoute.points) || [];
-    var points = coords.map(function (c, i) { return { position: c, name: (hostPts[i] && hostPts[i].name) || meta[i].name || '' }; });
+    var points = coords.map(function (c, i) { return { position: c, name: (hostPts[i] && hostPts[i].name) || meta[i].name || '', description: hostPts[i] && hostPts[i].description }; });
     var props = Object.assign({}, resource.feature.properties);
     delete props.coordinatesMeta;
     if (fin(resource.distance)) props.total_distance_m = resource.distance;
@@ -1708,7 +1711,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       // The user's points only: the router's from an earlier run are left out, so a run again is free to find a
       // better way through the user's waypoints instead of following the last result; a stop the router moved is
       // asked for where it was drawn.
-      var placed = result && result.routeId === routeId && result.points ? result.points.map(function (p) { return p.position; }) : null;
+      var placed = result && result.routeId === routeId && result.points ? result.points : null;
       var start = requestPosition(pts[0], placed), end = requestPosition(pts[pts.length - 1], placed);
       var vias = pts.slice(1, -1).filter(function (p) { return !addedByRouter(p, placed); }).map(function (p) { return requestPosition(p, placed); });
       return startJob(requestBody(start, end, vias, r.name || 'Weather route'), function (geojson) {

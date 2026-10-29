@@ -226,8 +226,9 @@ export async function refreshSmoc(st: WorkerState, offline: string | null = null
       if (!hold) {
         st.log('error', `smoc: resident area load failed: ${(err as Error).message}`);
         if (newRun && st.smoc) {
-          // Keep serving the previous run; the new one is written (it failed to load), so nothing is pending.
+          // Keep serving the previous run; the new one is written (it failed to load), so nothing is pending or updating.
           st.smoc.pending = null;
+          st.smoc.updating = false;
           noteCheck(st, 'smoc', isOffline(err) ? 'could-not-check' : 'failed', `run ${run.key}: ${(err as Error).message}`);
           return;
         }
@@ -239,6 +240,7 @@ export async function refreshSmoc(st: WorkerState, offline: string | null = null
       // As after a failed load: the previous run keeps serving.
       if (newRun && st.smoc) {
         st.smoc.pending = null;
+        st.smoc.updating = false;
         noteCheck(st, 'smoc', checked.outcome, checked.reason);
         return;
       }

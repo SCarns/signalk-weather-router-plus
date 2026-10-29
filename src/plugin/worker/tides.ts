@@ -138,8 +138,9 @@ export async function refreshTides(st: WorkerState, offline: string | null = nul
         st.tidesError = `resident tide area load failed: ${(err as Error).message}`;
         st.log('error', `tides: ${st.tidesError}`);
         if (newRun && st.tides) {
-          // Keep serving the previous run; the new one is written (it failed to load), so nothing is pending.
+          // Keep serving the previous run; the new one is written (it failed to load), so nothing is pending or updating.
           st.tides.pending = null;
+          st.tides.updating = false;
           noteCheck(st, 'tides', isOffline(err) ? 'could-not-check' : 'failed', `run ${run.key}: ${(err as Error).message}`);
           return;
         }
@@ -151,6 +152,7 @@ export async function refreshTides(st: WorkerState, offline: string | null = nul
       // As after a failed load: the previous run keeps serving.
       if (newRun && st.tides) {
         st.tides.pending = null;
+        st.tides.updating = false;
         noteCheck(st, 'tides', checked.outcome, checked.reason);
         return;
       }
