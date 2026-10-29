@@ -125,7 +125,8 @@ export function arcoFreshness(
 ): Freshness {
   if (run === null) return missing(name, rows, 'no run loaded');
   const appeared = appearedIso ? Date.parse(appearedIso) : NaN;
-  if (Number.isNaN(appeared)) return { ...missing(name, rows, `run ${run}: the store gave no publication time`), run };
+  if (Number.isNaN(appeared))
+    return { ...missing(name, rows, `run ${run}: the store gave no publication time`), run, pending_since: pendingIso };
   return { ...timed(name, rows, iso(appeared).slice(0, 10), appeared, appeared + DAY_MS, nowMs), pending_since: pendingIso };
 }
 
