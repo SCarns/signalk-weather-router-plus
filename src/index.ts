@@ -593,7 +593,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
                 rtofsHorizonS: cfg.currents.rtofsHorizonS,
               }
             : null,
-        tides: !cfg.tides.enabled ? 'off' : dataStatus?.tides ? { run: dataStatus.tides.run, settled: dataStatus.tides.settled } : null,
+        tides: !cfg.tides.enabled ? 'off' : tidesRun ? { run: tidesRun.key, settled: tidesRun.settled } : null,
       })
     );
   }
@@ -1019,9 +1019,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'tides-run':
         if (role === 'data') {
           tidesRun = msg.run;
+          // The tide generation moves with the run (and its settledness), the same values the
+          // answers' stamps name: saved tide (and point) tiles of the old run stop being read at
+          // once, and a tile built ahead is adopted into the generation its stamp names. setGenerations
+          // rebuilds only the groups whose key changed. This runs before the builders are told of the run.
+          updateTileGenerations();
           tiles?.dataChanged();
           prebuilder?.broadcast({ type: 'tides-run', run: msg.run });
-          // The tide group depends on a tide run; rewritten only when the group key changes.
           void charts.publishGroups();
         }
         return;
