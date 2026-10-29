@@ -26,6 +26,35 @@ uses [Semantic Versioning](https://semver.org/).
   finished writing it", and the run stays red past its due time. New in
   `/api/status`: `freshness[].pending_since`, and `pending`
   (`{run, appeared_at}`) in `currents[].smoc` and `tides`.
+- **Weather-route it in Freeboard, pressed again, routes through your
+  points, not the last result's.** The panel put the result's points on
+  the chart in place of the drawn ones, and the next press sent every one
+  of them as a precise waypoint, so the route could only follow the first
+  result. A chartplotter keeps nothing on a route point but its name,
+  description and waypoint link, so the points the router adds now have a
+  description that starts with "Added by the weather router", and the
+  panel leaves those out of the next request: it sends the start, the
+  destination and your own points (any you add in Freeboard included). A
+  router point you drag counts as yours while the panel stays open. Routes
+  the web app publishes to Signal K carry the same tag (the server marks
+  the points the router added in `coordinatesMeta`, and the web app keeps
+  the tag when it writes the leg details), so one of them opened in
+  Freeboard is routed again through its own waypoints too. Routes saved
+  before this have no tags and are routed through every point once more.
+- **A stop the router moved is asked for where it was drawn when routed
+  again.** A start, waypoint or destination too close to the shore or to
+  water the boat cannot use is moved, and reached on coming within the
+  distance it was moved; the point on the chart is where the route
+  passed, on the edge of that water. Weather-route it sent that point
+  back as an exact stop, the search could not reach it (brain: "boxed
+  in" 0.4 km short), and the leg fell back to the chart's own route with
+  a tack on every piece of it: 91 points instead of 26, and 16 minutes
+  slower, seconds after the first run. The point's description now
+  starts with "Drawn at <lat>, <lon>" (the panel, the web app's published
+  routes, and the server's `coordinatesMeta`), and the panel asks for
+  that position. The point descriptions say "moved N m to water the boat
+  can use" instead of "the drawn point was on land", which was wrong for
+  a shoal.
 
 ## [0.2.0] - 2026-10-28
 

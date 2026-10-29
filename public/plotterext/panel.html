@@ -1437,7 +1437,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   // One line per point, for the chartplotter's point descriptions (Info and Points views).
   function legText(feats, i) {
     var l = leg(feats, i);
-    var head = fmtTime(l.time) + ' · ' + (l.mode || '—') + (l.tack ? ' (' + l.tack + ')' : '') + (l.beyond ? ' · beyond the forecast (conditions held at its last step)' : '') + (l.movedM ? ' · the drawn point was on land; moved ' + (fmtQ('length', l.movedM) || '—') + ' into the water' : '');
+    var head = fmtTime(l.time) + ' · ' + (l.mode || '—') + (l.tack ? ' (' + l.tack + ')' : '') + (l.beyond ? ' · beyond the forecast (conditions held at its last step)' : '') + (l.movedM ? ' · moved ' + (fmtQ('length', l.movedM) || '—') + ' to water the boat can use' : '');
     return [head].concat(legFields(l).map(function (r) { return r[0] + ' ' + r[1]; })).join(' · ');
   }
   // One line for the route's own description.
@@ -1588,20 +1588,57 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     followCourse();
   }
 
+  // How a point the router added begins its description (the server's saved routes and the web app use the same
+  // words, routeformat.ts ROUTER_ADDED_TAG): the chartplotter keeps only a point's name, description and waypoint
+  // link, so this is how Weather-route it, pressed again, knows the user's points from the router's.
+  var ROUTER_ADDED_TAG = 'Added by the weather router';
   // The result's waypoints as host route points. A point that coincides with
-  // one of the user's own named points keeps that name.
+  // one of the user's own named points keeps that name. The points the router
+  // added (neither end, not one of the waypoints asked for: `role: "via"`) are
+  // tagged at the start of their description.
   function resultPoints(geojson, userPoints) {
     var feats = (geojson.features || []).filter(function (f) { return f.geometry && f.geometry.type === 'Point' && f.properties && f.properties.time; });
     var line = (geojson.features || []).filter(function (f) { return f.geometry && f.geometry.type === 'LineString'; })[0];
     var points = feats.map(function (f, i) {
       var lon = f.geometry.coordinates[0], lat = f.geometry.coordinates[1];
-      var name = i === 0 ? 'Start' : i === feats.length - 1 ? 'Arrival' : 'WP ' + i;
+      var last = i === feats.length - 1;
+      var name = i === 0 ? 'Start' : last ? 'Arrival' : 'WP ' + i;
       (userPoints || []).forEach(function (u) {
         if (u.name && Math.abs(u.position[0] - lon) < 1e-4 && Math.abs(u.position[1] - lat) < 1e-4) name = u.name;
       });
-      return { position: [lon, lat], name: name, description: legText(feats, i) };
+      var added = i > 0 && !last && f.properties.role !== 'via';
+      // A stop the router moved (too close to the shore or to water the boat cannot use) says where it was drawn.
+      var orig = f.properties.original;
+      var drawn = Array.isArray(orig) ? DRAWN_AT + orig[1].toFixed(6) + ', ' + orig[0].toFixed(6) + ' · ' : '';
+      return { position: [lon, lat], name: name, description: drawn + (added ? ROUTER_ADDED_TAG + ' · ' : '') + legText(feats, i) };
     });
     return { points: points, props: (line && line.properties) || {}, feats: feats };
+  }
+  // How a stop the router moved begins its description (routeformat.ts drawnAtText, the same words): where it was
+  // drawn. The point on the chart is where the route passed, on the edge of the water it was moved away from; a leg
+  // made to end exactly there can fail its search (brain, 2026-10-29: 64 points of tacks instead of 7).
+  var DRAWN_AT = 'Drawn at ';
+  function drawnPosition(p) {
+    var m = /^Drawn at (-?\d+(?:\.\d+)?), (-?\d+(?:\.\d+)?)/.exec(p.description || '');
+    return m ? [+m[2], +m[1]] : null;
+  }
+  // Is the point still where the router put it (`placed`: this session's result)? Unknown after a reload (null).
+  function atPlaced(p, placed) {
+    return !!placed && placed.some(function (q) { return Math.abs(q[0] - p.position[0]) < 1e-7 && Math.abs(q[1] - p.position[1]) < 1e-7; });
+  }
+  // The position to ask for: where a moved stop was drawn, unless the user has dragged the point since (known while
+  // the panel stays open); otherwise the point itself.
+  function requestPosition(p, placed) {
+    var d = drawnPosition(p);
+    if (!d || (placed && !atPlaced(p, placed))) return p.position;
+    return d;
+  }
+  // A point of the route on the chart the router added, so not sent again as a waypoint: its description is tagged
+  // and, while this panel still knows where it put the points (`placed`), it is where the router put it. A tagged
+  // point the user has dragged since is theirs. After a reload `placed` is null and every tagged point is the router's.
+  function addedByRouter(p, placed) {
+    if (!p.description || p.description.indexOf(ROUTER_ADDED_TAG) !== 0) return false;
+    return !placed || atPlaced(p, placed);
   }
 
   // ---- a weather route shown on the chart ---------------------------------
@@ -1668,8 +1705,12 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     host.call('route.get', { routeId: routeId }).then(function (r) {
       var pts = r.points || [];
       if (pts.length < 2) { $('progress').textContent = 'The route needs at least two points.'; return; }
-      var start = pts[0].position, end = pts[pts.length - 1].position;
-      var vias = pts.slice(1, -1).map(function (p) { return p.position; });
+      // The user's points only: the router's from an earlier run are left out, so a run again is free to find a
+      // better way through the user's waypoints instead of following the last result; a stop the router moved is
+      // asked for where it was drawn.
+      var placed = result && result.routeId === routeId && result.points ? result.points.map(function (p) { return p.position; }) : null;
+      var start = requestPosition(pts[0], placed), end = requestPosition(pts[pts.length - 1], placed);
+      var vias = pts.slice(1, -1).filter(function (p) { return !addedByRouter(p, placed); }).map(function (p) { return requestPosition(p, placed); });
       return startJob(requestBody(start, end, vias, r.name || 'Weather route'), function (geojson) {
         var out = resultPoints(geojson, pts);
         if (out.points.length < 2) { finishJob('The result has no waypoints'); return; }

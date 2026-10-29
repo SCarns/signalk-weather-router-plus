@@ -1802,6 +1802,10 @@ function _warningText(w) {
 // route's description, one line per point as the point's description,
 // in the user's display units (a quantity whose unit is not set is left
 // out). The same text the Freeboard panel writes.
+// How a point the router added (not the start, the destination or a waypoint asked for) begins its description in
+// the saved route: the Freeboard panel routes again through the other points only (routeformat.ts ROUTER_ADDED_TAG,
+// the same words).
+const ROUTER_ADDED_TAG = 'Added by the weather router';
 let _pendingAnnotate = null;   // {id, resourceId} from the publish status
 let _annotatedJobId = null;    // the job whose itinerary was written into its saved route
 let _displayedJobId = null;    // the job whose itinerary is on screen
@@ -1848,7 +1852,8 @@ function _legDescription(p, isArrival) {
   const tack = !isArrival && mode === 'sailing' ? tackSide(cogDeg, p.next_wind_dir_deg) : null;
   if (mode) parts.push(mode + (tack ? ' (' + tack + ')' : ''));
   if (isArrival ? p.beyond_forecast : p.next_beyond_forecast) parts.push('beyond the forecast (conditions held at its last step)');
-  if (p.snap_distance_m > 0) parts.push('the drawn point was on land; moved ' + Math.round(p.snap_distance_m) + ' m into the water');
+  // Moved off the shore, or away from water the boat cannot use on the chart (a shoal, a rock, a mark): not always land.
+  if (p.snap_distance_m > 0) parts.push('moved ' + Math.round(p.snap_distance_m) + ' m to water the boat can use');
   const add = (label, v) => { if (v != null && v !== '') parts.push(label + ' ' + v); };
   if (!isArrival) {
     add('Distance', p.leg_distance_m != null ? fmtDist(p.leg_distance_m) : null);
@@ -1935,7 +1940,15 @@ function _annotateIfPending(jobId) {
     .then(route => {
       const meta = route && route.feature && route.feature.properties && route.feature.properties.coordinatesMeta;
       if (!Array.isArray(meta) || meta.length !== feats.length) throw new Error('waypoints do not match the itinerary');
-      meta.forEach((m, i) => { m.description = _legDescription(feats[i].getProperties(), i === feats.length - 1); });
+      meta.forEach((m, i) => {
+        const last = i === feats.length - 1;
+        const added = i > 0 && !last && feats[i].get('role') !== 'via';
+        // A stop the router moved says where it was drawn (routeformat.ts drawnAtText, the same words): a request
+        // made again from the saved route sends that position, not the edge of the water it was moved to.
+        const orig = feats[i].get('original');
+        const drawn = Array.isArray(orig) ? 'Drawn at ' + orig[1].toFixed(6) + ', ' + orig[0].toFixed(6) + ' · ' : '';
+        m.description = drawn + (added ? ROUTER_ADDED_TAG + ' · ' : '') + _legDescription(feats[i].getProperties(), last);
+      });
       if (_lastRouteProps) route.description = _routeDescription(_lastRouteProps, feats.length);
       return authFetch('/signalk/v2/api/resources/routes/' + encodeURIComponent(resourceId), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(route),

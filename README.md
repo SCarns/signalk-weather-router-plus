@@ -741,8 +741,25 @@ and the panel runs in a sandboxed iframe served from
   point as the start, the last as the destination and the points between
   as precise waypoints, and rewrites that route's geometry in place with
   the result, which stays Freeboard's editable draft (or an unsaved edit
-  of a saved route). Drag a point and press the button again to re-route;
-  **Restore drawn route** puts the drawn points back.
+  of a saved route). The points the router added have a description that
+  starts with *Added by the weather router*. Pressed again, the button
+  sends only the other points (the start, the destination and your own
+  waypoints, including any you add in Freeboard), so the new route is free
+  to take another way instead of following the last result. A router point
+  you drag counts as yours while the panel stays open; after the panel
+  reloads, remove the tag from its description (or add a point of your
+  own) to keep it. Routes saved before this have no tags and are routed
+  through every point once more. A start, waypoint or destination the
+  router moved (too close to the shore, or to water the boat cannot use on
+  the chart) stays on the chart where the route passed, and its
+  description starts with *Drawn at* and where you drew it: pressed
+  again, the button asks for the drawn position, so the stop is moved and
+  reached as the first time (asked for exactly where the route passed, on
+  the edge of that water, a leg can fail its search and come back as a
+  long run of short tacks). A moved point you drag counts at its new
+  position while the panel stays open. **Restore drawn route** puts the
+  drawn points back. Routes the web app publishes carry the same tag, so one of
+  them opened in Freeboard is routed again through its own waypoints too.
 - **From the boat to a position** (the quick way): **From** is the
   vessel's position, kept up to date through Freeboard's own Signal K
   connection (editable; **Use the vessel position** snaps back); **To** is
