@@ -1596,6 +1596,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
       publicDir,
       polarLibrary: () => (config ? { polarFile: config.polarFile, polarsDir: config.polarsDir, userDir: config.polarUserDir } : null),
       managedPolar: () => detectManagedPolar(app),
+      polarSource: () => config?.polarSource ?? 'auto',
       getSettings: () => {
         if (!settings || stopped) throw new NotStartedError();
         return { values: settings.values, schema: settingsSchema() };

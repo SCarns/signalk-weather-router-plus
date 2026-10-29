@@ -530,6 +530,7 @@ function loadPolarList() {
     .then(items => {
       if (!Array.isArray(items) || items.length === 0) {
         sel.innerHTML = '<option value="">(no polars found — select a polar in Polar Management or configure a local polar source)</option>';
+        _polarPreviewGen++;
         _polarItems = [];
         _polarAngles = null; _polarTable = null;
         drawPolarDiagram();
@@ -549,6 +550,8 @@ function loadPolarList() {
     })
     .catch(e => {
       sel.innerHTML = '<option value="">(error loading polars)</option>';
+      _polarPreviewGen++;
+      document.getElementById('polarSourceHint').textContent = 'Active source unavailable: ' + e.message;
       _polarItems = []; _polarAngles = null; _polarTable = null;
       drawPolarDiagram();
       document.getElementById('polarInfo').textContent = e.message;

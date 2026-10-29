@@ -2908,7 +2908,7 @@ file that is the same as one already listed is left out.
 
 | Query | Default | Notes |
 |---|---|---|
-| `path` | `auto` | a token |
+| `path` | `polarSource` preference (`auto` by default) | a token; explicit `auto` enables detection |
 
 `200`: `{tws_ms[], nogo_deg[], beat_deg[], run_deg[]}`: for each true
 wind speed of the polar (m/s), the no-go angle (the tightest true wind
@@ -2923,7 +2923,7 @@ polar's first row with speed at or beyond the setting.
 
 | Query | Default | Notes |
 |---|---|---|
-| `path` | `auto` | a token |
+| `path` | `polarSource` preference (`auto` by default) | a token; explicit `auto` enables detection |
 
 `200`: `{path, source, label, performance_factor?, twa_deg[], tws_ms[], speeds_ms[][]}`.
 `source` identifies `signalk` or `internal`; a managed preview includes the

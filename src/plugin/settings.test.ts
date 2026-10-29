@@ -544,3 +544,47 @@ test('selfDesignValue: Signal K self-data within the vessel bounds is used, anyt
   assert.equal(selfDesignValue(undefined, 'maximum', [0.1, 30]), null);
   assert.equal(selfDesignValue({ value: { maximum: 'deep' } }, 'maximum', [0.1, 30]), null);
 });
+
+test('tokenless polar previews follow the source preference, while explicit auto and local choices override it', async t => {
+  const dir = tmp();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'internal.csv');
+  fs.writeFileSync(file, 'twa/tws,10\n45,4\n90,6\n180,5\n');
+  let source: 'auto' | 'files' | 'signalk' = 'files';
+  let loads = 0;
+  const { router, call } = fakeRouter();
+  registerApi(
+    router as never,
+    {
+      pluginId: 'x',
+      basePath: '/x',
+      publicDir: dir,
+      polarLibrary: () => ({ polarFile: file, polarsDir: dir }),
+      polarSource: () => source,
+      managedPolar: async () => {
+        loads++;
+        return { label: 'Managed boat', twa: [60, 120], tws: [5], speeds: [3, 4], performanceFactor: 1 };
+      },
+    } as unknown as ApiDeps
+  );
+  for (const query of [undefined, { path: '' }]) {
+    const angles = await call('GET', '/api/polar-angles', undefined, query);
+    assert.deepEqual((angles.body as { nogo_deg: number[] }).nogo_deg, [45]);
+    const table = await call('GET', '/api/polars/table', undefined, query);
+    assert.equal((table.body as { source: string }).source, 'internal');
+  }
+  assert.equal(loads, 0, 'files preference does not fetch the provider');
+  for (const token of ['auto', 'signalk-active']) {
+    const angles = await call('GET', '/api/polar-angles', undefined, { path: token });
+    assert.deepEqual((angles.body as { nogo_deg: number[] }).nogo_deg, [60]);
+    const table = await call('GET', '/api/polars/table', undefined, { path: token });
+    assert.equal((table.body as { source: string }).source, 'signalk');
+  }
+  for (const preference of ['auto', 'signalk'] as const) {
+    source = preference;
+    const angles = await call('GET', '/api/polar-angles');
+    assert.deepEqual((angles.body as { nogo_deg: number[] }).nogo_deg, [60]);
+    const local = await call('GET', '/api/polars/table', undefined, { path: 'default' });
+    assert.equal((local.body as { source: string }).source, 'internal');
+  }
+});

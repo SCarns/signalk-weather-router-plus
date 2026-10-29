@@ -80,3 +80,59 @@ test('with no saved polar and no filter the picker defaults to automatic detecti
   await p.refresh();
   assert.equal(p.sel.value, 'auto');
 });
+
+test('a pending table response cannot restore a preview after the polar list fails', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../public/rp-core.js'), 'utf8');
+  const code = source.slice(source.indexOf('let _polarItems = [];'), source.indexOf('const _POLAR_TWS_COLORS')).replace(/^export /gm, '');
+  const select = new Select();
+  const hint = { textContent: '', appendChild() {} };
+  const nodes: Record<string, unknown> = {
+    polarSelect: select,
+    polarFilter: { value: '' },
+    openVesselForm: {},
+    polarInfo: {},
+    polarSourceHint: hint,
+  };
+  let lists = 0;
+  let finishTable!: (r: Response) => void;
+  const pending = new Promise<Response>(resolve => {
+    finishTable = resolve;
+  });
+  const context = {
+    document: {
+      getElementById: (id: string) => nodes[id],
+      createElement: () => ({
+        value: '',
+        textContent: '',
+        get outerHTML() {
+          return `<option value="${this.value}">${this.textContent}</option>`;
+        },
+      }),
+      createTextNode: () => ({}),
+    },
+    prefs: { get: () => '' },
+    API: '/api',
+    authFetch: async (url: string) => {
+      if (url.includes('/polars/table')) return pending;
+      if (url.includes('/polar-angles')) return Response.json({ tws_ms: [5] });
+      lists++;
+      return lists === 1
+        ? Response.json([{ path: 'auto', label: 'Automatic' }])
+        : Response.json({ error: 'List unavailable' }, { status: 503 });
+    },
+    drawPolarDiagram: () => {},
+    unitText: (s: string) => s,
+    console: { log() {} },
+  };
+  const picker = runInNewContext(`${code}\n({refresh:loadPolarList, table:()=>_polarTable})`, context) as {
+    refresh: () => Promise<void>;
+    table: () => unknown;
+  };
+  await picker.refresh(); // Starts the table request, whose body has not arrived.
+  await picker.refresh(); // List fails while that request remains pending.
+  finishTable(Response.json({ source: 'signalk', label: 'Stale boat', twa_deg: [45, 90], tws_ms: [5], speeds_ms: [[2], [3]] }));
+  // Drain the fetch/body/preview promise chain without relying on a wall-clock delay.
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  assert.equal(picker.table(), null);
+  assert.equal(hint.textContent, 'Active source unavailable: List unavailable');
+});

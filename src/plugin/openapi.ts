@@ -240,7 +240,8 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               in: 'query',
               required: false,
               schema: { type: 'string' },
-              description: 'Token from /api/polars; absent or empty = auto; default or file token = internal override',
+              description:
+                'Token from /api/polars; absent or empty = polarSource preference; explicit auto = managed with fallback; default or file token = internal override',
             },
           ],
           responses: {
@@ -262,7 +263,8 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               in: 'query',
               required: false,
               schema: { type: 'string' },
-              description: 'Token from /api/polars; absent or empty = auto; default or file token = internal override',
+              description:
+                'Token from /api/polars; absent or empty = polarSource preference; explicit auto = managed with fallback; default or file token = internal override',
             },
           ],
           responses: {

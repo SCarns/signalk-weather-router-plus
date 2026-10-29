@@ -117,6 +117,8 @@ export interface ApiDeps {
   /** Polar library configuration (null before the plugin has started). */
   polarLibrary: () => { polarFile: string | null; polarsDir: string | null; userDir?: string | null } | null;
   managedPolar?: () => Promise<ManagedPolar | null>;
+  /** Configured preference for previews with an omitted/empty token, matching route dispatch. */
+  polarSource?: () => 'auto' | 'files' | 'signalk';
   /** Web-app settings; throws when the plugin is not started. */
   getSettings: () => {
     values: AppSettings;
@@ -401,6 +403,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     if (!lib) throw new NotStartedError();
     return lib;
   };
+  const previewToken = (value: unknown): string => String(value || (deps.polarSource?.() === 'files' ? 'default' : 'auto'));
   const selectedPolar = async (token: string) => {
     const managed = token === 'auto' || token === ACTIVE_POLAR_TOKEN ? await deps.managedPolar?.() : null;
     if (managed)
@@ -435,7 +438,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   });
   ro.get('/api/polar-angles', async (req: Request, res: Response) => {
     try {
-      const selected = await selectedPolar(String(req.query.path || 'auto'));
+      const selected = await selectedPolar(previewToken(req.query.path));
       // The tightest sailable angle setting, as the router applies it (degrees; 0 before the plugin has started).
       let minTwaDeg = 0;
       try {
@@ -450,7 +453,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   });
   ro.get('/api/polars/table', async (req: Request, res: Response) => {
     try {
-      const token = String(req.query.path || 'auto');
+      const token = previewToken(req.query.path);
       const selected = await selectedPolar(token);
       json(res, 200, {
         path: token,
@@ -712,9 +715,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     json(res, 413, { error: `route request too large (over ${MAX_ROUTE_REQUEST_BYTES / 1024} KB)` });
     return true;
   };
-  // The polar is checked here, so a token not in the library is refused before a job is queued, not when it runs.
+  // Check local files before queuing. Managed tokens are resolved by the capture before dispatch (index.ts).
   const badPolar = (res: Response, polar: string | undefined, field: string): boolean => {
-    if (!polar) return false;
+    if (!polar || polar === 'auto' || polar === ACTIVE_POLAR_TOKEN) return false;
     try {
       resolvePolarPath(polarLib(), polar);
       return false;

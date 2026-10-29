@@ -8,6 +8,10 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Accept `auto` and `signalk-active` selections when submitting routes and
+  departure windows. Their provider check stays at dispatch; local file tokens
+  are still checked before queuing. Tokenless previews follow `polarSource`,
+  and failed polar-list refreshes discard pending preview responses.
 - Preserve Polar Management beat/run targets stored in `derived.rows`, using
   the existing linear polar model and per-wind-speed no-go floors.
 - Keep the polar picker filter during automatic refresh; motor-only routes

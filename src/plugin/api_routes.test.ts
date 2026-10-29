@@ -232,3 +232,42 @@ test("DELETE /api/routes/:id: a departure window's job is 409; DELETE /api/windo
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('POST routes and departure windows accept managed tokens before dispatch without a provider', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-managed-tokens-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const submitted: unknown[] = [];
+  const created: unknown[] = [];
+  const call = api(
+    {
+      queueLength: 0,
+      submit: (body: unknown) => (submitted.push(body), { id: 'job', status: 'queued' }),
+      links: () => ({ self: '/x/api/routes/job' }),
+    },
+    dir,
+    {
+      running: 0,
+      create: (body: unknown) => (created.push(body), { id: 'window', status: 'running', departures: [{}] }),
+      links: () => ({ self: '/x/api/windows/window' }),
+    }
+  );
+  for (const mode of ['sail_max', 'motor']) {
+    for (const polar of ['auto', 'signalk-active']) {
+      const route = { ...ROUTE, mode, vessel: { polar } };
+      const answer = await call('POST /api/routes', { body: route });
+      assert.equal(answer.status, 202, `${mode}/${polar}: ${JSON.stringify(answer.body)}`);
+      assert.deepEqual(submitted.at(-1), route, 'the selection is left for dispatch');
+      const window = { route, from: '2030-01-01T00:00:00Z', to: '2030-01-01T01:00:00Z', step_s: 3600 };
+      const windowAnswer = await call('POST /api/windows', { body: window });
+      assert.equal(windowAnswer.status, 202, `${mode}/${polar}: ${JSON.stringify(windowAnswer.body)}`);
+      assert.deepEqual(created.at(-1), window);
+    }
+  }
+  for (const polar of ['missing.csv', '../private.csv']) {
+    assert.equal((await call('POST /api/routes', { body: { ...ROUTE, vessel: { polar } } })).status, 400);
+    const body = { route: { ...ROUTE, vessel: { polar } }, from: '2030-01-01T00:00:00Z', to: '2030-01-01T01:00:00Z' };
+    assert.equal((await call('POST /api/windows', { body })).status, 400);
+  }
+  assert.equal(submitted.length, 4, 'invalid local tokens never queue');
+  assert.equal(created.length, 4);
+});
