@@ -176,7 +176,6 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   <div id="routeInfo" class="muted small"></div>
   <div class="row">
     <button id="routeIt" type="button" class="primary" disabled>Weather-route it</button>
-    <button id="restore" type="button" hidden>Restore drawn route</button>
   </div>
 </section>
 
@@ -272,10 +271,12 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
  *  - A route on the chart (the main way): the user draws it with the host's
  *    own tool (map taps: start, waypoints, end) or shows a saved one; the
  *    panel lists the host's visible routes (`route.list`, kept in sync from
- *    the `route.*` events) and "Weather-route it" rewrites the chosen route's
- *    geometry in place (`route.replace`): first point = start, last =
- *    destination, the others = precise waypoints. The route stays the host's
- *    draft (or an unsaved edit of a saved route) until the user saves it.
+ *    the `route.*` events) and "Weather-route it" routes through the chosen
+ *    route's points (first point = start, last = destination, the others =
+ *    precise waypoints) and shows the result as a new route of its own
+ *    (`route.create`), named after the drawn one. The drawn route is never
+ *    changed: pressed again, the button routes through its points as drawn.
+ *    The result is a draft until the user saves it under a name of their own.
  *  - From the boat to a position: start = the vessel (editable), end = typed,
  *    the map centre or a saved waypoint; the result becomes a new draft
  *    (`route.create`).
@@ -485,7 +486,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   var units = null;
   var vessel = null;        // {lat, lon}
   var job = null;           // {id, links, es, onDone}
-  var result = null;        // {routeId, created: bool, original: points|null, props, href?}
+  var result = null;        // {routeId, created: bool, from?: drawn routeId, props, href?}
   var course = null;        // Signal K navigation.course.activeRoute (href, pointIndex, pointTotal, reverse) or null
   var courseRoute = null;   // {href, first: [lon, lat], last: [lon, lat], n} of the active route, fetched once per href
   var visible = [];         // the host's visible routes: {routeId, name, pointCount, saved, dirty}
@@ -1143,7 +1144,6 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     $('itinerary').innerHTML = '';
     $('save').hidden = true;
     $('discard').hidden = true;
-    $('restore').hidden = !(result && result.original);
   }
   function startJob(body, onDone) {
     $('progress').textContent = 'Calculating the route…';
@@ -1588,60 +1588,20 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     followCourse();
   }
 
-  // How a point the router added begins its description (the server's saved routes and the web app use the same
-  // words, routeformat.ts ROUTER_ADDED_TAG): the chartplotter keeps only a point's name, description and waypoint
-  // link, so this is how Weather-route it, pressed again, knows the user's points from the router's.
-  var ROUTER_ADDED_TAG = 'Added by the weather router';
   // The result's waypoints as host route points. A point that coincides with
-  // one of the user's own named points keeps that name. The points the router
-  // added (neither end, not one of the waypoints asked for: `role: "via"`) are
-  // tagged at the start of their description.
+  // one of the user's own named points keeps that name.
   function resultPoints(geojson, userPoints) {
     var feats = (geojson.features || []).filter(function (f) { return f.geometry && f.geometry.type === 'Point' && f.properties && f.properties.time; });
     var line = (geojson.features || []).filter(function (f) { return f.geometry && f.geometry.type === 'LineString'; })[0];
     var points = feats.map(function (f, i) {
       var lon = f.geometry.coordinates[0], lat = f.geometry.coordinates[1];
-      var last = i === feats.length - 1;
-      var name = i === 0 ? 'Start' : last ? 'Arrival' : 'WP ' + i;
+      var name = i === 0 ? 'Start' : i === feats.length - 1 ? 'Arrival' : 'WP ' + i;
       (userPoints || []).forEach(function (u) {
         if (u.name && Math.abs(u.position[0] - lon) < 1e-4 && Math.abs(u.position[1] - lat) < 1e-4) name = u.name;
       });
-      var added = i > 0 && !last && f.properties.role !== 'via';
-      // A stop the router moved (too close to the shore or to water the boat cannot use) says where it was drawn.
-      var orig = f.properties.original;
-      var drawn = Array.isArray(orig) ? DRAWN_AT + orig[1].toFixed(6) + ', ' + orig[0].toFixed(6) + ' · ' : '';
-      return { position: [lon, lat], name: name, description: drawn + (added ? ROUTER_ADDED_TAG + ' · ' : '') + legText(feats, i) };
+      return { position: [lon, lat], name: name, description: legText(feats, i) };
     });
     return { points: points, props: (line && line.properties) || {}, feats: feats };
-  }
-  // How a stop the router moved begins its description (routeformat.ts drawnAtText, the same words): where it was
-  // drawn. The point on the chart is where the route passed, on the edge of the water it was moved away from; a leg
-  // made to end exactly there can fail its search (brain, 2026-10-29: 64 points of tacks instead of 7).
-  var DRAWN_AT = 'Drawn at ';
-  function drawnPosition(p) {
-    var m = /^Drawn at (-?\d+(?:\.\d+)?), (-?\d+(?:\.\d+)?)/.exec(p.description || '');
-    return m ? [+m[2], +m[1]] : null;
-  }
-  // Is the point still where the router put it (`placed`: this session's result points)? Unknown after a reload
-  // (null). Only against its own result point, found by its description: one dragged onto another is the user's.
-  function atPlaced(p, placed) {
-    return !!placed && placed.some(function (q) {
-      return q.description === p.description && Math.abs(q.position[0] - p.position[0]) < 1e-7 && Math.abs(q.position[1] - p.position[1]) < 1e-7;
-    });
-  }
-  // The position to ask for: where a moved stop was drawn, unless the user has dragged the point since (known while
-  // the panel stays open); otherwise the point itself.
-  function requestPosition(p, placed) {
-    var d = drawnPosition(p);
-    if (!d || (placed && !atPlaced(p, placed))) return p.position;
-    return d;
-  }
-  // A point of the route on the chart the router added, so not sent again as a waypoint: its description is tagged
-  // and, while this panel still knows where it put the points (`placed`), it is where the router put it. A tagged
-  // point the user has dragged since is theirs. After a reload `placed` is null and every tagged point is the router's.
-  function addedByRouter(p, placed) {
-    if (!p.description || p.description.indexOf(ROUTER_ADDED_TAG) !== 0) return false;
-    return !placed || atPlaced(p, placed);
   }
 
   // ---- a weather route shown on the chart ---------------------------------
@@ -1660,7 +1620,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       return { type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: Object.assign({}, meta[i], { lat: c[1], lon: c[0] }) };
     });
     var hostPts = (hostRoute && hostRoute.points) || [];
-    var points = coords.map(function (c, i) { return { position: c, name: (hostPts[i] && hostPts[i].name) || meta[i].name || '', description: hostPts[i] && hostPts[i].description }; });
+    var points = coords.map(function (c, i) { return { position: c, name: (hostPts[i] && hostPts[i].name) || meta[i].name || '' }; });
     var props = Object.assign({}, resource.feature.properties);
     delete props.coordinatesMeta;
     if (fin(resource.distance)) props.total_distance_m = resource.distance;
@@ -1687,13 +1647,12 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         }).catch(function () {}).then(function () { return angles; }).then(function (a) {
           if (job || (result && !result.viewOnly && !result.saved)) return;
           routeAngles = a;
-          result = { routeId: routeId, created: false, original: null, props: legs.props, saved: true, href: r.href, n: legs.points.length, points: legs.points, viewOnly: true };
+          result = { routeId: routeId, created: false, props: legs.props, saved: true, href: r.href, n: legs.points.length, points: legs.points, viewOnly: true };
           // The route dropdown names the route whose legs are shown.
           if (visible.some(function (x) { return x.routeId === routeId; })) { $('routeSelect').value = routeId; autoSelected = false; renderRoutes(); }
           showResult(legs.props, legs.points.length);
           $('save').hidden = true;
           $('discard').hidden = true;
-          $('restore').hidden = true;
           renderItinerary(legs.feats, legs.points);
           followCourse();
         });
@@ -1702,38 +1661,32 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   }
 
   // ---- weather-route a route on the chart ---------------------------------
+  // The drawn route is read, never written: its points as drawn are the request, and the result is a new route of
+  // its own, named after it. Pressed again (with points added in the chartplotter, say), the result shown for the
+  // same drawn route is replaced while it is not saved; a saved one stays.
   function routeIt() {
     var routeId = $('routeSelect').value;
     if (!routeId || job) return;
     host.call('route.get', { routeId: routeId }).then(function (r) {
       var pts = r.points || [];
       if (pts.length < 2) { $('progress').textContent = 'The route needs at least two points.'; return; }
-      // The user's points only: the router's from an earlier run are left out, so a run again is free to find a
-      // better way through the user's waypoints instead of following the last result; a stop the router moved is
-      // asked for where it was drawn.
-      var placed = result && result.routeId === routeId && result.points ? result.points : null;
-      var start = requestPosition(pts[0], placed), end = requestPosition(pts[pts.length - 1], placed);
-      var vias = pts.slice(1, -1).filter(function (p) { return !addedByRouter(p, placed); }).map(function (p) { return requestPosition(p, placed); });
-      return startJob(requestBody(start, end, vias, r.name || 'Weather route'), function (geojson) {
+      var start = pts[0].position, end = pts[pts.length - 1].position;
+      var vias = pts.slice(1, -1).map(function (p) { return p.position; });
+      var drawnName = r.name || 'Weather route';
+      return startJob(requestBody(start, end, vias, drawnName), function (geojson) {
         var out = resultPoints(geojson, pts);
         if (out.points.length < 2) { finishJob('The result has no waypoints'); return; }
-        host.call('route.replace', { routeId: routeId, points: out.points }).then(function () {
-          result = { routeId: routeId, created: false, original: pts, props: out.props, saved: r.saved, n: out.points.length, points: out.points, hasDescription: !!(r.description && String(r.description).trim()) };
+        if (result && result.created && !result.saved && result.from === routeId) host.call('route.hide', { routeId: result.routeId }).catch(function () {});
+        var name = drawnName + ' · weather ' + fmtTime(out.props.departure || new Date().toISOString());
+        host.call('route.create', { points: out.points, name: name }).then(function (c) {
+          result = { routeId: c.routeId, created: true, from: routeId, props: out.props, saved: false, n: out.points.length, points: out.points, hasDescription: false };
           finishJob('');
           showResult(out.props, out.points.length);
           renderItinerary(out.feats, out.points);
-          $('restore').hidden = false;
           fitTo(out.points);
         }).catch(function (e) { finishJob('The chartplotter refused the route: ' + e.message); });
       });
     }).catch(function (e) { $('progress').textContent = 'Could not read the route: ' + e.message; });
-  }
-  function restore() {
-    if (!result || !result.original) return;
-    host.call('route.replace', { routeId: result.routeId, points: result.original }).then(function () {
-      clearResult();
-      $('progress').textContent = 'The drawn route is back.';
-    }).catch(function (e) { $('progress').textContent = 'Could not restore: ' + e.message; });
   }
 
   // ---- from the boat to a position ----------------------------------------
@@ -1770,11 +1723,10 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       if (out.points.length < 2) { finishJob('The result has no waypoints'); return; }
       var name = 'Weather route, ' + fmtTime(out.props.departure || new Date().toISOString());
       host.call('route.create', { points: out.points, name: name }).then(function (r) {
-        result = { routeId: r.routeId, created: true, original: null, props: out.props, saved: false, n: out.points.length, points: out.points, hasDescription: false };
+        result = { routeId: r.routeId, created: true, props: out.props, saved: false, n: out.points.length, points: out.points, hasDescription: false };
         finishJob('');
         showResult(out.props, out.points.length);
         renderItinerary(out.feats, out.points);
-        $('restore').hidden = true;
         fitTo(out.points);
       }).catch(function (e) { finishJob('The chartplotter refused the route: ' + e.message); });
     });
@@ -1859,7 +1811,6 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   function discardResult() {
     if (!result) return;
     if (result.created) host.call('route.hide', { routeId: result.routeId }).catch(function () {});
-    else if (result.original) { restore(); return; }
     clearResult();
   }
   function clearResult() {
@@ -1867,13 +1818,11 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     $('result').hidden = true;
     $('sumBody').innerHTML = '';
     $('saved').textContent = '';
-    $('restore').hidden = true;
     refreshRouteIt(); refreshFind();
   }
 
   // ---- start --------------------------------------------------------------
   $('routeIt').addEventListener('click', routeIt);
-  $('restore').addEventListener('click', restore);
   $('find').addEventListener('click', findRoute);
   $('cancel').addEventListener('click', cancelJob);
   $('save').addEventListener('click', saveResult);

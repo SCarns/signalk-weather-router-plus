@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Route, Waypoint } from '../engine/route';
-import { drawnAtText, ROUTER_ADDED_TAG, routeToGeoJSON, routeToSignalKRoute } from './routeformat';
+import { routeToGeoJSON, routeToSignalKRoute } from './routeformat';
 
 function wp(lon: number, lat: number, h: number, role?: 'via'): Waypoint {
   const w: Waypoint = { lon, lat, time: new Date(Date.UTC(2026, 9, 1, h)), sogMs: 3, cogDeg: 90, mode: 'sailing' };
@@ -45,44 +45,6 @@ test('snapped stops are reported on the route, on the matching points and as the
   assert.equal(sk.feature.properties.coordinatesMeta[4].snap_distance_m, 70);
   assert.equal(sk.feature.properties.coordinatesMeta[6].snap_distance_m, 150);
   assert.equal(sk.feature.properties.coordinatesMeta[2].snap_distance_m, undefined);
-});
-
-test('the saved route marks the points the router added, not the start, the destination or the waypoints asked for', () => {
-  const route: Route = {
-    waypoints: [wp(0, 0, 0), wp(0.1, 0, 1), wp(0.2, 0, 2, 'via'), wp(0.3, 0, 3), wp(0.4, 0, 4)],
-    totalTimeS: 4 * 3600,
-    totalDistanceM: 44_000,
-    motoringTimeS: 0,
-    sailingTimeS: 4 * 3600,
-    validated: true,
-  };
-  const sk = routeToSignalKRoute(route, 'r') as { feature: { properties: { coordinatesMeta: Record<string, unknown>[] } } };
-  assert.deepEqual(
-    sk.feature.properties.coordinatesMeta.map(m => m.description),
-    [undefined, ROUTER_ADDED_TAG, undefined, ROUTER_ADDED_TAG, undefined]
-  );
-});
-
-test('a stop the router moved says where it was drawn, for a later request to send that position again', () => {
-  // Stops: start, waypoint 1 (moved), destination (moved).
-  const route: Route = {
-    waypoints: [wp(0, 0, 0), wp(0.1, 0, 1), wp(0.2, 0, 2, 'via'), wp(0.3, 0, 3)],
-    totalTimeS: 3 * 3600,
-    totalDistanceM: 33_000,
-    motoringTimeS: 0,
-    sailingTimeS: 3 * 3600,
-    validated: true,
-    snaps: [
-      { index: 1, original: [-72.362166, 41.234758], anchor: [-72.362504, 41.234686], distanceM: 29 },
-      { index: 2, original: [0.3004, 0.0002], anchor: [0.3, 0], distanceM: 50 },
-    ],
-  };
-  assert.equal(drawnAtText([-72.362166, 41.234758]), 'Drawn at 41.234758, -72.362166');
-  const sk = routeToSignalKRoute(route, 'r') as { feature: { properties: { coordinatesMeta: Record<string, unknown>[] } } };
-  assert.deepEqual(
-    sk.feature.properties.coordinatesMeta.map(m => m.description),
-    [undefined, ROUTER_ADDED_TAG, 'Drawn at 41.234758, -72.362166', 'Drawn at 0.000200, 0.300400']
-  );
 });
 
 test('a route without snaps carries none of the snap fields', () => {

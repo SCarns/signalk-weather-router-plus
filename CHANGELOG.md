@@ -25,36 +25,21 @@ uses [Semantic Versioning](https://semver.org/).
   newer run appeared Thu, 04:40 AM EDT, but Copernicus Marine has not
   finished writing it", and the run stays red past its due time. New in
   `/api/status`: `freshness[].pending_since`, and `pending`
-  (`{run, appeared_at}`) in `currents[].smoc` and `tides`.
-- **Weather-route it in Freeboard, pressed again, routes through your
-  points, not the last result's.** The panel put the result's points on
-  the chart in place of the drawn ones, and the next press sent every one
-  of them as a precise waypoint, so the route could only follow the first
-  result. A chartplotter keeps nothing on a route point but its name,
-  description and waypoint link, so the points the router adds now have a
-  description that starts with "Added by the weather router", and the
-  panel leaves those out of the next request: it sends the start, the
-  destination and your own points (any you add in Freeboard included). A
-  router point you drag counts as yours while the panel stays open. Routes
-  the web app publishes to Signal K carry the same tag (the server marks
-  the points the router added in `coordinatesMeta`, and the web app keeps
-  the tag when it writes the leg details), so one of them opened in
-  Freeboard is routed again through its own waypoints too. Routes saved
-  before this have no tags and are routed through every point once more.
-- **A stop the router moved is asked for where it was drawn when routed
-  again.** A start, waypoint or destination too close to the shore or to
-  water the boat cannot use is moved, and reached on coming within the
-  distance it was moved; the point on the chart is where the route
-  passed, on the edge of that water. Weather-route it sent that point
-  back as an exact stop, the search could not reach it (brain: "boxed
-  in" 0.4 km short), and the leg fell back to the chart's own route with
-  a tack on every piece of it: 91 points instead of 26, and 16 minutes
-  slower, seconds after the first run. The point's description now
-  starts with "Drawn at <lat>, <lon>" (the panel, the web app's published
-  routes, and the server's `coordinatesMeta`), and the panel asks for
-  that position. The point descriptions say "moved N m to water the boat
-  can use" instead of "the drawn point was on land", which was wrong for
-  a shoal.
+  (`{run, appeared_at}`) and `updating` (an update has started while the
+  store still holds the run in use) in `currents[].smoc` and `tides`.
+- **Weather-route it in Freeboard leaves the route you drew alone.** It
+  wrote the result's points over the drawn route, so the route you drew
+  was gone (4 points became 10), and the next press sent every one of the
+  result's points as a precise waypoint: the route could only follow the
+  first result, and a stop the router had moved was sent back where the
+  route passed, on the edge of the water it was moved away from, where a
+  search can fail. The result is now a new route of its own, named after
+  the drawn one with the departure time, a draft until you save it under
+  a name of your choosing; pressed again, the button routes through the
+  drawn points as drawn, and replaces the previous result unless it was
+  saved. **Restore drawn route** is gone: there is nothing to restore. The
+  point descriptions say "moved N m to water the boat can use" instead of
+  "the drawn point was on land", which was wrong for a shoal.
 - **A stretch the router could not search, and a beat it had to motor,
   are warnings on the route.** Both were only a WARNING line in the job
   log: the route showed 0 warnings and "validated", while a chart-mesh

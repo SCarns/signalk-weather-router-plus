@@ -1820,10 +1820,6 @@ function _warningText(w) {
 // route's description, one line per point as the point's description,
 // in the user's display units (a quantity whose unit is not set is left
 // out). The same text the Freeboard panel writes.
-// How a point the router added (not the start, the destination or a waypoint asked for) begins its description in
-// the saved route: the Freeboard panel routes again through the other points only (routeformat.ts ROUTER_ADDED_TAG,
-// the same words).
-const ROUTER_ADDED_TAG = 'Added by the weather router';
 let _pendingAnnotate = null;   // {id, resourceId} from the publish status
 let _annotatedJobId = null;    // the job whose itinerary was written into its saved route
 let _displayedJobId = null;    // the job whose itinerary is on screen
@@ -1958,15 +1954,7 @@ function _annotateIfPending(jobId) {
     .then(route => {
       const meta = route && route.feature && route.feature.properties && route.feature.properties.coordinatesMeta;
       if (!Array.isArray(meta) || meta.length !== feats.length) throw new Error('waypoints do not match the itinerary');
-      meta.forEach((m, i) => {
-        const last = i === feats.length - 1;
-        const added = i > 0 && !last && feats[i].get('role') !== 'via';
-        // A stop the router moved says where it was drawn (routeformat.ts drawnAtText, the same words): a request
-        // made again from the saved route sends that position, not the edge of the water it was moved to.
-        const orig = feats[i].get('original');
-        const drawn = Array.isArray(orig) ? 'Drawn at ' + orig[1].toFixed(6) + ', ' + orig[0].toFixed(6) + ' · ' : '';
-        m.description = drawn + (added ? ROUTER_ADDED_TAG + ' · ' : '') + _legDescription(feats[i].getProperties(), last);
-      });
+      meta.forEach((m, i) => { m.description = _legDescription(feats[i].getProperties(), i === feats.length - 1); });
       if (_lastRouteProps) route.description = _routeDescription(_lastRouteProps, feats.length);
       return authFetch('/signalk/v2/api/resources/routes/' + encodeURIComponent(resourceId), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(route),

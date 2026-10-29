@@ -261,31 +261,6 @@ export function routeToGeoJSON(route: Route): Record<string, unknown> {
 }
 
 /**
- * How a route point the router added (neither the start, the destination nor
- * one of the waypoints asked for) begins its description in a saved route. A
- * chartplotter keeps only a point's name, description and waypoint link
- * (Freeboard-SK's plotter-extension routes), so this is how a later request
- * made from the saved route (the Freeboard panel's Weather-route it) tells the
- * user's points from the router's. The web app and the Freeboard panel write
- * the same words (rp-plan.js, plotterext/panel.html).
- */
-export const ROUTER_ADDED_TAG = 'Added by the weather router';
-
-/**
- * How a stop the router moved (start, waypoint or destination: too close to
- * unusable water or the shore) begins its description in a saved route: where
- * the user drew it, as "Drawn at <lat>, <lon>". The point itself is where the
- * route passed. A later request made from the saved route sends the drawn
- * position, so the stop is moved again and reached on its circle, as it was
- * the first time; the point where the route passed lies on the edge of the
- * unusable water, and a leg made to end exactly there can fail its search.
- * The web app and the Freeboard panel write and read the same words.
- */
-export function drawnAtText(original: [number, number]): string {
-  return `Drawn at ${original[1].toFixed(6)}, ${original[0].toFixed(6)}`;
-}
-
-/**
  * Signal K Resources API `routes` record. Coordinates stay strict
  * [lon, lat]; per-waypoint data rides in `properties.coordinatesMeta`,
  * a parallel array of the same length. The server's Route schema
@@ -325,9 +300,6 @@ export function routeToSignalKRoute(route: Route, name: string, description?: st
         ...(fe && fe.legsBeyond > 0 ? { legs_beyond_forecast: fe.legsBeyond } : {}),
         coordinatesMeta: wps.map((w, i) => ({
           name: i === 0 ? 'Start' : i === wps.length - 1 ? 'End' : `WP${i}`,
-          // The web app writes the leg after it, in the user's units, once the route is published.
-          ...(i > 0 && i < wps.length - 1 && w.role !== 'via' ? { description: ROUTER_ADDED_TAG } : {}),
-          ...(snapped.byWaypoint.has(i) ? { description: drawnAtText(snapped.byWaypoint.get(i)!.original) } : {}),
           ...waypointProperties(w),
           ...(fe && w.time.getTime() > fe.validTo.getTime() ? { beyond_forecast: true } : {}),
           ...(snapped.byWaypoint.has(i)

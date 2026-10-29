@@ -739,27 +739,13 @@ and the panel runs in a sandboxed iframe served from
   saved route in the Routes list. The panel lists the routes shown on the
   chart (one is picked by itself). **Weather-route it** sends the first
   point as the start, the last as the destination and the points between
-  as precise waypoints, and rewrites that route's geometry in place with
-  the result, which stays Freeboard's editable draft (or an unsaved edit
-  of a saved route). The points the router added have a description that
-  starts with *Added by the weather router*. Pressed again, the button
-  sends only the other points (the start, the destination and your own
-  waypoints, including any you add in Freeboard), so the new route is free
-  to take another way instead of following the last result. A router point
-  you drag counts as yours while the panel stays open; after the panel
-  reloads, remove the tag from its description (or add a point of your
-  own) to keep it. Routes saved before this have no tags and are routed
-  through every point once more. A start, waypoint or destination the
-  router moved (too close to the shore, or to water the boat cannot use on
-  the chart) stays on the chart where the route passed, and its
-  description starts with *Drawn at* and where you drew it: pressed
-  again, the button asks for the drawn position, so the stop is moved and
-  reached as the first time (asked for exactly where the route passed, on
-  the edge of that water, a leg can fail its search and come back as a
-  long run of short tacks). A moved point you drag counts at its new
-  position while the panel stays open. **Restore drawn route** puts the
-  drawn points back. Routes the web app publishes carry the same tag, so one of
-  them opened in Freeboard is routed again through its own waypoints too.
+  as precise waypoints, and shows the result as a new route of its own,
+  named after yours with the departure time ("named7 · weather Thu
+  09:20"), a draft until you save it (**Save route…**, under any name you
+  choose) or discard it. The route you drew is never changed: pressed
+  again, the button routes through its points as you drew them, plus any
+  you have added, and the new result replaces the previous one unless you
+  saved that.
 - **From the boat to a position** (the quick way): **From** is the
   vessel's position, kept up to date through Freeboard's own Signal K
   connection (editable; **Use the vessel position** snaps back); **To** is
@@ -2538,10 +2524,10 @@ Plugin, forecast, currents, tides and queue status. Access: readonly.
 | `freshness` | per source in use: `{source, rows, run, published_at, next_due_at, state, reason, pending_since}`; `run`: as the source names it (`20261029 00z`, `2026-10-29`), for SMOC and sea level the day it was published (their store's own key is the last data hour); `rows`: the header rows it colours (`wind`, `waves`, `currents`, `tides`); `state`: `green` (more than 30 min before the next run is due), `orange` (from then until 60 min after), `red` (later, or nothing loaded; `reason` then says why when the times do not); `pending_since`: for SMOC and sea level, when a newer run appeared that Copernicus Marine is still writing (the run in use stays until it has finished), else null |
 | `connectivity` | `{online, since, lastOkAt, reason}`: whether the data worker's last request reached a server (`online` null before the first), since when, and why not; separate from freshness |
 | `forecast_loading` | while the data worker gets a forecast: `{phase, why, cycle, done, total, started_at, text}`. `phase`: `checking` (finding the newest ECMWF cycle) or `decoding` (step `done` of `total`, downloading what the GRIB cache lacks); `why`: `first` (no decoded run on disk yet), `redecode` (the runs on disk do not fit the forecast settings or are incomplete) or `update` (a newer cycle while the run in use keeps serving); `text`: the same as one line, e.g. `"loading the forecast: decoding the 06Z cycle, step 12 of 37 (first start)"`. Null when not loading |
-| `currents` | the data worker's current sources in priority order: `{name, priority, resolutionM, bbox, validFrom, validTo}`; the CMEMS SMOC entry adds `smoc` (run, resident and on-demand areas, memory, downloads, and `pending`: `{run, appeared_at}` of a newer run Copernicus Marine is still writing, or null) |
+| `currents` | the data worker's current sources in priority order: `{name, priority, resolutionM, bbox, validFrom, validTo}`; the CMEMS SMOC entry adds `smoc` (run, resident and on-demand areas, memory, downloads, `pending`: `{run, appeared_at}` of a newer run Copernicus Marine is still writing, or null, and `updating`: Copernicus Marine has started an update while the store still holds this run, so there is no newer run to name yet) |
 | `currents_route_worker` | the same for the route worker |
 | `rtofs` | null when RTOFS is off, else `{auto, auto_reason, extra, runs, unknown_extents}`: the product that contains the vessel (null, with `auto_reason`, when there is no position or no product covers it), the extra products set, each product loaded as `{product, run}` (its current source is `RTOFS-<product>`), and the products whose extent is not known yet |
-| `tides` | Copernicus Marine sea-level source status (run, resident and on-demand areas, point cache, memory, downloads, and `pending` as SMOC's), or null when off or not loaded |
+| `tides` | Copernicus Marine sea-level source status (run, resident and on-demand areas, point cache, memory, downloads, and `pending` and `updating` as SMOC's), or null when off or not loaded |
 | `tides_enabled` | the tides setting, or null before start |
 | `tides_error` | last tide source error, or null |
 | `overlay_land` | overlay land-raster cache: `{entries, cells, bytes, index_bytes, builds, hits, last_build_ms, disk_hits, disk_writes, disk, polygons}`, or null; `polygons`: the data worker's cache of coastline tiles read (for the point test) `{entries, bytes, budget_bytes, hits, decodes, evictions}` |
