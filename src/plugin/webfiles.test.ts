@@ -77,3 +77,29 @@ test('refreshPublicFileDates tags and dates the files once per content change', 
   fs.rmSync(pub, { recursive: true, force: true });
   fs.rmSync(data, { recursive: true, force: true });
 });
+
+test('refreshPublicFileDates: the same files deployed again untagged and dated 1985 are tagged and dated again', () => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-data-'));
+  const logs: string[] = [];
+  const refresh = (pub: string): void =>
+    refreshPublicFileDates(
+      pub,
+      data,
+      m => logs.push(m),
+      m => logs.push('ERROR ' + m)
+    );
+  const first = tmpPublic();
+  refresh(first);
+  const tag = /\?v=([0-9a-f]{8})/.exec(fs.readFileSync(path.join(first, 'index.html'), 'utf8'))![1];
+  // A server-only update: npm's copies of the same files, untagged, with npm's date.
+  const again = tmpPublic();
+  const npmDate = new Date('1985-10-26T08:15:00Z');
+  for (const f of fs.readdirSync(again)) fs.utimesSync(path.join(again, f), npmDate, npmDate);
+  refresh(again);
+  assert.equal(logs.length, 2, logs.join('\n'));
+  assert.match(fs.readFileSync(path.join(again, 'index.html'), 'utf8'), new RegExp(`rp-plan\\.js\\?v=${tag}"`), 'the same tag again');
+  assert.ok(fs.statSync(path.join(again, 'rp-plan.js')).mtimeMs > npmDate.getTime() + 1e6, 'dated now');
+  refresh(again);
+  assert.equal(logs.length, 2, 'tagged files, same content: nothing done');
+  for (const d of [first, again, data]) fs.rmSync(d, { recursive: true, force: true });
+});

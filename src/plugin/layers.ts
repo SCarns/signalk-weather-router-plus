@@ -20,6 +20,8 @@ export const LAYER_PARAMS: Record<string, readonly string[]> = {
   sst: ['skt'],
   precip: ['tprate', 'ptype'],
   sea_state: ['10u', '10v', 'swh', 'mwp', 'mwd'],
+  seas: ['10u', '10v', 'swh', 'mwp', 'mwd'],
+  wave_arrows: ['swh', 'mwp', 'mwd'],
   current: [],
   arrows: [],
   tide: [],

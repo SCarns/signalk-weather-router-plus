@@ -11,29 +11,33 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { availableSteps, type Cycle, cycleFor, EcmwfClient, latestExpectedCycle } from '../../data/ecmwf';
 import { ForecastStore } from '../../data/forecast';
-import { decodeForecastToDisk, requestedParams, resolveCycle, type ResolvedCycle } from '../../data/loader';
+import { isOffline } from '../../data/http';
+import { requestedParams, resolveCycle, type ResolvedCycle } from '../../data/loader';
 import {
   cycleName,
   DECODED_DIR,
   DecodedRun,
-  DecodedRunWriter,
   dirBytes,
   listDecodedRuns,
   openDecodedRun,
   pruneDecodedRuns,
   type WindowOptions,
 } from '../../data/decoded';
+import { runChildTask } from '../childtask';
 import { checkDecodeResources } from '../memguard';
-import { releaseMemory } from '../../util/gc';
 import { type ResolvedConfig } from '../config';
-import { requireInit } from './state';
+import { noteNetwork, requireInit } from './state';
 import type { WorkerState } from './state';
+import type { ForecastLoading, SourceCheck } from '../protocol';
 
-/** ECMWF open-data short names; 2 m dew point is `2d` in the index files. */
-const EXTRA_ATM = ['2t', 'tprate', 'skt', '2d', 'ptype'];
+/** ECMWF open-data short names; 2 m dew point is `2d` in the index files, 10 m wind gust `10fg`, total cloud cover `tcc`. */
+const EXTRA_ATM = ['2t', 'tprate', 'skt', '2d', 'ptype', 'tcc', '10fg'];
+
+/** Energy-modelling fields (the forecast.energyFields setting, off by default): total precipitation, surface solar radiation, snowfall, surface thermal radiation down and net, most-unstable CAPE. tp/sf/ssrd/strd/str are accumulated since the forecast start; the decode turns them into per-interval values. */
+const ENERGY_ATM = ['tp', 'ssrd', 'sf', 'strd', 'str', 'mucape'];
 
 export function extraParams(cfg: ResolvedConfig): string[] {
-  return cfg.forecast.extraFields ? EXTRA_ATM : [];
+  return [...(cfg.forecast.extraFields ? EXTRA_ATM : []), ...(cfg.forecast.energyFields ? ENERGY_ATM : [])];
 }
 
 /** Parameters the configured forecast holds (atmosphere + waves), in store order. */
@@ -130,53 +134,97 @@ export function pruneForecastCaches(st: WorkerState, cfg: ResolvedConfig, cl: Ec
  *  1. The run in use already is that cycle (for the current settings): nothing to do.
  *  2. A complete decoded run of that cycle is on disk (a restart): adopt it, no decode.
  *  3. Otherwise decode it from the GRIB cache (downloading what is missing)
- *     straight to disk, one step at a time, then adopt it.
+ *     straight to disk, one step at a time, in a child process
+ *     (forecastdecodetask.ts), then adopt it.
  * `force` skips 1 and 2: the run is decoded again from the GRIB cache.
- * The run in use keeps answering until the new one is complete; memory
- * during the decode is one step (streamingDecodeBytes), not a store.
+ * The run in use keeps answering until the new one is complete. Every check
+ * ends with what it found (SourceCheck), sent as 'forecast-check'.
+ * `offline`: this refresh round already found no connection; the server is
+ * not asked again (the reason is reported). `held`: why the internet state
+ * holds this round now (internet.ts), or null: no forecast yet is then not
+ * an error, so a route waiting for the first forecast keeps waiting
+ * (index.ts asks for a round of the owner's for it), and a decode it stops
+ * (worker.ts 'internet-hold') is skipped, not failed.
  */
-export async function refreshForecast(st: WorkerState, force: boolean): Promise<void> {
+export async function refreshForecast(
+  st: WorkerState,
+  force: boolean,
+  offline: string | null = null,
+  held: () => string | null = () => null
+): Promise<void> {
+  let check: SourceCheck;
+  try {
+    check = await refreshForecastInner(st, force, offline, held);
+  } catch (err) {
+    check = { outcome: isOffline(err) ? 'could-not-check' : 'failed', at: '', reason: (err as Error).message };
+  } finally {
+    // Done, unchanged or failed: nothing is loading any more.
+    st.send({ type: 'forecast-loading', loading: null });
+  }
+  check.at = new Date().toISOString();
+  st.checks.ecmwf = check;
+  st.send({ type: 'forecast-check', check });
+}
+
+const newest = (reason: string | null = null): SourceCheck => ({ outcome: 'newest', at: '', reason });
+const newRun = (reason: string): SourceCheck => ({ outcome: 'new-run', at: '', reason });
+
+async function refreshForecastInner(
+  st: WorkerState,
+  force: boolean,
+  offline: string | null,
+  held: () => string | null
+): Promise<SourceCheck> {
   const { config: cfg, client: cl } = requireInit(st);
+  const startedAt = new Date().toISOString();
+  // Why a decode would be needed, for the user waiting on it.
+  const why: ForecastLoading['why'] = st.run ? 'update' : listDecodedRuns(decodedRoot(st)).length ? 'redecode' : 'first';
+  const loading = (l: Omit<ForecastLoading, 'why' | 'startedAt'>): void =>
+    st.send({ type: 'forecast-loading', loading: { ...l, why, startedAt } });
   const horizon = cfg.forecast.horizonS;
   const t = Date.now();
   const expected = latestExpectedCycle(new Date(), horizon);
-  if (!force && runMatches(st, cfg, expected)) {
-    st.send({ type: 'forecast-unchanged', cycleTimeMs: st.run!.index.cycleTimeMs });
-    return;
-  }
+  if (!force && runMatches(st, cfg, expected)) return newest(`cycle ${cycleName(expected.time)} is the newest published`);
   if (!force) {
     const onDisk = decodedRunOnDisk(st, cfg, expected);
     if (onDisk) {
       adoptRun(st, onDisk, 'disk', Date.now() - t, 0);
       pruneForecastCaches(st, cfg, cl, expected);
-      return;
+      return newRun(`cycle ${cycleName(expected.time)} from the decoded run on disk`);
     }
   }
   let resolved: ResolvedCycle;
+  loading({ phase: 'checking', cycle: null, done: 0, total: null });
   try {
-    resolved = await resolveCycle(cl, horizon, { extraAtmParams: extraParams(cfg), log: m => st.log('info', `forecast: ${m}`) });
+    resolved = await resolveCycle(cl, horizon, {
+      extraAtmParams: extraParams(cfg),
+      log: m => st.log('info', `forecast: ${m}`),
+      offline: offline ?? undefined,
+    });
   } catch (err) {
+    const outcome: SourceCheck['outcome'] = isOffline(err) ? 'could-not-check' : 'failed';
     // Offline with no complete GRIB cycle: a decoded run on disk still serves.
     const fallback = !st.run ? newestDecodedRun(st, cfg) : null;
     if (fallback) {
       st.log('info', `forecast: ${(err as Error).message}; using the decoded run ${path.basename(fallback.dir)} on disk`);
       adoptRun(st, fallback, 'disk', Date.now() - t, 0);
-      return;
+      return { outcome, at: '', reason: `${(err as Error).message}; using the decoded run ${path.basename(fallback.dir)} on disk` };
     }
-    st.send({ type: 'refresh-error', message: (err as Error).message });
-    return;
+    // No run in use at all: the error the page shows instead of a forecast.
+    if (!st.run && !held()) st.send({ type: 'refresh-error', message: (err as Error).message });
+    return { outcome, at: '', reason: (err as Error).message };
   }
   const cycle = resolved.cycle;
-  if (!force && runMatches(st, cfg, cycle)) {
-    st.send({ type: 'forecast-unchanged', cycleTimeMs: st.run!.index.cycleTimeMs });
-    return;
-  }
+  // The server could not be asked: the cached cycle is used, not known to be the newest.
+  const notChecked = (): SourceCheck => ({ outcome: 'could-not-check', at: '', reason: resolved.fallback ?? null });
+  if (!force && runMatches(st, cfg, cycle))
+    return resolved.fallback ? notChecked() : newest(`cycle ${cycleName(cycle.time)} is the newest published`);
   if (!force && cycle.time.getTime() !== expected.time.getTime()) {
     const onDisk = decodedRunOnDisk(st, cfg, cycle);
     if (onDisk) {
       adoptRun(st, onDisk, 'disk', Date.now() - t, 0);
       pruneForecastCaches(st, cfg, cl, cycle);
-      return;
+      return resolved.fallback ? notChecked() : newRun(`cycle ${cycleName(cycle.time)} from the decoded run on disk`);
     }
   }
   // Nothing in use yet (a start with a newer cycle out): serve the newest
@@ -194,46 +242,82 @@ export async function refreshForecast(st: WorkerState, force: boolean): Promise<
   }
   // Guard: memory for one step of decoding, disk for the whole run.
   fs.mkdirSync(decodedRoot(st), { recursive: true });
-  const res = checkDecodeResources(horizon, cfg.forecast.extraFields, cfg.forecast.memoryHeadroomBytes, decodedRoot(st));
+  const res = checkDecodeResources(
+    horizon,
+    cfg.forecast.extraFields,
+    cfg.forecast.energyFields,
+    cfg.forecast.memoryHeadroomBytes,
+    decodedRoot(st)
+  );
   if (!res.ok) {
     st.log('error', `forecast: ${res.message} [${res.source}]`);
     st.send({ type: 'refresh-error', message: res.message });
-    return;
+    return { outcome: 'failed', at: '', reason: res.message };
   }
   st.log('debug', `forecast: resource check ok: ${res.message} [${res.source}]`);
-  let writer: DecodedRunWriter | null = null;
-  try {
-    writer = new DecodedRunWriter(decodedRoot(st), cycleName(cycle.time));
-    st.decodingBlockBytes = res.needBytes;
-    const out = await decodeForecastToDisk(cl, writer, {
-      horizonS: horizon,
-      cycle,
-      extraAtmParams: extraParams(cfg),
-      log: m => st.log('debug', `forecast: ${m}`),
-      onStep: (done, total) => {
-        if (done === 1 || done % 5 === 0 || done === total) st.log('debug', `forecast: decoded and wrote step ${done}/${total}`);
-      },
+  // The interim run above (if any) serves meanwhile: then this is an update, not a wait.
+  const cycleIso = cycle.time.toISOString();
+  const decoding = (done: number, total: number | null): void =>
+    st.send({
+      type: 'forecast-loading',
+      loading: { phase: 'decoding', why: st.run ? 'update' : why, cycle: cycleIso, done, total, startedAt },
     });
-    const opened = openDecodedRun(writer.finalDir);
+  decoding(0, null);
+  st.decodeAbort = new AbortController();
+  // A hold that began while the cycle was looked up found no decode to stop: stop it before it downloads (worker.ts
+  // 'internet-hold'). A cycle fully in the GRIB cache decodes without the network and goes on.
+  if (!resolved.fromCache && held()) st.decodeAbort.abort();
+  try {
+    // The one-step block lives in the child process; shown in the status while it runs.
+    st.decodingBlockBytes = res.needBytes;
+    const out = await runChildTask(
+      {
+        task: 'forecast-decode',
+        cacheRoot: st.cacheRoot,
+        mirror: cfg.forecast.mirror,
+        cycle: cycleIso,
+        horizonS: horizon,
+        extraAtmParams: extraParams(cfg),
+      },
+      null,
+      st.decodeAbort.signal,
+      e => {
+        if (e.event === 'decode-step') {
+          decoding(e.done, e.total);
+          if (e.done === 1 || e.done % 5 === 0 || e.done === e.total)
+            st.log('debug', `forecast: decoded and wrote step ${e.done}/${e.total}`);
+        } else if (e.event === 'decode-log') st.log('debug', `forecast: ${e.message}`);
+      }
+    );
+    const opened = openDecodedRun(out.dir);
     if (!opened.run) throw new Error(`the decoded run just written is not usable: ${opened.problem}`);
     st.lastDecode = {
       at: new Date().toISOString(),
-      cycle: out.index.cycle,
-      ms: out.index.decodeMs,
+      cycle: opened.run.index.cycle,
+      ms: out.decodeMs,
       stepBlockBytes: out.stepBlockBytes,
-      writtenBytes: out.index.bytes,
+      writtenBytes: opened.run.index.bytes,
       downloaded: out.downloaded,
     };
-    st.decodingBlockBytes = null;
-    // Let the one-step block and the decode buffers go now.
-    releaseMemory();
     adoptRun(st, opened.run, 'grib', Date.now() - t, out.downloaded);
     pruneForecastCaches(st, cfg, cl, cycle);
+    return resolved.fallback ? notChecked() : newRun(`cycle ${cycleName(cycle.time)} decoded (${out.downloaded} fields downloaded)`);
   } catch (err) {
+    // Stopped by the internet state starting to hold (worker.ts 'internet-hold'): skipped, as the sources after it are.
+    const h = held();
+    if (h && st.decodeAbort?.signal.aborted) {
+      st.log('info', `forecast: the decode of cycle ${cycleName(cycle.time)} stops: ${h}`);
+      return { outcome: 'could-not-check', at: '', reason: `skipped: ${h}` };
+    }
+    const offlineNow = isOffline(err);
+    // The child's requests are not this thread's: what it found about the connection is recorded here.
+    if (offlineNow) noteNetwork(st, 'offline', (err as Error).message);
+    // With a run in use, a download that lost the connection is "could not check", not an error to show.
+    if (!offlineNow || !st.run) st.send({ type: 'refresh-error', message: (err as Error).message });
+    return { outcome: offlineNow ? 'could-not-check' : 'failed', at: '', reason: (err as Error).message };
+  } finally {
     st.decodingBlockBytes = null;
-    writer?.abort();
-    releaseMemory();
-    st.send({ type: 'refresh-error', message: (err as Error).message });
+    st.decodeAbort = null;
   }
 }
 
@@ -244,27 +328,50 @@ export function keepCycles(current: Cycle, n: number): Cycle[] {
 }
 
 /**
+ * A window of the decoded run, and the run it was read from: a run replaced
+ * (and pruned) between choosing it and reading it is retried once with the
+ * run now current, so an answer's stamp must name the run actually read.
+ */
+export interface WindowRead {
+  store: ForecastStore;
+  run: DecodedRun;
+}
+
+/**
  * Read a window of the decoded run, noting the memory it holds while in
  * use. A run replaced (and pruned) between choosing it and reading it is
- * retried once with the run now current.
+ * retried once with the run now current. Options that depend on the run
+ * (its bracket indices) are computed from the run actually read: pass
+ * them as a function of the run; static options as an object. With
+ * `pinned`, that run is read and no other (a query reading several windows
+ * must not mix two runs): a pruned one is an ENOENT for the caller.
  */
-export async function readWindow(st: WorkerState, what: string, opts: WindowOptions): Promise<ForecastStore> {
-  const r = st.run;
+export async function readWindow(
+  st: WorkerState,
+  what: string,
+  opts: WindowOptions | ((run: DecodedRun) => WindowOptions),
+  pinned?: DecodedRun
+): Promise<WindowRead> {
+  const r = pinned ?? st.run;
   if (!r) throw new Error('no forecast loaded');
+  const forRun = (run: DecodedRun): WindowOptions => (typeof opts === 'function' ? opts(run) : opts);
   const t = Date.now();
   let store: ForecastStore;
+  let read = r;
   try {
-    store = await r.window(opts);
+    store = await r.window(forRun(r));
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT' && st.run && st.run !== r) store = await st.run.window(opts);
-    else throw err;
+    if (!pinned && (err as NodeJS.ErrnoException).code === 'ENOENT' && st.run && st.run !== r) {
+      read = st.run;
+      store = await st.run.window(forRun(st.run));
+    } else throw err;
   }
   const bytes = store.bytes();
   st.forecastMemory.heldBytes += bytes;
   if (!st.forecastMemory.last || bytes >= st.forecastMemory.last.bytes || Date.now() - Date.parse(st.forecastMemory.last.at) > 600_000) {
     st.forecastMemory.last = { what, bytes, readMs: Date.now() - t, at: new Date().toISOString() };
   }
-  return store;
+  return { store, run: read };
 }
 
 export function releaseWindow(st: WorkerState, store: ForecastStore | null): void {

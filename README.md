@@ -1,27 +1,32 @@
 # signalk-weather-router-plus
 
-Standalone open-water weather routing as a Signal K plugin. Nothing runs
-outside the Signal K process: the plugin downloads ECMWF open-data
+Weather routing as a Signal K plugin: in open water by the coastline, and
+on the charts where a chart mesh is configured. No outside
+service: everything runs in Signal K's process and in short-lived
+processes the plugin starts itself. The plugin downloads ECMWF open-data
 forecasts by HTTP byte range, decodes the CCSDS-packed GRIB2 fields in
 TypeScript, reads Copernicus Marine SMOC ocean currents (worldwide,
 including tides) and the Copernicus Marine hourly sea level (tide
 height, total water level, surge) from their Zarr stores with an
 in-process Blosc/LZ4 decoder, avoids land with GSHHG coastline polygons, and runs an
-isochrone router against the vessel's polar in a worker thread. No
-runtime npm dependencies.
+isochrone router against the vessel's polar in a worker thread. One
+runtime npm dependency: TypeBox, which describes the API's requests and
+answers.
 
 The "plus" is the overlays: wind, temperature, tide, current and more,
 drawn from the same data the routing uses.
 
-What it does not do: it routes in open water and avoids land, but knows
-nothing about depths, channels or bridges. (US inshore routing was too
-much for a plugin; it lives in the separate
-[router.zeddisplay.com](https://router.zeddisplay.com).)
+Depths, channels and bridges are known only where a chart mesh is
+configured: a leg inside one is routed on the charts (charted depth,
+vertical clearance, rocks, wrecks, marks, structures; see
+[Chart mesh](#chart-mesh-charted-depths-and-obstructions)). Elsewhere the
+plugin avoids land by the coastline and knows nothing about depths,
+channels or bridges.
 
 ![A finished route from the western Mediterranean through the Strait of Gibraltar to Lisbon, with wind speed, isobars and the itinerary of legs](public/screenshots/01-route.jpg)
 
 
-**Status: beta** (0.1.0-beta.7). Please report
+**Status: beta** (0.2.1-beta.1). Please report
 problems at https://github.com/motamman/signalk-weather-router-plus/issues.
 
 What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
@@ -35,7 +40,7 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
 | Route job API (REST + Server-Sent Events) | `/plugins/signalk-weather-router-plus/api/…` |
 | OpenAPI | `/plugins/signalk-weather-router-plus/api/openapi.json` |
 | Finished routes | saved to `/signalk/v2/api/resources/routes/{jobId}` (needs a routes provider, e.g. `resources-provider`) |
-| Weather API provider | point forecasts and observations anywhere from the global forecast (read from the decoded run on disk by the data worker) via `/signalk/v2/api/weather/forecasts/point?lat=&lon=` and `/observations`, with `water.level` / `water.levelTendency` (relative to mean sea level) when tides are on and `water.surfaceCurrentSpeed` / `surfaceCurrentDirection` (the set, towards) where a current source covers the point |
+| Weather API provider | point forecasts and observations anywhere from the global forecast (read from the decoded run on disk by the data worker) via `/signalk/v2/api/weather/forecasts/point?lat=&lon=` and `/observations`, with `outside.cloudCover` / `wind.gust` when the extra fields are on, `water.level` / `water.levelTendency` (relative to mean sea level) when tides are on and `water.surfaceCurrentSpeed` / `surfaceCurrentDirection` (the set, towards) where a current source covers the point |
 | Notifications | `notifications.weatherRouterPlus.{jobId}` on completion or failure |
 | CLI (no Signal K) | `wrp-route` |
 
@@ -51,13 +56,33 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   precision (exactly the decoded values), so overlays, conditions, the
   Weather API and routing work anywhere: 1440 × 721 cells × 4 B =
   4.15 MB per field per step. A 72 h horizon (25 steps) is 623 MB with
-  the six base fields and 1.14 GB with the extra fields (`2t`, `tprate`,
-  `skt`, `2d`, `ptype`).
+  the six base fields and 1.35 GB with the extra fields (`2t`, `tprate`,
+  `skt`, `2d`, `ptype`, `tcc`, `10fg`).
+
+  **When a run is due.** ECMWF publishes each cycle at once, 454 minutes
+  after its run time for 00z/12z and 387 minutes for 06z/18z (measured
+  from the server's file times for every cycle of 2026-10-16 to 19); the
+  plugin looks for a cycle from then on, and checks every source (ECMWF,
+  SMOC, RTOFS, sea level) at the *Check for a new cycle every* interval
+  (Defaults, 15 min for a new install). Each check reports what it found
+  (`/api/status` `checks`): the newest run is in use, a new run was
+  loaded, the server could not be asked (the run in use stays, not known
+  to be the newest), or the new run could not be loaded. With no
+  connection at all (no name resolves, no route to any network) a request
+  fails at once and the rest of that round asks no server; a refused
+  connection, an unreachable host or a timeout is retried and the next
+  ECMWF mirror tried, as one server failing or a slow link.
 
   **Decoded once per update, kept on disk, read per request.** The
-  decoded forecast is not kept in memory. When a new ECMWF run arrives
-  the data worker decodes it one step at a time into one reusable
-  one-step block (45.7 MB with the extra fields) plus decode buffers
+  decoded forecast is not kept in memory. When a new ECMWF run arrives a
+  child process (`plugin/forecastdecodetask.ts`) downloads what the GRIB
+  cache lacks and decodes it one step at a time, while the data worker
+  goes on answering map, conditions and Weather API requests from the
+  run in use (on the test box, 2026-10-19, uncached map tiles answered in
+  17–64 ms during a 172 s decode; before, they waited for the whole
+  decode and timed out at 120 s); the child exits with the decode, and
+  its memory with it. It decodes into one reusable
+  one-step block (54.0 MB with the extra fields) plus decode buffers
   (20.8 MB: one global field as Uint32 + Float64 + Float32 + Int32) and
   writes each step to `forecast/<yyyymmddHH>/` under the
   plugin data directory: one raw Float32 file per field and step
@@ -82,12 +107,13 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   OS page cache (1–2 ms for a map view, below), so an in-process cache
   of field-steps was not added.
 
-  Disk: one run of 72 h with the extra fields is 1,142,064,000 B of
+  Disk: one run of 72 h with the extra fields is 1,349,712,000 B of
   `.f32` files plus a 3.5 kB `index.json`; with `keepCycles` 2 up to two
   runs are kept, next to the GRIB cache (212.5 MB for one 72 h cycle
   with the extra fields). An update writes the run once:
   1,144,471,552 B written by the plugin process during a forced reload
-  (`/proc/<pid>/io` `write_bytes`). The GRIB cache stays, so a settings
+  (`/proc/<pid>/io` `write_bytes`, measured on a build with the previous
+  extra-field set). The GRIB cache stays, so a settings
   change (horizon, extra fields) can decode again without downloading.
 
   *Measured on a Pi 5 (8 GB, NVMe), 2026-09-28*, the installed build
@@ -117,13 +143,18 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   decodes its CMEMS SMOC area again from the disk cache (2.1–3.4 s
   measured).
 - **Land:** GSHHG shorelines as shapefiles (`GSHHS_f_L1.shp` for full
-  resolution; add `GSHHS_f_L6.shp` for Antarctica) or the OSM
-  land-polygons export. Overlay land flags use a raster built on demand
-  for each requested bbox at a resolution matched to the request's
-  sample spacing (a quarter of it, 0.002° to 0.25°, at most 4 M cells),
-  from an in-memory index of the shapefile records; the last 8 rasters
-  are kept. Conditions `is_land` uses the exact polygons. For routing,
-  land is loaded for the box around the route's corridor (see [Global
+  resolution, automatically including L2–L4 siblings; add `GSHHS_f_L6.shp` for Antarctica) or the OSM
+  land-polygons export. At start the plugin cuts the coastline into
+  0.5° tiles once per coastline, in a child process (`coast-tiles/` in
+  the plugin data directory; GSHHG full resolution: 196 MB, 14.6 s on a
+  Pi 5), and every land question then reads only the tiles near it,
+  never a whole continent's record. Overlay land flags use a raster built
+  on demand for each requested bbox at a resolution matched to the
+  request's sample spacing (a quarter of it, 0.002° to 0.25°, at most 4 M
+  cells), drawn straight from the tiles' bytes; the last 8 rasters are
+  kept, and each is saved on disk so a box is drawn once. Conditions
+  `is_land` uses the exact polygons of the point's tile. For routing,
+  land is loaded from the tiles for the box around the route's corridor (see [Global
   water grid](#global-water-grid)) plus 1° and rasterised at
   the finest resolution that fits the configured cell budget (0.5 m
   arc-seconds to 0.01°). The raster is conservative: cells crossed by a
@@ -137,7 +168,11 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   exact polygons: a leg crossing or touching any coastline edge is a
   land crossing, whatever the width of the land (legs whose cells are all
   water need no polygon test).
-- **Depth:** none in this version. There is no bathymetry: depths,
+- **Depth:** only where a chart mesh covers the water (see [Chart
+  mesh](#chart-mesh-charted-depths-and-obstructions)): there the charted
+  depth, vertical clearance, rocks, wrecks, marks and structures decide
+  the route against the boat's draught and air draft and the under-keel
+  and overhead clearances. Elsewhere there is no bathymetry, and depths,
   draught and clearances play no part in the route.
 - **Currents:** a stack of sources; where several cover a point the
   highest priority with data wins, and exactly (0, 0) from a source
@@ -147,7 +182,7 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   |---|---|---|
   | 10 (from the file) | user-installed tidal harmonics `.npz`, e.g. NECOFS GoM3 | its grid |
   | 3 | **Copernicus Marine SMOC** (below) | worldwide, 80°S–90°N |
-  | 2 | NOAA Global RTOFS, depth-averaged `ubaro`/`vbaro`, one regional product | the product's box |
+  | 2 | NOAA Global RTOFS, depth-averaged `ubaro`/`vbaro`: the regional product that contains the vessel (the finest where two overlap), plus any extra products set; where no product covers the vessel, only the extra products | each product's box, read from its file |
   | 0 (from the file) | FES2014 harmonic extract `.npz` | its grid |
 
   **SMOC** is product `GLOBAL_ANALYSISFORECAST_PHY_001_024`, dataset
@@ -165,8 +200,9 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   from `geoChunked`, a wide area from `timeChunked`).
   - *Resident area:* the vessel's position (Signal K
     `navigation.position`) ± the configured half-width (15°), every step
-    from the current hour to the SMOC horizon (72 h) at 3 h (or 1 h)
-    spacing, cropped from the decoded chunks and held as Float32 in
+    from the current hour to the forecast horizon (72 h by default; SMOC
+    has no horizon of its own) at 3 h (or 1 h) spacing, cropped from
+    the decoded chunks and held as Float32 in
     SharedArrayBuffers: the data worker loads it and the route worker
     uses the same memory. It is rebuilt when the window moves on a step,
     when the vessel has moved more than a third of the half-width, or
@@ -289,13 +325,16 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   *Tide-height map layer* (`/api/field?layer=tide`): `ocean_tide` only,
   hourly (a 3-hourly step would err by up to ~30 % of the amplitude
   mid-step). A resident area around the vessel (± `tides.halfWidth`,
-  default 15°) over now → `tides.horizon` (default 24 h), its start
+  default 15°) over now → the forecast horizon (72 h by default; it was
+  a separate `tides.horizon`, default 24 h, before 0.2.0-beta.3), its start
   aligned to 6 h so it is rebuilt four times a day; views elsewhere load
   their hour on demand (1/3° grid for zoomed-out views); at most 16 MB
   of those on-demand hours are kept between queries. Measured at 15° around Newport: 368 × 368 cells × 31 hourly
   steps, 16.8 MB in memory, 62 timeChunked chunks = 39.9 MB downloaded
   in 3.5 s (about 1.3 MB per hour of window; a new daily run re-downloads
-  it). One on-demand hour: 0.74 MB (1/12°, Sydney) or 0.53 MB (1/3°,
+  it). At the 72 h default the resident area held 42,793,984 bytes (test
+  box, 2026-10-22, 15° around 40.6°N 74.0°W). One on-demand hour: 0.74 MB
+  (1/12°, Sydney) or 0.53 MB (1/3°,
   most of the North Atlantic). The same 2-cell coastal extension as the
   current layers is applied for display; the page's land mask clips it.
 
@@ -310,8 +349,76 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   https://doi.org/10.48670/moi-00016* (shown in the map attribution while
   the tide layer is on, and under the Tide chart).
 
+## Users
+
+What "the user" means throughout the plugin, for the choices kept per
+user now and for whatever is kept per user later:
+
+- **The user is the Signal K login name.** In the browser it is
+  `username` from `/skServer/loginStatus`; on the server it is the
+  identifier Signal K attaches to an authenticated request
+  (`req.skPrincipal.identifier`). They are the same value: Signal K's
+  `loginStatus` answers with `skPrincipal.identifier` as `username`, sets
+  `skPrincipal` the same way for requests to a plugin's routes
+  (`/plugins/…`, from the same token or cookie), and files a user's
+  application data under it (signalk-server 2.34: `src/tokensecurity.ts`
+  `getLoginStatus`, `http_authorize`; `src/interfaces/applicationData.js`).
+  A device with its own access token is its own principal, under its
+  client id.
+- **Security off: one set for everyone.** Signal K then has no users and
+  keeps no application data (its `applicationData.js` answers 405), so the
+  plugin keeps the choices itself, one set that every browser reads and
+  writes: `prefs.json` in its data directory (`GET`/`POST /api/prefs`,
+  JSON Patch as for application data; 405 with security on). The page
+  sends `add` only. When it opens, it sends up the choices this browser
+  holds that the record lacks, as for a user's application data, so a
+  member removed through the API comes back from a browser that still
+  holds it. It is not a cache: it sits beside `settings.json`, outside the directories tagged
+  `CACHEDIR.TAG`, so backups keep it. A write to it reads no login status
+  first (there is no session that could name someone else); once security
+  is on, its 405 stops the page's writes. Routes are shared.
+- **Security on but no login: nothing is per user.** The choices stay in
+  the browser, and routes are shared.
+- **A read-only user owns nothing.** Signal K takes no application data
+  from them, so their choices stay in the browser.
+- **Switching security on or off:** a browser's choices from the other
+  side (everyone's, or one user's) are not dropped or sent: the banner
+  asks whether to keep them for the new owner, as for choices from before
+  they were kept on the server.
+
+Where things live: the choices (below) in the user's Signal K application
+data, the standard store, since they are small (with security off, in the
+plugin's `prefs.json`); routes in the plugin's own job store, since they
+are large. The route computation never reads
+the saved choices: a route request carries everything it is computed
+with, so a route sent by another client (the Freeboard panel, the API) is
+computed with what that request says, not with the user's saved Setup.
+
 ## Using the webapp
 
+- **Screen layout.** The layout follows the screen:
+  - **Desktop** (a window wider than 768 px, unless it is a phone held
+    sideways): the panel at the top right; the chevron (⌄) in its title
+    row folds it to its header.
+  - **A window up to 768 px wide** (a phone held upright): a bottom sheet
+    with three heights: folded to its tab bar, half, or open. Drag it by
+    its grip or header, or tap the grip to fold or open it. Tapping a tab
+    opens a folded sheet; tapping the active tab again folds it. Find
+    Route stays pinned at the bottom of the sheet while the form scrolls
+    above it.
+  - **A phone held sideways** (the screen in landscape, its short side
+    500 px or less): a drawer on the right, folded with its › button.
+    Folded, a rail of the tab names stays at the edge and opens the drawer
+    at that tab.
+
+  Each layout remembers its last state in the browser; on a first visit
+  the sheet is half open and the others are open. The sideways test comes
+  first and reads the screen, not the window, so the on-screen keyboard,
+  which shrinks the window to a wide, short box, does not turn the sheet
+  into the drawer; the other two read the window's width. On a phone,
+  upright or sideways, the legend folds to one line naming its rows (tap
+  to open; remembered), and the map credits fold to their button with the
+  OpenStreetMap credit beside it. Upright, both sit just above the sheet.
 - **Planning.** Click the map for the menu: set or move the start, set or
   move the destination, **Add waypoint here** (the clicked point becomes
   the destination and the old destination becomes the last waypoint, so
@@ -327,18 +434,129 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   destination, waypoints with their radii, departure) is kept in the
   browser and restored on reload; a departure that has passed is set to
   now, and the status line says so.
-- **Header.** One line per quantity with the source it comes from: wind
-  (the ECMWF run, plus any regional model), waves, currents, tides, and
-  the job queue. Only the sources that apply to the route on the map, or
-  to the map view when there is none, are listed; times are local, with
-  UTC as a tooltip.
+- **Your choices follow the Signal K user.** The vessel (polar, sail or
+  power, the power boat's name and cruise speed), the Route → Options
+  settings and the Route tab's search and router choices are kept in the
+  user's Signal K application data
+  (`/signalk/v1/applicationData/user/signalk-weather-router-plus/1.0.0`)
+  as well as in the browser, so a polar picked in one browser is the one
+  the next browser the same user opens starts with (another device, a
+  kiosk, a private window). The page reads them once when it opens; a
+  server that has not answered within 3 s leaves it with what this
+  browser remembers. The browser notes whose choices it holds: a
+  choice only it has is sent up for that user, while another user's are
+  dropped when someone else logs in there, also when the read fails. A
+  choice made while the page cannot tell who is logged in (nobody is, or
+  the login status did not answer) leaves the browser's choices
+  without an owner: like those from before this change (next), they wait
+  for the user's Keep or Discard. Before each write the page reads the
+  login status again; if another user or nobody is logged in by then (a
+  login in another tab, a logout), or it cannot tell, it writes nothing more and the choices
+  stay in the browser. Two gaps remain: the login changing between that
+  check and the write, and the last write of a page being closed, which
+  goes without a check. Choices a browser held before
+  this change have no owner: they stay in use there, and a banner asks
+  the logged-in user whether to keep them as theirs (sent up) or discard
+  them (the page reloads with the defaults). Opening the page stores
+  nothing by itself: a default such as Sailboat is sent up only once it
+  is clicked. The
+  map view, open tabs, layer toggles and the plan stay per browser.
+  With security off (Signal K then has no users and keeps no application
+  data) the plugin keeps one set of choices for every browser. With
+  security on but no login with write access, the choices are kept in
+  the browser only, as before ([Users](#users)). The Freeboard panel keeps its polar, mode,
+  min sail speed and limits in the same store ([In Freeboard-SK](#in-freeboard-sk)).
+- **Header.** The data sources, with how fresh each one is. Collapsed (the
+  default): one line, `wind ●● | waves ● | currents ●● | tides ●`, a dot
+  per source in its colour, with **Show** on the right. Expanded (**Hide**
+  folds it again; the choice is kept in the browser): a *Data sources*
+  title, then each row (wind, waves, currents, tides) with one line per
+  source: wind the ECMWF run and any regional model, waves the ECMWF run,
+  currents each current source, tides the sea-level run (by when it was
+  published), then the job queue. A source that does not cover the
+  route on the map (or the map view when there is none) is listed all
+  the same, marked *(not in this
+  view)*. Each source carries a pill with its run's age, coloured by its
+  own publication cadence: **green** until 30 minutes before its next run
+  is due, **orange** from then until an hour after, **red** after that
+  (the old run still in use) or when nothing is loaded; hover a pill for
+  the run, when it was published and when the next is due. Sources and
+  when their runs are due: ECMWF at its measured publication times (see
+  [Data](#data)); RTOFS daily, by the last file the horizon needs (a pill
+  per product loaded; where no product covers the vessel, the currents row
+  says so, with no pill); SMOC and sea level a day after their store last
+  updated; AROME by run hour as measured, the other regional models as
+  signalk-grib-downloader schedules them; tidal harmonics are fixed tables,
+  green when loaded. Under the rows, whatever needs saying, collapsed or
+  not: *Processing new forecast data: 00Z, step 12 of 37* while a new run
+  decodes behind the one in use; a red *Late:* line naming each red source
+  and the run still in use by when it was published ("next run was due Thu,
+  04:09 AM EDT; still using the run published Wed, 04:09 AM EDT"), or, for
+  SMOC and sea level, that a newer run has appeared which Copernicus Marine
+  has not finished writing ("a newer run appeared Thu, 04:40 AM EDT, but
+  Copernicus Marine has not finished writing it; still using …": the plugin
+  waits for the update to finish, so the source stays red meanwhile); a
+  line for a check that failed while online ("ECMWF check failed at …:
+  HTTP 503").
+  Under the title, the connection: blue **online** when the plugin's last
+  request reached a server, grey **No internet connection since …** when
+  it found none (freshness and the connection are separate: the data can
+  be fresh while the link is down). Times are local, with UTC as a
+  tooltip.
 - **Saved routes** (Saved tab): opening one replaces the route on the map
   (its own start, destination, waypoints and precision) and offers
   **Recompute** with the current forecast and settings, or **Keep as
   saved**. **Publish** in the itinerary bar saves it to Signal K's
   Resources; a published route carries each point's leg (time, mode,
   distance, SOG, COG, wind, current, waves) as the point's description,
-  in your units, which chartplotters show with the point.
+  in your units, which chartplotters show with the point. **GPX** in the
+  same bar downloads the route as a GPX 1.1 file for plotters and apps
+  that import GPX: one route whose points carry their name (Start, WP1 …
+  End), time and leg, and the route's summary as its description.
+- **Units and times.** Every quantity follows the Signal K user's unit
+  preferences, with one deliberate exception: a duration of a day or more
+  (a passage, the sailing or motoring time, a forecast horizon) is written
+  as days, hours and minutes, Signal K's own *duration-compact* format
+  ("9d 7h"), whatever the time unit is set to, as "223.0 hour" reads
+  badly; shorter durations follow the preference. Clock times are shown
+  in **ship's time** when the Signal K server publishes it
+  (`environment.time.timezoneRegion`, an IANA zone such as
+  `Pacific/Tongatapu`, else `environment.time.timezoneOffset`, e.g. `-930`;
+  [signalk-ships-time](https://github.com/meri-imperiumi/signalk-ships-time)
+  sets them), else in the browser's time zone, and the departure field is
+  read in the same zone. A time a day or more away carries its date
+  ("Tue 13 Oct 21:58"), as a weekday alone is ambiguous on a long passage.
+- **Best departure** (Route tab): the route on the map computed for each
+  departure from the Departure time to a latest departure, every 3, 6, 12
+  or 24 h ([Departure windows](#departure-windows)). The departures run
+  one after another on the server, each as long as one route; the table
+  fills in as they finish: leave, arrive, passage time, the strongest
+  wind and highest waves met, time motoring and time close-hauled. The
+  best by the measure chosen (shortest passage, least motoring, lightest
+  wind, smallest waves, least upwind) is starred; a passage that arrives
+  after the forecast ends is marked and not ranked. A row opens that
+  departure's route. The newest window shows again when the page opens.
+- **Meteogram** (Itinerary → Meteogram): the weather along the route on
+  the map, as TimeZero shows it. Charts stacked on one time axis from
+  departure to arrival: wind and gust with its direction, the boat (speed
+  over ground and the true wind angle, motoring stretches shaded), waves,
+  pressure and precipitation, each where the boat is at that hour
+  (`GET /api/routes/{id}/meteogram`, every 30 min, 1 h or 3 h). Hovering
+  a chart reads out the values there and puts a marker on the route where
+  the boat is then; a click sets the map's overlays to that hour. From the
+  keyboard each chart is a slider: Tab to it, the arrow keys (Home, End)
+  step through the passage, Enter sets the hour. The
+  route is fitted into the map above the meteogram when it opens. On a
+  phone held upright (or a window up to 768 px wide) the meteogram is at
+  the top, and while it is open the sheet at half takes 35 % of the height
+  instead of 48 %, so the route is fitted between them. The zoom and
+  locate buttons move from the top left to just below the meteogram. On a
+  phone held sideways the meteogram sits to the left of the drawer. The
+  conditions come from the forecast loaded now; the wind is the route's:
+  where it was computed with a regional model (AROME, ICON-EU, …) that
+  model is layered over ECMWF as the router layers it, and the note names
+  the model for each stretch. The stretch after the forecast's last step
+  is shaded.
 - **Points of sail** in the itinerary come from the route's polar at each
   leg's wind speed: in irons tighter than the polar's no-go angle (the
   tightest angle it gives any speed, with the tightest sailable angle
@@ -354,17 +572,41 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   from the boat's position through the remaining waypoints and offers it
   in a banner (Accept, Dismiss). SIMULATE sails a simulated boat along
   the route at a chosen speed-up, with **Start**, **Stop** and **Rewind to
-  start**, and draws its track. Both run only while the page is open; the
+  start**, and draws its track. In both the map keeps the boat centred
+  while **Follow the boat** (Live vessel panel) is ticked; dragging the
+  map unticks it, and ticking it or the centre-on-boat button follows
+  again. Both run only while the page is open; the
   re-plan is not published and does not change Freeboard's active course.
 
   ![Planning: start, destination and waypoints on the map, with the click menu open](public/screenshots/02-planning.jpg)
 
-- **Waypoint behaviour** (Setup tab): **Precision** Precise (each leg
+- **Waypoint behaviour** (Route → Options): **Precision** Precise (each leg
   ends exactly at its waypoint) or Approximate (one search carries the
   route through the circle around each waypoint instead of stopping at
   it), and
   **Waypoint radius** 50–2000 m, default 200 (Approximate only). See
   [Waypoints](#waypoints-legs).
+- **Signal K notes** (Layers → Base, on by default): notes from the
+  Signal K Resources API that have a position (hazards, warnings and
+  remarks, e.g. the area warnings signalk-passage-briefing adds) as
+  markers in the map view. Click one for its title, text, link, who
+  wrote it and when, and its bearing and distance from the boat, with
+  **Edit** and **Delete** (a second press confirms); drag one to move it.
+  **Add note here** in the map's click menu writes a new note at that
+  point. Notes are saved to Signal K's Resources API, so Freeboard and
+  other apps see them; writing needs a Signal K login with write access.
+- **Areas to avoid.** A note can mark the area around it to avoid: tick
+  **Avoid this area** in the note's form and give a radius. The note turns
+  red with a dashed circle, and the router treats the circle as land: no
+  candidate or leg may enter it, and a start, waypoint or destination
+  inside one is refused with a message naming the note. The radius is
+  stored in the note as `properties.avoid.radius_m` (metres), so a note
+  another plugin wrote (a passage briefing's area warning) can be marked
+  too, and other apps can read it. **Avoid marked areas** in the Plan tab
+  (on by default; `avoid_areas` in a request) turns this off for a route;
+  the job log lists the areas used. The land-avoiding corridor that guides
+  the search does not know the areas, so a circle across a narrow passage
+  can leave the search with no way through.
 - **Layers** (Base / Weather / Water): each layer is named for the
   quantity it shows. Colour layers are exclusive (one at a time). Colour
   layers, wind barbs and current arrows are drawn tile by tile from
@@ -381,12 +623,62 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
 
   ![Current speed and direction in the Aegean, cut at the coastline, with "no model data" hatching in the Euboean Gulf](public/screenshots/03-layers.jpg)
 
+- **Seas along the route** (Layers → Base, on by default): an arrow on
+  each leg of the route, pointing the way the waves travel, coloured by
+  the encounter index (the sea as the boat meets it, see
+  [Comfort](#comfort-rough-water)). The leg cards and the Freeboard
+  panel show a **Seas** row for the next leg: where the waves come from
+  ("head seas", "on the starboard bow") and the encounter index's band
+  and value ("rough (112)").
+- **Current against the waves** (Layers → Water, off by default): what
+  the current does to the sea, from `/api/tile/seas`, coloured by the
+  sea state there (the sea-state heatmap's scale, each band in the colour
+  of its legend swatch, shifted slightly darker and outlined so the
+  glyphs stay visible over the heatmap). Three styles, chosen under the
+  layer's checkbox and remembered in the browser (a trial, to settle on
+  one):
+  - **A arrows:** an arrow at every point along the way the waves
+    travel: two heads meeting in the middle where the current runs
+    against the waves (drawn larger the more it steepens them), a double
+    chevron where it runs with them, a thin arrow where there is little
+    current along them.
+  - **B rips & breakers:** a mark only where the current against the
+    waves steepens a choppy or rougher sea (index 75 or more): the short
+    wavy lines charts use for tide rips when the waves are 10–25 %
+    steeper, a breaking wave at 25–50 %, a breaking wave with spray from
+    50 %. Nothing elsewhere, and no direction (the wave and current
+    arrows carry that).
+  - **C wind, waves, current:** three arrows from each point, each
+    pointing where it is going: wind thin with a feather at the tail,
+    waves wavy, current thick and solid. Where two point at each other
+    the sea is rough, and the glyph shows which pair (wind against
+    current, waves against current, or wind against waves). Arms within
+    20° are spread apart; an arm is left out below 1 m/s of wind, 0.1 m
+    of waves or 0.1 m/s of current.
+
+  A and B choose their glyph from the waves against the current only;
+  wind against current is in the sea state (the colour) but not in their
+  glyph. C shows all three. The thresholds are named constants in
+  `public/rp-layers.js`.
+- **Wave direction (arrows)** (Layers → Water, off by default): an arrow
+  per point along the way the waves travel, from the same
+  `/api/tile/seas` points, coloured by the significant wave height on
+  the wave-height heatmap's scale (shifted darker and outlined, as
+  above) and longer the longer the mean wave period (12 px at 4 s and
+  below to 34 px at 16 s and above), so long swell and short chop read
+  apart.
+
 - **Conditions popup** (shift-click, or the menu): 72-hour charts for
   Wind, Waves, Sea state (index / Beaufort / Douglas), **Tide & current**
   (tide height, total water level and surge on the left axis; current
   speed as a filled area on the right axis; the current's set as arrows;
   high and low water marked), Pressure, Temp, Precip, and a Raw table.
-  Click the chart to move every map layer to that hour.
+  Click the chart to move every map layer to that hour. On a phone the
+  conditions open in a card instead: across the top of the screen when
+  upright, down the left side when sideways. The chart is as wide as the
+  card (up to 500 px) and the panel folds. The marker stays on the spot,
+  centred in the map between the card and the panel. Sideways, opening
+  the drawer hides the card until the drawer folds again.
 
   ![Conditions popup, Tide & current tab: tide height, total water level and surge against current speed and set, with high and low waters](public/screenshots/04-conditions.jpg)
 
@@ -404,7 +696,27 @@ What changed in this version: [WHATSNEW.md](WHATSNEW.md). Full history:
   streamed and kept with the job; the switch only shows or hides them, so
   turning it on after a run shows the search that was made. The finished
   route's fronts stay, faintly, also for a past route opened from the log.
-- **Settings tab**: the web-app settings below, in the selected units.
+- **The search's boat**: while a route computes, a small boat on the map
+  at the head of the search's best path so far, with that path behind
+  it and the stage beside it ("stage 13/20", and the leg with
+  waypoints), moving on with each stage. It comes with the first stage
+  (the start as drawn can be on land, which the router first leaves for
+  usable water) and goes when the job ends; a repair detour after the
+  search (water too shallow on the finished route) leaves it where the
+  search ended. With the decision lines on, the path is theirs (dashed)
+  and the boat sits at its end.
+- **Defaults tab**: the web-app settings below (what every route starts from, shared by every client), in the selected units. Numbers are sliders with the value beside the label; max wind and max wave height have a "no limit" box.
+- **While the server gets its forecast** (a first start, or after the
+  forecast settings changed, when the forecast is decoded again): a notice
+  under the header says what it is doing ("Loading the forecast: decoding
+  the 06Z cycle, step 12 of 37"), with a progress bar and, once measured
+  from the decode itself, the time left. The map layers wait quietly
+  meanwhile (no error notes), a route started meanwhile waits for the
+  forecast and its log shows the same progress, and when the forecast is
+  ready every layer and the units load by themselves. The Freeboard panel
+  shows the same in its status line. A later update decodes behind the
+  run in use: the map keeps working and the header says *Processing new
+  forecast data*.
 - The page references its scripts with `?v=<tag>`, a tag that changes
   whenever a file in `public/` changes, so browsers and proxies in front
   of Signal K always load the current scripts after an update.
@@ -421,17 +733,21 @@ and the panel runs in a sandboxed iframe served from
 ![The Weather Router Plus panel in Freeboard-SK, with a draft route on the chart](public/screenshots/07-freeboard.jpg)
 
 - Tap the grid icon at the top right of the chart to show the extension
-  toolbar, then **Weather route**. The panel slides in on the right.
+  toolbar, then **Weather route**. The panel slides in on the right, with
+  two tabs: **Weather** (the forecast layers, below) and **Route**.
 - **Route on the chart** (the usual way): draw the route with Freeboard's
   own **Draw Route** tool (pencil menu), tapping the start, any
   waypoints and the destination on the chart, then Finish; or tick a
   saved route in the Routes list. The panel lists the routes shown on the
   chart (one is picked by itself). **Weather-route it** sends the first
   point as the start, the last as the destination and the points between
-  as precise waypoints, and rewrites that route's geometry in place with
-  the result, which stays Freeboard's editable draft (or an unsaved edit
-  of a saved route). Drag a point and press the button again to re-route;
-  **Restore drawn route** puts the drawn points back.
+  as precise waypoints, and shows the result as a new route of its own,
+  named after yours with the departure time ("named7 · weather Thu
+  09:20"), a draft until you save it (**Save route…**, under any name you
+  choose) or discard it. The route you drew is never changed: pressed
+  again, the button routes through its points as you drew them, plus any
+  you have added, and the new result replaces the previous one unless you
+  saved that.
 - **From the boat to a position** (the quick way): **From** is the
   vessel's position, kept up to date through Freeboard's own Signal K
   connection (editable; **Use the vessel position** snaps back); **To** is
@@ -442,7 +758,13 @@ and the panel runs in a sandboxed iframe served from
   speed under sail below which the router motors; the plugin's routing
   setting by default, in Freeboard's speed unit), and the **Limits**: a
   maximum wind speed and wave height that no leg may exceed (empty = no
-  limit; the routing settings' values by default). Progress is shown;
+  limit; the routing settings' values by default). With a min sail speed
+  of 0 (never motor) a stretch the boat cannot sail or tack out of fails
+  the route, saying "set Min sail speed above 0". The polar, mode, min
+  sail speed and limits are the web app's Setup choices: the panel reads
+  and writes them in the same store, so the same Signal K user has the
+  same polar and limits in both ([Users](#users)); what it kept under its
+  own keys before is moved into that store under the same rules. Progress is shown;
   Cancel stops the job. The map
   is fitted to the result; the panel shows distance and time in
   Freeboard's unit preferences, the sailing/motoring split, the arrival
@@ -468,14 +790,16 @@ and the panel runs in a sandboxed iframe served from
   (its Settings → Units; wave height follows depth), so nothing changes
   unit from one part of the Freeboard screen to another; angles, times
   and data sizes, which Freeboard has no setting for, follow your Signal
-  K unit preferences; wave periods are in seconds. Freeboard's units can
+  K unit preferences, except that a duration of a day or more is written
+  as days, hours and minutes ("9d 7h"), and clock times are in ship's
+  time when the server publishes it, as in the web app; wave periods are
+  in seconds. Freeboard's units can
   differ from your Signal K preferences, which the web app uses, until
   Freeboard adopts them (PR-8 in `docs/plans/freeboard-sk-integration.md`).
 - **Save route…** opens Freeboard's Route Details dialog and stores the
   route in Signal K's Resources (the plugin does not publish it itself in
   this case, so there is one copy); for a saved route, **Save changes**
-  updates it. **Discard** removes a new draft or restores a rewritten
-  route.
+  updates it. **Discard** removes the new draft.
 - The panel keeps running while closed, so a long route finishes in the
   background. Routes started here are ordinary jobs: they appear in the
   web app's run log and in `GET /api/routes`.
@@ -486,39 +810,81 @@ height) are published as Signal K chart resources, served as PNG tiles
 (`/api/tile/<layer>/{z}/{x}/{y}.png`, see [Map layers](#map-layers)) with
 a `time` block covering the forecast hours. In Freeboard's **Chart list**
 they appear as "Wind speed (Weather Router Plus)" and so on: tick one to
-show it, set its opacity and order like any chart, and use the **clock**
-action on its row for Freeboard's Time palette (scrub, step, loop, play
-through the forecast; **NOW** returns to the current hour). A layer is
+show it and set its opacity and order like any chart. The **clock** action
+on its row opens Freeboard's own Time palette, which (Freeboard 3.4) ends
+at the current hour: it is made for radar and satellite pictures, so it
+offers no forecast hours ahead (SignalK/freeboard-sk#1075). Step through
+the forecast with the panel's Weather tab instead. Each layer's `time`
+block says `forecast: true` and, for the layers drawn from the forecast
+alone, `issued` (the run). A layer is
 listed only while its data is there: currents need a current source,
 tides the tide data, waves and the temperatures the forecast fields. The
 colours are the web app's; Freeboard has no legend, so the scale is in
 the web app's layer legend (`GET /api/legends`). The tide layer uses its
-fixed ±3 m scale here. Three glyph layers come with them: **Wind barbs**,
-**Current arrows** and **Isobars** (4 hPa, bold every 20 hPa; highs and
+fixed ±3 m scale here. Five glyph layers come with them: **Wind barbs**,
+**Current arrows**, **Isobars** (4 hPa, bold every 20 hPa; highs and
 lows as blue and red dots; no pressure labels, as the server has no
-font). The layers are also organised as Freeboard **Groups** (resources
+font), **Current against the waves** (the web app's layer in style A)
+and **Wave arrows** (coloured by wave height, longer for a
+longer period); the last two need wave data. The layers are also organised as Freeboard **Groups** (resources
 menu → Groups), one colour layer each with the glyphs that belong with
-it, shown in one tap: *Wind* (speed, barbs), *Waves* (height, barbs),
+it, shown in one tap: *Wind* (speed, barbs), *Waves* (height, wave arrows),
 *Currents* (speed, arrows), *Pressure* (isobars, barbs), *Sea state*
-(index, arrows), *Tide* (height, arrows), *Rain* (precipitation,
+(index, current against the waves), *Tide* (height, arrows), *Rain* (precipitation,
 isobars), *Air temperature* and *Sea temperature* (with isobars and
 arrows). Two colour layers over each other are unreadable, so no group
 has more than one. A group holds the layers whose data is there and is
-rewritten when the forecast is reloaded; it needs the server's `groups`
+rewritten when the forecast is reloaded; without its colour layer's data
+(Pressure: the isobars') it is left out. It needs the server's `groups`
 collection, which Freeboard creates.
+
+**Weather tab.** The panel's Weather tab switches the layers and the
+forecast hour from one place, as a chartplotter's weather view does:
+
+![The Weather tab in Freeboard-SK: the Waves preset a day ahead, its legend, the forecast time bar and the run's age](public/screenshots/08-freeboard-weather.jpg)
+
+- **Presets**: the groups above as buttons (*Wind*, *Waves*, …, **Off**),
+  from `GET /api/chart-groups`. A tap shows that preset's layers, the
+  glyphs over the colour layer, and hides the plugin's other layers.
+  Layers turned on or off in Freeboard's Chart list are followed.
+- **Legend** of the preset's colour layer, in your units (Freeboard's
+  speed and depth units; temperature from your Signal K preferences).
+- **Forecast time**: a bar over the whole run, from its first hour to its
+  last, with the days marked in the ship's time zone, the past shaded and
+  now in red. Drag or tap it, step with ◀ ▶ (1, 3, 6, 12 or 24 h), **Play**,
+  and **Now** to go back to the current hour. All the plugin's layers show
+  the same hour, so switching from Waves to Wind keeps it. Keys: arrows
+  step, Page Up/Down a day, Home now, End the last hour.
+- **How fresh the data is**: the model, the run (UTC) and when the
+  forecast ends, then a coloured pill per source the shown layers are
+  drawn from, with its run's age (the run, when it was published and when
+  the next one is due in its tooltip), as the web page's header shows them
+  (`/api/status` `freshness`; the map layers read ECMWF, so the regional
+  wind models are not listed; when the panel cannot read the
+  chartplotter's chart list or the presets, every source is, and both
+  are read again with the next status a minute later). The worst colours
+  the line; a red source gets a Late line, and a failed check says so. The
+  connection is on a line of its own (`connectivity`): online, or no
+  internet connection since when. Past the forecast's end it is flagged
+  in red.
+
+It needs a chartplotter with the `charts` and `charts.time` capabilities
+(Freeboard-SK 3.2 or later), which pass the chosen hour on to the tiles
+unchanged. Freeboard keeps a chart's hour only while the chart is on the
+map, so a preset just switched on loads the current hour first and then
+the shown one.
 
 Not yet available in the panel: waypoints in the "from the boat" flow
 (draw a route on the chart for those), a departure time other than now,
 polar performance and the other web-app settings (they apply as set
-in the web app's Settings tab). A "weather route to here" entry in
+in the web app's Defaults tab). A "weather route to here" entry in
 Freeboard's map menu needs a change to Freeboard; see
 [docs/plans/freeboard-sk-integration.md](docs/plans/freeboard-sk-integration.md).
 
 ## Routing engine
 
-A port of the routePlanning `OceanPropagator` (subsector isochrone,
-Hagiwara 1989 / Chen & Mao 2024), guided by a corridor from a global
-water grid:
+The `OceanPropagator`, a subsector isochrone router (Hagiwara 1989 /
+Chen & Mao 2024), guided by a corridor from a global water grid:
 
 1. **Corridor.** A* on the [global water grid](#global-water-grid) finds
    a land-avoiding corridor from the start to the end of each leg (see
@@ -526,6 +892,8 @@ water grid:
    the Strait of Gibraltar, far outside the box around the endpoints).
    The route's land raster, the CMEMS SMOC area loaded for the route and
    the first-boot forecast crop cover the corridor's box plus 1°.
+   Outside that box nothing is loaded, so the router treats it as land:
+   a route never leaves the box.
 2. **Consistency with the route raster.** A flood fill on the route's
    (conservative) land raster, inside a band of grid cells along the
    corridor, must connect start and end. Where it stops, because the
@@ -571,12 +939,287 @@ water grid:
    among those with a clear final leg. If the planned stages run out
    first, up to K/2 more run.
 
+### Chart mesh (charted depths and obstructions)
+
+With a navigation mesh configured (`meshDir`), a leg inside it is routed
+on the charts rather than the coastline: a constrained triangulation of
+the chart area (`src/engine/mesh/`) whose triangles carry the charted
+depth, vertical clearance, rocks, wrecks and obstructions, marks,
+structures and fairways. A triangle is blocked when its charted depth is
+under the draught + the under-keel clearance (outside a fairway, dredged
+area or recommended track), its clearance under the air draft + the
+overhead clearance, a rock or wreck has less than draught + the under-keel
+clearance over it (or no charted depth), it holds a mark (a
+channel mark inside a fairway or dredged area excepted) or a structure,
+or it lies in an area marked to avoid on a Signal K note. The draught and
+air draft are the vessel's Signal K base data (`design.draft.maximum`,
+`design.airHeight`; a request can override them with `vessel.draught_m`
+and `vessel.air_draft_m`); the mesh is not used until both are set. The
+under-keel clearance (0.5 m) and overhead clearance (2 m) are vessel
+settings; a request can override them with
+`vessel.under_keel_clearance_m` and `vessel.overhead_clearance_m`.
+
+- **Motor:** the whole leg is an A* over the mesh's triangle edges with a
+  shore and shallow-water penalty, pulled tight by the funnel algorithm.
+- **Sailing modes:** the mesh route is the skeleton. Its narrow passages
+  (both shores within 1 km of the track) are motored along it, or, with a
+  sail threshold of 0 (never motor), sailed along it, tacked where the
+  wind needs it with the tacks tested against the mesh; each open
+  stretch between them is sailed by the open-water router from the end of
+  one passage to the start of the next, with that stretch of the mesh
+  route and its passage widths as the search's corridor (water wider than
+  the 4 km scan on both sides counts as open). The whole leg is planned in
+  the process that holds the mesh: the search, the tack layout, the polish
+  and the smoother test every move by walking the mesh triangles it
+  crosses and stopping at the first one the boat cannot use (charted depth
+  under the draught + the under-keel clearance off a fairway, clearance
+  under the air draft + the overhead clearance, a rock or wreck shallower
+  than the draught + the under-keel clearance or uncharted, a mark, a
+  structure, an area to avoid), the same test the mesh route is built
+  with. That process reads the forecast window, the regional wind runs,
+  the cached currents (RTOFS, CMEMS SMOC, harmonics) and the polar from
+  the plugin's files; it never uses the network. With a buffer from
+  unusable water (Defaults) every usable triangle within that distance of
+  a blocked one is blocked for the leg, by exact distance from the
+  boundary, before anything is routed: the mesh route, the passage widths
+  and the sailed stretches all keep it, and a passage narrower than twice
+  the buffer closes (the mesh then finds no route).
+- **Depth:** each waypoint of a mesh leg carries the charted depth of the
+  triangle under it (`depth_m` in the GeoJSON, Depth in the itinerary); a
+  waypoint on a depth contour reports the usable side.
+- **Opening bridges:** the mesh marks bascule, swing, lift, draw and
+  transporter bridges (flag bit 7) and stores their open clearance, or
+  none when the chart gives none. The clearance rule (air draft + the overhead clearance)
+  applies to that open clearance. The Drawbridges setting (Defaults tab;
+  a request's `drawbridges` overrides it) is ask, open or avoid: ask plans the route as if
+  they open and, when the finished route passes under one, lists the
+  bridges in the summary and the log and the web app offers a re-plan
+  avoiding them; avoid blocks every opening bridge; the wait setting adds
+  time at each one passed. A mesh built before 2026-10-08 has no bit 7
+  and its bridges block at their charted (closed) height, as before. An open stretch
+  whose search fails is followed along the mesh route under the request's
+  own mode: sailed under sail_max (tacks where needed, motor only below a
+  positive threshold), walked under fastest; when it cannot be sailed the
+  route fails naming the segment rather than motoring it. A stretch
+  followed this way carries a `search_failed` warning (its ends and the
+  search's reason), so the page and the chartplotter show it: it can be
+  slower than a searched stretch, with many short tacks.
+- **Across the limits of the charts.** The mesh decides wherever it has
+  triangles; the coastline data only where it has none. A leg whose area a
+  mesh meets, and that one mesh does not hold, is planned through the waters
+  it crosses: leaving the charts, entering them, crossing open water between
+  them (out and back in, or in, out and in again), or going from one
+  district's mesh to another's. A leg moves between charts and open water
+  only where usable mesh water meets the coastline's open water (an exit or
+  entry: never a shoreline, beyond which is land or water that does not
+  connect out), and between two meshes only where both call the water usable
+  for the boat (a transfer; neighbouring districts' charts disagree in a few
+  percent of their overlap, and such water is never used). Which water of
+  one mesh joins which of another is recorded per boat with the rough cut
+  (the joins). The way taken has the fewest changes between charts and open
+  water, then the fewest transfers between meshes; ways still tied are each
+  planned and the cheapest taken. The charts alone are tried first, and the
+  open-water map (the coastline search's raster, every mesh's water marked
+  as land) is built only when they hold no way. Each mesh stretch is one
+  mesh search, its entry and exit chosen together towards the end; each open
+  stretch is the coastline search with every mesh's water as land, so it
+  never enters charted water. A leg the waters do not join fails with the
+  reason.
+- **No search area.** The mesh search reads the chart a 0.25° tile at a
+  time, as it reaches each tile, and lets a tile go once nothing it still
+  has to look at lies there (read again if it comes back), so a route
+  that swings far from its ends (the Bahamas to the Gulf round the Keys,
+  Chicago to Lake Huron through the Straits of Mackinac) is found without
+  any box being chosen first. On the test box the longest legs held about
+  1.1 GB at most this way (31 legs, 2026-10-12). The sailed stretches and
+  the final depth check read the tiles the same way.
+- **The rough cut.** Each mesh has a rough cut for the boat: the usable
+  water as pieces, one set of connected triangles per tile, linked across
+  tile edges. It is built from the same tile reads as the mesh search
+  (the boat's draught and air draft, the buffer from unusable water, the
+  Drawbridges choice), so it connects two points exactly when the search
+  can; areas to avoid, which change per request, are applied to it at the
+  time of the request by recomputing the tiles they touch. Before a leg is
+  searched it answers: whether water connects the leg's points for this
+  boat (if not, the leg fails at once with that reason, no search), where
+  an approximate waypoint on water the boat cannot use is aimed (the
+  nearest usable water connected to the start, never a pond), where that
+  water runs (the forecast and currents are loaded over its tiles as well
+  as around the ends), and which triangles on each tile's edge the boat
+  cannot use, so the buffer carries across tile edges. An area to avoid in
+  the next tile is not carried across a tile edge by the buffer (its
+  triangles are still blocked). Rough cuts are built in a child process
+  after a mesh is downloaded or updated and on the configuration panel's
+  *Rebuild rough cuts* button (`POST /api/meshes/rough-cut`), for the
+  boat's Signal K draught and air draft and the Defaults buffer and
+  Drawbridges choice, and by a route that needs one not built yet (another
+  buffer, Drawbridges = Avoid on one request); never at start. They are
+  kept in `mesh-coarse/` in the plugin's data folder, two files (`.json`,
+  `.bnd`) per mesh build, draught, air draft, buffer and Drawbridges
+  choice; a rough cut of an earlier version is rebuilt.
+- **No coastline search inside the mesh.** A leg both of whose ends one
+  mesh holds is routed on the mesh or fails: when the mesh cannot take it
+  (no water connecting its ends, a start or end in a blocked triangle, a
+  stretch that cannot be made against the current, no draught or air
+  draft, the forecast still being decoded, the mesh process failing) the
+  route fails with that reason; it is no longer handed to the coastline
+  search, which knows no depths. One case still uses the coastline search
+  for now: a leg through waypoint circles (Approximate precision) whose
+  points are not all in one mesh; the final depth check still applies.
+- **Approximate waypoints on the mesh.** A leg through waypoint circles
+  (Approximate precision) is planned on the mesh like any other: the mesh
+  route runs from the start to the first circle, on from where it entered
+  it to the next, and so on to the end; narrow passages are motored along
+  it, and each open stretch is sailed by the open-water router, which must
+  pass through the circles on that stretch (where it cannot, the stretch
+  follows the mesh route, which passes through them). The point where the
+  route reaches each circle is marked as the waypoint. A waypoint on water
+  the boat cannot use (land, shallows, a pond cut off from the route) is
+  aimed at the nearest usable water connected to the start; when that
+  lies outside the waypoint's circle the log says so in a WARNING with the
+  distance and position.
+- **Final depth check.** Every finished route, whatever planned it, is
+  walked through every mesh it meets, segment by segment and triangle by
+  triangle (the walk the routers test their moves with), against the same
+  rules: depth, clearance, rocks and wrecks, marks, structures, opening
+  bridges under Drawbridges = Avoid, areas to avoid (no buffer). Each
+  segment that crosses a triangle the boat cannot use is routed again
+  with the same leg search (sail threshold 0, so the detour motors only
+  where sailing cannot move the boat) and the detour spliced in, the
+  waypoints after it moved by the time it added; the route is then
+  checked again (at most 2 passes and 5 detours). Warnings and opening
+  bridges after a detour move with its waypoints, and the detour's own
+  opening bridges are reported. A detour that motors on a `sail_max`
+  route is a `detour_motored` warning. A route that still
+  crosses such a triangle fails, naming the places and what blocks them;
+  nothing unchecked is returned. Water with no
+  charted depth and depths inside fairways, dredged areas and recommended
+  tracks pass, as the blocking rules pass them. Where two meshes overlap,
+  a stretch either one blocks fails, whichever covers it first. Where the
+  route leaves the mesh the stretch is counted, not judged. The log has a "depth check:"
+  line, and the result strip a *Chart depth checked* line: the shallowest
+  charted depth crossed, the distance with no charted depth and the
+  distance outside the mesh.
+- The mesh search and the depth check run in child processes that exit
+  with their work, so their tile arrays never stay in Signal K's memory.
+
+The mesh files are built outside the plugin by the s57Work chart build
+(binary tiles plus an `index.json`; the format is documented in
+`src/engine/mesh/store.ts`). The plugin panel lists the published meshes
+from a catalogue and downloads the ticked ones (`mesh.catalogUrl`,
+`mesh.downloads`); the catalogue is read at start and once a day, or at
+once with the panel's "Check for updates" button
+(`POST /api/meshes/refresh`). The panel's per-mesh buttons (Download,
+Update, Download again, Remove, Cancel; `POST /api/meshes/{name}/{action}`)
+change the download list at once, without a restart. A mesh is
+downloaded as the catalogue's archive (`<name>_mesh.tar.zst`, about a
+third of the unpacked size), two meshes at a time: the archive is fetched
+into `<data dir>/mesh/.dl-<name>/` (a stopped download resumes where it
+stopped; each chunk is on disk before the next is read, so a dropped
+connection loses nothing received), unpacked into `<name>.new/`, checked
+(every cluster folder and tile the index lists inside the mesh folder and
+present as a file, their total the catalogue's `bytes`) and swapped in;
+the archive is deleted then. Each catalogue row is checked when the
+catalogue is read: a row missing a field the plugin uses, or whose
+`archive` is not a bare `.tar.zst` file name (a URL or a path is
+refused), is set aside with its reason on its own panel row and never
+downloaded; the other rows serve. Before it starts, the free disk must hold the rest of the
+archive and the unpacked mesh with a tenth to spare (07CGD: about 5.7 GB
+from scratch). A leg is covered when one downloaded mesh (or the
+`meshDir` folder) holds its points, and that mesh is used; a leg whose ends
+lie in two meshes uses both (above).
+The job log says what the mesh did ("chart mesh: …") and the summary's
+`mesh` is true when any leg used it. When a mesh meets the route, the
+summary's `depth_checked` is true and `legs_detail` gives, per leg, what
+planned it (`mesh`, `coastline`, or `mixed` for a leg partly on the
+coastline search: leaving the charts, or between two meshes across water
+neither charts), the
+metres on the mesh, with no charted depth and outside the mesh, and the
+shallowest charted depth crossed with its position; the route's GeoJSON
+carries the same as `depth_check`.
+
+### Open-water router: Standard or Refined
+
+The open-water search is selectable: the request's `router`, else the
+`routing.router` setting, else `standard` (the search above). The
+**refined** router (`src/engine/experimental/`) is the same search with
+three changes, kept behind this toggle so the same request can be run
+both ways and compared (the Route tab's *Router*: Standard / Refined):
+
+1. **Convex polar.** The search runs on the convex hull of the polar
+   (per wind speed), so a leg into the wind is a straight line at the
+   beat's exact VMG and the search needs no beat handling.
+2. **Legs laid out forward in time.** Afterwards every sailed leg is laid
+   out from its start: at each point the wind there and then decides
+   whether the course to the leg's end is a time-share of two polar
+   headings (a beat: two legs and one tack, the second landing on the
+   leg's end, each tack costing the tack penalty) or a heading the polar
+   sails directly (the rest in one straight leg); a piece is split only
+   where the real polar cannot sail it all the way or it crosses land, so
+   a wind that veers along a long leg is met where it veers. A tack runs
+   as far as the water allows on its heading (exactly, on the chart mesh)
+   and only where the boat can go on from its end; one that would cross
+   land or that the real polar cannot sail is tried on the other side,
+   then shorter. Where no tack fits (the tacks lead into a pocket the
+   water closes round), with a sail threshold above 0 the leg is motored
+   straight, as the standard router times it, with a WARNING naming it in
+   the log and a `beat_motored` warning on the route (the leg's ends and
+   its motoring time);
+   with a threshold of 0 the route fails with a message naming the leg,
+   never an invented time. Tack points carry `tack: true` in the GeoJSON.
+3. **Cross-track polish.** Each interior waypoint is tried a little to
+   either side of its track (2 km down to 250 m, capped at a third of the
+   shorter adjacent leg) and moved when the route, re-timed from there
+   with the real polar, arrives earlier and the legs stay clear of land;
+   up to five passes.
+
+Measured on a Raspberry Pi 5 against the isochrone router (same forecast
+run, fixed departures): a harbour beat 17,234 s vs 18,659 s, an offshore
+reach 36,235 s vs 36,469 s, a 1,240 km passage 382,041 s vs 383,615 s.
+The same passage run with a much wider isochrone beam (`routing.stages`
+40, `routing.subsectors` 150, `routing.headings` 120 at 0.5°) arrived
+377,985 s, 94 minutes earlier than the standard beam, at 21 × the wall
+time: the standard pruning is the larger loss on long passages. That
+beam and a middle one are the **Method** choice on the Route tab
+(request `search`: `normal`, `moderate`, `maximum`; `src/engine/search/presets.ts`),
+beside the **Router** choice.
+
+### Comfort (rough water)
+
+The sea-state index describes the water at a point (wind against
+current, swell steepened by an opposing current); it knows nothing of
+the boat. It is the sum of a wind term (50 in any breeze without a
+current, more where wind and current oppose) and a wave term,
+`10 × swh² × 5/max(period, 5) × steepening` (`SWELL_COEFF`,
+`src/plugin/conditions.ts`), on the bands smooth < 35 ≤ good < 50 ≤
+slight < 75 ≤ choppy < 100 ≤ rough < 150 ≤ extreme: a 2 m wind sea is
+choppy, 3.5 m rough, 5 m and more extreme, and long swell reads milder
+than a wind sea of the same height. Heading into the waves is harder than running before them, so
+the router weights the index by the angle between the course and the
+direction the waves come from: × 1.3 in head seas, × 1.05 abeam, × 0.8
+in following seas, a cosine between (the **encounter index**,
+`src/engine/seas.ts`). The weights are a judgement, not derived from
+physics, and are kept in one place so they can be tuned.
+
+With a comfort weight above 0 (setting `routing.comfortWeight`, default
+1; request field `comfort_weight`), each second the leg simulator sails
+in water above an encounter index of 75 (the top of the "slight" band:
+with no current the index's wind term alone is 50, which head seas
+weight to 65) counts extra in the search's choices: weight × (index −
+75) / 100 extra seconds per second, at most 2 × weight. With weight 1,
+choppy water at 100 adds 25 %, rough at 125 adds 50 %, extreme at 200
+adds 125 %. The cost is used for pruning, the choice of the terminal,
+and (when it runs) the smoother; the route's times, ETAs and summary
+stay the real times. It needs wave data in the forecast; without it the
+cost is 0. Each waypoint carries the sea on the leg into it
+(`sea_index`, `seas_angle_deg`, `seas_side`, `seas_sector`,
+`encounter_index`).
+
 ### Waypoints (legs)
 
 A waypoint is an end point and a start point by another name: it ends
-one leg and starts the next (port of the routePlanning
-`compute_multi_leg_route`). Each leg is routed as its own route, with its
-own corridor, land raster, isochrone search (K stages per leg) and
+one leg and starts the next. Each leg is routed as its own route, with
+its own corridor, land raster, isochrone search (K stages per leg) and
 retries, departing at the previous leg's arrival time so wind, current
 and waves move on with the boat. The legs are then stitched: the
 duplicate junction point is dropped, distances and sailing/motoring
@@ -594,9 +1237,8 @@ never `role: "via"`). Progress messages are prefixed `leg 2/4: …`.
   like the final leg to the destination).
 - **`approximate`**: the route only has to pass through the waypoint's
   circle (`arrival_radius_m`, default 200 m, or the waypoint's own
-  `radius_m`). As in the reference (`hybrid.py`, collapsed ocean runs),
-  consecutive legs joined by approximate waypoints are routed as **one
-  search** from the run's start to its end, with each waypoint circle as
+  `radius_m`). Consecutive legs joined by approximate waypoints are
+  routed as **one search** from the run's start to its end, with each waypoint circle as
   a via the winning branch must pass through in order. The track carries
   on through the waypoint instead of ending there and restarting, and the
   point where it passes the circle carries `role: "via"`. Progress
@@ -604,10 +1246,9 @@ never `role: "via"`). Progress messages are prefixed `leg 2/4: …`.
   circle(s) … in one search`.
 
 The final destination is always exact. Routes without waypoints are one
-leg, unchanged. Where this differs from the reference:
+leg, unchanged. Further:
 - after a precise waypoint the next leg starts where the previous one
-  ended (the reference restarts from the canonical waypoint and trims the
-  stitch), so the track is continuous;
+  ended, so the track is continuous;
 - a branch whose next waypoint circle is closer than one stage step also
   gets a candidate that steps straight into the circle. Without it a
   branch reaches a small circle only if a full stage step (tens of km)
@@ -625,9 +1266,9 @@ the same time (Baja, 4 legs: 11.9 / 12.0 s against 11.5 / 11.8 s per leg)
 and held more forecast (3.0 MB against at most 2.0 MB per leg) and SMOC
 (2.5 MB against at most 0.9 MB).
 
-One deliberate difference from the reference: the stage budget is sized
-to the corridor length, not the straight-line distance, so detours around
-land fit within the configured number of stages.
+The stage budget is sized to the corridor length, not the straight-line
+distance, so detours around land fit within the configured number of
+stages.
 
 If a route arrives after the last forecast step, conditions are held at
 the last step. The GeoJSON carries `forecast_valid_to`,
@@ -637,14 +1278,19 @@ it: an amber badge in the result strip with the end time, the legs after
 it drawn dashed with a "forecast ends" marker on the map, a chip on the
 itinerary cards, and a note in the saved route's description. The
 Freeboard panel shows the same note. The **Forecast horizon** setting
-(Settings tab, Forecast group, 3 h to 360 h) decides how far the forecast
-reaches.
+(Defaults tab, Forecast group, 3 h to 360 h) decides how far the forecast
+reaches, and with it SMOC, RTOFS and the tide map, each to the end of its
+own data when that comes first.
 
 **Regional wind (optional).** With the signalk-grib-downloader plugin
-installed (AROME, ARPEGE, ICON-EU, GFS), the plugin decodes each of its
-complete runs' 10 m wind and layers it over ECMWF: the regional model
-where it covers the point and the time, blended over five grid cells at
-its border and over its last 3 hours, ECMWF elsewhere; waves stay ECMWF.
+installed (AROME, ARPEGE, ICON-EU, GFS), the plugin decodes the 10 m
+wind of each complete run whose grid is finer than ECMWF's and layers it
+over ECMWF: the regional model where it covers the point and the time,
+blended over five grid cells at its border and over its last 3 hours,
+ECMWF elsewhere; waves stay ECMWF. A source no finer than ECMWF (GFS at
+0.25°, ECMWF's own spacing) is not decoded or used; the header lists it
+as "not used: not finer than the global forecast". A regional grid on
+either side of 180° works for routes across it.
 The job log and the summary's `regional_wind` say which model answered
 how much. `wind_model: "ecmwf"` (or unticking "Regional wind where
 available" in the Plan tab) routes on ECMWF alone. Install only the
@@ -663,18 +1309,31 @@ not the nearest one: branches advance a fixed distance per stage, so a
 slow branch crawling straight at the waypoint is nearest while faster
 branches that tacked are further out but ahead in time.
 
-Every stop (start, waypoints, destination) is tested against the exact
-coastline polygons before routing. One on land, or within 150 m of the
-shore, is moved to the nearest point with 150 m of water around it, within
-1,000 m, and reported: in the log (which point, how far), on
+Every stop (start, waypoints, destination) is tested before routing. In
+water a chart mesh covers, the mesh decides: the start, the destination and
+exact waypoints on water the boat cannot use (too shallow, a hazard, mark,
+structure, low clearance or area to avoid, within the buffer from unusable
+water, or on land) or on water that does not connect to the route (a pond
+the boat cannot leave) are moved to the nearest water the boat can use that
+connects to the route, within 1,000 m; a move out of unconnected water is
+logged as a WARNING. The moved point lies on the edge of the unusable water,
+so a moved waypoint or destination is reached on coming within the distance
+it was moved (its leg ends on that circle, as an approximate waypoint's
+does), not exactly: a boat under sail alone may have no room to beat the
+last metres into a corner of a shoal. Approximate waypoints are not moved: their circle is
+aimed at usable water when the leg is planned. Outside the meshes, a stop
+is tested against the exact coastline polygons: one on land, or within
+150 m of the shore, is moved to the nearest point with 150 m of water around
+it, within 1,000 m. Either way the move is reported: in the log (which point, how far), on
 the route (`snaps`, `stop_count`, the `start_`/`end_` original, anchor and
 snap-distance fields) and on the moved point (`snap_distance_m`,
 `original`); the web app draws the tie from the drawn point to the water
-and the itinerary says "moved N m". With no water within 1,000 m the
-route fails naming the point.
+and the itinerary says "moved N m". With no such water within 1,000 m the
+route fails naming the point (on the mesh, also the nearest usable water and
+its distance).
 
 Polar rows closer to the wind than the **Tightest sailable angle**
-setting (Settings tab, Routing group, default 30°, 0 = off) are ignored
+setting (Defaults tab, Routing group, default 30°, 0 = off) are ignored
 for routing: many library polars carry small boat speeds at 5°–25° off
 the wind, which would send a route dead upwind at a crawl instead of
 tacking. The polar files themselves are not changed.
@@ -682,9 +1341,9 @@ tacking. The polar files themselves are not changed.
 When a parent's primary heading sweep yields nothing (its headings in
 the polar's no-go angle, on land or over a limit), that parent alone gets
 the wider sweeps (±120°, then half step, then the full circle at a quarter
-step) while its siblings keep their primary candidates; the reference
-implementation widened only when the whole stage's sweep was empty, which
-left a front beating to windward tacking in place.
+step) while its siblings keep their primary candidates. Widening only
+when the whole stage's sweep is empty would leave a front beating to
+windward tacking in place.
 
 The candidate nearest each goal always survives a stage's subsector
 pruning (the bin cost prices the remaining distance at motor speed, which
@@ -699,21 +1358,25 @@ stages plus half the configured count; progress is measured towards the
 deepest branch's next via, or the destination once every via is crossed)
 fails with "the search is boxed in" (or, with a via still uncrossed, the
 vias-not-crossed error that makes the router retry without automatic
-vias), counting how many of
-the last stage's candidates were over the wind/wave limit, crossed land
-or had no boat speed, and naming the forecast end when the search had
-run past it. Each stage's progress line also carries those counts.
+vias). The message says why in plain words: over the wind or wave
+limit (the value against the limit, where, when it comes under, or that
+it does not before the forecast ends), every heading on land, dead
+upwind, no boat speed, or the reasons together; and it names the
+forecast end when the search had run past it. Each stage's progress
+line in the job's log counts the candidates over the limit, on land and
+dead upwind; the dead-end and boxed-in lines there also count those with
+no boat speed.
 
 ### Global water grid
 
-`data/water-grid-0.02.bin.gz` (shipped, 1.49 MB) is a navigability graph
+`data/water-grid-0.02.bin.gz` (shipped, about 1.99 MB) is a navigability graph
 of the whole world at 0.02° (18000 × 9000 cells), built from GSHHG full
-resolution L1 (`GSHHS_f_L1.shp`):
+resolution levels 1–4 (`GSHHS_f_L1.shp` through `GSHHS_f_L4.shp`):
 
 - **Water and edges.** The coastline is rasterised at 0.005° (4 × 4 fine
   cells per grid cell) in 10° tiles with a 1.2° halo, so edges on tile
   borders and across the antimeridian see the neighbouring tile. A fine
-  cell is water when its centre is outside every polygon. Per grid cell
+  cell is water when the deepest containing GSHHG level is even (or no polygon contains it). Per grid cell
   the file stores a water bit and two edge bits (east, north). An edge is
   open when a 4-connected path of fine water cells inside the two cells
   crosses it, i.e. when some fine row (or column) has water on both
@@ -780,14 +1443,22 @@ resolution L1 (`GSHHS_f_L1.shp`):
   React 19 Admin UI that came with 2.24.0); tested on 2.33.0. Read-only users can use
   the web app on servers that support per-route access (see
   [API](#api)); on older servers every route is admin-only.
-- Node.js 20.10 or later (the server's own Node).
+- Node.js 22.15 or later (the server's own Node; Signal K 2.33 itself
+  needs 22): the chart mesh archives are zstd, which Node's own zlib
+  unpacks from 22.15 on.
 - Internet access for the forecast, current, tide and coastline
-  downloads.
+  downloads. On a metered link, see
+  [Metered or no internet](#metered-or-no-internet-signalk-internet).
 - Disk in the Signal K data directory: the decoded forecast (about
-  1.1 GB for 72 h with the extra fields, 3.9 GB at 360 h), the GRIB files
-  of the cached cycles, the coastline (about 156 MB when downloaded),
-  current and tide caches, and the saved map tiles (up to the configured
-  cap, 20 GB by default).
+  1.35 GB for 72 h with the extra fields, 4.6 GB at 360 h), the GRIB files
+  of the cached cycles, the coastline (about 156 MB when downloaded, and
+  about 196 MB more once cut into tiles at start), current and tide
+  caches, and the saved map tiles (up to the configured
+  cap, 20 GB by default). Each cache directory holds a
+  [cache directory tag](https://bford.info/cachedir/) (`CACHEDIR.TAG`),
+  so backups leave the caches out: Kopia by default, restic, Borg and
+  GNU tar with `--exclude-caches`. Settings, jobs, polars, the
+  coastline and the downloaded meshes are backed up.
 - Memory: tested on a Raspberry Pi 5 with 8 GB. The resource guard keeps
   the configured amount free (default 1 GB) and refuses a forecast or a
   route that would not fit.
@@ -822,18 +1493,26 @@ LGPL) once from the authors' site,
 `https://www.soest.hawaii.edu/pwessel/gshhg/gshhg-shp-2.3.7.zip`
 (149 MB; if that fails, the identical copy at
 `https://router.zeddisplay.com/downloads/gshhg-shp-2.3.7.zip`; the
-archive's SHA-256 is checked either way), extracts the full-resolution level-1 shoreline
-(`GSHHS_f_L1.shp` with its `.shx` and `.prj`, about 156 MB) into
+archive's SHA-256 is checked either way), extracts the full-resolution levels 1–4
+(`GSHHS_f_L1.shp` through `GSHHS_f_L4.shp`, with their `.shx` and `.prj`) into
 `coastline/gshhg-2.3.7/` in the plugin data directory, deletes the
 archive and starts; the plugin status shows the progress. The global
-water grid shipped with the plugin was built from this same file, so it
+water grid shipped with the plugin was built from this same hierarchy, so it
 is used as is. The download does not hold up the server's start-up; if
 it fails (offline, server error, short file) the plugin status says why
 and it is tried again every 10 minutes (or at once with **Download
 coastline** in the plugin's configuration panel); stopping the plugin
-cancels it.
+cancels it. Once the coastline is there, the plugin cuts it into 0.5°
+tiles before anything else starts (once per coastline, in a child
+process: 14.6 s for GSHHG full resolution on a Pi 5; the status says
+*starting: cutting the coastline into tiles*); a coastline whose path,
+size or modification time changes, or a tile store from an older
+version, is cut again.
 To use another coastline, or an existing GSHHG copy, set its path in the
-plugin configuration. A configured coastline is never replaced by the
+plugin configuration. A standard GSHHS layer path automatically includes all four
+sibling layers at the same resolution; missing siblings are an error. An older
+automatic L1-only installation downloads the complete hierarchy on upgrade.
+A configured coastline is never replaced by the
 download: if a configured file is missing or unreadable, the plugin does
 not start and its status names the file.
 
@@ -862,19 +1541,24 @@ React and needs no build step for it.
 
 | Field | Notes |
 |---|---|
-| `landShapefiles` | comma-separated absolute paths; blank = download GSHHG 2.3.7 full-resolution level 1 once (see [Install](#install)) |
+| `landShapefiles` | comma-separated absolute paths; blank = download GSHHG 2.3.7 full-resolution levels 1–4 once (see [Install](#install)) |
 | `polarSource` | `auto` (default: detect active Polar Management polar, else local fallback), `files` (prefer local default), or `signalk` (compatibility alias for auto) |
+| `mesh.catalogUrl` | the `index.json` listing the published meshes (the s57Work build's `charts/mesh/index.json`); blank = the US-ENC catalogue on R2 |
+| `mesh.downloads` | names from the catalogue (`01CGD`, `07CGD`, …) ticked in the plugin panel; each is downloaded as its archive and unpacked into `<data dir>/mesh/<name>/` and kept current (the catalogue is read at start, daily, and on the panel's "Read the catalogue now" button; a newer `build_date` is downloaded again and swapped in); an unticked mesh is deleted. `/api/meshes` and `/api/status` `meshes` list every mesh with its state |
+| `mesh.disabled` | downloaded meshes switched off for routing (kept on disk); the panel's *Use* tick |
+| `mesh.preferLocal`, `mesh.preferDownload` | names that exist both as a download and in `meshDir`, where the router uses your folder's copy, or the download, whatever the build dates; the panel's *downloaded / my folder* choice. In neither list: the newer build |
+| `meshDir` | a mesh folder you manage yourself — one mesh (`index.json` and its tiles, or `meshes.json` with cluster sub-folders) or a folder of such mesh folders — used beside the downloaded ones and listed in the panel as *local* with its own *Use* tick; blank = none. See [Chart mesh](#chart-mesh-charted-depths-and-obstructions) |
 | `polarFile` | `.csv` (`twa/tws,4,6,…`) or `.pol` (tab-delimited); the default polar (token `default`). Blank = the bundled Catalina 36 |
 | `polarsDir` | directory of `.pol`/`.csv` polars listed by `/api/polars`. Blank = the library bundled with the plugin (`data/polars/`: the ~700 polars of the OpenCPN [weather_routing_pi](https://github.com/seandepagnier/weather_routing_pi) library, GPL-3.0), with user polars (generated ones included) kept in `polars/user/` in the plugin data directory, so an update never removes them. Set, user polars are in `<polarsDir>/user/` |
 | `currents.harmonicDir` | directory of tidal-harmonic `.npz` files |
 | `forecast.mirror` | `ecmwf`, `aws` or `google` |
 | `weatherProvider.enabled` | register with the Weather API (default on) |
 | `overlayCache.enabled` | build map tiles ahead of time (default on) |
-| `overlayCache.radius` | m, around the boat and the map view at zoom 8 and below; halved at each deeper zoom (default 250000, 1000–2000000) |
+| `overlayCache.radius` | m, around the boat at zoom 8 and below; halved at each deeper zoom (default 250000, 1000–2000000); the map view builds only the tiles it showed |
 | `overlayCache.window` | s, how far ahead tiles are built from now; 0 = the whole forecast (default 0, max 1296000) |
 | `overlayCache.maxZoom` | deepest zoom built ahead (default 15, 6–18) |
 | `overlayCache.diskCap` | bytes for saved tiles, least recently used removed first (default 20e9 = 20 GB, min 100e6) |
-| `overlayCache.workers` | threads building tiles ahead (default 2, 1–8) |
+| `overlayCache.workers` | processes building tiles ahead (default 2, 1–8); they start when there are tiles to build and exit when the walk is complete |
 | `overlayCache.followView` | also build around the area the map shows (default on) |
 
 Stored in SI (metres, seconds, bytes); the configuration panel shows
@@ -884,19 +1568,42 @@ ahead, except those computed while an on-demand current or tide area is
 still loading: those are answered but not saved. What is built ahead of time: the colour layers the page
 draws (wind, waves, sea state, current, rain, air temperature, sea
 temperature, tide height), wind barbs, current arrows and coastline
-tiles, for every hour from now to the end of the window (tide height:
-to the end of the tide run), at zooms 6 to `maxZoom`. Order: the map
+tiles, at each layer's own data steps from now to the end of the window
+(the forecast's layers every 3 hours, the currents at their steps, tide
+height every hour to the end of the tide run; the map draws the hours
+between on demand). Around the boat: zooms 6 to `maxZoom`, the radius
+halved at each zoom past 8. For the map view: only the tiles the map
+showed, at its zoom. The view is worked out from the tiles any map asks
+for (this plugin's page, a chartplotter drawing the PNG tiles, or another
+app): a burst of requests ends when no new tile has come for 5 s, and the
+view is the burst's tiles at its deepest zoom; a view zoomed out past zoom
+6 leaves the last view as it is, and the last view is kept when the map
+closes. Order: the map
 view's area, then the boat's; within each, nearest hour first, then
 shallower zoom, then nearest the centre. Tiles already saved are
 skipped. A new forecast cycle, currents run or tide run removes the
 tiles made from the old one and the walk starts again; so do a new
 hour, a boat move of more than 1 km, a new view and a settings change.
 No new tile is started while a route runs or the map's own queries are
-waiting. The boat's last position is kept in `last-position.json` in
+waiting. The builders are separate processes, not threads: each answers
+a tile's query, encodes it and writes it to a temporary file beside it,
+and Signal K's own process only moves the file into place (a tile built
+while its data changed is deleted). They are
+started when the walk has a tile to build and exit when it is complete,
+so the memory they used goes back to the system (a thread's memory stays
+with Signal K until it restarts). While they run, each reads the current,
+tide and RTOFS data from the disk caches the data worker writes and holds
+its own copy (every RTOFS product loaded, whole: about 350 MB per builder
+at its peak on the test box, given back when it exits). A builder that
+cannot read a current source keeps none of the current layers' tiles
+until it can. Folders of tiles made obsolete by a
+new forecast, currents run or tide run are normally deleted by a
+short-lived child process; if that process cannot run, the deletion
+falls back to Signal K's own process. The boat's last position is kept in `last-position.json` in
 the plugin data directory, so the boat's area is known after a restart
 before a fix arrives.
 
-**Web-app settings** (the webapp's **Settings** tab, or `GET`/`PUT
+**Web-app settings** (the webapp's **Defaults** tab, or `GET`/`PUT
 /api/settings`): stored on the server in `settings.json` in the plugin
 data directory and shared by every client. Values are SI on the wire
 (m, m/s, s; degrees for the heading increment); the page shows them in
@@ -904,11 +1611,11 @@ the Signal K user's unit preferences. Saving needs a `readwrite` login.
 
 | Group | Settings (default) | A change… |
 |---|---|---|
-| `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2) | applies to the next route |
-| `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify), check interval (60 min), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast; the interval restarts the timer |
-| `currents` | SMOC on, SMOC horizon (72 h = 259200 s, 6–240 h), SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on, RTOFS product (`west_atl`, …), RTOFS horizon (72 h), RTOFS step (3 h) | reloads currents |
-| `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°), tide map horizon (24 h = 86400 s, 6–240 h) | reloads tides only |
-| `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (on), shortcut may be slower by (0.05 = 5%), finished routes kept (50), max wind (none), max wave height (none) | applies to the next route |
+| `vessel` | speed under power (6 kt = 3.087 m/s), polar performance (1 = 100%, 0.3–1.2), under-keel clearance (0.5 m, 0–3 m), overhead clearance (2 m, 0–10 m) | applies to the next route |
+| `forecast` | horizon (72 h = 259200 s, 3–360 h; above 144 h only 00z/12z cycles qualify; every source's horizon: SMOC, RTOFS and the tide map follow it, each to the end of its own data), check interval (15 min = 900 s; every source is checked at it: ECMWF, SMOC, RTOFS, sea level; an existing settings.json keeps its value), cached cycles kept (2), extra fields (on), memory kept free (1 GB = 1e9 B) | horizon / extra fields / memory kept free reload the forecast (the horizon also currents and tides); the interval restarts the timer |
+| `currents` | SMOC on, SMOC step (3 h = 10800 s; 1 h or 3 h only), SMOC area half-width (15°, 2–30°), RTOFS on (the product that contains the vessel is loaded, and changes as the vessel moves), also load RTOFS products (none; a list of products loaded wherever the vessel is), RTOFS step (3 h) | reloads currents |
+| `tides` | Copernicus Marine sea level on, tide map area half-width (15°, 1–30°) | reloads tides only |
+| `routing` | stages (20), subsectors (30), headings (30), heading increment (1°), sail threshold (4.9 kt), tacking penalty (30 s, charged per tack or gybe by both routers), buffer from land (0 m: the route keeps at least this far from the coastline; a start or end closer is moved out to it, a passage narrower than twice it closes), buffer from unusable water (0 m: on a mesh leg the route keeps at least this far from every triangle the boat cannot use), drawbridges (ask: plan as open and report the ones crossed; open; avoid), wait at a drawbridge (0 s), simulation step (200 m), land raster cell budget (25 M), allow canals (off), route simplification (10 m, 0 = off), shortcut smoother (off), comfort weight (1, 0 = off), shortcut may be slower by (0.05 = 5%), finished routes kept (50), max wind (none), max wave height (none) | applies to the next route |
 | `publish` | save to the Resources API (on), route name prefix (`WRP`), notifications (on) | applies to the next route |
 
 **Resource guard.** The decoded forecast is on disk, so the guard
@@ -1188,9 +1895,15 @@ the SSE endpoint replays.
 | GET | `/api/routes/{id}/skeleton` | readonly | coarse corridor skeleton as GeoJSON |
 | GET | `/api/routes/{id}/fronts` | readonly | every search stage's front and best path, compact (display only) |
 | GET | `/api/routes/{id}/signalk` | readonly | Signal K Resources API route record |
+| GET | `/api/routes/{id}/meteogram` | readonly | conditions where the boat is at each step of the passage |
 | POST | `/api/routes/{id}/cancel` | readwrite | cancel a queued or running job |
 | POST | `/api/routes/{id}/publish` | readwrite | save the route to the Resources API |
 | DELETE | `/api/routes/{id}` | readwrite | delete a job |
+| POST | `/api/windows` | readwrite | departure window: the route for a series of departures |
+| GET | `/api/windows` | readonly | list departure windows |
+| GET | `/api/windows/{id}` | readonly | a window's departures, their status and metrics |
+| POST | `/api/windows/{id}/cancel` | readwrite | cancel the departures not computed yet |
+| DELETE | `/api/windows/{id}` | readwrite | delete a finished window and its route jobs |
 
 #### Job lifecycle
 
@@ -1221,28 +1934,39 @@ Submit a route request. Access: readwrite. Body: JSON `RouteRequest`.
 | Field | Type | Unit | Default | Limits and notes |
 |---|---|---|---|---|
 | `start` | `{lat, lon}` | degrees | required | both numbers |
-| `end` | `{lat, lon}` | degrees | required | both numbers; always reached exactly |
+| `end` | `{lat, lon}` | degrees | required | both numbers; reached exactly, unless the chart mesh's snap moved it: then reached on coming within the distance it was moved (see the stops above) |
 | `waypoints` | array of `{lat, lon, radius_m?}` | degrees, m | none | at most 20; each ends one leg and starts the next ([Waypoints](#waypoints-legs)). `radius_m` 0..5000, overrides `arrival_radius_m` for that waypoint, and must be > 0 with `"approximate"` |
 | `precision` | `"precise"` or `"approximate"` | | `"precise"` | `precise`: each leg ends exactly on its waypoint; `approximate`: the route only has to pass through the waypoint's circle; consecutive approximate waypoints are normally routed as one search through their circles in order, and leg by leg when no branch passes through all of them |
 | `arrival_radius_m` | number | m | 200 | 0..5000; must be > 0 with `"approximate"`. Ignored in precise mode and for the destination |
 | `departure` | string | ISO 8601 | now | an empty string also means now |
-| `mode` | `"sail_max"`, `"fastest"` or `"motor"` | | `"sail_max"` | mode policy. `motor`: always motor, and no forecast is used; `fastest`: sail when the polar speed beats the motor speed; `sail_max`: sail when the polar speed is at or above `sail_thresh_ms`, otherwise motor (`src/engine/legsim.ts`). The parent routePlanning server also sails above 0.25 m/s VMG or 1.0 m/s whatever the threshold; this plugin does not |
+| `mode` | `"sail_max"`, `"fastest"` or `"motor"` | | `"sail_max"` | mode policy. `motor`: always motor, and no forecast is used; `fastest`: sail when the polar speed beats the motor speed; `sail_max`: sail when the polar speed is at or above `sail_thresh_ms`, otherwise motor (`src/engine/legsim.ts`) |
 | `stages` | number | count | setting `routing.stages` (20) | 4..200; isochrone stages per leg |
 | `sail_thresh_ms` | number | m/s | setting `routing.sailThreshold` | ≥ 0 |
 | `max_wind_ms` | number | m/s | setting `routing.maxWind` (none) | 0..100; a leg is not allowed where the forecast wind speed is above this |
 | `max_swh_m` | number | m | setting `routing.maxSwh` (none) | 0..30; a leg is not allowed where the significant wave height is above this (needs wave data) |
 | `simplify_m` | number | m | setting `routing.simplify` | 0..5000; route simplification tolerance, 0 = off |
 | `smoother` | boolean | | setting `routing.smoother` | run the shortcut smoother |
-| `smoother_tolerance` | number | ratio | setting `routing.smootherTolerance` | 0..0.5; how much slower a shortcut may be (0.05 = 5%) |
+| `smoother_tolerance` | number | ratio | setting `routing.smootherTolerance` | 0..0.5; how much slower a shortcut may be (0.05 = 5%). The Route tab's *Smoothing* (Default / On / Off) sends `smoother`; it runs for both routers |
+| `smoother_sim_step_m` | number | m | setting `routing.simStep` (200) | 50..5000; the step the smoother times its shortcuts with; the search keeps `routing.simStep` |
+| `tack_penalty` | number | s | setting `routing.tackPenalty` (30) | 0..3600; seconds lost per tack or gybe, charged by both routers, on chart-mesh stretches and in repair detours too |
+| `comfort_weight` | number | | setting `routing.comfortWeight` (1) | 0..3; how much the search avoids rough water as the boat meets it (the encounter index). 0 = off, the fastest route. See [Comfort](#comfort-rough-water) |
 | `name` | string | | `<prefix> <lat>,<lon> → <lat>,<lon>` | name of the Signal K route record (trimmed). The default uses the `publish.routeNamePrefix` setting (`WRP`) and the start and end to two decimals |
 | `publish` | boolean | | setting `publish.toResources` (on) | save the finished route to the Resources API |
 | `no_forecast` | boolean | | false | route with calm wind |
 | `no_currents` | boolean | | false | ignore every current source |
+| `wind_model` | string | | `auto` | `auto`: regional wind from signalk-grib-downloader where finer and covering, ECMWF elsewhere; `ecmwf`: ECMWF only |
+| `avoid_areas` | boolean | | true | treat the areas marked on Signal K notes (`properties.avoid.radius_m` around the note's position) as land |
 | `vessel` | object | | the vessel settings | per-route overrides; absent keys use the settings ([Configuration](#configuration)) |
 | `vessel.name` | string | | | ignored (accepted so older clients still validate); the vessel name is Signal K's `vessels.self.name` |
 | `vessel.motor_speed_ms` | number | m/s | setting (3.087) | 0.01..50 |
 | `vessel.polar_performance` | number | ratio | setting (1) | 0.3..1.2; see below |
 | `vessel.polar` | string | | `polarSource` preference (`auto`) | a token from `GET /api/polars`, at most 200 characters; see below |
+| `vessel.draught_m` | number | m | Signal K `design.draft.maximum` | 0.1..30; with `air_draft_m`, lets the [chart mesh](#chart-mesh-charted-depths-and-obstructions) route the leg |
+| `vessel.air_draft_m` | number | m | Signal K `design.airHeight` | 0.5..100 |
+| `vessel.under_keel_clearance_m` | number | m | setting (0.5) | 0..3; charted depth on chart-mesh legs must be at least the draught plus this |
+| `vessel.overhead_clearance_m` | number | m | setting (2) | 0..10; charted clearance on chart-mesh legs must be at least the air draft plus this |
+| `router` | `"standard"` or `"refined"` | | setting `routing.router` (`standard`) | the [open-water router](#open-water-router-standard-or-refined) |
+| `search` | `"normal"`, `"moderate"` or `"maximum"` | | `normal` | search method (the Route tab's *Method*): `normal` = the routing settings as they are; `moderate` = stages 40, 100 cross-track bins, headings ±60° at 1° (a better route; about 2 min on a 600 nm passage on a Raspberry Pi 5); `maximum` = stages 40, 150 bins, ±60° at 0.5° (the best; about 6 min). An explicit `stages` still wins |
 
 `vessel.polar` is a token from `GET /api/polars`. `auto` detects the managed
 polar with local fallback; `signalk-active` requires the managed polar. A file name such as
@@ -1269,18 +1993,19 @@ Validation happens in two places:
   `arrival_radius_m`, `radius_m`, `mode`, `departure`, `stages`,
   `sail_thresh_ms`, `simplify_m`, `smoother`, `smoother_tolerance`,
   `name`, `vessel`, `vessel.polar_performance`
-  and `vessel.polar` outside the limits above. The message names the
+  and `vessel.polar` outside the limits above, or a `vessel.polar` token
+  that is not in the library. The message names the
   field, e.g. `"stages must be 4..200"`.
 - **When the job runs** (the job ends `failed` with the message):
   coordinates outside latitude −90..90 or longitude −180..360;
   the other `vessel.*` ranges above (the message uses the internal
-  name, e.g. `vessel.motorSpeedMs must be a number in [0.01, 50] (got 60)`);
-  a `vessel.polar` token that is not in the library.
+  name, e.g. `vessel.motorSpeedMs must be a number in [0.01, 50] (got 60)`).
 
 | Status | Body |
 |---|---|
 | 202 | `{id, status: "queued", links}`; header `Location: <links.self>` |
 | 400 | `{error}`: invalid request (above) |
+| 413 | `{error}`: the request body is over 64 KB (it is kept with the job and returned in every job list) |
 | 429 | `{error: "job queue is full"}`: 16 jobs are already waiting |
 
 `links` has `self`, `events`, `result`, `skeleton`, `cancel` and
@@ -1344,6 +2069,9 @@ Progress entry:
 | `auto_vias` | `[{name, width_m}]` | m | automatic vias at narrow passages ([Routing engine](#routing-engine)); not route waypoints |
 | `legs` | number | count | routes with waypoints only |
 | `precision` | string | | routes with waypoints only |
+| `mesh` | boolean | | `true` when at least one leg was routed on the [chart mesh](#chart-mesh-charted-depths-and-obstructions) |
+| `router` | string | | the open-water router that ran: `standard` or `refined` |
+| `search` | string | | the search method the route ran with: `normal`, `moderate` or `maximum` |
 
 #### GET /api/routes/{id}/events
 
@@ -1403,7 +2131,7 @@ LineString `properties`:
 | `arrival` | string | ISO 8601 | |
 | `waypoint_count` | number | count | route points |
 | `validated` | boolean | | |
-| `repairs_applied` | number | count | always 0 |
+| `repairs_applied` | number | count | detours the final depth check spliced in |
 | `smoother_drops` | number | count | points the shortcut smoother removed |
 | `forecast_cycle` | string | ISO 8601 | when a forecast was used |
 | `auto_vias` | `[{name, lat, lon, width_m, radius_m}]` | degrees, m | automatic vias; present when any |
@@ -1418,7 +2146,7 @@ LineString `properties`:
 | `stop_count` | number | count | start + waypoints + destination; present with `snaps` |
 | `start_original`, `start_anchor`, `start_snap_distance_m` | `[lon, lat]`, `[lon, lat]`, number | degrees, m | present when the start was moved: the drawn point, where the route starts, and the distance between them |
 | `end_original`, `end_anchor`, `end_snap_distance_m` | as above | | present when the destination was moved |
-| `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired}`, `violation` `"leg_crosses_land"` or `"leg_too_shallow"`, `from`/`to` `[lon, lat]` |
+| `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired, detail?}`, `violation` `"leg_crosses_land"`, `"wind_over_limit"`, `"waves_over_limit"`, `"detour_motored"` (a depth-check detour that motored on a sailing route; `detail` its motoring time, seconds), `"search_failed"` (the search on an open stretch of a chart-mesh leg failed and the stretch follows the mesh route instead; `from`/`to` the stretch's ends, `detail` the search's reason) or `"beat_motored"` (the refined router found no room to tack and motored the leg straight; `detail` its motoring time, seconds), `from`/`to` `[lon, lat]` |
 | `land_crossings` | number | count | present when a warning is `leg_crosses_land` |
 | `has_land_crossing` | boolean | | `true` when `land_crossings` is present |
 | `max_swh_m` | number | m | highest significant wave height at a route point; present when wave data was sampled |
@@ -1432,7 +2160,7 @@ Point `properties` (one feature per route point, in order):
 | `time` | string | ISO 8601 | time at the point |
 | `sog_ms` | number | m/s | speed over ground into the point (0 at the start) |
 | `cog_deg` | number | degrees true | course over ground into the point |
-| `depth_m` | null | | always null |
+| `depth_m` | number or null | m | charted depth under the waypoint from the chart mesh, on mesh legs; null elsewhere |
 | `mode` | string | | `"sailing"` or `"motoring"` on the leg into the point |
 | `twa_deg` | integer | degrees | true wind angle, 0..180; when wind was sampled |
 | `wind_ms` | number | m/s | wind speed |
@@ -1443,16 +2171,23 @@ Point `properties` (one feature per route point, in order):
 | `current_ms` | number | m/s | current speed |
 | `current_dir_deg` | integer | degrees true | current set (flows TO) |
 | `current_u_ms`, `current_v_ms` | number | m/s | current east and north components |
-| `leg` | string | | engine that produced the waypoint; always `"ocean"` in this plugin (kept for compatibility with the routePlanning server, which also uses other values) |
+| `sea_index` | number | index | sea-state index of the water on the leg into the point (wind, current, swell; one decimal); when wind and wave data were sampled |
+| `seas_angle_deg` | integer | degrees | angle between the leg's course and the direction the waves come from, 0..180 (0 = head seas, 180 = following) |
+| `seas_side` | string or null | | `"port"` or `"starboard"`: the side the waves come from; null dead ahead or astern |
+| `seas_sector` | string | | `head` (0–30°), `bow` (30–60°), `beam` (60–120°), `quarter` (120–150°), `following` (150–180°) |
+| `encounter_index` | number | index | `sea_index` weighted for the angle: × 1.3 in head seas, × 1.05 abeam, × 0.8 in following seas, a cosine between (`src/engine/seas.ts`); the sea as the boat meets it |
+| `leg` | string | | engine that produced the waypoint; always `"ocean"` in this plugin |
 | `role` | string | | `"via"` on the junction point of each request waypoint |
+| `tack` | boolean | | `true` on a tack or gybe point the experimental router placed |
 | `leg_distance_m` | number | m | distance to the next point; absent on the last point |
 | `leg_time_s` | number | s | time to the next point; absent on the last point |
+| `leg_wind_min_ms`, `leg_wind_max_ms` | number | m/s | lowest and highest wind speed sampled along the leg to the next point (about hourly samples, both ends included); absent on the last point and when no wind data |
+| `leg_swh_min_m`, `leg_swh_max_m` | number | m | lowest and highest significant wave height sampled along the leg to the next point; absent on the last point and when no wave data |
 | `beyond_forecast` | boolean | | `true` on a point whose time is after the forecast's last step |
 | `snap_distance_m`, `original` | number, `[lon, lat]` | m, degrees | present on a start, via or end point that was on land and was moved: how far, and the drawn point |
 
 The optional point properties are present only when the value was
-sampled and is finite. Property names match the routePlanning server's
-GeoJSON, so consumers of either can read both.
+sampled and is finite.
 
 #### GET /api/routes/{id}/skeleton
 
@@ -1468,6 +2203,71 @@ The route record the plugin saves to the Resources API (format under
 [Resources API publishing](#resources-api-publishing)). Access:
 readonly. `200` the record; `404 {error: "job not found"}`; `409
 {error: "job is <status>"}` when not `done`.
+
+#### GET /api/routes/{id}/meteogram
+
+The route's meteogram: where the boat is at each step of the passage and
+the conditions there and then, as the web app's Meteogram draws them.
+Access: readonly.
+
+| Query | Type | Unit | Default | Limits |
+|---|---|---|---|---|
+| `step_s` | number | s | 3600 | 600..21600; raised (whole minutes) when the passage would need more than 1000 rows |
+
+The boat's track comes from the route's points: between two points it
+sails the great circle at the leg's even pace, so a row a fraction of the
+way through a leg's time is that fraction of the way along it. The rows
+run from the departure to the arrival (both included). The conditions are
+sampled from the forecast loaded now, which may be a newer run than the
+route was computed with; both cycles are given. The wind is sampled from
+the same models as the route's: the regional wind models in its summary
+(`regional_wind`) are layered over ECMWF as the router layers them (each
+inside its grid and hours, blended at its border and over its last 3 h),
+from the newest decoded run of each; `wind_source` names the model that
+answered each row. Gusts, waves, pressure and the rest are ECMWF's: a
+regional run holds 10 m wind only. Every row comes from the same runs: a
+run replaced while the rows are read gives an answer that is not kept
+for the next request. A kept answer is saved with the point answers under
+its query, which names each of the route's regional models with the run
+the data worker last reported decoded for it: a new regional run is a
+new query and a fresh answer, and the other saved point answers
+(conditions, Weather API) stay. Rows read from a run decoded since that
+report are answered but not kept. Currents are those already loaded (the on-demand
+Copernicus SMOC areas are not fetched for a track).
+
+`200`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `departure`, `arrival` | string | the first and last row's time |
+| `step_s` | number | the step used |
+| `step_raised` | boolean | the step was raised above the one asked for |
+| `forecast_cycle`, `forecast_valid_to` | string | the ECMWF run the rows were sampled from, and its last valid time |
+| `regional_wind` | array | `{name, cycle}` of each regional wind run layered over it |
+| `regional_wind_missing` | array | regional models the route used that have no decoded run now (ECMWF answers there) |
+| `route_forecast_cycle` | string or null | the run the route was computed with |
+| `complete` | boolean | false when the forecast, a regional run, the currents or the tides changed while the rows were read, or a regional run was decoded since the data worker last reported one: the answer is not kept, and a subsequent request reads the newest runs. The forecast fields are still those of the runs named here; the currents and tides may be from two sources, or missing. The web app then says to reopen the meteogram |
+| `rows` | array | one per step (below) |
+
+Row fields: every [`/api/conditions`](#get-apiconditions) row field
+(wind, gust, waves, current, pressure, temperatures, precipitation,
+cloud, indices) plus:
+
+| Field | Unit | Notes |
+|---|---|---|
+| `lon`, `lat` | degrees | the boat's position at `time` |
+| `leg` | index | the leg the boat is on (0 = from the start) |
+| `mode` | string | `sailing` or `motoring`, as the route planned the leg |
+| `sog_ms` | m/s | the leg's speed over ground |
+| `cog_deg` | degrees true | the course at the position (the great circle's bearing) |
+| `twa_deg` | degrees | true wind angle 0..180 (0 = head to wind), from the sampled wind and the course |
+| `tack` | string or null | `port` or `starboard`: the side the wind comes from (null head to wind or dead downwind) |
+| `beyond_forecast` | boolean | after the forecast's last step: the values are those held at that step |
+| `wind_source` | string | the model that answered the wind: a regional model's name where it weighs more than half, else `ECMWF` |
+
+`400 {error}` for a bad `step_s`; `404 {error: "job not found"}`; `409
+{error: "job is <status>"}` when not `done`; `503` before the first
+forecast is loaded.
 
 #### POST /api/routes/{id}/cancel
 
@@ -1505,6 +2305,78 @@ readwrite.
 | 204 | none |
 | 404 | `{error: "job not found"}` |
 | 409 | `{error: "cancel the running job before deleting it"}` |
+| 409 | `{error: "a departure window's route: delete the window (DELETE …/api/windows/{window})"}`: a departure window's jobs go with their window |
+
+### Departure windows
+
+A departure window is the same route computed for a series of departure
+times, so the best time to leave can be picked: the web app's **Best
+departure** (Route tab). Each departure is an ordinary route job,
+submitted when the one before has finished, so a route asked for
+meanwhile waits behind one job, not the whole window. A window's jobs
+are not in `GET /api/routes` (each carries `window_id`; open one with
+`GET /api/routes/{id}`), do not count towards `routing.keepJobs`, are
+never published to the Resources API and send no notification of their
+own; the window sends one when it is done. The last 10 finished windows
+are kept, with their jobs. Once a departure is done, the plugin holds only
+its metrics in memory: its route stays in the job's file and is read from
+there when it is opened (`/result`, `/signalk`, `/skeleton`, `/fronts`,
+`/events`).
+
+A departure after the forecast's last step is not computed (`skipped`),
+and once a passage arrives after the forecast ends, the later departures
+are skipped too: their passages would end later still. After a restart
+a window that was computing ends `failed`.
+
+#### POST /api/windows
+
+Access: readwrite. Body:
+
+| Field | Type | Unit | Default | Notes |
+|---|---|---|---|---|
+| `route` | object | | required | the route request, as [`POST /api/routes`](#routes-jobs) takes it; `departure` and `publish` are set per departure |
+| `from` | string | ISO 8601 | required | the earliest departure |
+| `to` | string | ISO 8601 | required | the latest departure, at most 16 days after `from` |
+| `step_s` | number | s | 21600 | 3600..86400 between departures; at most 48 departures |
+
+`202 {id, status: "running", departures, links}`; `400 {error}` for a bad
+body (a route error is prefixed `route: `); `413 {error}` when the request
+body is over 64 KB; `429` when two windows are being computed already.
+
+#### GET /api/windows/{id}
+
+Access: readonly. `200`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `id`, `status` | string | `running`, `done`, `cancelled` or `failed` |
+| `created_at`, `finished_at`, `error` | string | |
+| `request` | object | as posted, with `step_s` |
+| `progress` | string or null | the last progress line of the departure computing |
+| `departures` | array | one per departure (below) |
+
+| Departure field | Unit | Notes |
+|---|---|---|
+| `departure` | ISO 8601 | |
+| `job_id` | string or null | the route job, once submitted |
+| `status` | | `pending`, `queued`, `running`, `done`, `failed`, `cancelled` or `skipped` |
+| `error` | | why it failed or was skipped |
+| `metrics.arrival` | ISO 8601 | |
+| `metrics.total_time_s`, `sailing_time_s`, `motoring_time_s` | s | |
+| `metrics.total_distance_m` | m | |
+| `metrics.max_wind_ms` | m/s | the strongest wind on any leg |
+| `metrics.max_swh_m` | m | the highest significant waves on any leg |
+| `metrics.max_sea_index` | index | the roughest sea met (a leg's encounter index, else its sea-state index) |
+| `metrics.upwind_time_s` | s | time sailed with the true wind under 60° off the bow |
+| `metrics.beyond_forecast` | boolean | the passage arrives after the forecast ends |
+| `metrics.warnings` | count | the route's warnings |
+
+`GET /api/windows?limit=` lists the windows newest first in the same
+form. `POST /api/windows/{id}/cancel` → `202 {id, status}`: the
+departures not started are cancelled, and the one computing is asked to
+stop; it stops when the route worker next checks, a moment later.
+`DELETE /api/windows/{id}` → `204`, or `409` while it is running, and
+after a cancel until the departure computing has stopped.
 
 ### Forecast and conditions
 
@@ -1651,20 +2523,24 @@ Plugin, forecast, currents, tides and queue status. Access: readonly.
 | `workers` | `{data, route}`: each worker is ready |
 | `forecast` | null until a decoded run is ready; see below |
 | `process_rss_bytes` | resident memory of the Signal K process, bytes |
-| `forecast_error` | last forecast refresh error, or null |
-| `currents` | the data worker's current sources in priority order: `{name, priority, resolutionM, bbox, validFrom, validTo}`; the CMEMS SMOC entry adds `smoc` (run, resident and on-demand areas, memory, downloads) |
+| `forecast_error` | last forecast refresh error, or null; cleared only by a check that reached ECMWF (the newest run in use, or a new one loaded) |
+| `checks` | what the last check of each source found: `{ecmwf, smoc, tides}` and `rtofs:<product>` per RTOFS product loaded, each `{outcome, at, reason}`; `outcome`: `newest`, `could-not-check` (the server could not be asked: no connection, or it failed; the run in use stays), `new-run` or `failed` (the server answered but the new run could not be loaded) |
+| `freshness` | per source in use: `{source, rows, run, published_at, next_due_at, state, reason, pending_since}`; `run`: as the source names it (`20261029 00z`, `2026-10-29`), for SMOC and sea level the day it was published (their store's own key is the last data hour); `rows`: the header rows it colours (`wind`, `waves`, `currents`, `tides`); `state`: `green` (more than 30 min before the next run is due), `orange` (from then until 60 min after), `red` (later, or nothing loaded; `reason` then says why when the times do not); `pending_since`: for SMOC and sea level, when a newer run appeared that Copernicus Marine is still writing (the run in use stays until it has finished), else null |
+| `connectivity` | `{online, since, lastOkAt, reason}`: whether the data worker's last request reached a server (`online` null before the first), since when, and why not; separate from freshness |
+| `forecast_loading` | while the data worker gets a forecast: `{phase, why, cycle, done, total, started_at, text}`. `phase`: `checking` (finding the newest ECMWF cycle) or `decoding` (step `done` of `total`, downloading what the GRIB cache lacks); `why`: `first` (no decoded run on disk yet), `redecode` (the runs on disk do not fit the forecast settings or are incomplete) or `update` (a newer cycle while the run in use keeps serving); `text`: the same as one line, e.g. `"loading the forecast: decoding the 06Z cycle, step 12 of 37 (first start)"`. Null when not loading |
+| `currents` | the data worker's current sources in priority order: `{name, priority, resolutionM, bbox, validFrom, validTo}`; the CMEMS SMOC entry adds `smoc` (run, resident and on-demand areas, memory, downloads, `pending`: `{run, appeared_at}` of a newer run Copernicus Marine is still writing, or null, and `updating`: Copernicus Marine has started an update while the store still holds this run, so there is no newer run to name yet) |
 | `currents_route_worker` | the same for the route worker |
-| `rtofs_run` | RTOFS run in use, or null |
-| `tides` | Copernicus Marine sea-level source status (run, resident and on-demand areas, point cache, memory, downloads), or null when off or not loaded |
+| `rtofs` | null when RTOFS is off, else `{auto, auto_reason, extra, runs, unknown_extents}`: the product that contains the vessel (null, with `auto_reason`, when there is no position or no product covers it), the extra products set, each product loaded as `{product, run}` (its current source is `RTOFS-<product>`), and the products whose extent is not known yet |
+| `tides` | Copernicus Marine sea-level source status (run, resident and on-demand areas, point cache, memory, downloads, and `pending` and `updating` as SMOC's), or null when off or not loaded |
 | `tides_enabled` | the tides setting, or null before start |
 | `tides_error` | last tide source error, or null |
-| `overlay_land` | overlay land-raster cache: `{entries, cells, bytes, index_bytes, builds, hits, last_build_ms, disk_hits, disk_writes, disk}`, or null |
-| `overlay_tiles` | saved map tiles: `{dir, cap_bytes, files, bytes, hits, misses, writes, not_kept, generations, inflight}` (`files`/`bytes` after the first scan; `not_kept`: answered but not saved because an on-demand current or tide load was late or failed; `generations`: the data each layer group was built from; `inflight`: tile queries waiting or running), or null before start |
-| `starting` | while the plugin is starting and not answering yet, why (e.g. `"starting: downloading the coastline (40 %)"`); null once started. 503 answers carry the same text |
+| `overlay_land` | overlay land-raster cache: `{entries, cells, bytes, index_bytes, builds, hits, last_build_ms, disk_hits, disk_writes, disk, polygons}`, or null; `polygons`: the data worker's cache of coastline tiles read (for the point test) `{entries, bytes, budget_bytes, hits, decodes, evictions}` |
+| `overlay_tiles` | saved map tiles: `{dir, cap_bytes, files, bytes, hits, misses, writes, not_kept, generations, inflight}` (`files`/`bytes` from the totals saved in `.totals.json` in the tile folder, counted once when missing or a day old; `not_kept`: answered but not saved because an on-demand current or tide load was late or failed; `generations`: the data each layer group was built from; `inflight`: tile queries waiting or running), or null before start |
+| `starting` | while the plugin is starting and not answering yet, why (e.g. `"starting: downloading the coastline (40 %)"`, `"starting: cutting the coastline into tiles (once per coastline, seconds)"`); null once started. 503 answers carry the same text |
 | `overlay_prebuild` | tiles built ahead of time: `{enabled, workers, workers_ready, paused, areas, window, max_zoom, walk_started_at, seen, built, skipped, not_kept, errors, last_error, at, complete, built_total, build_ms_avg}`; `areas`: `[{kind: "view" or "boat", lat, lon, radius_m}]`; `at`: `{area, hour, z}` of the last tile started; `complete`: every tile of the window is saved. Null before start |
 | `weather_provider_registered` | the Weather API provider is registered |
 | `jobs` | `{running: id or null, queued, total}`, or null before start |
-| `vessel`, `polar`, `land`, `harmonic_dir`, `extra_fields` | the resolved configuration: vessel parameters (internal camelCase names), default polar file, coastline shapefiles, tidal-harmonic directory, extra fields on/off |
+| `vessel`, `polar`, `router`, `land`, `harmonic_dir`, `extra_fields` | the resolved configuration: vessel parameters (internal camelCase names; `draughtM` and `airDraftM` are Signal K's `design.draft.maximum` and `design.airHeight`, null when unset), default polar file, default open-water router, coastline shapefiles, tidal-harmonic directory, extra fields on/off |
 
 `forecast` fields: `cycle`, `valid_from`, `valid_to`, `steps` (number of
 steps), `params`, `coverage` (`"global"`), `storage`
@@ -1692,7 +2568,7 @@ nested `smoc` and `tides` fields in full.
 | GET | `/api/pressure` | readonly | isobars and highs/lows as GeoJSON |
 | GET | `/api/land-mask` | readonly | binary land mask at screen resolution |
 | GET | `/api/tile/{layer}/{z}/{x}/{y}` | readonly | one web-map tile of a layer at a whole hour, saved on the server |
-| GET | `/api/tile/{layer}/{z}/{x}/{y}.png` | readonly | the same tile as a PNG image, for chartplotters (the eight colour layers, and the `barbs`, `arrows` and `isobars` glyph layers) |
+| GET | `/api/tile/{layer}/{z}/{x}/{y}.png` | readonly | the same tile as a PNG image, for chartplotters (the eight colour layers, and the `barbs`, `arrows`, `isobars`, `seas` and `wave_arrows` glyph layers) |
 | GET | `/api/legends` | readonly | colour ramps for every layer |
 
 **Common parameters.**
@@ -1856,20 +2732,26 @@ The colour layers as 256 × 256 PNG image tiles, for chartplotters that
 draw image tiles (Freeboard-SK's chart layers; the plugin publishes the
 matching chart resources, see [In Freeboard-SK](#in-freeboard-sk)).
 `layer` is one of `wind`, `waves`, `current`, `sea_state`, `precip`,
-`temperature`, `sst`, `tide` (colour layers), `barbs`, `arrows`, `isobars`
-(glyph layers); `z`, `x`, `y` and `?time=` as for the data tile below
+`temperature`, `sst`, `tide` (colour layers), `barbs`, `arrows`, `isobars`,
+`seas`, `wave_arrows` (glyph layers); `z`, `x`, `y` and `?time=` as for the data tile below
 (time rounded to the nearest hour, default now). A colour layer is what
 the web app paints from the data tile: the legend's colour ramp
 (`GET /api/legends`), alpha 0.55, land transparent for the layers that
 mask it, water without model data hatched for currents and tides; the
 tide layer uses its fixed ±3 m scale. A glyph layer draws the web app's
 barbs and arrows from the point tiles of the tile and its eight
-neighbours (so a glyph on a tile edge is whole), and isobars from the
+neighbours (so a glyph on a tile edge is whole; `seas` and `wave_arrows`
+both from the `seas` point tiles, in the heatmaps' colour scales shifted
+15 % darker, outlined), and isobars from the
 joined 0.25° pressure field (`/api/pressure`), without labels. Rendered
 on the server from the saved data tiles and kept in memory (48 MB, least
 recently used first);
 `X-Tile-Cache: hit | miss` says which, and `Cache-Control` is as for the
-data tile. Errors: 400 for a bad layer, tile or time, 503 before the
+data tile. While the first forecast loads (no forecast yet, see
+`forecast_loading` in the status) every forecast layer answers at once
+with 503, `Retry-After: 10` and `{error, loading}` (the status's loading
+progress) instead of waiting behind the decode; `land` does not wait.
+Errors: 400 for a bad layer, tile or time, 503 before the
 plugin has started.
 
 #### GET /api/tile/{layer}/{z}/{x}/{y}
@@ -1884,7 +2766,7 @@ before its query has started is dropped from the data worker's queue.
 
 | Path / query | Values |
 |---|---|
-| `layer` | `wind`, `waves`, `msl`, `temperature`, `sst`, `precip`, `sea_state`, `current`, `tide` (colour layers), `barbs` (wind barbs), `arrows` (current arrows), `land` (coastline) |
+| `layer` | `wind`, `waves`, `msl`, `temperature`, `sst`, `precip`, `sea_state`, `current`, `tide` (colour layers), `barbs` (wind barbs), `arrows` (current arrows), `seas` (the points for current against the waves and wave arrows), `land` (coastline) |
 | `z` | 0–18 |
 | `x`, `y` | 0 to 2^z − 1 |
 | `time` | ISO 8601, default now; rounded to the nearest hour. Ignored for `land` |
@@ -1898,7 +2780,16 @@ before its query has started is dropped from the data worker's queue.
   interpolate between samples), spacing = tile width ÷ 64, clamped to 0.002°–2°;
 - `barbs`: as [`/api/wind-points`](#get-apiwind-points), 7 across a tile;
 - `arrows`: as [`/api/currents`](#get-apicurrents), 5 across a tile;
-  for both, points on the tile's east and north edges belong to the
+- `seas`: 5 across a tile, points with wave data only:
+  `[{lon, lat, idx, swh_m, mwp_s, to_deg, rel, steepen}]` — `idx` the
+  sea-state index, `swh_m` the significant wave height, `mwp_s` the mean
+  wave period (null when the forecast has none), `to_deg` the direction the waves travel TO (degrees true), `rel`
+  the current along the waves (`opposing`, `following`, or `none` below
+  0.1 m/s), `steepen` the factor the opposing current steepens them by
+  (1 = none), `wind_ms` and `wind_to_deg` the wind and the way it blows
+  TO (null without wind data), `cur_ms` and `cur_to_deg` the current and
+  its set (0 and null without a current source);
+  for all three, points on the tile's east and north edges belong to the
   neighbouring tile;
 - `land`: 256 × 256 bytes, 1 = land, row 0 at the north edge, rows
   evenly spaced in Web Mercator y (the map's own rows), columns evenly
@@ -1971,7 +2862,7 @@ The adapter converts angles to degrees and transposes into `PolarDiagram`.
 Its existing interpolation, extrapolation, angle mirroring and no-go logic
 are unchanged. Zero cells are preserved. Complete, nonnegative, symmetric
 tables are required; missing/null cells and asymmetric tables fail explicitly
-rather than inventing speeds. Derived provider targets are not used.
+rather than inventing speeds. Derived beat/run targets are folded into each wind-speed row as described above.
 
 The active table and `polars.performanceFactor` (ratio 0..1, absent/null = 1)
 are read afresh before each sailing route, including same-id table edits,
@@ -2048,8 +2939,9 @@ started.
 
 Generate a polar with the physics polar calculator
 (`src/vessel/vpp_physics.ts`: ORC 2026 sail forces, Delft hull
-resistance, a heeling limit; see `docs/plans/vpp-physics.md`), write it
-to `<polarsDir>/user/<slug>.csv` in the routing server's CSV layout, and
+resistance, a heeling limit (where no reef or flattening keeps the heel
+within it, the speed is 0); see `docs/plans/vpp-physics.md`), write it
+to `<polarsDir>/user/<slug>.csv` in the library's CSV layout, and
 return it. Access: readwrite.
 
 Body `{name, specs, overwrite?}`:
@@ -2113,7 +3005,7 @@ Sent with `Cache-Control: no-store`. `200`: `{values, schema}`.
 | `key` | `group.key`, e.g. `vessel.motorSpeed` |
 | `group` | group id |
 | `label`, `help` | text for display |
-| `type` | `number`, `integer`, `boolean`, `string` or `enum` |
+| `type` | `number`, `integer`, `boolean`, `string`, `enum` or `enumList` (a list of `enum` values, each at most once, in the `enum`'s order) |
 | `unit` | SI unit of the value (`m`, `m/s`, `s`, `deg`); absent for dimensionless values |
 | `quantity` | display quantity for unit conversion: `speed`, `depth`, `wave_height`, `short_distance`, `ratio`, `megabytes`, `hours`, `minutes`, `seconds`, `angle` or `count` |
 | `min`, `max` | range |
@@ -2122,6 +3014,7 @@ Sent with `Cache-Control: no-store`. `200`: `{values, schema}`.
 | `default` | default value |
 | `nullable` | null is allowed (e.g. no maximum wave height) |
 | `enum` | allowed strings |
+| `enumHelp` | text shown beside each `enum` value (unit tokens as in `help`) |
 | `maxLength` | for strings |
 | `reload` | what a change re-does: `forecast`, `currents`, `tides`, `refresh_timer`, `jobs`, `next_job` (nothing now; the next route uses it) or `cache` (used at the next cache prune) |
 
@@ -2197,10 +3090,13 @@ Each entry (Signal K units: m/s, rad, Pa, K, m, s, ratio):
 | `description` | | `"ECMWF IFS 0.25° open data, cycle <ISO>, +<h> h"` |
 | `wind.speedTrue` | 10 m wind | m/s |
 | `wind.directionTrue` | 10 m wind direction FROM | rad |
+| `wind.gust` | `10fg`, 10 m wind gust | m/s; extra fields only |
 | `outside.pressure` | `msl` | Pa |
 | `outside.temperature` | `2t` | K; extra fields only |
 | `outside.dewPointTemperature` | `2d` | K; extra fields only |
 | `outside.relativeHumidity` | from `2t` and `2d` | ratio 0..1; extra fields only |
+| `outside.cloudCover` | `tcc`, total cloud cover | ratio 0..1; extra fields only |
+| `outside.precipitationVolume` | `tp`, total precipitation | m; energy fields only, the depth of the interval ending at the step valid time |
 | `water.temperature` | `skt` | K; extra fields only |
 | `water.waveSignificantHeight` | `swh` | m |
 | `water.wavePeriod` | `mwp` | s |
@@ -2208,10 +3104,7 @@ Each entry (Signal K units: m/s, rad, Pa, K, m, s, ratio):
 | `water.level` | Copernicus Marine hourly sea level | m, total water level (tide + surge) relative to local mean sea level, not chart datum; tides on only |
 | `water.levelTendency` | same | `increasing`, `decreasing` or `steady` (within ±2 cm/h), `not available` |
 
-A field is left out when its value is not available. The Weather API
-omits precipitation volume, because only the instantaneous rate is
-fetched. When the water-level series cannot be fetched, the two
-`water.level*` fields are left out and the rest is returned.
+A field is left out when its value is not available. With the energy fields on, point forecasts carry `outside.precipitationVolume` (m, the `tp` interval depth); observations omit it, because their time falls inside an interval that has not ended. When the water-level series cannot be fetched, the two `water.level*` fields are left out and the rest is returned.
 
 #### Resources API publishing
 
@@ -2246,9 +3139,48 @@ sends a delta for the own vessel on the path
 |---|---|---|
 | route done | `normal` | `route ready: <nm> nm, <h> h` |
 | route failed | `alert` | `route failed: <error>` |
+| departure window done | `normal` | `departure window ready: <n> of <m> departures computed; the fastest leaves <departure> and takes <s> s`: the fastest of the passages that end within the forecast, as the Best departure table ranks them; when every passage computed ends after it, `; every passage computed arrives after the forecast ends` instead |
+| departure window, no route | `warn` | `departure window finished: no route for any of its <m> departures` |
 
+A window's notification is on `notifications.weatherRouterPlus.<windowId>`;
+its departures' route jobs send none ([Departure windows](#departure-windows)).
 The value is `{state, method: [], message, timestamp}`. Cancelled jobs
-send no notification. The plugin emits no other deltas.
+send no notification, nor does a window that ends other than done
+(cancelled, or failed by a restart). The plugin emits no other deltas.
+
+#### Metered or no internet (signalk-internet)
+
+With the [signalk-internet](https://www.npmjs.com/package/@meri-imperiumi/signalk-internet)
+plugin installed (recommended in the App Store), the plugin follows its
+`network.internet.state` on the vessel with one subscription: it asks for
+nothing, waits for nothing at start and keeps no timers for it. The
+server sends the last state when the subscription starts; at a server
+start the first round may download in the seconds before signalk-internet
+publishes its first state. While the state is `metered`, `offline` or
+`captive`, nothing is downloaded on its own:
+
+- the forecast, current and tide refresh rounds use what is on disk
+  (`checks` in `/api/status` says `skipped: the internet connection is
+  metered …`), and one runs as soon as the state clears; a round under
+  way when the state turns skips the sources it has not reached yet, and
+  its forecast decode stops (a SMOC, RTOFS or tide request already under
+  way finishes);
+- the coastline download at first start and the chart meshes' daily
+  catalogue read and downloads wait, and start as soon as the state
+  clears; a coastline or mesh download under way stops (a mesh download
+  resumes from its parts later);
+- map tiles are not built ahead of time (`overlay_prebuild.paused` in
+  `/api/status`).
+
+What you ask for still downloads: **Refresh forecast**, **Download
+coastline**, the mesh panel's buttons, routes and departure windows
+(a route with no forecast on disk yet downloads the forecast first),
+and the map and conditions you look at. The plugin status says why it
+waits. Without signalk-internet, or in any other state, downloads run as
+before. signalk-internet 0.7.1 and older leave their last state behind
+when disabled, and Signal K keeps it until it restarts; that state then
+still holds (clearing it on stop is
+[signalk-internet#4](https://github.com/meri-imperiumi/signalk-internet/pull/4)).
 
 #### OpenAPI
 

@@ -11,10 +11,12 @@ import * as path from 'node:path';
 
 import { loadTideResident, SeaLevelClient, TIDE_DEFAULT_BUDGET_BYTES, type TideSettings, TideSource } from '../../tides/sealevel';
 import { type ArcoRun } from '../../data/arco';
+import { isOffline, OfflineError } from '../../data/http';
 import { type ConditionsTide } from '../overlays';
 import { type ResolvedConfig } from '../config';
-import { type QueryArgs, type TideSeriesResult } from '../protocol';
-import { requireInit } from './state';
+import { type CheckOutcome, type QueryArgs, type TideSeriesResult } from '../protocol';
+import { noteCheck } from './currents';
+import { backgroundHold, requireInit } from './state';
 import type { WorkerState } from './state';
 
 /** Map / conditions queries wait at most this long for a tide download. */
@@ -37,17 +39,26 @@ export function makeSeaLevelClient(st: WorkerState, cfg: ResolvedConfig): SeaLev
  * position changed, prune superseded cached runs. Offline, the newest
  * cached run is used.
  */
-export async function refreshTides(st: WorkerState): Promise<void> {
+export async function refreshTides(st: WorkerState, offline: string | null = null): Promise<void> {
   const { config: cfg } = requireInit(st);
   if (!cfg.tides.enabled || !st.seaLevelClient) {
     st.tides = null;
     st.tidesError = null;
+    delete st.checks.tides;
     return;
   }
   const settings = tideSettings(cfg);
   let run: ArcoRun | null;
+  let checked: { outcome: CheckOutcome; reason: string | null };
+  // As SMOC's (currents.ts refreshSmoc): a newer run Copernicus Marine is still writing; undefined when the store
+  // could not be asked this round, which leaves it as it was.
+  let pending: TideSource['pending'] | undefined;
+  let updating: boolean | undefined;
   try {
+    if (offline) throw new OfflineError(offline);
     const probed = await st.seaLevelClient.probe(st.tides?.run ?? null);
+    pending = null;
+    updating = false;
     if (probed.settled || !st.tides) {
       run = probed;
       if (!probed.settled)
@@ -55,31 +66,64 @@ export async function refreshTides(st: WorkerState): Promise<void> {
           'info',
           `tides: the store update is still being written (STAC updated ${probed.stacUpdated ?? '?'}); using run ${probed.key} provisionally`
         );
-    } else {
+    } else if (probed.key !== st.tides.run.key) {
       st.log('info', `tides: store update in progress (STAC updated ${probed.stacUpdated ?? '?'}); keeping run ${st.tides.run.key}`);
       run = st.tides.run;
+      pending = { key: probed.key, appearedAt: probed.metadataModified };
+    } else {
+      st.log(
+        'info',
+        `tides: store update in progress (STAC updated ${probed.stacUpdated ?? '?'}); the store still holds run ${st.tides.run.key}, kept`
+      );
+      run = st.tides.run;
+      updating = true;
     }
     st.tidesError = null;
+    checked = {
+      outcome: 'newest',
+      reason: pending
+        ? `a newer run appeared in the store ${pending.appearedAt ?? '(time not known)'} and Copernicus Marine is still writing it; the previous run stays in use until it is finished`
+        : !run.settled
+          ? `run ${run.key} is still being written by Copernicus Marine`
+          : updating
+            ? `Copernicus Marine has started an update; no newer run is in the store yet; run ${run.key} stays in use`
+            : null,
+    };
   } catch (err) {
-    st.tidesError = `cannot reach the Copernicus Marine sea-level store: ${(err as Error).message}`;
-    st.log('error', `tides: ${st.tidesError}`);
+    const why = `cannot reach the Copernicus Marine sea-level store: ${(err as Error).message}`;
+    // A round the internet state holds asked nothing of the store: no error to show for it.
+    if (!backgroundHold(st)) st.tidesError = why;
+    if (!offline) st.log('error', `tides: ${why}`);
     run = st.tides?.run ?? st.seaLevelClient.cachedRuns()[0] ?? null;
     if (run && !st.tides) st.log('info', `tides: using cached run ${run.key} (offline)`);
+    checked = { outcome: 'could-not-check', reason: (err as Error).message };
   }
-  if (!run) return;
+  if (!run) {
+    noteCheck(st, 'tides', checked.outcome, checked.reason);
+    return;
+  }
   const provisionalReplaced = !!st.tides && st.tides.run.key === run.key && !st.tides.run.settled && run.settled;
   const newRun = !st.tides || st.tides.run.key !== run.key || provisionalReplaced;
   const now = Date.now();
   const src = newRun ? new TideSource(run, settings, st.seaLevelClient, m => st.log('info', m)) : st.tides!;
+  if (pending !== undefined) src.pending = pending;
+  if (updating !== undefined) src.updating = updating;
   if (!newRun) src.expire(now);
-  if (provisionalReplaced) st.seaLevelClient.dropRun(run.key);
   if (newRun) st.seaLevelClient.saveRun(run);
   const steps = src.windowSteps(now);
   const pos = st.vesselPos;
   if (pos && (newRun || src.residentStale(pos, steps))) {
+    // As for SMOC (currents.ts): no resident area loads while the internet state holds a background round, and one
+    // under way stops between chunks once it starts holding.
+    let hold = backgroundHold(st);
     try {
       const t = Date.now();
-      const res = await loadTideResident(st.seaLevelClient, run, settings, pos, steps, { log: m => st.log('info', m) });
+      const res = hold
+        ? null
+        : await loadTideResident(st.seaLevelClient, run, settings, pos, steps, {
+            log: m => st.log('info', m),
+            shouldCancel: () => backgroundHold(st) !== null,
+          });
       if (res) {
         src.setResident(res.area, pos);
         src.noteDownload('resident tide area', res.stats);
@@ -89,16 +133,41 @@ export async function refreshTides(st: WorkerState): Promise<void> {
         );
       }
     } catch (err) {
-      st.tidesError = `resident tide area load failed: ${(err as Error).message}`;
-      st.log('error', `tides: ${st.tidesError}`);
-      if (newRun && st.tides) return; // keep serving the previous run
+      hold = backgroundHold(st);
+      if (!hold) {
+        st.tidesError = `resident tide area load failed: ${(err as Error).message}`;
+        st.log('error', `tides: ${st.tidesError}`);
+        if (newRun && st.tides) {
+          // Keep serving the previous run; the new one is written (it failed to load), so nothing is pending or updating.
+          st.tides.pending = null;
+          st.tides.updating = false;
+          noteCheck(st, 'tides', isOffline(err) ? 'could-not-check' : 'failed', `run ${run.key}: ${(err as Error).message}`);
+          return;
+        }
+      }
+    }
+    if (hold) {
+      st.log('info', `tides: run ${run.key}: the resident area is not loaded: ${hold}`);
+      checked = { outcome: 'could-not-check', reason: `skipped: ${hold}` };
+      // As after a failed load: the previous run keeps serving.
+      if (newRun && st.tides) {
+        st.tides.pending = null;
+        st.tides.updating = false;
+        noteCheck(st, 'tides', checked.outcome, checked.reason);
+        return;
+      }
     }
   } else if (newRun && !pos) {
     st.log('info', `tides: run ${run.key}: no vessel position; nothing resident, map areas load on demand`);
   }
+  if (checked.outcome === 'newest' && newRun)
+    checked = { outcome: 'new-run', reason: `run ${run.key}${run.settled ? '' : ' (still being written)'}` };
+  noteCheck(st, 'tides', checked.outcome, checked.reason);
   if (newRun) {
     st.tides = src;
-    const removed = st.seaLevelClient.pruneRuns([run.key]);
+    // Also removes the provisional directory the settled run replaces: only
+    // now, so a failed load above leaves the still-serving run its chunks.
+    const removed = st.seaLevelClient.pruneRuns([run]);
     if (removed.length) st.log('info', `tides: removed superseded cached run(s) ${removed.join(', ')}`);
   }
 }

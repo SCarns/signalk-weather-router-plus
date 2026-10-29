@@ -2,12 +2,15 @@
  * Map tiles built ahead of time (main thread scheduler + `tiles` worker
  * threads).
  *
- * Areas: the view the map shows (inferred from the tile requests the page
- * sends: the deepest zoom asked for in the last seconds and the middle of
- * those tiles) and the boat (navigation.position, kept across restarts).
- * Each area is a pyramid of web-map tiles: the full radius down to zoom 8,
- * half the radius at each deeper zoom, to the deepest zoom set. Every
- * hour of the window is built at every level.
+ * Areas: the view a map shows (ViewTracker: inferred from the tile requests
+ * of any map, this plugin's page or a chartplotter drawing the PNG tiles)
+ * and the boat (navigation.position, kept across restarts).
+ * The boat's area is a pyramid of web-map tiles: the full radius down to
+ * zoom 8, half the radius at each deeper zoom, to the deepest zoom set.
+ * The view is the tiles the map showed, at its zoom (and the isobar tiles
+ * over them). Each layer is built at its data's steps in the window
+ * (hasStep: the forecast's 3-hourly steps, the currents' steps, tide
+ * height hourly); the map draws the hours between on demand.
  *
  * Order: the view's area, then the boat's; within each, nearest hour
  * first, then shallower zoom, then tiles nearest the centre. Tiles already
@@ -15,26 +18,46 @@
  * generation), a new hour, a boat move of more than a kilometre, a new
  * view or a settings change starts the walk again from the top.
  *
- * Priority: the workers are separate threads, so the map's own queries
+ * Each builder finishes its tiles: answers the query, encodes the tile and
+ * writes it to a temporary file beside it; the main thread only moves the
+ * file into place and counts it (TileStore.adopt). Until 2026-10-13 the
+ * answer crossed to the main thread, which encoded and wrote every tile:
+ * Signal K's main thread at 47–100 % while the prebuild ran, 6 % a minute
+ * after it was turned off (brain, top).
+ *
+ * Priority: the builders are separate processes, so the map's own queries
  * (data worker) and routes (route worker) never queue behind them; no new
  * tile is started while a route runs or the data worker has map queries
  * waiting.
+ *
+ * Builders are child processes (not worker threads), started when the walk
+ * has a tile to build and stopped when it is complete. A thread's memory,
+ * freed, stays with Signal K's process until it restarts; a child process
+ * gives all of it back when it exits (brain, 2026-10-06: the two tile
+ * threads held 95–110 MB of buffers each and kept them after the walk; a
+ * map session added 350 MB that stayed). Shared memory does not cross
+ * processes, so a builder is told where the currents are on disk and reads
+ * them itself ('currents-ref', currents/fromcache.ts), as it reads the tides:
+ * copies of them made on the main thread for two builders took 609 MB of
+ * Signal K's memory, which glibc kept after they were freed (brain,
+ * 2026-10-25).
  */
 
 import * as fs from 'node:fs';
 import { DEG, M_PER_DEG, HOUR_MS } from '../geo/units';
 import * as path from 'node:path';
-import { Worker } from 'node:worker_threads';
-import type { MainToWorker, VesselPosition, WorkerToMain } from './protocol';
+import { fork, type ChildProcess } from 'node:child_process';
+import type { DataStamp, MainToWorker, VesselPosition, WorkerToMain } from './protocol';
 import { PRESSURE_TILE_ZOOM } from './tilejoin';
 import {
-  encodeTile,
   PYRAMID_MIN_ZOOM,
   pyramidRadius,
   pyramidTiles,
+  tileAt,
   tileBBox,
   tileGroup,
-  tileQuery,
+  stampMatches,
+  type TileGroup,
   type TileId,
   type TileLayer,
   type TileStore,
@@ -56,10 +79,51 @@ export const PREBUILD_LAYERS: readonly TileLayer[] = [
 ];
 
 const QUERY_TIMEOUT_MS = 120_000;
-/** A view is the deepest zoom the page asked for within this long. */
-const VIEW_WINDOW_MS = 5_000;
+/** A builder that has not reported ready within this long is stopped (its start-up failed). */
+const READY_TIMEOUT_MS = 60_000;
+/** After a builder failed to start, no new one is started for this long (a lasting error does not respawn in a loop). */
+const START_RETRY_MS = 5 * 60_000;
+/** A burst of tile requests ends when no new tile has come for this long: one view drawn. */
+const VIEW_GAP_MS = 5_000;
 /** Consecutive errors after which a layer is left out until the walk restarts. */
 const LAYER_ERROR_LIMIT = 3;
+
+/** The step times of the data the map layers are drawn from, for `atStep`. */
+export interface StepSources {
+  /** The forecast's steps (valid times, ms); null: no forecast loaded. */
+  forecast: number[] | null;
+  /** RTOFS steps (valid times, ms), or none. */
+  rtofs: number[];
+  /** SMOC's step (ms; its steps are the multiples of it from 00Z, data/arco.ts alignedSteps), or null when off. */
+  smocStepMs: number | null;
+  /** Tidal-harmonic current sources loaded: they give a value for every hour. */
+  harmonic: boolean;
+}
+
+/**
+ * Whether a layer's data has a step at this whole hour (`atStep`). The forecast's layers (group `wx`): at its steps.
+ * The current layers (`cur`: current, arrows, sea state): at an RTOFS step or a SMOC step, or every hour with tidal
+ * harmonics (brain's settings, 2026-10-14: SMOC and RTOFS both at 3 h, so hourly current tiles were interpolations).
+ * Tide height and the coastline: every hour (the sea level is hourly).
+ */
+export function hasStep(group: TileGroup, hourMs: number, s: StepSources): boolean {
+  if (group === 'wx') return !!s.forecast?.includes(hourMs);
+  if (group === 'cur') return s.harmonic || s.rtofs.includes(hourMs) || (s.smocStepMs !== null && hourMs % s.smocStepMs === 0);
+  return true;
+}
+
+/** The tiles at zoom `zTo` covering the given tiles of zoom `z` (each tile's own extent: no wrap across the date line). */
+export function coveringTiles(z: number, tiles: { x: number; y: number }[], zTo: number): { x: number; y: number }[] {
+  const out = new Map<string, { x: number; y: number }>();
+  for (const t of tiles) {
+    const b = tileBBox(z, t.x, t.y);
+    const nw = tileAt(b.west, b.north, zTo);
+    // The east and south edges belong to the next tile: step back a hair inside.
+    const se = tileAt(b.east - 1e-9, b.south + 1e-9, zTo);
+    for (let x = nw.x; x <= se.x; x++) for (let y = nw.y; y <= se.y; y++) out.set(`${x}/${y}`, { x, y });
+  }
+  return [...out.values()];
+}
 
 export interface PrebuildSettings {
   enabled: boolean;
@@ -76,17 +140,24 @@ export interface PrebuildDeps {
   /** Worker script and its exec args (index.ts startWorker). */
   workerPath: string;
   execArgv: string[];
-  cancelFlag: SharedArrayBuffer;
   /** init for a new tiles worker. */
   initMessage: () => MainToWorker;
   /** What a new tiles worker must adopt: forecast, SMOC, harmonics, tide run, a refresh. */
   replayMessages: () => MainToWorker[];
+  /** The data the plugin holds now, to check a built tile's stamp against before adopting it. */
+  dataStamp: () => DataStamp;
   vesselPosition: () => VesselPosition | null;
   /** Hours available: forecast (colour and barb layers), tide run, per layer; null = not loaded. */
   lastHourMs: (layer: TileLayer) => number | null;
+  /**
+   * Whether a layer's data has a step at this whole hour. Hours between a source's steps are not built ahead: the map
+   * draws them on demand, interpolated as always (the forecast's steps are 3 h apart, the tiles hourly: two of every
+   * three wind and wave tiles were interpolations built ahead, and every new cycle built them again; brain, 2026-10-14).
+   */
+  atStep: (layer: TileLayer, hourMs: number) => boolean;
   /** Layers the loaded data can answer (e.g. no waves without wave fields). */
   layerAvailable: (layer: TileLayer) => boolean;
-  /** A route is running or the data worker has map queries waiting. */
+  /** A route is running, the data worker has map queries waiting, or the internet state holds downloads (internet.ts). */
   busy: () => boolean;
   log: (msg: string) => void;
   error: (msg: string) => void;
@@ -96,17 +167,98 @@ interface Area {
   kind: 'view' | 'boat';
   lat: number;
   lon: number;
-  /** view: the deepest zoom the page asked for. */
+  /** view: the deepest zoom the map asked for. */
   z?: number;
+  /**
+   * view: the tiles the map showed at that zoom. Only those are built ahead (every layer, every step of the window),
+   * not the pyramid: a pyramid round every place a map paused on cost tens of thousands of tiles each (brain,
+   * 2026-10-14: one pan by ZedDisplay off Block Island, about 30 minutes of two cores).
+   */
+  tiles?: { x: number; y: number }[];
+}
+
+/**
+ * The view a map shows, from the tiles it asks for. A burst is the tiles of one view drawn: it ends when no new tile
+ * (one it does not hold yet, or one deeper) has come for VIEW_GAP_MS. Requests again for tiles it holds (a map asking
+ * for the same view at other hours, or refreshing it) do not keep it open (PR #39 review: ended by any request, a
+ * map asking at least every 5 s never let the view be taken). The view is taken from a burst only when it has ended, from all its
+ * distinct tiles at its deepest zoom (a tile asked for several layers counts once): their middle, rounded to a
+ * quarter of the build's radius at that zoom so small pans do not restart the walk. A view shallower than the
+ * shallowest zoom built (PYRAMID_MIN_ZOOM) has nothing of the build on screen and leaves the last view as it is;
+ * so does no request at all (the map closed: the last view is kept).
+ *
+ * Until 2026-10-13 the view was the deepest zoom asked for in the last 5 s, read every second: with the requests
+ * of a whole-Atlantic view at zoom 4 trickling in over half a minute (the server answering in 12–21 s), the last
+ * 5 s held only the view's north-east corner tile, 4/9/4, and the prebuild built northwest Russia down to zoom 15 for
+ * every hour (brain, journal and /api/status).
+ */
+export class ViewTracker {
+  /** `newAt`: when the burst last gained a tile. */
+  private burst: { z: number; tiles: Map<string, { x: number; y: number }>; newAt: number } | null = null;
+  private last: Area | null = null;
+
+  /** `radiusM`: the build's radius now (the rounding step follows it). */
+  constructor(private readonly radiusM: () => number) {}
+
+  /** A map asked for tile z/x/y at `atMs`. */
+  note(z: number, x: number, y: number, atMs: number): void {
+    if (this.burst && atMs - this.burst.newAt > VIEW_GAP_MS) this.close();
+    if (!this.burst) this.burst = { z, tiles: new Map(), newAt: atMs };
+    const b = this.burst;
+    if (z > b.z) {
+      b.z = z;
+      b.tiles.clear();
+    }
+    const k = `${x}/${y}`;
+    if (z === b.z && !b.tiles.has(k)) {
+      b.tiles.set(k, { x, y });
+      b.newAt = atMs;
+    }
+  }
+
+  /** The view at `nowMs`: from the last burst that has ended, or null when there has been none. */
+  view(nowMs: number): Area | null {
+    if (this.burst && nowMs - this.burst.newAt > VIEW_GAP_MS) this.close();
+    return this.last;
+  }
+
+  private close(): void {
+    const b = this.burst;
+    this.burst = null;
+    if (!b || b.z < PYRAMID_MIN_ZOOM || !b.tiles.size) return;
+    // Mean of the tile centres, on the unit circle for longitude (date line).
+    let sx = 0;
+    let sy = 0;
+    let lat = 0;
+    for (const { x, y } of b.tiles.values()) {
+      const box = tileBBox(b.z, x, y);
+      const lon = ((box.west + box.east) / 2) * DEG;
+      sx += Math.cos(lon);
+      sy += Math.sin(lon);
+      lat += (box.north + box.south) / 2;
+    }
+    const step = pyramidRadius(this.radiusM(), b.z) / 4 / M_PER_DEG;
+    const cLat = lat / b.tiles.size;
+    const cLon = (Math.atan2(sy, sx) * 180) / Math.PI;
+    this.last = {
+      kind: 'view',
+      lat: Math.round(cLat / step) * step,
+      lon: Math.round(cLon / step) * step,
+      z: b.z,
+      tiles: [...b.tiles.values()],
+    };
+  }
 }
 
 interface TilesWorker {
-  worker: Worker;
+  proc: ChildProcess;
   ready: boolean;
-  /** Query in flight. */
+  /** Stopped on purpose (walk complete, plugin stopped): its exit is not an error and it is not replaced. */
+  retiring: boolean;
+  /** Tile build in flight. */
   pending: {
     id: number;
-    resolve: (v: { result: unknown; complete: boolean }) => void;
+    resolve: (v: { bytes: number; complete: boolean; stamp: DataStamp }) => void;
     reject: (e: Error) => void;
     timer: NodeJS.Timeout;
   } | null;
@@ -136,6 +288,51 @@ export interface PrebuildStatus {
   build_ms_avg: number | null;
 }
 
+/**
+ * A copy of a message with every SharedArrayBuffer-backed typed array
+ * replaced by a plain copy: shared memory cannot be sent to another
+ * process. The same source array gives the same copy (an area's `u` and
+ * `data.utotal` stay one array).
+ */
+export function unshared<T>(v: T, memo = new Map<unknown, unknown>()): T {
+  if (v === null || typeof v !== 'object') return v;
+  if (memo.has(v)) return memo.get(v) as T;
+  if (ArrayBuffer.isView(v)) {
+    let out: unknown = v;
+    if (v.buffer instanceof SharedArrayBuffer) {
+      if (v instanceof DataView) {
+        // No slice(): copy its bytes into a plain buffer.
+        const bytes = new Uint8Array(v.byteLength);
+        bytes.set(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+        out = new DataView(bytes.buffer);
+      } else if (Buffer.isBuffer(v)) {
+        out = Buffer.from(v); // Buffer.slice() is a view on the same memory; Buffer.from copies
+      } else {
+        out = (v as unknown as { slice: () => unknown }).slice(); // a typed array's slice() copies into a plain buffer
+      }
+    }
+    memo.set(v, out);
+    return out as T;
+  }
+  if (Array.isArray(v)) {
+    const out: unknown[] = [];
+    memo.set(v, out);
+    for (const x of v) out.push(unshared(x, memo));
+    return out as T;
+  }
+  if (v instanceof Map) {
+    const out = new Map();
+    memo.set(v, out);
+    for (const [k, x] of v) out.set(k, unshared(x, memo));
+    return out as T;
+  }
+  if (Object.getPrototypeOf(v) !== Object.prototype) return v; // Date and the like: sent as they are
+  const out: Record<string, unknown> = {};
+  memo.set(v, out);
+  for (const [k, x] of Object.entries(v)) out[k] = unshared(x, memo);
+  return out as T;
+}
+
 function hourIso(ms: number): string {
   return new Date(ms).toISOString().slice(0, 13) + 'Z';
 }
@@ -159,10 +356,13 @@ export class TilePrebuilder {
   private complete = false;
   private paused = false;
   private timer: NodeJS.Timeout | null = null;
+  /** The walk's next tile, taken before a builder was free to build it. */
+  private peeked: { t: TileId; area: Area } | null = null;
+  /** No new builder before this time (a builder failed to start). */
+  private noStartUntil = 0;
   private boat: VesselPosition | null = null;
-  private readonly recent: { z: number; x: number; y: number; at: number }[] = [];
+  private readonly views = new ViewTracker(() => this.settings.radiusM);
   private areas: Area[] = [];
-  private lastView: Area | null = null;
   private window: { fromMs: number; toMs: number } | null = null;
   /** The last messages to replay to a (re)started worker, by type. */
   private broadcastLog = new Map<string, MainToWorker>();
@@ -176,7 +376,7 @@ export class TilePrebuilder {
   start(): void {
     this.stopped = false;
     if (!this.settings.enabled) return;
-    for (let i = 0; i < this.settings.workers; i++) this.spawn();
+    // Builders are started when the walk has a tile for them (pump).
     this.schedule(1000);
   }
 
@@ -184,30 +384,50 @@ export class TilePrebuilder {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
-    for (const w of this.workers) {
-      if (w.pending) {
-        clearTimeout(w.pending.timer);
-        w.pending.reject(new Error('stopped'));
-      }
-      w.worker.postMessage({ type: 'shutdown' } as MainToWorker);
-      const ww = w.worker;
-      setTimeout(() => void ww.terminate(), 2000);
-    }
+    this.peeked = null;
+    for (const w of [...this.workers]) this.retire(w, 'stopped');
     this.workers = [];
   }
 
-  /** Forward a message to every tiles worker (forecast, SMOC, harmonics, tide run, config, refresh). */
-  broadcast(msg: MainToWorker): void {
-    if (msg.type !== 'config' && msg.type !== 'refresh') this.broadcastLog.set(msg.type, msg);
-    for (const w of this.workers) if (w.ready) w.worker.postMessage(msg);
+  /** Send a message to a builder process (shared memory copied). */
+  private post(h: TilesWorker, msg: MainToWorker): void {
+    if (!h.proc.connected) return;
+    try {
+      h.proc.send(unshared(msg));
+    } catch (err) {
+      this.deps.error(`tiles builder: could not send ${msg.type}: ${(err as Error).message}`);
+    }
   }
 
-  /** The page asked for this tile (view inference). */
+  /** Stop a builder on purpose: shut down, killed after 2 s; a query in flight is rejected. */
+  private retire(h: TilesWorker, why: string): void {
+    h.retiring = true;
+    if (h.pending) {
+      clearTimeout(h.pending.timer);
+      const p = h.pending;
+      h.pending = null;
+      p.reject(new Error(why));
+    }
+    this.post(h, { type: 'shutdown' } as MainToWorker);
+    const proc = h.proc;
+    setTimeout(() => {
+      if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL');
+    }, 2000);
+    const i = this.workers.indexOf(h);
+    if (i >= 0) this.workers.splice(i, 1);
+  }
+
+  /** Forward a message to every builder (forecast, where the currents are, tide run, config, refresh). */
+  broadcast(msg: MainToWorker): void {
+    // A new builder gets the currents from replayMessages, made at its start: a kept one could be older.
+    if (msg.type !== 'config' && msg.type !== 'refresh' && msg.type !== 'currents-ref') this.broadcastLog.set(msg.type, msg);
+    for (const w of this.workers) if (w.ready) this.post(w, msg);
+  }
+
+  /** A map asked for this tile (view inference). */
   noteRequest(z: number, x: number, y: number): void {
     if (!this.settings.followView) return;
-    const now = Date.now();
-    this.recent.push({ z, x, y, at: now });
-    while (this.recent.length && (this.recent.length > 400 || now - this.recent[0].at > VIEW_WINDOW_MS)) this.recent.shift();
+    this.views.note(z, x, y, Date.now());
   }
 
   private readBoat(): VesselPosition | null {
@@ -224,50 +444,62 @@ export class TilePrebuilder {
   }
 
   private spawn(): void {
-    const worker = new Worker(this.deps.workerPath, {
-      workerData: { cancelFlag: this.deps.cancelFlag, role: 'tiles' },
+    const proc = fork(this.deps.workerPath, [], {
       execArgv: this.deps.execArgv,
+      env: { ...process.env, WRP_WORKER_ROLE: 'tiles' },
+      serialization: 'advanced',
+      stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
     });
-    const h: TilesWorker = { worker, ready: false, pending: null };
+    const h: TilesWorker = { proc, ready: false, retiring: false, pending: null };
     this.workers.push(h);
-    worker.on('message', (m: WorkerToMain) => this.onMessage(h, m));
-    worker.on('error', err => this.deps.error(`tiles worker error: ${err.message}`));
-    worker.on('exit', code => {
+    // Start-up failed (e.g. its init threw): it would hold its slot for good and no replacement would start.
+    const readyTimer = setTimeout(() => {
+      if (h.ready || h.retiring) return;
+      this.deps.error(
+        `tiles builder did not start within ${READY_TIMEOUT_MS / 1000} s; stopped, next attempt in ${START_RETRY_MS / 60_000} min`
+      );
+      this.noStartUntil = Date.now() + START_RETRY_MS;
+      this.retire(h, 'did not start');
+      this.schedule(START_RETRY_MS);
+    }, READY_TIMEOUT_MS);
+    proc.on('exit', () => clearTimeout(readyTimer));
+    proc.on('message', (m: WorkerToMain) => this.onMessage(h, m));
+    proc.on('error', err => this.deps.error(`tiles builder error: ${err.message}`));
+    proc.on('exit', (code, signal) => {
       const i = this.workers.indexOf(h);
-      if (i < 0) return; // stopped
-      this.workers.splice(i, 1);
+      if (i >= 0) this.workers.splice(i, 1);
       if (h.pending) {
         clearTimeout(h.pending.timer);
-        h.pending.reject(new Error(`tiles worker exited with code ${code}`));
+        const p = h.pending;
+        h.pending = null;
+        p.reject(new Error(`tiles builder exited (${code ?? signal})`));
       }
-      if (!this.stopped) {
-        this.deps.error(`tiles worker exited with code ${code}; restarting in 5 s`);
-        setTimeout(() => {
-          if (!this.stopped && this.workers.length < this.settings.workers) this.spawn();
-        }, 5000);
-      }
+      if (h.retiring || this.stopped) return;
+      // Died on its own: the walk starts another builder when it next has a tile.
+      this.deps.error(`tiles builder exited (${code ?? signal}); a new one is started in 5 s`);
+      this.schedule(5000);
     });
-    worker.postMessage(this.deps.initMessage());
+    this.post(h, this.deps.initMessage());
   }
 
   private onMessage(h: TilesWorker, m: WorkerToMain): void {
     switch (m.type) {
       case 'ready': {
         h.ready = true;
-        for (const msg of this.deps.replayMessages()) h.worker.postMessage(msg);
-        for (const msg of this.broadcastLog.values()) h.worker.postMessage(msg);
+        for (const msg of this.deps.replayMessages()) this.post(h, msg);
+        for (const msg of this.broadcastLog.values()) this.post(h, msg);
         this.schedule(0);
         return;
       }
       case 'log':
         if (m.level === 'error') this.deps.error(m.message);
         return;
-      case 'query-result':
+      case 'tile-built':
         if (h.pending && h.pending.id === m.id) {
           const p = h.pending;
           h.pending = null;
           clearTimeout(p.timer);
-          p.resolve({ result: m.result, complete: m.complete });
+          p.resolve({ bytes: m.bytes, complete: m.complete, stamp: m.stamp });
         }
         return;
       case 'query-error':
@@ -283,8 +515,8 @@ export class TilePrebuilder {
     }
   }
 
-  private workerQuery(h: TilesWorker, t: TileId): Promise<{ result: unknown; complete: boolean }> {
-    const { kind, args } = tileQuery(t);
+  /** Build a tile in a builder, written to `tmp` (complete: false, nothing written). */
+  private workerBuild(h: TilesWorker, t: TileId, tmp: string): Promise<{ bytes: number; complete: boolean; stamp: DataStamp }> {
     const id = ++this.queryId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -292,11 +524,11 @@ export class TilePrebuilder {
         // cancelled: restart the worker (its exit handler rejects this query
         // and starts a new one), so the worker count stays the cap.
         if (h.pending?.id !== id) return;
-        this.deps.error(`tiles worker: tile query timed out after ${QUERY_TIMEOUT_MS / 1000} s; restarting the worker`);
-        void h.worker.terminate();
+        this.deps.error(`tiles builder: tile query timed out after ${QUERY_TIMEOUT_MS / 1000} s; restarting the builder`);
+        h.proc.kill('SIGKILL');
       }, QUERY_TIMEOUT_MS);
       h.pending = { id, resolve, reject, timer };
-      h.worker.postMessage({ type: 'query', id, kind, args } as MainToWorker);
+      this.post(h, { type: 'build-tile', id, tile: t, tmp });
     });
   }
 
@@ -309,31 +541,9 @@ export class TilePrebuilder {
     }, ms);
   }
 
-  /** The view: middle of the deepest-zoom tiles asked for in the last seconds. */
+  /** The view a map shows (ViewTracker), when the walk follows it. */
   private viewArea(): Area | null {
-    if (!this.settings.followView) return null;
-    const now = Date.now();
-    const recent = this.recent.filter(r => now - r.at <= VIEW_WINDOW_MS);
-    if (!recent.length) return this.lastView; // keep the last view
-    const z = Math.max(...recent.map(r => r.z));
-    const at = recent.filter(r => r.z === z);
-    // Mean of tile centres on the unit circle for longitude (date line).
-    let sx = 0;
-    let sy = 0;
-    let lat = 0;
-    for (const r of at) {
-      const b = tileBBox(r.z, r.x, r.y);
-      const lon = ((b.west + b.east) / 2) * DEG;
-      sx += Math.cos(lon);
-      sy += Math.sin(lon);
-      lat += (b.north + b.south) / 2;
-    }
-    // Round the centre to a quarter of the radius at its zoom so small pans do not restart the walk.
-    const step = pyramidRadius(this.settings.radiusM, z) / 4 / M_PER_DEG;
-    const cLat = lat / at.length;
-    const cLon = (Math.atan2(sy, sx) * 180) / Math.PI;
-    this.lastView = { kind: 'view', lat: Math.round(cLat / step) * step, lon: Math.round(cLon / step) * step, z };
-    return this.lastView;
+    return this.settings.followView ? this.views.view(Date.now()) : null;
   }
 
   /** What the walk depends on; a change starts it again. */
@@ -354,26 +564,36 @@ export class TilePrebuilder {
     this.areas = areas;
     const gens = (['wx', 'cur', 'tide', 'land'] as const).map(g => this.deps.store.generation(g)).join(',');
     const hour = Math.floor(now / HOUR_MS);
-    return JSON.stringify({ gens, hour, areas: areas.map(a => [a.kind, a.lat.toFixed(4), a.lon.toFixed(4)]), s: this.settings });
+    // A view is its tiles: a pan showing other tiles starts the walk again (cheap now: the view's tiles only).
+    const where = (a: Area): unknown =>
+      a.tiles ? [a.kind, a.z, a.tiles.map(t => `${t.x}/${t.y}`).join(',')] : [a.kind, a.lat.toFixed(4), a.lon.toFixed(4)];
+    return JSON.stringify({ gens, hour, areas: areas.map(where), s: this.settings });
   }
 
   private *tiles(areas: Area[], layers: TileLayer[], fromMs: number, windowEndMs: number): Generator<{ t: TileId; area: Area }> {
     const zs: number[] = [];
     for (let z = PYRAMID_MIN_ZOOM; z <= this.settings.maxZoom; z++) zs.push(z);
     for (const area of areas) {
-      const byZ = zs.map(z => ({ z, tiles: pyramidTiles(area.lat, area.lon, this.settings.radiusM, z) }));
+      // The view: the tiles the map showed, at its zoom; the boat: the pyramid round it.
+      const shown = area.tiles && area.z !== undefined ? { z: area.z, tiles: area.tiles } : null;
+      const byZ = shown ? [shown] : zs.map(z => ({ z, tiles: pyramidTiles(area.lat, area.lon, this.settings.radiusM, z) }));
       for (const { z, tiles } of byZ) for (const { x, y } of tiles) yield { t: { layer: 'land', z, x, y, hourMs: 0 }, area };
       const ends = new Map(layers.map(l => [l, Math.min(windowEndMs, this.deps.lastHourMs(l) ?? -Infinity)]));
       const lastMs = Math.max(...ends.values());
       const tileLayers = layers.filter(l => l !== 'msl');
       // Isobars read the pressure grid at one zoom (tilejoin.ts joinPressure), whatever the map zoom.
-      const pressure = layers.includes('msl') ? pyramidTiles(area.lat, area.lon, this.settings.radiusM, PRESSURE_TILE_ZOOM) : [];
+      const pressure = !layers.includes('msl')
+        ? []
+        : shown
+          ? coveringTiles(shown.z, shown.tiles, PRESSURE_TILE_ZOOM)
+          : pyramidTiles(area.lat, area.lon, this.settings.radiusM, PRESSURE_TILE_ZOOM);
       for (let h = fromMs; h <= lastMs; h += HOUR_MS) {
-        if (h <= (ends.get('msl') ?? -Infinity))
+        if (h <= (ends.get('msl') ?? -Infinity) && this.deps.atStep('msl', h))
           for (const { x, y } of pressure) yield { t: { layer: 'msl', z: PRESSURE_TILE_ZOOM, x, y, hourMs: h }, area };
+        const atH = tileLayers.filter(l => h <= (ends.get(l) as number) && this.deps.atStep(l, h));
+        if (!atH.length) continue;
         for (const { z, tiles } of byZ)
-          for (const { x, y } of tiles)
-            for (const layer of tileLayers) if (h <= (ends.get(layer) as number)) yield { t: { layer, z, x, y, hourMs: h }, area };
+          for (const { x, y } of tiles) for (const layer of atH) yield { t: { layer, z, x, y, hourMs: h }, area };
       }
     }
   }
@@ -388,6 +608,7 @@ export class TilePrebuilder {
     this.window = lasts.length ? { fromMs, toMs } : null;
     this.walk = lasts.length ? this.tiles(this.areas, layers, fromMs, windowEnd) : null;
     this.walkKey = key;
+    this.peeked = null;
     this.walkStartedAt = now;
     this.counts = { seen: 0, built: 0, skipped: 0, notKept: 0, errors: 0 };
     this.layerErrors.clear();
@@ -430,9 +651,9 @@ export class TilePrebuilder {
         this.schedule(500);
         return;
       }
-      for (const h of this.workers) {
-        if (!h.ready || h.pending) continue;
-        const item = await this.next();
+      for (;;) {
+        const item = this.peeked ?? (await this.next());
+        this.peeked = null;
         if (!item) {
           if (!this.complete && this.walk) {
             this.complete = true;
@@ -442,8 +663,17 @@ export class TilePrebuilder {
           }
           break;
         }
+        const h = this.workers.find(w => w.ready && !w.pending);
+        if (!h) {
+          // No free builder: keep the tile, start a builder if fewer than the setting are running.
+          this.peeked = item;
+          if (this.workers.length < this.settings.workers && Date.now() >= this.noStartUntil) this.spawn();
+          break;
+        }
         void this.build(h, item);
       }
+      // Walk complete (or nothing to walk): idle builders exit and give their memory back.
+      if (this.complete || !this.walk) for (const h of this.workers.filter(w => !w.pending)) this.retire(h, 'walk complete');
     } finally {
       this.pumping = false;
     }
@@ -455,11 +685,23 @@ export class TilePrebuilder {
     const { t, area } = item;
     this.at = { area: area.kind, hour: hourIso(t.hourMs), z: t.z };
     const generation = this.deps.store.generation(tileGroup(t.layer));
+    const tmp = this.deps.store.tmpFile(t);
     const t0 = Date.now();
     try {
-      const { result, complete } = await this.workerQuery(h, t);
-      if (complete) {
-        await this.deps.store.write(t, await encodeTile(t, result), generation);
+      if (!tmp) throw new Error('its data is not loaded');
+      const { bytes, complete, stamp } = await this.workerBuild(h, t, tmp);
+      const group = tileGroup(t.layer);
+      if (complete && !stampMatches(group, this.deps.dataStamp(), stamp)) {
+        // The tile was computed from data the plugin has replaced meanwhile
+        // (a settings change, or a tide run the builders learned late): not
+        // adopted, not counted as built. No forecast-swap window exists: a
+        // builder has the new run before it builds (worker.ts handles its
+        // messages one at a time, behind the 'forecast' message itself).
+        await fs.promises.rm(tmp, { force: true }).catch(() => undefined);
+        this.counts.notKept++;
+        this.deps.store.noteNotKept();
+      } else if (complete) {
+        await this.deps.store.adopt(t, tmp, bytes, generation);
         this.counts.built++;
         this.builtTotal++;
         this.buildMsTotal += Date.now() - t0;
@@ -469,6 +711,8 @@ export class TilePrebuilder {
       }
       this.layerErrors.delete(t.layer);
     } catch (err) {
+      // A builder stopped or failed while writing may have left part of the file.
+      if (tmp) await fs.promises.rm(tmp, { force: true }).catch(() => undefined);
       this.counts.errors++;
       this.lastError = `${t.layer} ${t.z}/${t.x}/${t.y} ${t.layer === 'land' ? '' : hourIso(t.hourMs)}: ${(err as Error).message}`;
       const n = (this.layerErrors.get(t.layer) ?? 0) + 1;

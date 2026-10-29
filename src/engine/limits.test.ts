@@ -5,6 +5,7 @@ import type { CurrentSource, WindSource } from './environment';
 import { makeVessel } from '../vessel/vessel';
 import { PolarDiagram } from '../vessel/polar';
 import { OceanPropagator, RouteError, ViasNotCrossedError } from './propagator';
+import { RouteRefused } from './refusal';
 import { LandMask } from '../geo/landmask';
 
 /** Uniform wind and waves everywhere. */
@@ -104,7 +105,11 @@ test('a search boxed in by the wind limit fails with a message that counts the l
     });
   assert.throws(run, (err: Error) => {
     assert.ok(err instanceof RouteError && err.code === 'boxed_in', `${err.name}: ${err.message}`);
-    assert.match(err.message, /\d+ over the wind\/wave limit/);
+    assert.match(err.message, /wind \{speed:[^}]+\} against your \{speed:15\} limit/);
+    assert.ok(
+      err instanceof RouteRefused && err.refusal.kind === 'over_limit' && /over the wind\/wave limit/.test(err.detail),
+      err.message
+    );
     assert.doesNotMatch(err.message, /forecast ends/);
     return true;
   });

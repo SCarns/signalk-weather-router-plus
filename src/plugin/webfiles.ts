@@ -48,7 +48,7 @@ export function filesHash(dir: string, exclude: string[] = []): string {
 }
 
 /** Modules in public/ the panel imports (with its own ?v=, so they count in its hash). */
-const PANEL_SHARED = ['rp-units.js'];
+const PANEL_SHARED = ['rp-units.js', 'rp-prefs.js'];
 
 /** The panel's files (public/plotterext and the shared modules it imports), for its cache-busting URL. */
 export function panelFilesHash(publicDir: string): string {
@@ -62,6 +62,9 @@ export function panelFilesHash(publicDir: string): string {
   }
   return h.digest('hex').slice(0, 8);
 }
+
+/** index.html's script and style references tagPublicFiles tags (the tag, when there is one, in group 3). */
+const PAGE_REF = /(<(?:script|link)[^>]+(?:src|href)=")((?:ol|rp-[a-z]+)\.(?:js|css))(?:\?v=([0-9a-z]+))?"/g;
 
 /**
  * Write the version tag into the files on disk: index.html's script and
@@ -97,16 +100,22 @@ export function tagPublicFiles(publicDir: string, tag: string): number {
       throw err;
     }
   };
-  rewrite(
-    path.join(publicDir, 'index.html'),
-    /(<(?:script|link)[^>]+(?:src|href)=")((?:ol|rp-[a-z]+)\.(?:js|css))(?:\?v=[0-9a-z]+)?"/g,
-    `$1$2?v=${tag}"`
-  );
+  rewrite(path.join(publicDir, 'index.html'), PAGE_REF, `$1$2?v=${tag}"`);
   for (const f of fs.readdirSync(publicDir)) {
     if (!/^rp-[a-z]+\.js$/.test(f)) continue;
     rewrite(path.join(publicDir, f), /^(\s*import\b[^'"\n]*['"]\.\/rp-[a-z]+\.js)(?:\?v=[0-9a-z]+)?(['"])/gm, `$1?v=${tag}$2`);
   }
   return n;
+}
+
+/** Whether every one of index.html's script and style tags carries `?v=<tag>` (tagPublicFiles has written this tag). */
+export function carriesTag(publicDir: string, tag: string): boolean {
+  try {
+    const refs = [...fs.readFileSync(path.join(publicDir, 'index.html'), 'utf8').matchAll(PAGE_REF)];
+    return refs.length > 0 && refs.every(m => m[3] === tag);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -139,7 +148,10 @@ export function refreshPublicFileDates(publicDir: string, dataDir: string, log: 
   } catch {
     previous = '';
   }
-  if (hash === previous) return;
+  // The stamp alone is not enough: a deploy of the same web files (a server-only update) puts back npm's untagged
+  // copies dated 1985 with the hash unchanged, and a browser holding the untagged URL from an earlier such time keeps
+  // its old module. So the files are also tagged and re-dated whenever index.html does not carry this hash's tag.
+  if (hash === previous && carriesTag(pub, hash)) return;
   const now = new Date();
   let n = 0;
   const walk = (d: string): void => {

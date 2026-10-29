@@ -4,6 +4,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SETTINGS_GROUPS, SETTINGS_SPEC, type SettingSpec } from './settings';
 import { routeRequestSchema } from './request_schema';
+import { JobPublicSchema } from './response_schema';
+import { WindowPublicSchema, WindowRequestSchema } from './windows';
 
 /** JSON schema of one setting's value (SI). */
 function settingValueSchema(s: SettingSpec): Record<string, unknown> {
@@ -15,6 +17,8 @@ function settingValueSchema(s: SettingSpec): Record<string, unknown> {
       return { ...base, type: 'string', maxLength: s.maxLength, default: s.default };
     case 'enum':
       return { ...base, type: 'string', enum: [...(s.enum ?? [])], default: s.default };
+    case 'enumList':
+      return { ...base, type: 'array', items: { type: 'string', enum: [...(s.enum ?? [])] }, uniqueItems: true, default: s.default };
     default:
       return {
         ...base,
@@ -48,25 +52,41 @@ function packageVersion(): string {
   }
 }
 
+/**
+ * A TypeBox schema (JSON Schema) as OpenAPI 3.0 writes it: 3.0 has no `null`
+ * type, no `const` and no tuple `items`. `anyOf [X, null]` becomes X with
+ * `nullable: true`, `const: v` becomes `enum: [v]`, and a tuple of one item
+ * schema becomes an array of it with `minItems` / `maxItems`.
+ */
+export function openApi30(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(openApi30);
+  if (schema === null || typeof schema !== 'object') return schema;
+  const s = schema as Record<string, unknown>;
+  const anyOf = s.anyOf as Record<string, unknown>[] | undefined;
+  if (anyOf && anyOf.length === 2 && anyOf.some(x => x.type === 'null')) {
+    const { anyOf: _drop, ...rest } = s;
+    void _drop;
+    return { ...(openApi30(anyOf.find(x => x.type !== 'null')) as object), ...(openApi30(rest) as object), nullable: true };
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(s)) {
+    if (k === 'const') out.enum = [v];
+    else if (k === 'items' && Array.isArray(v)) {
+      const items = v.map(openApi30);
+      if (!items.every(x => JSON.stringify(x) === JSON.stringify(items[0]))) throw new Error('openApi30: a tuple of mixed items');
+      out.items = items[0];
+      out.minItems = v.length;
+      out.maxItems = v.length;
+    } else if (k === 'additionalItems' && Array.isArray(s.items)) continue;
+    else out[k] = openApi30(v);
+  }
+  return out;
+}
+
 export function openApiDocument(basePath: string): Record<string, unknown> {
   const routeRequest = routeRequestSchema();
-  const job = {
-    type: 'object',
-    properties: {
-      id: { type: 'string' },
-      status: { type: 'string', enum: ['queued', 'running', 'done', 'failed', 'cancelled'] },
-      request: routeRequest,
-      created_at: { type: 'string' },
-      started_at: { type: 'string' },
-      finished_at: { type: 'string' },
-      progress: { type: 'array', items: { type: 'object' } },
-      summary: { type: 'object' },
-      error: { type: 'string' },
-      resource_id: { type: 'string' },
-      publish_error: { type: 'string', description: 'Why publishing to the Resources API failed, when it did' },
-      links: { type: 'object' },
-    },
-  };
+  const job = openApi30(JobPublicSchema);
+  const windowDoc = openApi30(WindowPublicSchema);
   return {
     openapi: '3.0.0',
     info: {
@@ -84,8 +104,17 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         get: {
           summary: 'Plugin, forecast (decoded run on disk, memory held), currents, overlay land cache and queue status',
           description:
-            'Top level: plugin, started, workers {data, route}, forecast, forecast_error, currents, currents_route_worker, rtofs_run, overlay_land, overlay_tiles, overlay_prebuild, ' +
-            'weather_provider_registered, jobs, vessel, polar, land, harmonic_dir, extra_fields, tides, tides_enabled, tides_error, process_rss_bytes. ' +
+            'Top level: plugin, started, workers {data, route}, forecast, forecast_error, forecast_loading, currents, currents_route_worker, rtofs, overlay_land, overlay_tiles, overlay_prebuild, ' +
+            'weather_provider_registered, jobs, vessel, polar, land, harmonic_dir, extra_fields, tides, tides_enabled, tides_error, process_rss_bytes, ' +
+            'meshes (the managed chart meshes, as GET /api/meshes), router (the open-water router the next route runs: "standard" | "refined"), checks, freshness, connectivity. ' +
+            '`forecast_error` clears only on a check that reached ECMWF (the newest run in use, or a new one loaded). ' +
+            '`checks`: what the last check of each source found, {ecmwf, smoc, tides, "rtofs:<product>" per RTOFS product loaded}, each {outcome: "newest" | "could-not-check" (the server could not be asked: ' +
+            'no connection, or it failed; the run in use stays) | "new-run" | "failed" (the server answered but the new run could not be loaded), at, reason}. ' +
+            '`freshness`: per source in use [{source, rows: ["wind" | "waves" | "currents" | "tides"], run (as the source names it; CMEMS SMOC and sea level: the day it was published, yyyy-mm-dd), ' +
+            'published_at, next_due_at, state: "green" (more than 30 min ' +
+            'before the next run is due) | "orange" (from then until 60 min after) | "red" (later, or nothing loaded), reason, ' +
+            'pending_since (CMEMS SMOC and sea level: when a newer run appeared that Copernicus Marine is still writing, the run in use staying until it has finished; else null)}]. ' +
+            "`connectivity`: {online (null before the first request), since, lastOkAt, reason}: whether the data worker's last request reached a server. " +
             '`forecast` (null until a run is ready): {cycle, model, valid_from, valid_to, steps, params, coverage, storage: "decoded-on-disk", loaded_at, has_waves, ' +
             'source: "disk" (a complete decoded run was already on disk, no decode) | "grib" (decoded from the GRIB cache / download), ready_ms, fields_downloaded, ' +
             'decoded_dir, decoded_bytes (this run on disk), decoded_at, decode_ms, decoded_disk_bytes (all decoded runs kept), grib_cache_bytes, ' +
@@ -93,15 +122,20 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             'route_worker_held_bytes, route_worker_largest_recent_window, decoding_block_bytes}} — the decoded forecast is never resident; `memory` is what ' +
             "requests hold now (a route's corridor store while it runs, a query's window while it is answered). `process_rss_bytes`: the Signal K process RSS. " +
             "`currents` lists the data worker's current sources in priority order ({name, priority, resolutionM, bbox, validFrom, validTo}); " +
-            'the CMEMS-SMOC entry adds `smoc`: {run, run_last_time, stac_updated, settled, step_hours, horizon_hours, half_width_deg, ' +
+            'the CMEMS-SMOC entry adds `smoc`: {run (the store key: its last data hour, yyyymmddHH), run_last_time, stac_updated, metadata_modified (when the run appeared in the store), settled, ' +
+            'pending: {run, appeared_at} (a newer run Copernicus Marine is still writing while this one stays in use) | null, ' +
+            'updating (Copernicus Marine has started an update while the store still holds this run: no newer run to name yet), step_hours, horizon_hours, half_width_deg, ' +
             'resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, memory_bytes, ' +
             'shared_resident, last_download: {at, reason, bytes, chunks, downloaded, from_disk, seconds, decode_ms} | null, downloaded_bytes_total, disk_cache_bytes, layouts}. ' +
             '`currents_route_worker` is the same for the route worker (its own on-demand SMOC areas). ' +
+            '`rtofs` (null when RTOFS is off): {auto (the product that contains the vessel, the finest where two overlap) | null, auto_reason (why none: no vessel position, or no product covers it) | null, ' +
+            'extra (the extra products set), runs: [{product, run (yyyy-mm-dd)}] (the products loaded, each a current source RTOFS-<product>), unknown_extents (products whose extent is not known yet)}. ' +
             '`tides` (null when off or not loaded; `tides_enabled`, `tides_error`): the Copernicus Marine sea-level source {name, doi, datum, run, run_last_time, ' +
-            'stac_updated, settled, half_width_deg, horizon_hours, resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, ' +
+            "stac_updated, metadata_modified, settled, pending: {run, appeared_at} | null (as SMOC's), updating (as SMOC's), half_width_deg, horizon_hours, resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, " +
             'point_cache: {entries, bytes, queries, hits}, memory_bytes, last_download, last_point_query: {at, lat, lon, bytes, chunks, downloaded, from_disk, seconds, cached} | null, ' +
             'downloaded_bytes_total, disk_cache_bytes, layouts, mean_window_days}. ' +
             '`starting`: why the plugin is not answering yet (e.g. "starting: downloading the coastline (40 %)"), null once started; 503 answers carry the same text. ' +
+            '`forecast_loading`: while a forecast is fetched and decoded {phase (checking | decoding), why (first | redecode | update), cycle, done, total, started_at, text}, else null; until the first forecast is loaded, map and point requests answer 503 at once with Retry-After and {error, loading}. ' +
             '`overlay_tiles` (null before start): saved map tiles {dir, cap_bytes, files, bytes, hits, misses, writes, not_kept, generations, inflight}. ' +
             '`overlay_prebuild` (null before start): tiles built ahead of time {enabled, workers, workers_ready, paused, areas: [{kind: "view" | "boat", lat, lon, radius_m}], ' +
             'window: {from, to} | null, max_zoom, walk_started_at, seen, built, skipped, not_kept, errors, last_error, at: {area, hour, z} | null, complete, built_total, build_ms_avg}.',
@@ -115,7 +149,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           responses: {
             200: {
               description:
-                '{values, schema: {groups[{id,label,help}], settings[{key, group, label, type, unit, quantity, min, max, multipleOf, default, nullable, enum, maxLength, help, reload}]}}',
+                '{values, schema: {groups[{id,label,help}], settings[{key, group, label, type, unit, quantity, min, max, multipleOf, step, default, nullable, enum, maxLength, help, reload}]}}',
               content: {
                 'application/json': {
                   schema: { type: 'object', properties: { values: settingsValuesSchema(), schema: { type: 'object' } } },
@@ -136,6 +170,45 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             403: { description: 'Needs readwrite access' },
             500: { description: 'Saving failed' },
             503: { description: 'Plugin not started' },
+          },
+        },
+      },
+      '/api/prefs': {
+        get: {
+          summary:
+            "The web app's Setup choices every browser shares while Signal K runs with security off (no users, no application data). With security on they are each user's, in Signal K's application data, and this answers 405.",
+          responses: {
+            200: {
+              description: '{<choice>: string}, as the web app stores them; {} while there are none',
+              content: { 'application/json': { schema: { type: 'object', additionalProperties: { type: 'string' } } } },
+            },
+            405: { description: '{error}: security is on' },
+          },
+        },
+        post: {
+          summary:
+            "Change some of them: a JSON Patch of add / remove operations, as Signal K's application data takes, one top-level member each (\"/<name>\", RFC 6901 escapes), string values. All-or-nothing; saved to prefs.json in the plugin's data directory (kept by backups, not a cache). The web app and the Freeboard panel send add only, and send up the choices a browser holds that the record lacks when the page opens: a member removed here comes back from a browser that still holds it, as from a user's application data.",
+          requestBody: {
+            required: true,
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'array',
+                  maxItems: 200,
+                  items: {
+                    type: 'object',
+                    required: ['op', 'path'],
+                    properties: { op: { type: 'string', enum: ['add', 'remove'] }, path: { type: 'string' }, value: { type: 'string' } },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            200: { description: 'The choices after the change' },
+            400: { description: '{error}: not such a patch; nothing saved' },
+            405: { description: '{error}: security is on' },
+            413: { description: '{error}: over 200 operations, or the choices would be over 64 KB; nothing saved' },
           },
         },
       },
@@ -300,7 +373,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           summary:
             'Hourly point series of every conditions field, plus tide height, total water level and surge with the high and low waters',
           description:
-            'Rows: every conditions field (wind_ms, wind_dir_deg, swh_m, mwp_s, mwd_deg, current_ms, current_dir_deg, msl_pa, t2m_k, skt_k, precip_rate_ms, precip_type, precip_type_label, dewpoint_k, rh, feels_like_k, feels_like_basis, wind_chill_k, heat_index_k, beaufort, douglas, douglas_label, sea_state_index, sea_state, sea_state_partial) (current_ms and current_dir_deg are null where no current source has data: not slack water) plus `time` and the tide fields `tide_m` (tide height above mean sea level, m; Copernicus Marine ocean_tide, FES2014), ' +
+            'Rows: every conditions field (wind_ms, gust_ms, wind_dir_deg, swh_m, mwp_s, mwd_deg, current_ms, current_dir_deg, msl_pa, t2m_k, skt_k, precip_rate_ms, precip_type, precip_type_label, precip_m, snowfall_m, ssrd_wm2, strd_wm2, str_wm2, interval_h, cloud_cover, mucape_jkg, dewpoint_k, rh, feels_like_k, feels_like_basis, wind_chill_k, heat_index_k, beaufort, douglas, douglas_label, sea_state_index, sea_state, sea_state_partial) (current_ms and current_dir_deg are null where no current source has data: not slack water; gust_ms, precip_m, snowfall_m, the fluxes and interval_h are null when the extra or energy fields are off — precip_m/snowfall_m and the W/m² fluxes are the values of the interval_h-hour interval containing the sample time, 3 h to 144 h and 6 h past it) plus `time` and the tide fields `tide_m` (tide height above mean sea level, m; Copernicus Marine ocean_tide, FES2014), ' +
             '`water_level_m` (total water level above local mean sea level, m = total_sea_level − local mean), `surge_m` (non-tidal residual = water level − tide, m), ' +
             '`tide_extrapolated` (a bilinear corner is model land and took the value of valid cells within 2 cells, ~18 km), `tide_tendency` (rising / falling / steady within ±2 cm/h). ' +
             'Tide fields are null when tides are off or there is no model water within 2 cells. ' +
@@ -328,6 +401,13 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
         get: {
           summary:
             'Colour ramps for the heatmap layers: {key: {title, quantity, category, si_unit, kind, stops: [[SI value, css colour]], bands?, fade_below?}}; `category` is the Signal K unit category for display; `fade_below`: values under it fade to transparent (precipitation); `tide`: tide height above mean sea level, −3..+3 m diverging',
+          responses: { 200: { description: 'OK' } },
+        },
+      },
+      '/api/chart-groups': {
+        get: {
+          summary:
+            'The chart-layer presets a chartplotter panel offers: {groups: [{id, name, description, charts: [chart resource ids, colour layer first], legend: /api/legends key or null}], chart_rows: {chart id: [the /api/status freshness rows it is drawn from: wind, waves, currents, tides]}}; only the charts whose data is there now, and no group without any',
           responses: { 200: { description: 'OK' } },
         },
       },
@@ -430,7 +510,21 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               required: true,
               schema: {
                 type: 'string',
-                enum: ['wind', 'waves', 'current', 'sea_state', 'precip', 'temperature', 'sst', 'tide', 'barbs', 'arrows', 'isobars'],
+                enum: [
+                  'wind',
+                  'waves',
+                  'current',
+                  'sea_state',
+                  'precip',
+                  'temperature',
+                  'sst',
+                  'tide',
+                  'barbs',
+                  'arrows',
+                  'isobars',
+                  'seas',
+                  'wave_arrows',
+                ],
               },
             },
             { name: 'z', in: 'path', required: true, schema: { type: 'integer', minimum: 0, maximum: 18 } },
@@ -465,7 +559,21 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
               required: true,
               schema: {
                 type: 'string',
-                enum: ['wind', 'waves', 'msl', 'temperature', 'sst', 'precip', 'sea_state', 'current', 'tide', 'barbs', 'arrows', 'land'],
+                enum: [
+                  'wind',
+                  'waves',
+                  'msl',
+                  'temperature',
+                  'sst',
+                  'precip',
+                  'sea_state',
+                  'current',
+                  'tide',
+                  'barbs',
+                  'arrows',
+                  'seas',
+                  'land',
+                ],
               },
             },
             { name: 'z', in: 'path', required: true, schema: { type: 'integer', minimum: 0, maximum: 18 } },
@@ -505,7 +613,8 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           requestBody: { required: true, content: { 'application/json': { schema: routeRequest } } },
           responses: {
             202: { description: '{id, status, links}; Location header = links.self' },
-            400: { description: 'Invalid request' },
+            400: { description: 'Invalid request, or a vessel.polar token that is not in the library' },
+            413: { description: 'The request body is over 64 KB' },
             429: { description: 'Queue full (16 queued jobs)' },
             503: { description: 'Plugin not started' },
           },
@@ -534,7 +643,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           responses: {
             204: { description: 'Deleted' },
             404: { description: 'Not found' },
-            409: { description: 'Job is running' },
+            409: { description: "Job is running, or a departure window's (deleted with its window)" },
             503: { description: 'Plugin not started' },
           },
         },
@@ -585,6 +694,30 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           },
         },
       },
+      '/api/routes/{id}/meteogram': {
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        get: {
+          summary: "Conditions where the boat is at each step of a finished route's passage (meteogram)",
+          parameters: [
+            {
+              name: 'step_s',
+              in: 'query',
+              schema: { type: 'number', minimum: 600, maximum: 21600, default: 3600 },
+              description: 'Seconds between rows; raised when the passage would need more than 1000 rows',
+            },
+          ],
+          responses: {
+            200: {
+              description:
+                '{departure, arrival, step_s, step_raised, forecast_cycle, forecast_valid_to, regional_wind: [{name, cycle}], regional_wind_missing: [name], route_forecast_cycle, complete, rows: [{time, lon, lat, leg, mode, sog_ms, cog_deg, twa_deg, tack, beyond_forecast, wind_source, …the /api/conditions row fields}]}. The wind is layered from the regional models the route was computed with, as the router layers them; wind_source names the model that answered each row (ECMWF elsewhere). complete is false when the data changed while the rows were read (not kept; ask again for the newest).',
+            },
+            400: { description: 'Bad step_s, or a route without two timed points' },
+            404: { description: 'Not found' },
+            409: { description: 'Not finished' },
+            503: { description: 'Plugin not started, or the first forecast still loading' },
+          },
+        },
+      },
       '/api/routes/{id}/cancel': {
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         post: {
@@ -607,6 +740,132 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             502: { description: 'Resources API error' },
             503: { description: 'Plugin not started' },
           },
+        },
+      },
+      '/api/windows': {
+        post: {
+          summary: 'Departure window: the route computed for a series of departures, one route job each, one at a time',
+          requestBody: { required: true, content: { 'application/json': { schema: openApi30(WindowRequestSchema) } } },
+          responses: {
+            202: { description: '{id, status: "running", departures, links}' },
+            400: { description: '{error}' },
+            413: { description: 'The request body is over 64 KB' },
+            429: { description: 'Two windows are being computed already' },
+            503: { description: 'Plugin not started' },
+          },
+        },
+        get: {
+          summary: 'The departure windows, newest first',
+          parameters: [{ name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 12, default: 12 } }],
+          responses: {
+            200: { description: 'OK', content: { 'application/json': { schema: { type: 'array', items: windowDoc } } } },
+            503: { description: 'Plugin not started' },
+          },
+        },
+      },
+      '/api/windows/{id}': {
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        get: {
+          summary: 'A departure window: each departure with its status, route job and metrics',
+          responses: {
+            200: {
+              description:
+                '{id, status: "running" | "done" | "cancelled" | "failed", created_at, finished_at, error, request, progress, links, departures: [{departure, job_id, status: "pending" | "queued" | "running" | "done" | "failed" | "cancelled" | "skipped", error, metrics: {arrival, total_time_s, sailing_time_s, motoring_time_s, total_distance_m, max_wind_ms, max_swh_m, max_sea_index, upwind_time_s, beyond_forecast, warnings}}]}',
+              content: { 'application/json': { schema: windowDoc } },
+            },
+            404: { description: 'Not found' },
+            503: { description: 'Plugin not started' },
+          },
+        },
+        delete: {
+          summary: 'Delete a finished window and its route jobs',
+          responses: {
+            204: { description: 'Deleted' },
+            404: { description: 'Not found' },
+            409: { description: 'Still running, or cancelled with a departure still stopping' },
+          },
+        },
+      },
+      '/api/windows/{id}/cancel': {
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        post: {
+          summary:
+            'Cancel the departures not computed yet, and ask the one computing to stop: it stops when the route worker next checks, so DELETE answers 409 until then',
+          responses: { 202: { description: '{id, status}' }, 404: { description: 'Not found' } },
+        },
+      },
+      '/api/meshes': {
+        get: {
+          summary: 'The managed chart meshes: the catalogue rows and their state on this server',
+          description:
+            '{catalog_url, catalog_updated, catalog_error, catalog_problems (catalogue rows set aside that have no usable name: "row 4: no name"), store_dir, ' +
+            'meshes: [{name, title, description, source: "catalog" | "local", ticked, enabled, state: ' +
+            '"absent" | "downloading" | "ready" | "update" | "error" | "removing", progress: {files, total} | null, catalog_build_date, disk_build_date, bytes, error, ' +
+            'using, local_dir, local_build_date}]}. The catalogue is read at start and once a day; POST /api/meshes/refresh reads it now. ' +
+            'Each row is checked when read: one missing a field the plugin uses, or whose `archive` is not a bare .tar.zst file name, is set aside ' +
+            '(its row: state "error", error "the catalogue entry is unusable: …") and never downloaded.',
+          responses: { 200: { description: 'OK' }, 503: { description: 'Plugin not started' } },
+        },
+      },
+      '/api/meshes/{name}/{action}': {
+        parameters: [
+          {
+            name: 'name',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', pattern: '^[A-Za-z0-9_-]{1,64}$' },
+            description: 'The mesh name as the catalogue lists it (01CGD, 09CGD, …)',
+          },
+          {
+            name: 'action',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', enum: ['download', 'update', 'redownload', 'remove', 'cancel'] },
+          },
+        ],
+        post: {
+          summary:
+            "The plugin panel's per-mesh buttons (readwrite): download, update, redownload (fetch the current build afresh and swap it in when complete), remove, cancel",
+          description:
+            "Changes the download list in the plugin's own options (saved without a restart; download, update and redownload add the name, remove and cancel drop it), " +
+            'then reads the catalogue and runs a pass. Answers {downloads: [names], ...the body of GET /api/meshes}. 400 for a name that is not letters, digits, - or _, or an unknown action.',
+          responses: {
+            200: { description: '{downloads, catalog_url, catalog_updated, catalog_error, store_dir, meshes}' },
+            400: { description: '{error}' },
+            503: { description: 'Plugin not started' },
+          },
+        },
+      },
+      '/api/meshes/refresh': {
+        post: {
+          summary:
+            'Read the mesh catalogue now (readwrite), then download ticked meshes that are missing or have a newer build and delete unticked ones',
+          description:
+            'Waits for the catalogue read only (the downloads run on). Answers the same body as GET /api/meshes: 200 when the catalogue was read, ' +
+            '502 {error: "catalogue not read: …", catalog_url, catalog_updated, catalog_error, store_dir, meshes} when it was not.',
+          responses: {
+            200: { description: 'The mesh list, as GET /api/meshes' },
+            502: { description: 'The catalogue could not be read; the list as it stands' },
+            503: { description: 'Plugin not started' },
+          },
+        },
+      },
+      '/api/meshes/rough-cut': {
+        post: {
+          summary:
+            "Rebuild every chart mesh's rough cut for the boat's Signal K draught and air draft, in the background (readwrite); progress in GET /api/meshes `rough_cut`",
+          responses: {
+            202: { description: 'The rough-cut status: {running, done, total, last, error, draught_m, air_draft_m}' },
+            500: { description: 'Could not start' },
+            503: { description: 'Plugin not started' },
+          },
+        },
+      },
+      '/api/coastline/download': {
+        post: {
+          summary:
+            'Start (or retry now) the GSHHG coastline download (readwrite; works before a coastline is installed); progress in GET /api/status `coastline`',
+          responses: { 202: { description: '{status: "download requested; see /api/status coastline"}' } },
         },
       },
       '/api/openapi.json': {

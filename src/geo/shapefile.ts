@@ -16,6 +16,7 @@
  */
 
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { BBox } from './geodesy';
 import { bboxWidth, lonOffsetFromWest } from './geodesy';
 
@@ -26,15 +27,65 @@ export interface Ring {
   minLat: number;
   maxLon: number;
   maxLat: number;
+  /**
+   * Per edge k → k+1: 0 when it is a cut along a coastline tile's border (coasttiles.ts), not coastline; 1 coastline;
+   * 2 coastline a cut shortened, whose whole edge is in `whole`. Absent: every edge is coastline as it stands (a
+   * record read from the shapefile).
+   */
+  real?: Uint8Array;
+  /** The whole coastline edges of the edges with real[k] = 2, [x0, y0, x1, y1] each, in `wholeEdges` order. */
+  whole?: Float64Array;
+  /** Which edge each of `whole`'s edges is, ascending. */
+  wholeEdges?: Uint32Array;
+}
+
+/** Where edge k's whole coastline edge starts in `ring.whole`, or -1 when the edge stands as it is. */
+export function wholeAt(ring: Ring, k: number): number {
+  const e = ring.wholeEdges;
+  if (!e) return -1;
+  let lo = 0;
+  let hi = e.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (e[mid] === k) return 4 * mid;
+    if (e[mid] < k) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
 }
 
 export interface ShapePolygon {
+  /** GSHHG nesting level; ordinary land polygons default to 1. */
+  level?: number;
   recordNumber: number;
   minLon: number;
   minLat: number;
   maxLon: number;
   maxLat: number;
   rings: Ring[];
+}
+
+/** Recognize only standard GSHHS layer names; OSM/custom polygons remain land. */
+export function shorelineLevel(file: string): number {
+  return Number(/^GSHHS_[fhilc]_L([1-4])\.shp$/i.exec(path.basename(file))?.[1] ?? 1);
+}
+
+/** A configured GSHHS layer means the complete same-resolution hierarchy. */
+export function shorelinePaths(files: string[]): string[] {
+  const out = new Set<string>();
+  for (const file of files) {
+    if (/^GSHHS_[fhilc]_L[1-4]\.shp$/i.test(path.basename(file))) {
+      for (let level = 1; level <= 4; level++) {
+        const sibling = file.replace(/_L[1-4](\.shp)$/i, `_L${level}$1`);
+        if (!fs.existsSync(sibling))
+          throw new Error(
+            `Incomplete GSHHG hierarchy: missing ${sibling}; supply levels 1–4 or clear the coastline setting to download them`
+          );
+        out.add(sibling);
+      }
+    } else out.add(file);
+  }
+  return [...out].sort((a, b) => shorelineLevel(a) - shorelineLevel(b));
 }
 
 export class ShapefileError extends Error {
@@ -46,6 +97,32 @@ export class ShapefileError extends Error {
 
 const SHAPE_NULL = 0;
 const SHAPE_POLYGON = 5;
+
+/**
+ * Record scratch buffers reused across calls (one set per thread: each
+ * worker has its own module instance). A record is read into `content`
+ * and parsed before the next read, so one buffer per use serves; it grows
+ * to the largest record met (GSHHG's continents, tens of MB) and is kept.
+ * Allocating it per call churned that through the allocator, which keeps
+ * the freed space (brain, 2026-10-06).
+ */
+const CONTENT_BASE = 1 << 20;
+const PTS_BASE = 1 << 12;
+let contentScratch = Buffer.alloc(CONTENT_BASE);
+function contentBuffer(n: number): Buffer {
+  if (contentScratch.length < n) contentScratch = Buffer.alloc(n);
+  return contentScratch;
+}
+let ptsScratch = new Float64Array(PTS_BASE);
+/**
+ * After a read: drop a scratch grown past its base size (a continent's
+ * record is 13–27 MB), so a worker does not keep its largest record's
+ * buffer for good (brain, 2026-10-06: 13–27 MB in each of four workers).
+ */
+function releaseScratch(): void {
+  if (contentScratch.length > CONTENT_BASE) contentScratch = Buffer.alloc(CONTENT_BASE);
+  if (ptsScratch.length > PTS_BASE) ptsScratch = new Float64Array(PTS_BASE);
+}
 const SHAPE_POLYGON_Z = 15;
 const SHAPE_POLYGON_M = 25;
 
@@ -141,7 +218,7 @@ function parseRecord(
     }
     rings.push({ coords, minLon: rMinLon, minLat: rMinLat, maxLon: rMaxLon, maxLat: rMaxLat });
   }
-  return rings.length ? { recordNumber, minLon, minLat, maxLon, maxLat, rings } : null;
+  return rings.length ? { level: shorelineLevel(shpPath), recordNumber, minLon, minLat, maxLon, maxLat, rings } : null;
 }
 
 /**
@@ -155,8 +232,6 @@ export function readShapefilePolygons(shpPath: string, clip?: BBox): ShapePolygo
     const out: ShapePolygon[] = [];
     const recHeader = Buffer.alloc(8);
     let pos = 100;
-    // Reusable buffer for record contents, grown on demand.
-    let content = Buffer.alloc(1 << 20);
 
     while (pos + 8 <= fileLengthBytes) {
       if (fs.readSync(fd, recHeader, 0, 8, pos) !== 8) break;
@@ -164,7 +239,7 @@ export function readShapefilePolygons(shpPath: string, clip?: BBox): ShapePolygo
       const contentLen = recHeader.readInt32BE(4) * 2;
       pos += 8;
       if (contentLen < 4) throw new ShapefileError(`${shpPath}: record ${recordNumber} has length ${contentLen}`);
-      if (contentLen > content.length) content = Buffer.alloc(contentLen);
+      const content = contentBuffer(contentLen);
       if (fs.readSync(fd, content, 0, contentLen, pos) !== contentLen) {
         throw new ShapefileError(`${shpPath}: truncated record ${recordNumber}`);
       }
@@ -175,6 +250,7 @@ export function readShapefilePolygons(shpPath: string, clip?: BBox): ShapePolygo
     return out;
   } finally {
     fs.closeSync(fd);
+    releaseScratch();
   }
 }
 
@@ -339,11 +415,9 @@ export class ShapefileIndex {
     if (hits.length === 0) return false;
     const fd = fs.openSync(this.path, 'r');
     try {
-      let content = Buffer.alloc(1 << 16);
-      let pts = new Float64Array(1 << 12);
       for (const i of hits) {
         const len = this.length[i];
-        if (len > content.length) content = Buffer.alloc(len);
+        const content = contentBuffer(len);
         if (fs.readSync(fd, content, 0, len, this.offset[i]) !== len)
           throw new ShapefileError(`${this.path}: truncated record ${this.recNo[i]}`);
         if (content.readInt32LE(0) === SHAPE_NULL) continue;
@@ -353,7 +427,8 @@ export class ShapefileIndex {
         if (pointsOff + 16 * numPoints > len)
           throw new ShapefileError(`${this.path}: record ${this.recNo[i]} declares ${numPoints} points but has ${len} bytes`);
         // Copy the coordinates into an aligned Float64Array (little-endian hosts).
-        if (pts.length < 2 * numPoints) pts = new Float64Array(2 * numPoints);
+        if (ptsScratch.length < 2 * numPoints) ptsScratch = new Float64Array(2 * numPoints);
+        const pts = ptsScratch;
         const bytes = new Uint8Array(pts.buffer, 0, 16 * numPoints);
         content.copy(bytes, 0, pointsOff, pointsOff + 16 * numPoints);
         let inside = false;
@@ -376,6 +451,7 @@ export class ShapefileIndex {
       return false;
     } finally {
       fs.closeSync(fd);
+      releaseScratch();
     }
   }
 
@@ -387,21 +463,52 @@ export class ShapefileIndex {
 
   private eachRecord(idx: number[], fn: (s: ShapePolygon) => void): void {
     if (idx.length === 0) return;
-    const fd = fs.openSync(this.path, 'r');
+    const r = this.openReader();
     try {
-      let content = Buffer.alloc(1 << 20);
       for (const i of idx) {
-        const len = this.length[i];
-        if (len > content.length) content = Buffer.alloc(len);
-        if (fs.readSync(fd, content, 0, len, this.offset[i]) !== len) {
-          throw new ShapefileError(`${this.path}: truncated record ${this.recNo[i]}`);
-        }
-        const shape = parseRecord(content, len, this.recNo[i], this.shapeType, this.path);
+        const shape = r.decode(i);
         if (shape) fn(shape);
       }
     } finally {
-      fs.closeSync(fd);
+      r.close();
     }
+  }
+
+  /** Index positions (ascending = file order) of the records whose box intersects `clip`. */
+  hitIndices(clip: BBox): number[] {
+    const hits: number[] = [];
+    for (let i = 0; i < this.count; i++) {
+      if (boxIntersects(clip, this.minLon[i], this.minLat[i], this.maxLon[i], this.maxLat[i])) hits.push(i);
+    }
+    return hits;
+  }
+
+  /** Record number of index position `i`. */
+  recordNumber(i: number): number {
+    return this.recNo[i];
+  }
+
+  /**
+   * A reader that decodes records by index position with one open file
+   * (the polygon cache decodes only the records it lacks, in file order).
+   * `decode` returns null for null shapes and shapes without a ring.
+   */
+  openReader(): { decode: (i: number) => ShapePolygon | null; close: () => void } {
+    const fd = fs.openSync(this.path, 'r');
+    return {
+      decode: (i: number): ShapePolygon | null => {
+        const len = this.length[i];
+        const content = contentBuffer(len);
+        if (fs.readSync(fd, content, 0, len, this.offset[i]) !== len) {
+          throw new ShapefileError(`${this.path}: truncated record ${this.recNo[i]}`);
+        }
+        return parseRecord(content, len, this.recNo[i], this.shapeType, this.path);
+      },
+      close: () => {
+        fs.closeSync(fd);
+        releaseScratch();
+      },
+    };
   }
 }
 

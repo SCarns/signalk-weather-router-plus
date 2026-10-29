@@ -9,6 +9,8 @@
  *       --departure 2026-09-28T12:00:00Z -o route.geojson
  *
  * `--no-forecast` runs with calm wind (motor timing only).
+ * The coastline is read from its tiles (geo/coasttiles.ts), cut on first use
+ * into `--tiles <dir>` (default: wrp-coast-tiles in the system temp folder).
  * Waypoints: `--via "lat,lon[@radius_m];lat,lon"`; each waypoint ends one
  * leg and starts the next. `--precision precise|approximate` (default
  * precise: each leg ends exactly on its waypoint; approximate: one search
@@ -20,11 +22,14 @@
  */
 
 import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { NM_M, KTS_TO_MS, HOUR_S } from './geo/units';
 import { loadForecastForBBox, resolveCycle } from './data/loader';
 import { EcmwfClient, ECMWF_MIRRORS } from './data/ecmwf';
 import { bboxFromLonLat } from './geo/geodesy';
 import { LandMask } from './geo/landmask';
+import { CoastTiles } from './geo/coasttiles';
 import { runLegPipeline, type LegPipelineInputs } from './engine/pipeline';
 import { NoCurrent } from './engine/environment';
 import { defaultSettings } from './plugin/settings';
@@ -61,6 +66,7 @@ async function main(): Promise<void> {
   const landArg = arg('land');
   if (!landArg) throw new Error('--land <shapefile>[,<shapefile>...] is required');
   const land = landArg.split(',');
+  const coast = CoastTiles.build(land, arg('tiles') ?? path.join(os.tmpdir(), 'wrp-coast-tiles'), m => console.log(m));
   const polarPath = arg('polar');
   const mode = arg('mode', 'sail_max') as ModePolicy;
   const hours = Number(arg('hours', '72'));
@@ -116,7 +122,7 @@ async function main(): Promise<void> {
   const landFor = (b: ReturnType<typeof bboxFromLonLat>): LandMask => {
     const t1 = Date.now();
     const r = LandMask.chooseResolution(b);
-    const m = LandMask.fromShapefiles(land, b, { resolutionDeg: r });
+    const m = LandMask.fromCoastline(coast, b, { resolutionDeg: r });
     log(
       `land mask: box W${b.west.toFixed(2)} S${b.south.toFixed(2)} E${b.east.toFixed(2)} N${b.north.toFixed(2)}, ${m.shapes.length} polygons, ${m.nx}x${m.ny} cells at ${r}°, ${Date.now() - t1} ms`
     );

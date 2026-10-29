@@ -15,14 +15,20 @@
  */
 
 import type { ManagedPolar } from './managedpolar';
-import type { ResolvedConfig } from './config';
-import type { ModePolicy } from '../engine/legsim';
+import type { ConditionsRow } from './overlays';
+import type { AvoidArea } from '../geo/avoid';
+import type { ResolvedConfig, SelfDesign } from './config';
 import type { BBox } from '../geo/geodesy';
 import type { DecodedIndex } from '../data/decoded';
 import type { SerializedSmoc, SmocStatus } from '../currents/smoc';
+import type { SerializedRtofsSet } from '../currents/rtofs';
 import type { SerializedHarmonic } from '../currents/harmonic';
+import type { BuilderCurrentsRef } from '../currents/fromcache';
 import type { TideStatus } from '../tides/sealevel';
 import type { ArcoRun } from '../data/arco';
+import type { TileId } from './tiles';
+import type { RouteRequest } from './request_schema';
+import type { JobProgress, JobStatus, RouteSummary } from './response_schema';
 
 /** data: forecast, currents, map queries; route: the engine; tiles: builds map tiles ahead of time (prebuild.ts). */
 export type WorkerRole = 'data' | 'route' | 'tiles';
@@ -32,90 +38,30 @@ export interface VesselPosition {
   lon: number;
 }
 
-export interface RouteRequest {
-  start: { lat: number; lon: number };
-  end: { lat: number; lon: number };
-  /**
-   * Intermediate waypoints; each ends one leg and starts the next.
-   * radius_m overrides arrival_radius_m for that waypoint (approximate).
-   */
-  waypoints?: { lat: number; lon: number; radius_m?: number }[];
-  /** "precise" (default): each leg ends exactly on its waypoint; "approximate": one search through the waypoint circles. */
-  precision?: 'precise' | 'approximate';
-  /** Waypoint circle radius in approximate mode, metres (default 200, 0..5000, > 0 when approximate). */
-  arrival_radius_m?: number;
-  departure?: string;
-  mode?: ModePolicy;
-  sail_thresh_ms?: number;
-  /** Wind speed (m/s) and significant wave height (m) a leg must not exceed; default from routing.maxWind / routing.maxSwh. */
-  max_wind_ms?: number;
-  max_swh_m?: number;
-  /** RDP simplification tolerance, metres (0 = off); default from routing.simplify. */
-  simplify_m?: number;
-  /** Run the shortcut smoother; default from routing.smoother. */
-  smoother?: boolean;
-  /** Smoother time tolerance, ratio; default from routing.smootherTolerance. */
-  smoother_tolerance?: number;
-  name?: string;
-  stages?: number;
-  no_forecast?: boolean;
-  no_currents?: boolean;
-  /** auto (default): regional wind layered over ECMWF where available; ecmwf: ECMWF only. */
-  wind_model?: 'auto' | 'ecmwf';
-  publish?: boolean;
-  vessel?: {
-    name?: string;
-    motor_speed_ms?: number;
-    /** Share of the polar's boat speeds achieved under sail, ratio 0.3..1.2 (default from settings). */
-    polar_performance?: number;
-    /** Polar token from GET /api/polars (`default` or a library file name). */
-    polar?: string;
-  };
-}
+/** The route request: its type comes from the schema that also validates it and documents it (request_schema.ts). */
+export type { RouteRequest };
 
-export type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
-
-export interface JobProgress {
-  time: string;
-  stage: number;
-  total: number;
-  message: string;
-}
-
-export interface RouteSummary {
-  total_distance_m: number;
-  total_time_s: number;
-  sailing_time_s: number;
-  motoring_time_s: number;
-  waypoint_count: number;
-  warnings: number;
-  departure: string;
-  arrival: string;
-  forecast_cycle?: string;
-  current_sources?: string[];
-  /** Label of the polar the route was computed with, or null when motor-only. */
-  polar?: string | null;
-  /** Polar performance applied (ratio; 1 = the polar as written). */
-  polar_performance?: number;
-  polar_source?: 'signalk' | 'internal';
-  /** Automatic vias placed at narrow passages (not waypoints of the route). */
-  auto_vias?: { name: string; width_m: number }[];
-  /** Routes with waypoints: number of legs and the waypoint precision used. */
-  legs?: number;
-  precision?: 'precise' | 'approximate';
-  /** A leg's corridor search failed and ran on the coarse per-route skeleton (counted in /api/status corridor_fallbacks). */
-  corridor_fallback?: true;
-  /** Regional wind models used and the share of the search's wind samples each answered (0..1); absent when only ECMWF was used. */
-  regional_wind?: { name: string; run: string; share: number }[];
-}
+/** The job document's parts: their types come from the schemas that also document them (response_schema.ts). */
+export type { JobStatus, JobProgress, RouteSummary };
 
 export type QueryKind =
-  'field' | 'currents' | 'wind_points' | 'conditions' | 'pressure' | 'land_mask' | 'tide_series' | 'weather_point' | 'forecast_info';
+  | 'field'
+  | 'currents'
+  | 'wind_points'
+  | 'sea_points'
+  | 'conditions'
+  | 'pressure'
+  | 'land_mask'
+  | 'tide_series'
+  | 'weather_point'
+  | 'forecast_info'
+  | 'track_conditions';
 
 export interface QueryArgs {
   field: { layer: string; bbox: BBox; timeMs: number; res: number };
   currents: { bbox: BBox; timeMs: number; res: number };
   wind_points: { bbox: BBox; timeMs: number; res: number };
+  sea_points: { bbox: BBox; timeMs: number; res: number };
   conditions: { lon: number; lat: number; fromMs: number; hours: number; stepH: number };
   /** Current-hour conditions sample points for one XYZ tile. */
   /** `mercator`: rows evenly spaced in Web Mercator y (a map tile), else in latitude. */
@@ -128,6 +74,29 @@ export interface QueryArgs {
   weather_point: { lat: number; lon: number; startMs: number | null; maxCount: number | null; observation?: boolean };
   /** GET /api/forecast samples at a point (result the `samples` array). */
   forecast_info: { lat: number; lon: number };
+  /**
+   * Conditions at each (position, time) of a route's track, for its meteogram (result TrackConditions).
+   * `regional`: the regional wind models the route was computed with (its summary's regional_wind), layered over
+   * ECMWF as the router layers them, each with the run (yyyymmddHH) the data worker last reported decoded for it
+   * (null: none). The query is the saved answer's key (tiles.ts), so a newer run is a new query and a fresh answer;
+   * an answer read from another run than the one named is not kept.
+   */
+  track_conditions: { points: { lon: number; lat: number; tMs: number }[]; regional?: { name: string; cycle: string | null }[] };
+}
+
+/** A track row: the conditions, and the wind model that answered its wind (a regional model's name, or ECMWF). */
+export type TrackConditionsRow = ConditionsRow & { wind_source: string };
+
+/** The `track_conditions` answer: the runs sampled and one row per point, in order. */
+export interface TrackConditions {
+  /** Cycle and last valid time of the ECMWF run the rows were sampled from (ISO 8601). */
+  cycle: string;
+  validTo: string;
+  /** The regional wind runs layered over it (cycle ISO 8601). */
+  regional: { name: string; cycle: string }[];
+  /** Regional models the route used that have no decoded run here now: ECMWF answers there instead. */
+  regionalMissing: string[];
+  rows: TrackConditionsRow[];
 }
 
 /** The decoded run in use: where it is on disk and its index (relayed data worker → main → route worker). */
@@ -173,6 +142,74 @@ export interface LandCacheStatus {
   builds: number;
   hits: number;
   last_build_ms: number;
+  /** The thread's decoded-polygon cache (geo/polygoncache.ts). */
+  polygons?: { entries: number; bytes: number; budget_bytes: number; hits: number; decodes: number; evictions: number };
+}
+
+/**
+ * What the data worker is doing to get a forecast (null when idle):
+ * finding the cycle, then decoding it step by step (downloading what is
+ * not in the GRIB cache). `why`: no decoded run on disk yet ('first'), the
+ * runs on disk do not fit the settings or are incomplete ('redecode'), or a
+ * newer cycle while a run serves ('update').
+ */
+export interface ForecastLoading {
+  phase: 'checking' | 'decoding';
+  why: 'first' | 'redecode' | 'update';
+  /** The cycle being decoded (ISO), once known. */
+  cycle: string | null;
+  /** Steps decoded and written, and of how many (0 / null until the first step). */
+  done: number;
+  total: number | null;
+  startedAt: string;
+}
+
+/**
+ * What the last check of a source found, said plainly:
+ *  - newest: the server answered and the run in use is the newest published
+ *    (for ECMWF also: the newest cycle due by the clock is already in use);
+ *  - could-not-check: the server could not be asked (no connection, or it
+ *    failed); the run in use stays, not known to be the newest;
+ *  - new-run: a newer run was fetched and is now in use;
+ *  - failed: the server answered but the new run could not be loaded
+ *    (download, decode, memory or disk guard).
+ */
+export type CheckOutcome = 'newest' | 'could-not-check' | 'new-run' | 'failed';
+
+export interface SourceCheck {
+  outcome: CheckOutcome;
+  /** When the check ended, ISO. */
+  at: string;
+  reason: string | null;
+}
+
+/** The data worker's sources, by the key their check is kept under: RTOFS per product (`rtofs:west_atl`). */
+export type CheckedSource = 'ecmwf' | 'smoc' | 'tides' | `rtofs:${string}`;
+
+/**
+ * RTOFS as the data worker chose it: the product that contains the vessel
+ * (null, with the reason, when there is no position or none does), the
+ * extra products from the settings, each loaded product's run (yyyy-mm-dd),
+ * and the products whose extent is not known yet.
+ */
+export interface RtofsStatus {
+  auto: string | null;
+  autoReason: string | null;
+  extra: string[];
+  runs: { product: string; run: string }[];
+  unknownExtents: string[];
+}
+
+/** What the data worker's own requests found about the connection (http.ts setNetworkObserver). */
+export interface Connectivity {
+  /** null until the first request. */
+  online: boolean | null;
+  /** When the current state began, ISO. */
+  since: string | null;
+  /** Last answer from any server, ISO. */
+  lastOkAt: string | null;
+  /** Why it is offline (null when online). */
+  reason: string | null;
 }
 
 export interface DataStatus {
@@ -210,7 +247,8 @@ export interface DataStatus {
     /** CMEMS SMOC only: run, resident / on-demand areas, memory, downloads. */
     smoc?: SmocStatus;
   }[];
-  rtofsRun: string | null;
+  /** null when RTOFS is off. */
+  rtofs: RtofsStatus | null;
   /** On-demand overlay land rasters (LRU). */
   land: LandCacheStatus | null;
   /** Copernicus Marine sea level (tides): run, resident / on-demand map areas, point cache, downloads; null when off or not loaded. */
@@ -219,6 +257,11 @@ export interface DataStatus {
   tidesError: string | null;
   /** Regional runs decoded from signalk-grib-downloader (data worker), per source. */
   regional: RegionalDecodeState[];
+  /** The last check of each source, and what it found. */
+  checks: Partial<Record<CheckedSource, SourceCheck>>;
+  connectivity: Connectivity;
+  /** Tidal-harmonic files that failed to load ("file: reason"). */
+  harmonicErrors: string[];
 }
 
 /** One regional source's decode state. */
@@ -232,6 +275,8 @@ export interface RegionalDecodeState {
   decodeMs: number;
   decodedAt: string | null;
   error: string | null;
+  /** Why the source is not decoded or used for routes (not finer than the global forecast), or absent. */
+  skipped?: string;
 }
 
 export type MainToWorker =
@@ -239,12 +284,25 @@ export type MainToWorker =
   /**
    * data worker: check ECMWF/NOMADS/Copernicus and reload the forecast and currents; route worker: reload RTOFS from the disk cache.
    * `position`: the vessel's position (Signal K navigation.position), centre of the SMOC resident area; null when unknown.
+   * `user`: the owner asked (Refresh, a route): the round downloads whatever the internet state.
    */
-  | { type: 'refresh'; force?: boolean; position?: VesselPosition | null }
+  | { type: 'refresh'; force?: boolean; position?: VesselPosition | null; user?: boolean }
+  /**
+   * data worker: why background downloads wait now, or null (plugin/internet.ts). A background round under way
+   * skips the sources it has not reached, and its forecast decode stops.
+   */
+  | { type: 'internet-hold'; hold: string | null }
   /** route worker: adopt the data worker's SMOC run and resident area (shared memory, relayed by the main thread). */
   | { type: 'smoc'; smoc: SerializedSmoc | null }
+  /** The data worker's RTOFS products (SharedArrayBuffer views: relaying shares, not copies). */
+  | { type: 'rtofs'; rtofs: SerializedRtofsSet | null }
   /** route worker: adopt the data worker's tidal-harmonic sources (shared constituent blocks, relayed by the main thread). */
   | { type: 'harmonic'; sources: SerializedHarmonic[] }
+  /**
+   * tiles workers (separate processes, no shared memory): where the data worker's currents are on disk; each loads
+   * them itself (currents/fromcache.ts) instead of being sent copies.
+   */
+  | { type: 'currents-ref'; ref: BuilderCurrentsRef }
   /** route worker: the decoded run to read route areas from (null: none yet). */
   | { type: 'forecast'; run: ForecastRunInfo | null }
   /** Settings changed: new config; reload what `reload` names (data worker: forecast, currents and tides; route worker: currents from disk). */
@@ -254,27 +312,59 @@ export type MainToWorker =
       reload: { forecast: boolean; currents: boolean; tides?: boolean };
       position?: VesselPosition | null;
     }
-  | { type: 'route'; id: string; request: RouteRequest; managedPolar?: ManagedPolar }
+  /** avoid: the areas to avoid marked on Signal K notes, read by the main thread (the workers have no Resources API). */
+  | { type: 'route'; id: string; request: RouteRequest; avoid?: AvoidArea[]; self?: SelfDesign; managedPolar?: ManagedPolar }
   | { type: 'query'; id: number; kind: QueryKind; args: QueryArgs[QueryKind] }
+  /**
+   * tiles workers: answer a tile's query, encode it as the store saves it (tiles.ts encodeTile) and write it to `tmp`
+   * (the store's temporary file beside the tile); the main thread moves it into place (TileStore.adopt).
+   */
+  | { type: 'build-tile'; id: number; tile: TileId; tmp: string }
   /** tiles workers: the data worker's tide run (null: tides off or not loaded). */
   | { type: 'tides-run'; run: ArcoRun | null }
   /** Drop a query that has not started (its HTTP client went away); one that has started completes. */
   | { type: 'query-cancel'; id: number }
   | { type: 'shutdown' };
 
+/**
+ * The identity of the data an answer was computed from, as the worker that
+ * answered it read it (worker/query.ts answer): the forecast run actually
+ * read (readWindow falls back to the run that became current when the one
+ * it chose was pruned meanwhile), the SMOC run and settledness, the RTOFS
+ * run, and the tide run and settledness, all as sampled. The main thread
+ * serves and saves an answer only when this matches what it holds now; on
+ * a mismatch it asks again (tiles.ts TileService, prebuild.ts).
+ */
+export interface DataStamp {
+  /** The decoded run read, null when the query kind reads no forecast (the current and arrows layers, the tide series): not compared, unlike a missing source. */
+  forecast: { cycleMs: number; params: string[] } | null;
+  /** The SMOC run sampled, null when SMOC is off or not loaded. */
+  smoc: { key: string; settled: boolean } | null;
+  /** The RTOFS products sampled, each with its run; empty when RTOFS is off or not loaded. */
+  rtofs: { product: string; runMs: number }[];
+  /** The tide run sampled, null when tides are off or not loaded. */
+  tide: { key: string; settled: boolean } | null;
+}
+
 export type WorkerToMain =
   | { type: 'ready'; role: WorkerRole }
   | { type: 'log'; level: 'debug' | 'info' | 'error'; message: string }
   /** data worker: a decoded run is ready (decoded now or found on disk). */
   | { type: 'forecast'; run: ForecastRunInfo }
-  | { type: 'forecast-unchanged'; cycleTimeMs: number }
+  /** data worker: what a forecast check found (the error line clears only on newest or new-run). */
+  | { type: 'forecast-check'; check: SourceCheck }
   /** route worker: forecast memory it holds (the corridor store while a route runs). */
   | { type: 'forecast-memory'; memory: ForecastMemory }
   | { type: 'refresh-error'; message: string }
-  | { type: 'currents'; status: DataStatus['currents']; rtofsRun: string | null }
+  /** data worker: forecast loading progress (null when it stops, done or failed). */
+  | { type: 'forecast-loading'; loading: ForecastLoading | null }
+  /** `rtofsRuns`: each loaded RTOFS product and its run ("west_atl 2026-10-22"). */
+  | { type: 'currents'; status: DataStatus['currents']; rtofsRuns: string[] }
   | { type: 'data-status'; status: DataStatus }
   /** data worker: SMOC run / resident area changed (SharedArrayBuffer views: relaying shares, not copies). */
   | { type: 'smoc'; smoc: SerializedSmoc | null }
+  /** data worker: the RTOFS products loaded (SharedArrayBuffer views, relayed to the route and tiles workers). */
+  | { type: 'rtofs'; rtofs: SerializedRtofsSet | null }
   /** data worker: the tide run in use (relayed to tiles workers, which open it themselves). */
   | { type: 'tides-run'; run: ArcoRun | null }
   /** data worker: tidal-harmonic sources loaded (shared constituent blocks). */
@@ -294,5 +384,7 @@ export type WorkerToMain =
     }
   | { type: 'error'; id: string; message: string; cancelled?: boolean }
   /** `complete`: false when an on-demand current / tide load missed its deadline or failed (do not cache). */
-  | { type: 'query-result'; id: number; result: unknown; complete: boolean }
+  | { type: 'query-result'; id: number; result: unknown; complete: boolean; stamp: DataStamp }
+  /** tiles worker: a 'build-tile' answered; `complete` false: nothing written (do not keep), else `bytes` written to its `tmp`. */
+  | { type: 'tile-built'; id: number; bytes: number; complete: boolean; stamp: DataStamp }
   | { type: 'query-error'; id: number; message: string };

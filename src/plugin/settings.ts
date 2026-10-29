@@ -15,23 +15,30 @@
  * to SI.
  */
 
+import { DRAWBRIDGE_CHOICES, type DrawbridgeChoice } from '../engine/mesh/route';
 import * as fs from 'node:fs';
 import { HOUR_S } from '../geo/units';
 import * as path from 'node:path';
 import { KTS_TO_MS } from '../geo/geodesy';
 import { RTOFS_REGIONS } from '../currents/rtofs';
 import type { LegacyPluginConfig } from './config';
+import { DEFAULT_ROUTER, ROUTER_KINDS, type RouterKind } from '../engine/router';
+import { DEFAULT_OVERHEAD_M, DEFAULT_UKC_M, OVERHEAD_M_RANGE, UKC_M_RANGE } from '../vessel/vessel';
 
 export interface AppSettings {
   vessel: {
     motorSpeed: number;
     polarPerformance: number;
+    underKeelClearance: number;
+    overheadClearance: number;
   };
   forecast: {
     horizon: number;
     refreshInterval: number;
     keepCycles: number;
     extraFields: boolean;
+    /** Also tp, ssrd, sf, strd, str, mucape, for energy modelling (off by default: about doubles the download). */
+    energyFields: boolean;
     /** Bytes that must stay free after the forecast loads (memory guard). */
     memoryHeadroom: number;
     /** Folder of signalk-grib-downloader's runs; empty = find it (its config, else ~/.signalk/gribs). */
@@ -39,20 +46,17 @@ export interface AppSettings {
   };
   currents: {
     smocEnabled: boolean;
-    smocHorizon: number;
     smocStep: number;
     smocHalfWidth: number;
     rtofsEnabled: boolean;
-    rtofsRegion: string;
-    rtofsHorizon: number;
+    /** RTOFS products loaded wherever the vessel is, besides the one that contains it. */
+    rtofsExtra: string[];
     rtofsStep: number;
   };
   tides: {
     enabled: boolean;
     /** Half-width of the resident tide-height map area around the vessel, degrees. */
     halfWidth: number;
-    /** How far ahead the resident tide-height map area reaches, s. */
-    horizon: number;
   };
   routing: {
     stages: number;
@@ -60,12 +64,23 @@ export interface AppSettings {
     headings: number;
     headingIncrement: number;
     sailThreshold: number;
+    /** Seconds lost per tack or gybe, charged by both routers. */
+    tackPenalty: number;
+    /** On a chart mesh leg, keep at least this far (m) from every triangle the boat cannot use; 0 = none. */
+    navigableBuffer: number;
+    /** Keep at least this far (m) from the coastline; 0 = none. */
+    landBuffer: number;
+    /** Opening bridges on chart-mesh legs: ask, open or avoid. */
+    drawbridges: DrawbridgeChoice;
+    /** Seconds added at each opening bridge the route passes under. */
+    bridgeWait: number;
     /** Polar rows closer to the wind than this (degrees) are ignored; 0 = the polar as written. */
     noGoMinAngle: number;
     /** A leg is not allowed where the wind speed (m/s) exceeds this; null = no limit. */
     maxWind: number | null;
     /** A leg is not allowed where the significant wave height (m) exceeds this; null = no limit. */
     maxSwh: number | null;
+    comfortWeight: number;
     simStep: number;
     landRasterMaxCells: number;
     /** Let routes use known ship canals (Corinth, Cape Cod, Kiel, Suez, …) where the coastline data shows them as water. */
@@ -76,6 +91,8 @@ export interface AppSettings {
     smoother: boolean;
     /** Smoother time tolerance, ratio (0.05 = a shortcut may be 5% slower). */
     smootherTolerance: number;
+    /** Open-water router by default: standard (the isochrone search) or refined. */
+    router: RouterKind;
     keepJobs: number;
   };
   publish: {
@@ -112,7 +129,8 @@ export interface SettingSpec {
   key: string;
   group: SettingsGroup;
   label: string;
-  type: 'number' | 'integer' | 'boolean' | 'string' | 'enum';
+  /** enumList: a list of `enum` values (checkboxes), each at most once, kept in the enum's order. */
+  type: 'number' | 'integer' | 'boolean' | 'string' | 'enum' | 'enumList';
   /** SI unit of the stored value ('m', 'm/s', 's', 'deg'), absent for dimensionless values. */
   unit?: string;
   quantity?: Quantity;
@@ -122,9 +140,18 @@ export interface SettingSpec {
   multipleOf?: number;
   /** Value must be one of these (SI), e.g. [3600, 10800] for a 1 h or 3 h step. */
   oneOf?: readonly number[];
-  default: number | boolean | string | null;
+  /**
+   * The Defaults tab's slider step (SI), converted to the user's unit by
+   * the page; a whole multiple of `multipleOf` where that is set. Every
+   * numeric setting has one (the owner's decision, 2026-10-08: numbers on
+   * the Defaults tab are sliders, not text boxes).
+   */
+  step?: number;
+  default: number | boolean | string | readonly string[] | null;
   nullable?: boolean;
   enum?: readonly string[];
+  /** enum / enumList: text shown beside each value (unit tokens as in `help`). */
+  enumHelp?: Readonly<Record<string, string>>;
   maxLength?: number;
   /**
    * Shown under the setting. Quantities in it are tokens {<Signal K unit
@@ -133,6 +160,8 @@ export interface SettingSpec {
    */
   help: string;
   reload: ReloadKind;
+  /** What else a change re-does (the forecast horizon is every source's horizon). */
+  alsoReload?: readonly ReloadKind[];
 }
 
 export const SETTINGS_GROUPS: { id: SettingsGroup; label: string; help: string }[] = [
@@ -141,7 +170,7 @@ export const SETTINGS_GROUPS: { id: SettingsGroup; label: string; help: string }
   {
     id: 'currents',
     label: 'Currents',
-    help: 'Copernicus Marine SMOC (worldwide surface currents on a {angle:0.00145444} grid, including tides and Stokes drift; primary) and NOAA Global RTOFS (regional; backup). Tidal harmonics come from the directory set in the Signal K plugin config and take precedence where they cover.',
+    help: 'Copernicus Marine SMOC (worldwide surface currents on a {angle:0.00145444} grid, including tides and Stokes drift; primary) and NOAA Global RTOFS (regional products; backup where SMOC has no data). Tidal harmonics come from the directory set in the Signal K plugin config and take precedence where they cover.',
   },
   {
     id: 'tides',
@@ -156,6 +185,28 @@ export const SETTINGS_GROUPS: { id: SettingsGroup; label: string; help: string }
   { id: 'publish', label: 'Publishing', help: 'What happens with a finished route.' },
 ];
 
+/**
+ * Each RTOFS product's area (its grid as the decoder places it, from the
+ * 2026-10-21 run's f024 headers: rtofsExtentOfGrid), its daily download (f024 + f048 + f072, the files a 72 h
+ * horizon needs, measured on that run) and the memory its steps hold at
+ * the default 72 h and 3 h step (columns × rows × u, v × 4 bytes × 24
+ * steps: worked out, not measured; west_atl's 46 MB was measured on brain
+ * in 0.1.2-beta.1).
+ */
+const RTOFS_PRODUCT_HELP: Readonly<Record<string, string>> = {
+  west_atl: '10–44.72°N, 100–54.08°W; {dataSize:115.2e6} a day, {dataSize:48.0e6} in memory',
+  west_conus: '10–59.92°N, 150–100.08°W; {dataSize:165.5e6} a day, {dataSize:75.0e6} in memory',
+  alaska: '40–84.7°N, 140°E–115.3°W; {dataSize:32.0e6} a day, {dataSize:10.1e6} in memory',
+  arctic: '60–79.92°N, 160°E–124.08°W; {dataSize:123.7e6} a day, {dataSize:45.6e6} in memory',
+  bering: '40–67.12°N, 155°E–149.08°W; {dataSize:140.6e6} a day, {dataSize:45.7e6} in memory',
+  guam: '0–29.92°N, 130–179.92°E; {dataSize:134.3e6} a day, {dataSize:45.0e6} in memory',
+  gulf_alaska: '40–62°N, 165–123.5°W; {dataSize:1.8e6} a day, {dataSize:0.7e6} in memory',
+  honolulu: '0–39.92°N, 180–130.08°W; {dataSize:175.8e6} a day, {dataSize:60.0e6} in memory',
+  hudson_baffin: '40–77.75°N, 109–27.25°W; {dataSize:16.1e6} a day, {dataSize:9.6e6} in memory',
+  samoa: '30–0.08°S, 170°E–145.28°W; {dataSize:119.2e6} a day, {dataSize:40.3e6} in memory',
+  trop_paci_lowres: '40°S–39°N, 130°E–111°W (1° grid); {dataSize:5.6e6} a day, {dataSize:1.8e6} in memory',
+};
+
 export const SETTINGS_SPEC: readonly SettingSpec[] = [
   {
     key: 'vessel.motorSpeed',
@@ -166,6 +217,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'speed',
     min: 0.01,
     max: 50,
+    step: 0.1 * KTS_TO_MS,
     default: 6 * KTS_TO_MS,
     help: 'Cruising speed when motoring.',
     reload: 'next_job',
@@ -179,11 +231,39 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'ratio',
     min: 0.3,
     max: 1.2,
+    step: 0.01,
     default: 1,
     help: "Share of the polar's boat speeds the boat actually makes under sail (100% = the polar as written). Polars are usually race predictions (flat water, racing sails, full crew); a loaded cruising boat is slower. Motor speed is not affected. Applies to the files polar source; the Signal K source uses polars.performanceFactor.",
     reload: 'next_job',
   },
-
+  {
+    key: 'vessel.underKeelClearance',
+    group: 'vessel',
+    label: 'Under-keel clearance',
+    type: 'number',
+    unit: 'm',
+    quantity: 'depth',
+    min: UKC_M_RANGE[0],
+    max: UKC_M_RANGE[1],
+    step: 0.1,
+    default: DEFAULT_UKC_M,
+    help: 'Water kept under the keel on chart-mesh legs: charted depth must be at least the draught plus this. A route request can set its own.',
+    reload: 'next_job',
+  },
+  {
+    key: 'vessel.overheadClearance',
+    group: 'vessel',
+    label: 'Overhead clearance',
+    type: 'number',
+    unit: 'm',
+    quantity: 'short_distance',
+    min: OVERHEAD_M_RANGE[0],
+    max: OVERHEAD_M_RANGE[1],
+    step: 0.1,
+    default: DEFAULT_OVERHEAD_M,
+    help: 'Headroom kept above the mast under bridges and overhead cables on chart-mesh legs: charted clearance must be at least the air draft plus this. A route request can set its own.',
+    reload: 'next_job',
+  },
   {
     key: 'forecast.horizon',
     group: 'forecast',
@@ -193,10 +273,12 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'hours',
     min: 3 * HOUR_S,
     max: 360 * HOUR_S,
+    step: HOUR_S,
     multipleOf: HOUR_S,
     default: 72 * HOUR_S,
-    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to {time:1296000}, 06z/18z runs to {time:518400}, so above {time:518400} only 00z/12z runs are used). Changing it decodes the forecast again; the decoded run on disk grows with it (about {dataSize:1.1e9} for {time:259200} and {dataSize:3.9e9} for {time:1296000} with the extra fields), memory does not.',
+    help: 'How far ahead the forecast reaches (ECMWF: 00z/12z runs to {time:1296000}, 06z/18z runs to {time:518400}, so above {time:518400} only 00z/12z runs are used), and with it every other source: SMOC and RTOFS currents and the tide map, each to the end of its own data when that comes first (SMOC about {time:864000}, RTOFS {time:518400}). Changing it decodes the forecast again and reloads currents and tides; the decoded run on disk grows with it (about {dataSize:1.35e9} for {time:259200} and {dataSize:4.6e9} for {time:1296000} with the extra fields), and so do the SMOC and tide areas held around the vessel.',
     reload: 'forecast',
+    alsoReload: ['currents', 'tides'],
   },
   {
     key: 'forecast.refreshInterval',
@@ -207,8 +289,9 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'minutes',
     min: 600,
     max: 24 * HOUR_S,
+    step: 60,
     multipleOf: 60,
-    default: HOUR_S,
+    default: 900,
     help: 'How often ECMWF is checked for a newer cycle.',
     reload: 'refresh_timer',
   },
@@ -219,6 +302,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'integer',
     min: 1,
     max: 10,
+    step: 1,
     default: 2,
     help: 'Older downloaded cycles (GRIB messages and decoded runs) are deleted beyond this.',
     reload: 'cache',
@@ -226,10 +310,19 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
   {
     key: 'forecast.extraFields',
     group: 'forecast',
-    label: 'Temperature, precipitation, SST, humidity',
+    label: 'Temperature, precipitation, SST, humidity, cloud cover',
     type: 'boolean',
     default: true,
-    help: 'Also fetch 2t, tprate, skt, 2d and ptype (the temperature, SST and precipitation layers and the full conditions). Changing it reloads the forecast.',
+    help: 'Also fetch 2t, tprate, skt, 2d, ptype, tcc and 10fg (the temperature, SST and precipitation layers, total cloud cover, wind gust and the full conditions). Changing it reloads the forecast.',
+    reload: 'forecast',
+  },
+  {
+    key: 'forecast.energyFields',
+    group: 'forecast',
+    label: 'Solar, thermal radiation, snowfall and instability',
+    type: 'boolean',
+    default: false,
+    help: 'Also fetch tp, ssrd, sf, strd, str and mucape (total precipitation, surface solar radiation, snowfall, surface thermal radiation down and net, and convective instability) for energy modelling: roughly doubles the download (about +127 MB per 72 h cycle) and adds about 620 MB of decoded data on disk. Off by default, so a metered connection only pays for it on purpose. Changing it reloads the forecast.',
     reload: 'forecast',
   },
   {
@@ -241,6 +334,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'data_size',
     min: 0,
     max: 64e9,
+    step: 100e6,
     multipleOf: 1e6,
     default: 1e9,
     help: 'A forecast update (one step decoded at a time) or a route (its forecast area) only runs if at least this much memory stays free afterwards for Signal K, the OS and other plugins. If it does not fit, the plugin says what to change instead.',
@@ -267,20 +361,6 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     reload: 'currents',
   },
   {
-    key: 'currents.smocHorizon',
-    group: 'currents',
-    label: 'SMOC horizon',
-    type: 'number',
-    unit: 's',
-    quantity: 'hours',
-    min: 6 * HOUR_S,
-    max: 240 * HOUR_S,
-    multipleOf: HOUR_S,
-    default: 72 * HOUR_S,
-    help: 'How far ahead SMOC is held (the product reaches about 10 days).',
-    reload: 'currents',
-  },
-  {
     key: 'currents.smocStep',
     group: 'currents',
     label: 'SMOC time step kept',
@@ -289,6 +369,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'hours',
     min: 1 * HOUR_S,
     max: 3 * HOUR_S,
+    step: 2 * HOUR_S,
     multipleOf: HOUR_S,
     oneOf: [1 * HOUR_S, 3 * HOUR_S],
     default: 3 * HOUR_S,
@@ -304,6 +385,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'angle',
     min: 2,
     max: 30,
+    step: 1,
     default: 15,
     help: 'Half-width of the area kept in memory around the vessel position (about {dataSize:27e6} at {angle:0.261799} with {time:10800} steps over {time:259200}; grows with the square of the half-width). Routes and map views elsewhere load their own area on demand.',
     reload: 'currents',
@@ -314,31 +396,18 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     label: 'Use RTOFS ocean currents',
     type: 'boolean',
     default: true,
-    help: 'Download NOAA Global RTOFS from NOMADS (used where SMOC has no data).',
+    help: 'Download NOAA Global RTOFS from NOMADS (used where SMOC has no data). The regional product that contains the vessel is loaded, the finest where two overlap, and changes when the vessel moves into another; where none does (Europe, the Mediterranean, the Indian Ocean, the South Atlantic, Australia) nothing is downloaded. Without a vessel position only the products below are loaded.',
     reload: 'currents',
   },
   {
-    key: 'currents.rtofsRegion',
+    key: 'currents.rtofsExtra',
     group: 'currents',
-    label: 'RTOFS regional product',
-    type: 'enum',
+    label: 'Also load RTOFS products',
+    type: 'enumList',
     enum: RTOFS_REGIONS,
-    default: 'west_atl',
-    help: 'Which regional RTOFS product to download.',
-    reload: 'currents',
-  },
-  {
-    key: 'currents.rtofsHorizon',
-    group: 'currents',
-    label: 'RTOFS horizon',
-    type: 'number',
-    unit: 's',
-    quantity: 'hours',
-    min: 24 * HOUR_S,
-    max: 144 * HOUR_S,
-    multipleOf: HOUR_S,
-    default: 72 * HOUR_S,
-    help: 'How far ahead RTOFS is loaded.',
+    enumHelp: RTOFS_PRODUCT_HELP,
+    default: [],
+    help: 'Products loaded wherever the vessel is, for a passage planned elsewhere. Each is its own daily download and stays in memory (also in each map tile builder while it runs). Sizes for the default 72 h horizon and 3 h step: the download measured on the 2026-10-21 run, the memory worked out from the grid.',
     reload: 'currents',
   },
   {
@@ -350,6 +419,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'hours',
     min: 1 * HOUR_S,
     max: 6 * HOUR_S,
+    step: HOUR_S,
     multipleOf: HOUR_S,
     default: 3 * HOUR_S,
     help: 'Spacing of the RTOFS steps held in memory.',
@@ -374,22 +444,9 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'angle',
     min: 1,
     max: 30,
+    step: 1,
     default: 15,
-    help: 'Half-width of the tide-height map area kept in memory around the vessel position (hourly steps; about {dataSize:17e6} at {angle:0.261799} over {time:86400}, growing with the square of the half-width and with the horizon). Map views elsewhere load their own hour on demand.',
-    reload: 'tides',
-  },
-  {
-    key: 'tides.horizon',
-    group: 'tides',
-    label: 'Tide map horizon',
-    type: 'number',
-    unit: 's',
-    quantity: 'hours',
-    min: 6 * HOUR_S,
-    max: 240 * HOUR_S,
-    multipleOf: HOUR_S,
-    default: 24 * HOUR_S,
-    help: 'How far ahead the resident tide-height map area reaches (hourly steps; each hour of a {angle:0.523599} area downloads about {dataSize:1e6} to {dataSize:3e6} per new daily run). Map times beyond it load on demand. The conditions popup and Weather API are not limited by this.',
+    help: 'Half-width of the tide-height map area kept in memory around the vessel position (hourly steps; about {dataSize:17e6} at {angle:0.261799} over {time:86400}, growing with the square of the half-width and with the forecast horizon, which the tide map follows). Map views elsewhere load their own hour on demand.',
     reload: 'tides',
   },
 
@@ -400,6 +457,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'integer',
     min: 4,
     max: 200,
+    step: 1,
     default: 20,
     help: 'Propagation stages between start and end.',
     reload: 'next_job',
@@ -411,6 +469,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'integer',
     min: 4,
     max: 200,
+    step: 1,
     default: 30,
     help: 'Angular sectors each isochrone is pruned to.',
     reload: 'next_job',
@@ -422,6 +481,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'integer',
     min: 4,
     max: 180,
+    step: 1,
     default: 30,
     help: 'Headings tried either side of the course.',
     reload: 'next_job',
@@ -435,6 +495,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'angle',
     min: 0.25,
     max: 10,
+    step: 0.25,
     default: 1,
     help: 'Spacing of the tried headings.',
     reload: 'next_job',
@@ -448,8 +509,52 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'speed',
     min: 0,
     max: 50 * KTS_TO_MS,
+    step: 0.1 * KTS_TO_MS,
     default: 4.9 * KTS_TO_MS,
     help: 'Below this polar speed the route motors (sail_max mode).',
+    reload: 'next_job',
+  },
+  {
+    key: 'routing.tackPenalty',
+    group: 'routing',
+    label: 'Tacking penalty',
+    type: 'number',
+    unit: 's',
+    // EXCEPTION: shown and typed in seconds whatever the Signal K time preference says (public/rp-settings.js, the owner's decision 2026-10-08, until Signal K has a seconds category).
+    quantity: 'seconds',
+    min: 0,
+    max: 3600,
+    step: 5,
+    default: 30,
+    help: 'Time lost on every tack or gybe. Both routers charge it: a branch that tacks arrives later and ranks lower, so routes with needless tacks lose to straighter ones.',
+    reload: 'next_job',
+  },
+  {
+    key: 'routing.landBuffer',
+    group: 'routing',
+    label: 'Buffer from land',
+    type: 'number',
+    unit: 'm',
+    quantity: 'short_distance',
+    min: 0,
+    max: 5000,
+    step: 10,
+    default: 0,
+    help: 'The route keeps at least this far from the coastline: the search, the smoother and the final check all measure to the shoreline. A start or end closer than this is moved out to it; a passage narrower than twice this closes. 0 = none.',
+    reload: 'next_job',
+  },
+  {
+    key: 'routing.navigableBuffer',
+    group: 'routing',
+    label: 'Buffer from unusable water',
+    type: 'number',
+    unit: 'm',
+    quantity: 'short_distance',
+    min: 0,
+    max: 5000,
+    step: 10,
+    default: 0,
+    help: 'On a chart-mesh leg the route keeps at least this far from every bit of water the boat cannot use (charted depth under the draft, bridges under the air draft, rocks, marks, structures, areas to avoid). The mesh route and the sailed stretches both keep it. A passage narrower than twice this closes. 0 = none.',
     reload: 'next_job',
   },
   {
@@ -461,6 +566,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'angle',
     min: 0,
     max: 60,
+    step: 1,
     default: 30,
     help: `Polar rows closer to the wind than this are ignored. Many library polars carry small boat speeds at {angle:0.0872665} to {angle:0.436332} off the wind, where no boat sails; left in, a route goes dead upwind at a crawl instead of tacking (an Amel 55 from the library: {speed:${3 * KTS_TO_MS}} at {angle:0.331613} against a {speed:${5.8 * KTS_TO_MS}} VMG tacking at {angle:0.698132}). 0 = use the polar as written.`,
     reload: 'next_job',
@@ -474,6 +580,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'speed',
     min: 0,
     max: 100,
+    step: KTS_TO_MS,
     default: null,
     nullable: true,
     help: 'A leg is not allowed where the forecast wind speed is above this. Empty = no limit. A route request can override it.',
@@ -488,9 +595,22 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'wave_height',
     min: 0,
     max: 30,
+    step: 0.1,
     default: null,
     nullable: true,
     help: 'A leg is not allowed where the significant wave height is above this. Empty = no limit. Needs wave data in the forecast. A route request can override it.',
+    reload: 'next_job',
+  },
+  {
+    key: 'routing.comfortWeight',
+    group: 'routing',
+    label: 'Comfort weight',
+    type: 'number',
+    min: 0,
+    max: 3,
+    step: 0.1,
+    default: 1,
+    help: 'How much the router avoids rough water, as the boat meets it (the sea-state index weighted for the angle of the waves to the course: head seas count more, following seas less). Above the "slight" band each hour sailed counts extra in the search\'s choices: with 1, choppy water adds up to 25 %, rough 50 %, extreme 125 %. 0 = off (the fastest route). The times shown stay the real times. Needs wave data in the forecast. A route request can override it.',
     reload: 'next_job',
   },
   {
@@ -502,6 +622,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'short_distance',
     min: 50,
     max: 5000,
+    step: 10,
     default: 200,
     help: 'Distance between samples along each leg.',
     reload: 'next_job',
@@ -513,6 +634,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'integer',
     min: 1_000_000,
     max: 1_000_000_000,
+    step: 1_000_000,
     default: 25_000_000,
     help: 'Upper bound on the per-route land raster (1 byte per cell). Lower it on small machines.',
     reload: 'next_job',
@@ -535,6 +657,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'short_distance',
     min: 0,
     max: 5000,
+    step: 1,
     default: 10,
     help: 'Waypoints closer than this to the straight line between their neighbours are dropped when that line is clear of land (0 = off). Your own waypoints are always kept.',
     reload: 'next_job',
@@ -544,8 +667,8 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     group: 'routing',
     label: 'Shortcut smoother',
     type: 'boolean',
-    default: true,
-    help: 'Replace runs of waypoints with one straight leg when it is clear of land and not much slower. Your own waypoints are always kept.',
+    default: false,
+    help: 'Replace runs of waypoints with one straight leg when it is clear of land and not much slower. Your own waypoints are always kept. The default; a route can choose On or Off (Route → Plan → Smoothing).',
     reload: 'next_job',
   },
   {
@@ -557,8 +680,44 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     quantity: 'ratio',
     min: 0,
     max: 0.5,
+    step: 0.01,
     default: 0.05,
     help: 'A straight shortcut is accepted when its simulated time is at most this much longer than the legs it replaces.',
+    reload: 'next_job',
+  },
+  {
+    key: 'routing.router',
+    group: 'routing',
+    label: 'Open-water router',
+    type: 'enum',
+    enum: ROUTER_KINDS,
+    default: DEFAULT_ROUTER,
+    help: 'standard: the isochrone search. refined: the same search on the convexified polar (a beat is a straight line at the exact VMG), each mixed sailing leg is then laid out as tacks, and a cross-track polish moves waypoints sideways where the route arrives earlier; under motor it is identical to standard. A route request can choose either (router).',
+    reload: 'next_job',
+  },
+  {
+    key: 'routing.drawbridges',
+    group: 'routing',
+    label: 'Drawbridges',
+    type: 'enum',
+    enum: DRAWBRIDGE_CHOICES,
+    default: 'ask',
+    help: "Opening bridges on chart-mesh legs. ask: the route is planned as if they open, and when it passes under one the web app says so and offers to re-plan avoiding them. open: plan as if they open. avoid: never pass one. The chart's open clearance is checked against the air draft either way. A route request can choose (drawbridges).",
+    reload: 'next_job',
+  },
+  {
+    key: 'routing.bridgeWait',
+    group: 'routing',
+    label: 'Wait at a drawbridge',
+    type: 'number',
+    unit: 's',
+    // EXCEPTION: shown and typed in seconds whatever the Signal K time preference says (public/rp-settings.js, the owner's decision 2026-10-08, until Signal K has a seconds category).
+    quantity: 'seconds',
+    min: 0,
+    max: 7200,
+    step: 30,
+    default: 0,
+    help: 'Time added at each opening bridge the route passes under, for the opening; everything after it is later by that much.',
     reload: 'next_job',
   },
   {
@@ -568,6 +727,7 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
     type: 'integer',
     min: 1,
     max: 500,
+    step: 1,
     default: 50,
     help: 'Older finished route jobs are deleted beyond this.',
     reload: 'jobs',
@@ -604,6 +764,23 @@ export const SETTINGS_SPEC: readonly SettingSpec[] = [
 ];
 
 const SPEC_BY_KEY = new Map(SETTINGS_SPEC.map(s => [s.key, s]));
+
+/** Two setting values are the same (lists element by element). */
+function sameValue(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((x, i) => x === b[i]);
+  return a === b;
+}
+
+/**
+ * The RTOFS product the old `currents.rtofsRegion` setting named, when it
+ * was a choice: any product but west_atl, the old default, which a stored
+ * file cannot tell from a choice (settings.json holds every value). That
+ * product is loaded as an extra product; west_atl is loaded whenever the
+ * vessel is inside it.
+ */
+function extraFromOldRegion(region: unknown): string | null {
+  return typeof region === 'string' && region !== 'west_atl' && (RTOFS_REGIONS as readonly string[]).includes(region) ? region : null;
+}
 
 export class SettingsValidationError extends Error {
   readonly errors: Record<string, string>;
@@ -658,7 +835,7 @@ function quantityToken(spec: SettingSpec, v: number | undefined): string {
 }
 
 /** Check one value against its spec; returns the normalised value or throws with a message. */
-export function validateValue(spec: SettingSpec, raw: unknown): number | boolean | string | null {
+export function validateValue(spec: SettingSpec, raw: unknown): number | boolean | string | string[] | null {
   switch (spec.type) {
     case 'boolean':
       if (typeof raw !== 'boolean') throw new Error('must be true or false');
@@ -673,6 +850,12 @@ export function validateValue(spec: SettingSpec, raw: unknown): number | boolean
     case 'enum': {
       if (typeof raw !== 'string' || !spec.enum!.includes(raw)) throw new Error(`must be one of ${spec.enum!.join(', ')}`);
       return raw;
+    }
+    case 'enumList': {
+      if (!Array.isArray(raw)) throw new Error(`must be a list of ${spec.enum!.join(', ')}`);
+      for (const x of raw)
+        if (typeof x !== 'string' || !spec.enum!.includes(x)) throw new Error(`must be a list of ${spec.enum!.join(', ')}`);
+      return spec.enum!.filter(x => raw.includes(x));
     }
     case 'number':
     case 'integer': {
@@ -730,7 +913,7 @@ export function mergeSettings(base: AppSettings, partial: unknown): { values: Ap
       try {
         const v = validateValue(spec, raw);
         const grp = (out as unknown as Record<string, Record<string, unknown>>)[g];
-        if (grp[k] !== v) {
+        if (!sameValue(grp[k], v)) {
           grp[k] = v;
           changed.push(key);
         }
@@ -743,10 +926,15 @@ export function mergeSettings(base: AppSettings, partial: unknown): { values: Ap
   return { values: out, changed };
 }
 
-/** Settings from a stored object, key by key; invalid or missing keys fall back to defaults and are reported. */
-export function settingsFromStored(stored: unknown): { values: AppSettings; problems: string[] } {
+/**
+ * Settings from a stored object, key by key; invalid or missing keys fall
+ * back to defaults and are reported. `notes`: settings carried over from
+ * one that no longer exists (the old RTOFS product).
+ */
+export function settingsFromStored(stored: unknown): { values: AppSettings; problems: string[]; notes: string[] } {
   const values = defaultSettings();
   const problems: string[] = [];
+  const notes: string[] = [];
   const obj = stored && typeof stored === 'object' ? (stored as Record<string, Record<string, unknown>>) : {};
   for (const spec of SETTINGS_SPEC) {
     const [g, k] = spec.key.split('.');
@@ -758,7 +946,14 @@ export function settingsFromStored(stored: unknown): { values: AppSettings; prob
       problems.push(`${spec.key}: ${(err as Error).message} (using the default)`);
     }
   }
-  return { values, problems };
+  // A settings.json from before the extra products: its one RTOFS product, when it was a choice, is loaded as one.
+  const cur = obj.currents;
+  const old = cur && typeof cur === 'object' && !('rtofsExtra' in cur) ? extraFromOldRegion(cur.rtofsRegion) : null;
+  if (old) {
+    values.currents.rtofsExtra = [old];
+    notes.push(`currents.rtofsRegion ${old} is now an extra RTOFS product (currents.rtofsExtra)`);
+  }
+  return { values, problems, notes };
 }
 
 /**
@@ -783,10 +978,13 @@ export function migrateLegacy(legacy: LegacyPluginConfig | undefined): { values:
   set(src.forecast, 'refreshInterval', num(f.refreshMinutes, 60));
   set(src.forecast, 'keepCycles', num(f.keepCycles));
   set(src.forecast, 'extraFields', f.extraFields);
+  set(src.forecast, 'energyFields', f.energyFields);
   const c = l.currents ?? {};
   set(src.currents, 'rtofsEnabled', c.rtofsEnabled);
-  set(src.currents, 'rtofsRegion', typeof c.rtofsRegion === 'string' ? c.rtofsRegion.trim() : c.rtofsRegion);
-  set(src.currents, 'rtofsHorizon', num(c.rtofsHorizonHours, HOUR_S));
+  // The one RTOFS product of earlier versions: a choice (any but west_atl, the default) is loaded as an extra product.
+  const oldRaw = typeof c.rtofsRegion === 'string' ? c.rtofsRegion.trim() : c.rtofsRegion;
+  const oldRegion = extraFromOldRegion(oldRaw);
+  if (oldRegion) set(src.currents, 'rtofsExtra', [oldRegion]);
   set(src.currents, 'rtofsStep', num(c.rtofsStepHours, HOUR_S));
   const r = l.routing ?? {};
   set(src.routing, 'stages', num(r.stages));
@@ -805,6 +1003,8 @@ export function migrateLegacy(legacy: LegacyPluginConfig | undefined): { values:
   const values = defaultSettings();
   const migrated: string[] = [];
   const skipped: string[] = [];
+  if (oldRaw !== undefined && oldRaw !== null && oldRaw !== '' && !(RTOFS_REGIONS as readonly unknown[]).includes(oldRaw))
+    skipped.push(`currents.rtofsRegion: ${String(oldRaw)} is not an RTOFS product`);
   for (const [g, grp] of Object.entries(src)) {
     for (const [k, raw] of Object.entries(grp)) {
       const key = `${g}.${k}`;
@@ -842,7 +1042,7 @@ export class SettingsStore {
    * plugin config) when it does not exist yet. The Signal K config file
    * is never modified. Returns what happened, for the log.
    */
-  load(legacy: LegacyPluginConfig | undefined): { created: boolean; migrated: string[]; problems: string[] } {
+  load(legacy: LegacyPluginConfig | undefined): { created: boolean; migrated: string[]; problems: string[]; notes: string[] } {
     let text: string | null = null;
     try {
       text = fs.readFileSync(this.file, 'utf8');
@@ -857,9 +1057,9 @@ export class SettingsStore {
         parsed = null;
       }
       if (parsed && typeof parsed === 'object') {
-        const { values, problems } = settingsFromStored(parsed.values);
+        const { values, problems, notes } = settingsFromStored(parsed.values);
         this.current = values;
-        return { created: false, migrated: [], problems };
+        return { created: false, migrated: [], problems, notes };
       }
       // Unreadable: keep it aside and start again from the legacy config.
       const aside = `${this.file}.corrupt-${Date.now()}`;
@@ -871,12 +1071,13 @@ export class SettingsStore {
         created: true,
         migrated: m.migrated,
         problems: [`settings.json was not valid JSON; moved to ${path.basename(aside)}`, ...m.skipped],
+        notes: [],
       };
     }
     const m = migrateLegacy(legacy);
     this.current = m.values;
     this.write('plugin-config');
-    return { created: true, migrated: m.migrated, problems: m.skipped };
+    return { created: true, migrated: m.migrated, problems: m.skipped, notes: [] };
   }
 
   get values(): AppSettings {
@@ -924,7 +1125,9 @@ export function reloadsFor(changed: string[]): Set<ReloadKind> {
   const out = new Set<ReloadKind>();
   for (const k of changed) {
     const s = SPEC_BY_KEY.get(k);
-    if (s) out.add(s.reload);
+    if (!s) continue;
+    out.add(s.reload);
+    for (const r of s.alsoReload ?? []) out.add(r);
   }
   return out;
 }

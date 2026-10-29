@@ -3,15 +3,20 @@
  * shapefiles:
  *
  *   npm run build:water-grid -- --land /path/GSHHS_f_L1.shp [--out data/water-grid-0.02.bin.gz]
- *                               [--region west,south,east,north]
+ *                               [--region west,south,east,north] [--tiles dir]
+ *
+ * The coastline is read from its tiles (src/geo/coasttiles.ts), cut on first
+ * use into --tiles (default: wrp-coast-tiles in the system temp folder).
  *
  * --region builds only the tiles intersecting the box (the rest stays
  * land); for testing only, never ship a partial grid.
  */
 
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { buildWaterGrid } from '../src/geo/watergrid_build';
 import { WG_FILE_NAME } from '../src/geo/watergrid';
+import { CoastTiles } from '../src/geo/coasttiles';
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -20,7 +25,7 @@ function arg(name: string): string | undefined {
 
 const land = arg('land');
 if (!land) {
-  console.error('usage: build_water_grid --land <shapefile>[,<shapefile>...] [--out file] [--region w,s,e,n]');
+  console.error('usage: build_water_grid --land <shapefile>[,<shapefile>...] [--out file] [--region w,s,e,n] [--tiles dir]');
   process.exit(2);
 }
 const out = arg('out') ?? path.join(__dirname, '..', 'data', WG_FILE_NAME);
@@ -31,7 +36,8 @@ const region = regionArg ? (() => {
 })() : undefined;
 const t0 = Date.now();
 let lastLog = 0;
-const grid = buildWaterGrid(land.split(','), {
+const coast = CoastTiles.build(land.split(','), arg('tiles') ?? path.join(os.tmpdir(), 'wrp-coast-tiles'), m => console.log(m));
+const grid = buildWaterGrid(coast, {
   region,
   onProgress: (done, total, msg) => {
     if (Date.now() - lastLog > 5000 || done === total) {

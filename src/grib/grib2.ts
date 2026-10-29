@@ -232,52 +232,7 @@ function parseMessage(m: Uint8Array, absOffset: number): Grib2Message {
   const referenceTime = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
 
   // ---- Section 3: grid definition
-  const gridSource = u8(m, s.s3 + 5);
-  const numberOfDataPoints = u32(m, s.s3 + 6);
-  const optListOctets = u8(m, s.s3 + 10);
-  const gdt = u16(m, s.s3 + 12);
-  if (gridSource !== 0) throw new Grib2Error(`grid definition source ${gridSource} not supported`);
-  if (gdt !== 0) throw new Grib2Error(`grid definition template 3.${gdt} not supported (only 3.0 lat/lon)`);
-  if (optListOctets !== 0) throw new Grib2Error('quasi-regular grids (optional point list) not supported');
-  const g = s.s3 - 1; // so that g + octetNumber addresses the octet
-  const ni = u32(m, g + 31);
-  const nj = u32(m, g + 35);
-  if (ni === MISSING_U32 || nj === MISSING_U32) throw new Grib2Error('Ni/Nj missing: quasi-regular grid not supported');
-  const basicAngle = u32(m, g + 39);
-  const subdivisions = u32(m, g + 43);
-  let unit = 1e-6;
-  if (!(basicAngle === 0 || basicAngle === MISSING_U32) || !(subdivisions === MISSING_U32 || subdivisions === 0)) {
-    if (basicAngle === 0 || subdivisions === 0 || subdivisions === MISSING_U32) {
-      throw new Grib2Error(`unsupported basic angle ${basicAngle} / subdivisions ${subdivisions}`);
-    }
-    unit = basicAngle / subdivisions;
-  }
-  const la1 = s32(m, g + 47) * unit;
-  const lo1 = s32(m, g + 51) * unit;
-  const la2 = s32(m, g + 56) * unit;
-  const lo2 = s32(m, g + 60) * unit;
-  const di = u32(m, g + 64) * unit;
-  const dj = u32(m, g + 68) * unit;
-  const scanningMode = u8(m, g + 72);
-  if (scanningMode & 0x20) throw new Grib2Error('scanning mode with adjacent points in j direction not supported');
-  if (scanningMode & 0x10) throw new Grib2Error('boustrophedonic scanning not supported');
-  if (scanningMode & 0x0f) throw new Grib2Error(`scanning mode 0x${scanningMode.toString(16)} not supported`);
-  const grid: Grib2Grid = {
-    ni,
-    nj,
-    la1,
-    lo1,
-    la2,
-    lo2,
-    di,
-    dj,
-    scanningMode,
-    jScansPositively: (scanningMode & 0x40) !== 0,
-    iScansPositively: (scanningMode & 0x80) === 0,
-  };
-  if (ni * nj !== numberOfDataPoints) {
-    throw new Grib2Error(`ni*nj = ${ni * nj} but numberOfDataPoints = ${numberOfDataPoints}`);
-  }
+  const { grid, numberOfDataPoints } = readGrid(m, s.s3);
 
   // ---- Section 4: product definition
   const pdt = u16(m, s.s4 + 7);
@@ -374,6 +329,81 @@ function parseMessage(m: Uint8Array, absOffset: number): Grib2Message {
     hasBitmap: bitmap !== null,
     decode,
   };
+}
+
+/** Section 3 (grid definition template 3.0) starting at offset `s3` of `m`. */
+function readGrid(m: Uint8Array, s3: number): { grid: Grib2Grid; numberOfDataPoints: number } {
+  const gridSource = u8(m, s3 + 5);
+  const numberOfDataPoints = u32(m, s3 + 6);
+  const optListOctets = u8(m, s3 + 10);
+  const gdt = u16(m, s3 + 12);
+  if (gridSource !== 0) throw new Grib2Error(`grid definition source ${gridSource} not supported`);
+  if (gdt !== 0) throw new Grib2Error(`grid definition template 3.${gdt} not supported (only 3.0 lat/lon)`);
+  if (optListOctets !== 0) throw new Grib2Error('quasi-regular grids (optional point list) not supported');
+  const g = s3 - 1; // so that g + octetNumber addresses the octet
+  const ni = u32(m, g + 31);
+  const nj = u32(m, g + 35);
+  if (ni === MISSING_U32 || nj === MISSING_U32) throw new Grib2Error('Ni/Nj missing: quasi-regular grid not supported');
+  const basicAngle = u32(m, g + 39);
+  const subdivisions = u32(m, g + 43);
+  let unit = 1e-6;
+  if (!(basicAngle === 0 || basicAngle === MISSING_U32) || !(subdivisions === MISSING_U32 || subdivisions === 0)) {
+    if (basicAngle === 0 || subdivisions === 0 || subdivisions === MISSING_U32) {
+      throw new Grib2Error(`unsupported basic angle ${basicAngle} / subdivisions ${subdivisions}`);
+    }
+    unit = basicAngle / subdivisions;
+  }
+  const la1 = s32(m, g + 47) * unit;
+  const lo1 = s32(m, g + 51) * unit;
+  const la2 = s32(m, g + 56) * unit;
+  const lo2 = s32(m, g + 60) * unit;
+  const di = u32(m, g + 64) * unit;
+  const dj = u32(m, g + 68) * unit;
+  const scanningMode = u8(m, g + 72);
+  if (scanningMode & 0x20) throw new Grib2Error('scanning mode with adjacent points in j direction not supported');
+  if (scanningMode & 0x10) throw new Grib2Error('boustrophedonic scanning not supported');
+  if (scanningMode & 0x0f) throw new Grib2Error(`scanning mode 0x${scanningMode.toString(16)} not supported`);
+  const grid: Grib2Grid = {
+    ni,
+    nj,
+    la1,
+    lo1,
+    la2,
+    lo2,
+    di,
+    dj,
+    scanningMode,
+    jScansPositively: (scanningMode & 0x40) !== 0,
+    iScansPositively: (scanningMode & 0x80) === 0,
+  };
+  if (ni * nj !== numberOfDataPoints) {
+    throw new Grib2Error(`ni*nj = ${ni * nj} but numberOfDataPoints = ${numberOfDataPoints}`);
+  }
+  return { grid, numberOfDataPoints };
+}
+
+/**
+ * The grid of the first message from the start of a GRIB2 file alone
+ * (sections 0 to 3; the rest of the message need not be there), so a
+ * product's extent can be learnt from its first few kilobytes.
+ */
+export function parseGrib2Grid(head: Uint8Array): Grib2Grid {
+  if (!(head[0] === 0x47 && head[1] === 0x52 && head[2] === 0x49 && head[3] === 0x42)) throw new Grib2Error('not a GRIB message');
+  const edition = u8(head, 7);
+  if (edition !== 2) throw new Grib2Error(`GRIB edition ${edition} is not supported`);
+  let p = 16;
+  while (p + 5 <= head.length) {
+    const secLen = u32(head, p);
+    const secNum = u8(head, p + 4);
+    if (secLen < 5) throw new Grib2Error(`section ${secNum} at ${p} has length ${secLen}`);
+    if (secNum === 3) {
+      if (p + secLen > head.length) break;
+      return readGrid(head, p).grid;
+    }
+    if (secNum > 3) throw new Grib2Error(`section ${secNum} before any grid definition`);
+    p += secLen;
+  }
+  throw new Grib2Error(`no grid definition in the first ${head.length} bytes`);
 }
 
 function timeUnitHours(code: number): number {

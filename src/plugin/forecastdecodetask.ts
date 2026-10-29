@@ -1,0 +1,66 @@
+/**
+ * The ECMWF decode in a child process (childtask.ts task 'forecast-decode'):
+ * one cycle downloaded where the GRIB cache lacks it and decoded straight to
+ * disk, one step at a time (data/loader.ts decodeForecastToDisk), exactly as
+ * the data worker did it before. In a child for two reasons:
+ *  - the data worker stays free for map, conditions and Weather API queries
+ *    while the decode runs (brain, 2026-10-19: during a 172 s decode an
+ *    uncached map tile timed out at 120 s and the next waited 49.8 s; 15–27
+ *    ms before);
+ *  - the decode's buffers go back to the system when the child exits.
+ * Progress goes to the worker as events; the answer is where the finished run
+ * is. A decode that fails removes its unfinished directory here; one killed
+ * (plugin stopped) leaves a `.tmp-*` directory for the next prune.
+ */
+
+import * as path from 'node:path';
+import { cycleFor, ECMWF_MIRRORS, EcmwfClient } from '../data/ecmwf';
+import { cycleName, DECODED_DIR, DecodedRunWriter } from '../data/decoded';
+import { decodeForecastToDisk } from '../data/loader';
+
+export interface ForecastDecodeTask {
+  task: 'forecast-decode';
+  /** Plugin data directory: the GRIB cache is `ecmwf/`, the decoded runs `forecast/` below it. */
+  cacheRoot: string;
+  mirror: string;
+  /** Cycle time, ISO. */
+  cycle: string;
+  horizonS: number;
+  extraAtmParams: string[];
+}
+
+export interface ForecastDecodeResult {
+  /** The finished run's directory. */
+  dir: string;
+  downloaded: number;
+  stepBlockBytes: number;
+  decodeMs: number;
+}
+
+export type ForecastDecodeEvent = { event: 'decode-step'; done: number; total: number } | { event: 'decode-log'; message: string };
+
+export async function runForecastDecodeTask(
+  t: ForecastDecodeTask,
+  emit: (e: ForecastDecodeEvent) => void,
+  client: EcmwfClient = new EcmwfClient({
+    baseUrl: ECMWF_MIRRORS[t.mirror] ?? ECMWF_MIRRORS.ecmwf,
+    cacheDir: path.join(t.cacheRoot, 'ecmwf'),
+    log: message => emit({ event: 'decode-log', message: `ecmwf: ${message}` }),
+  })
+): Promise<ForecastDecodeResult> {
+  const cycle = cycleFor(new Date(t.cycle));
+  const writer = new DecodedRunWriter(path.join(t.cacheRoot, DECODED_DIR), cycleName(cycle.time));
+  try {
+    const out = await decodeForecastToDisk(client, writer, {
+      horizonS: t.horizonS,
+      cycle,
+      extraAtmParams: t.extraAtmParams,
+      log: message => emit({ event: 'decode-log', message }),
+      onStep: (done, total) => emit({ event: 'decode-step', done, total }),
+    });
+    return { dir: writer.finalDir, downloaded: out.downloaded, stepBlockBytes: out.stepBlockBytes, decodeMs: out.index.decodeMs };
+  } catch (err) {
+    writer.abort();
+    throw err;
+  }
+}

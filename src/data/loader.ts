@@ -18,8 +18,18 @@ import type { BBox } from '../geo/geodesy';
 import { HOUR_S } from '../geo/units';
 import { parseGrib2Message, type DecodeScratch } from '../grib/grib2';
 import { ATM_PARAMS, WAVE_PARAMS, availableSteps, latestExpectedCycle, type Cycle, type EcmwfClient, type IndexRecord } from './ecmwf';
-import { buildStep, ForecastStore, GLOBAL_BBOX, type ForecastStep, FloatSlab, type NanFillScratch } from './forecast';
+import {
+  buildStep,
+  ForecastStore,
+  GLOBAL_BBOX,
+  applyAccumulated,
+  type AccumPrev,
+  type ForecastStep,
+  FloatSlab,
+  type NanFillScratch,
+} from './forecast';
 import { cycleName, type DecodedIndex, type DecodedRunWriter } from './decoded';
+import { OfflineError } from './http';
 
 export interface LoadOptions {
   /** Forecast horizon, seconds (the ECMWF step ladder is in hours; converted once here). */
@@ -45,15 +55,19 @@ export interface ResolvedCycle {
 }
 
 /**
- * Choose the cycle to load, planner-style:
+ * Choose the cycle to load:
  *  1. the wall-clock expected cycle when it is fully cached → no network;
  *  2. otherwise ask the server for the newest complete cycle;
- *  3. if that fails, the newest fully cached cycle, if any.
+ *  3. if that fails, the newest fully cached cycle, if any (`fallback`
+ *     says why: the server could not be asked, so this is not known to
+ *     be the newest).
+ * `offline`: the connection is already known to be down (this refresh
+ * round); step 2 is skipped with that reason.
  */
 export async function resolveCycle(
   client: EcmwfClient,
   horizonS: number,
-  opts: { now?: Date; includeWaves?: boolean; extraAtmParams?: string[]; log?: (m: string) => void } = {}
+  opts: { now?: Date; includeWaves?: boolean; extraAtmParams?: string[]; log?: (m: string) => void; offline?: string } = {}
 ): Promise<ResolvedCycle> {
   const log = opts.log ?? (() => undefined);
   const atm = [...ATM_PARAMS, ...(opts.extraAtmParams ?? [])];
@@ -64,6 +78,7 @@ export async function resolveCycle(
     return { cycle: expected, fromCache: true };
   }
   try {
+    if (opts.offline) throw new OfflineError(opts.offline);
     const cycle = await client.findLatestCycle(horizonS, { now: opts.now });
     return { cycle, fromCache: client.cycleFullyCached(cycle, horizonS, atm, wave) };
   } catch (err) {
@@ -140,6 +155,9 @@ async function decodeSteps(
   // instead of fresh ones per field: a 72 h load decodes ~275 fields.
   const scratch: DecodeScratch = {};
   const fillScratch: NanFillScratch = {};
+  // Previous step's raw accumulated fields, for the step-difference pass
+  // (ACCUMULATED_PARAMS): five global fields, about 21 MB.
+  const accumPrev = new Map<string, AccumPrev>();
   const fieldsPerStep = atmParams.length + (includeWaves ? WAVE_PARAMS.length : 0);
   const slab = slabFor(steps.length, fieldsPerStep);
   let done = 0;
@@ -177,7 +195,9 @@ async function decodeSteps(
         named.push({ param: p, message: parseGrib2Message(msg) });
       }
     }
-    onStep(buildStep(named, bbox, opts.waveFillCells ?? 3, scratch, slab, fillScratch));
+    const built = buildStep(named, bbox, opts.waveFillCells ?? 3, scratch, slab, fillScratch);
+    applyAccumulated(built, accumPrev);
+    onStep(built);
     done++;
     opts.onStep?.(done, steps.length);
     // Yield to the event loop between steps so a host process stays responsive.

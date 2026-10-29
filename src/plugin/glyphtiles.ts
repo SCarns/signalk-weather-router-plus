@@ -1,8 +1,9 @@
 /**
- * The glyph overlays as PNG image tiles: wind barbs, current arrows and
- * isobars, drawn as the web app draws them (public/rp-layers.js: the barb
- * SVG, the arrow SVG and its colour classes, the isobar strokes). Barbs
- * and arrows come from the point data tiles of this tile and its eight
+ * The glyph overlays as PNG image tiles: wind barbs, current arrows,
+ * isobars, sea state arrows and wave arrows, drawn as the web app draws
+ * them (public/rp-layers.js: the barb SVG, the arrow SVG and its colour
+ * classes, the isobar strokes, the seas and wave glyph SVGs). Barbs and
+ * the arrows come from the point data tiles of this tile and its eight
  * neighbours, so a glyph straddling a tile edge is complete on both
  * sides; isobars come from the joined 0.25° pressure field around the
  * tile (tilejoin.ts). Without a font, isobar labels are not drawn and the
@@ -17,10 +18,11 @@ import { Canvas, hexRgba, type Rgba } from './raster';
 import { PngCache, TILE_PX } from './pngtiles';
 import { tileBBox, tileGroup, type TileId, type TileService } from './tiles';
 import { joinPressure, type TileGetter } from './tilejoin';
-import type { CurrentPoint, WindPoint } from './overlays';
+import type { CurrentPoint, SeaPoint, WindPoint } from './overlays';
+import { seaBandGlyphColour, waveGlyphColour } from './legends';
 import type { IsobarFeature } from './isobars';
 
-export const GLYPH_LAYERS = ['barbs', 'arrows', 'isobars'] as const;
+export const GLYPH_LAYERS = ['barbs', 'arrows', 'isobars', 'seas', 'wave_arrows'] as const;
 export type GlyphLayer = (typeof GLYPH_LAYERS)[number];
 
 export interface GlyphLayerSpec {
@@ -44,6 +46,18 @@ export const GLYPH_LAYER_SPECS: Record<GlyphLayer, GlyphLayerSpec> = {
     chartId: 'wrp-isobars',
     name: 'Isobars',
     description: 'Mean sea-level pressure every 4 hPa (bold every 20 hPa), highs blue, lows red; ECMWF forecast, by the hour.',
+  },
+  seas: {
+    chartId: 'wrp-sea-state-arrows',
+    name: 'Current against the waves',
+    description:
+      'What the current does to the waves: arrows along the way the waves travel, coloured by the sea state there; heads meeting where the current opposes the waves (larger the more it steepens them), a double chevron where it runs with them. By the hour.',
+  },
+  wave_arrows: {
+    chartId: 'wrp-wave-arrows',
+    name: 'Wave arrows',
+    description:
+      'Arrows along the way the waves travel, coloured by significant wave height, longer for a longer mean period (swell long, chop short); ECMWF forecast, by the hour.',
   },
 };
 
@@ -175,6 +189,175 @@ export function drawArrow(cv: Canvas, ax: number, ay: number, speedMs: number, d
   cv.polygon([P(8, 0), P(1, 14), P(8, 10), P(15, 14)], colour);
 }
 
+/** Outline drawn under the seas and wave glyphs (the web app's SEA_GLYPH_OUTLINE). */
+const GLYPH_OUTLINE = hexRgba('#0f172a');
+const OUTLINE_EXTRA = 1.6;
+
+/**
+ * One sea state glyph at pixel (ax, ay): the web app's 22 × 22 SVG
+ * (_seasGlyphSvg), centred, pointing up, rotated to the way the waves
+ * travel; scaled by the steepening where the current opposes them.
+ */
+export function drawSeaGlyph(cv: Canvas, ax: number, ay: number, p: SeaPoint): void {
+  const colour = hexRgba(seaBandGlyphColour(p.idx));
+  const big = p.rel === 'opposing' ? Math.min(1.6, Math.max(1, p.steepen || 1)) : 1;
+  const rad = (Math.round(p.to_deg / 5) * 5 * Math.PI) / 180;
+  const P = (lx: number, ly: number): [number, number] => place(ax, ay, rad, big, lx - 11, ly - 11);
+  // Strokes as [points, width] in the SVG's units.
+  const strokes: [[number, number][], number][] =
+    p.rel === 'opposing'
+      ? [
+          [
+            [
+              [11, 1],
+              [11, 8],
+            ],
+            2.4,
+          ],
+          [
+            [
+              [6, 6],
+              [11, 11],
+              [16, 6],
+            ],
+            2.6,
+          ],
+          [
+            [
+              [11, 21],
+              [11, 14],
+            ],
+            2.4,
+          ],
+          [
+            [
+              [6, 16],
+              [11, 11],
+              [16, 16],
+            ],
+            2.6,
+          ],
+        ]
+      : p.rel === 'following'
+        ? [
+            [
+              [
+                [11, 21],
+                [11, 4],
+              ],
+              2,
+            ],
+            [
+              [
+                [6, 8],
+                [11, 3],
+                [16, 8],
+              ],
+              2,
+            ],
+            [
+              [
+                [6, 13],
+                [11, 8],
+                [16, 13],
+              ],
+              2,
+            ],
+          ]
+        : [
+            [
+              [
+                [11, 21],
+                [11, 4],
+              ],
+              1.5,
+            ],
+            [
+              [
+                [7, 8],
+                [11, 3],
+                [15, 8],
+              ],
+              1.5,
+            ],
+          ];
+  for (const [extra, c] of [
+    [OUTLINE_EXTRA, GLYPH_OUTLINE],
+    [0, colour],
+  ] as const)
+    for (const [pts, w] of strokes)
+      cv.polyline(
+        pts.map(([x, y]) => P(x, y)),
+        (w + extra) * big,
+        c
+      );
+}
+
+/** Wave arrow length (px) for a mean period (the web app's _waveArrowLength): 12 px at 4 s and below to 34 px at 16 s; 20 px without one. */
+export function waveArrowLength(mwp: number | null): number {
+  if (mwp == null || !Number.isFinite(mwp)) return 20;
+  const t = Math.max(0, Math.min(1, (mwp - 4) / (16 - 4)));
+  return Math.round(12 + t * (34 - 12));
+}
+
+/** One wave arrow at pixel (ax, ay): the web app's 14 × (len + 4) SVG (_waveArrowSvg), centred, pointing the way the waves travel. */
+export function drawWaveArrow(cv: Canvas, ax: number, ay: number, p: SeaPoint): void {
+  const colour = hexRgba(waveGlyphColour(p.swh_m));
+  const len = Math.round(waveArrowLength(p.mwp_s) / 2) * 2;
+  const h = len + 4;
+  const top = 2;
+  const bot = h - 2;
+  const rad = (Math.round(p.to_deg / 5) * 5 * Math.PI) / 180;
+  const P = (lx: number, ly: number): [number, number] => place(ax, ay, rad, 1, lx - 7, ly - h / 2);
+  const strokes: [number, number][][] = [
+    [
+      [7, bot],
+      [7, top + 1],
+    ],
+    [
+      [3, top + 5],
+      [7, top],
+      [11, top + 5],
+    ],
+  ];
+  for (const [extra, c] of [
+    [OUTLINE_EXTRA, GLYPH_OUTLINE],
+    [0, colour],
+  ] as const)
+    for (const pts of strokes)
+      cv.polyline(
+        pts.map(([x, y]) => P(x, y)),
+        2 + extra,
+        c
+      );
+}
+
+/** The point glyph tile: each point within reach of the tile drawn with `draw`. */
+function renderPointsPng<T extends { lon: number; lat: number }>(
+  z: number,
+  x: number,
+  y: number,
+  points: T[],
+  draw: (cv: Canvas, px: number, py: number, p: T) => void
+): Buffer {
+  const cv = new Canvas(TILE_PX, TILE_PX);
+  const proj = projector(z, x, y);
+  for (const p of points) {
+    const [px, py] = proj(p.lon, p.lat);
+    if (px < -GLYPH_MARGIN || px > TILE_PX + GLYPH_MARGIN || py < -GLYPH_MARGIN || py > TILE_PX + GLYPH_MARGIN) continue;
+    draw(cv, px, py, p);
+  }
+  return encodePng(TILE_PX, TILE_PX, cv.data);
+}
+
+export function renderSeasPng(z: number, x: number, y: number, points: SeaPoint[]): Buffer {
+  return renderPointsPng(z, x, y, points, drawSeaGlyph);
+}
+
+export function renderWaveArrowsPng(z: number, x: number, y: number, points: SeaPoint[]): Buffer {
+  return renderPointsPng(z, x, y, points, drawWaveArrow);
+}
+
 export function renderBarbsPng(z: number, x: number, y: number, points: WindPoint[]): Buffer {
   const cv = new Canvas(TILE_PX, TILE_PX);
   const proj = projector(z, x, y);
@@ -246,7 +429,8 @@ export async function renderGlyphTilePng(
   hourMs: number,
   signal?: AbortSignal
 ): Promise<{ png: Buffer; cached: boolean }> {
-  const dataLayer = layer === 'isobars' ? 'msl' : layer;
+  // The data tile layer each glyph layer is drawn from (both seas glyphs from the 'seas' points).
+  const dataLayer = layer === 'isobars' ? 'msl' : layer === 'wave_arrows' ? 'seas' : layer;
   const key = `${layer}/${z}/${x}/${y}/${hourMs}/${service.store.generation(tileGroup(dataLayer))}`;
   const hit = cache.get(key);
   if (hit) return { png: hit, cached: true };
@@ -263,9 +447,18 @@ export async function renderGlyphTilePng(
     );
     png = renderIsobarsPng(z, x, y, out.features);
   } else {
-    const tiles = await Promise.all(neighbourhood(z, x, y).map(t => service.decoded({ layer, z, x: t.x, y: t.y, hourMs }, signal)));
+    const tiles = await Promise.all(
+      neighbourhood(z, x, y).map(t => service.decoded({ layer: dataLayer, z, x: t.x, y: t.y, hourMs }, signal))
+    );
     const points = ([] as unknown[]).concat(...(tiles as unknown[][]));
-    png = layer === 'barbs' ? renderBarbsPng(z, x, y, points as WindPoint[]) : renderArrowsPng(z, x, y, points as CurrentPoint[]);
+    png =
+      layer === 'barbs'
+        ? renderBarbsPng(z, x, y, points as WindPoint[])
+        : layer === 'seas'
+          ? renderSeasPng(z, x, y, points as SeaPoint[])
+          : layer === 'wave_arrows'
+            ? renderWaveArrowsPng(z, x, y, points as SeaPoint[])
+            : renderArrowsPng(z, x, y, points as CurrentPoint[]);
   }
   cache.set(key, png);
   return { png, cached: false };

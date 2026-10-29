@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { LandMask } from '../geo/landmask';
+import { CoastTiles } from '../geo/coasttiles';
 import { WaterGrid } from '../geo/watergrid';
 import { buildWaterGrid } from '../geo/watergrid_build';
 import { gridAstar, GridAstarError, smoothGridPath, gridLineOfSight } from './gridastar';
@@ -103,10 +104,13 @@ writeShapefile(SHP2, [
   rect(172.51, -0.5, 180, 0.5),
   rect(172.49, 0.0, 172.51, 0.0002),
 ]);
+// Each coastline's tiles (geo/coasttiles.ts) in a folder of its own.
+const COAST = CoastTiles.build([SHP], path.join(tmp, 'tiles1'));
+const COAST2 = CoastTiles.build([SHP2], path.join(tmp, 'tiles2'));
 const region = { west: 160, east: -170, south: -10, north: 40 };
 let gridCache: WaterGrid | null = null;
 function grid(): WaterGrid {
-  if (!gridCache) gridCache = buildWaterGrid([SHP], { region });
+  if (!gridCache) gridCache = buildWaterGrid(COAST, { region });
   return gridCache;
 }
 
@@ -274,7 +278,7 @@ test('corridor: a passage the base raster closes is refined locally and verified
     {
       stages: 20,
       landFor: b => {
-        const m = LandMask.fromShapefiles([SHP], b, { resolutionDeg: 0.01 });
+        const m = LandMask.fromCoastline(COAST, b, { resolutionDeg: 0.01 });
         lands.push(m);
         return m;
       },
@@ -293,7 +297,7 @@ test('corridor: a passage the base raster closes is refined locally and verified
 });
 
 test('corridor: a passage closed on the raster even at the finest patch is blocked and routed around', () => {
-  const g = buildWaterGrid([SHP2], { region: { west: 160, east: 180, south: -10, north: 10 } });
+  const g = buildWaterGrid(COAST2, { region: { west: 160, east: 180, south: -10, north: 10 } });
   // The boom channel at lon 172.5 is open on the grid (the boom is thinner than a fine cell).
   const box = { west: 171.5, east: 173.5, south: -2, north: 2 };
   assert.ok(connectedIn(g, [172.5, -1], [172.5, 1], box), 'grid sees the boom channel as open');
@@ -307,7 +311,7 @@ test('corridor: a passage closed on the raster even at the finest patch is block
     {
       stages: 20,
       onProgress: (_s, _t, m) => messages.push(m),
-      landFor: b => LandMask.fromShapefiles([SHP2], b, { resolutionDeg: 0.002 }),
+      landFor: b => LandMask.fromCoastline(COAST2, b, { resolutionDeg: 0.002 }),
     }
   );
   assert.ok(cor.stats.reroutes >= 1, `re-routed (${messages.join(' | ')})`);
@@ -327,7 +331,7 @@ test('corridor: a start on land is a fatal error; a missing water path is a corr
           [169.985, 0],
           [170, 6],
         ],
-        { stages: 20, landFor: b => LandMask.fromShapefiles([SHP], b, { resolutionDeg: 0.01 }) }
+        { stages: 20, landFor: b => LandMask.fromCoastline(COAST, b, { resolutionDeg: 0.01 }) }
       ),
     (e: unknown) => e instanceof CorridorError && e.fatal && /start point .* on land/.test(e.message)
   );
@@ -340,14 +344,14 @@ test('corridor: a start on land is a fatal error; a missing water path is a corr
           [162.5, 25],
           [170, 6],
         ],
-        { stages: 20, landFor: b => LandMask.fromShapefiles([SHP], b, { resolutionDeg: 0.01 }) }
+        { stages: 20, landFor: b => LandMask.fromCoastline(COAST, b, { resolutionDeg: 0.01 }) }
       ),
     (e: unknown) => e instanceof CorridorError && e.fatal && /no water within/.test(e.message)
   );
 });
 
 test('width profile: an islet on the skeleton is not a narrow passage; a strait is', () => {
-  const m = LandMask.fromShapefiles([SHP], { west: 165, east: 175, south: -6, north: 6 }, { resolutionDeg: 0.002 });
+  const m = LandMask.fromCoastline(COAST, { west: 165, east: 175, south: -6, north: 6 }, { resolutionDeg: 0.002 });
   // Along lon 170 through the channel: width ≈ 0.02° · cos(0) · 111 km ≈ 2.2 km.
   const pts = [
     { lon: 170, lat: -0.2 },
@@ -356,12 +360,29 @@ test('width profile: an islet on the skeleton is not a narrow passage; a strait 
   ];
   const w = widthProfile(m, pts);
   assert.ok(w[1] > 1500 && w[1] < 2600, `strait width ${w[1]}`);
-  // Open water far from land: Infinity.
-  const w2 = widthProfile(m, [
+  // Open water far from land: Infinity. The mask must know that water: its box holds the point (outside its box a
+  // mask answers land).
+  const open = LandMask.fromCoastline(COAST, { west: 145, east: 155, south: -5, north: 5 }, { resolutionDeg: 0.002 });
+  const w2 = widthProfile(open, [
     { lon: 150, lat: 0 },
     { lon: 150.1, lat: 0 },
   ]);
   assert.equal(w2[0], Infinity);
+});
+
+test('land mask: outside its box is land (nothing was loaded there), so no leg passes over unloaded coast', () => {
+  const m = LandMask.fromCoastline(COAST, { west: 165, east: 175, south: -6, north: 6 }, { resolutionDeg: 0.002 });
+  // Inside the box, open water and the channel are water.
+  assert.equal(m.isLand(170, 5.8), false);
+  assert.equal(m.isLandExact(170, 5.8), false);
+  assert.equal(m.legCrossesLandExact(170, -5.8, 170, 5.8), false); // through the 0.02° channel
+  // Outside the box (beyond the 0.1° pad), every check says land.
+  assert.equal(m.isLand(150, 0), true);
+  assert.equal(m.isLandExact(150, 0), true);
+  assert.equal(m.legCrossesLandExact(170, 5.8, 170, 8), true); // ends outside
+  assert.equal(m.legCrossesLandExact(160, 5.8, 180, 5.8), true); // starts and ends outside
+  assert.deepEqual([...m.legsCrossLandBulk([170, 170], [5.8, 5.8], [170, 166], [5.9, 7])], [0, 1]);
+  assert.equal(m.clearAlong(170, 5.8, 0, 100_000).m < 50_000, true); // stops at the box edge (6.1°N), ~33 km north
 });
 
 test("mergeVias puts each segment's automatic vias before the user via ending it", () => {
@@ -386,7 +407,7 @@ test('propagator: automatic vias pull the route through the passage but are not 
       [170, -3],
       [170, 3],
     ],
-    { stages: 12, landFor: b => LandMask.fromShapefiles([SHP], b, { resolutionDeg: 0.002 }) }
+    { stages: 12, landFor: b => LandMask.fromCoastline(COAST, b, { resolutionDeg: 0.002 }) }
   );
   const prop = new OceanPropagator(cor.land, { stages: 12 });
   const auto = [{ lon: 170, lat: 0, radiusM: 1500, auto: true, name: 'Test Channel', widthM: 2200 }];

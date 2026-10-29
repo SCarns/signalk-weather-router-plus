@@ -9,6 +9,13 @@ import { twaFromHeading } from '../geo/angles';
 
 export type Mode = 'sailing' | 'motoring';
 
+export interface RouteDrawbridge {
+  lon: number;
+  lat: number;
+  clearM: number | null;
+  legIndex: number;
+}
+
 export interface Waypoint {
   lon: number;
   lat: number;
@@ -18,6 +25,8 @@ export interface Waypoint {
   /** Course over ground into this waypoint, degrees true. */
   cogDeg: number;
   mode: Mode;
+  /** Charted depth under the waypoint, metres, from the chart mesh (mesh legs only). */
+  depthM?: number;
   twaDeg?: number;
   windMs?: number;
   /** Wind direction FROM, degrees true. */
@@ -31,8 +40,23 @@ export interface Waypoint {
   currentMs?: number;
   /** Current set (flows TO), degrees true. */
   currentDirDeg?: number;
+  /** Lowest wind speed sampled along the leg departing here, m/s. */
+  windMinMs?: number;
+  /** Highest wind speed sampled along the leg departing here, m/s. */
+  windMaxMs?: number;
+  /** Lowest significant wave height along the leg departing here, m. */
+  swhMinM?: number;
+  /** Highest significant wave height along the leg departing here, m. */
+  swhMaxM?: number;
   leg?: string;
   role?: 'via';
+  /** A tack or gybe point the router placed when it split a beat into its two legs (experimental router). */
+  tack?: true;
+  /**
+   * The leg arriving here is a beat no tack fitted in, motored straight (experimental router, layTacks): turned into
+   * a `beat_motored` warning once the route is final (copies made by the polish keep it), then removed.
+   */
+  motoredBeat?: true;
   /**
    * Sailing and motoring seconds of the leg arriving here, set when the
    * shortcut smoother merged several legs into one (mixed modes); totals
@@ -43,10 +67,18 @@ export interface Waypoint {
 
 export interface RouteWarning {
   leg_index: number;
-  violation: 'leg_crosses_land' | 'wind_over_limit' | 'waves_over_limit';
+  /**
+   * `detour_motored`: a chart-mesh repair detour (worker/route.ts repairViolations) that had to motor because sailing
+   * could not move the boat there. `search_failed`: the search on an open stretch of a chart-mesh leg failed and the
+   * stretch follows the mesh route instead (mesh/legrun.ts), which can be slower, with many short tacks; from and to
+   * are the stretch's ends. `beat_motored`: a beat no tack fitted in, motored straight (experimental/propagator.ts).
+   */
+  violation: 'leg_crosses_land' | 'wind_over_limit' | 'waves_over_limit' | 'detour_motored' | 'search_failed' | 'beat_motored';
   from: [number, number];
   to: [number, number];
   repaired: boolean;
+  /** detour_motored and beat_motored: the motoring time, seconds. search_failed: why the search failed. */
+  detail?: string;
 }
 
 export interface FrontPoint {
@@ -85,6 +117,8 @@ export interface Route {
   sailingTimeS: number;
   warnings?: RouteWarning[];
   validated: boolean;
+  /** Detours the chart-mesh repair spliced in (worker/route.ts repairViolations). */
+  repairsApplied?: number;
   /** Set by the caller when the route runs past the forecast's last step. */
   forecastHorizonExceededS?: number;
   /** The forecast's last valid step (ms since epoch), set by the caller; waypoints after it ran on held conditions. */
@@ -113,8 +147,36 @@ export interface Route {
   smootherDrops?: number;
   /** Automatic vias the router placed at narrow passages (not waypoints). */
   autoVias?: { lon: number; lat: number; radiusM: number; widthM: number; name: string }[];
+  /** Opening bridges the route passes under (mesh legs): position, charted open clearance (null = none charted), the waypoint the crossing leg arrives at. */
+  drawbridges?: RouteDrawbridge[];
   /** The corridor search failed and the leg ran on the per-route coarse skeleton instead (decision E: counted in the status). */
   corridorFallback?: true;
+  /** The leg (or at least one leg) was routed on the chart mesh (engine/mesh) instead of the coastline search. */
+  meshLeg?: true;
+  /** Per leg of the route (a leg ends at each waypoint), what planned it: the chart mesh, the coastline search, or both (a handover leg). */
+  legSources?: LegSource[];
+  /** The final depth check against the chart mesh (set by the caller): per leg what the route crosses. */
+  depthCheck?: DepthCheck;
+}
+
+export type LegSource = 'mesh' | 'coastline' | 'mixed';
+
+/** What one leg of a finished route crosses on the chart mesh (engine/mesh/check.ts); metres along the route. */
+export interface LegDepth {
+  leg: number;
+  /** On mesh triangles. */
+  onMeshM: number;
+  /** On mesh triangles with no charted depth (-999): passed, as the blocking rules pass them. */
+  unknownDepthM: number;
+  /** Where no mesh triangle is (outside every mesh, or land the mesh leaves out: not told apart yet). */
+  outsideMeshM: number;
+  /** The shallowest charted depth crossed, metres, and where; null when none was charted along the leg. */
+  shallowestM: number | null;
+  shallowestAt: [number, number] | null;
+}
+
+export interface DepthCheck {
+  legs: LegDepth[];
 }
 
 /** Recompute cog / twa / sog on every waypoint from the final geometry. */

@@ -1,22 +1,27 @@
-// Weather Router Plus — Settings tab (server-side settings): entry module,
+// Weather Router Plus — Defaults tab (server-side settings): entry module,
 // imports UI_UNITS, API, escapeHtml and loadPluginStatus from rp-core.js.
 //
 // GET  /api/settings → {values, schema}: values are SI (m, m/s, s, deg);
 //      schema.settings[] gives key, group, label, type, unit, quantity,
-//      min/max (SI), multipleOf, oneOf, default, nullable, enum, help, reload.
+//      min/max/step (SI), multipleOf, oneOf, default, nullable, enum, help, reload.
+// Numbers are sliders (the owner's decision, 2026-10-08): min, max and step
+// come from the schema in SI and are converted to the user's unit; the
+// value shows beside the label. A nullable number has a "no limit" box.
+// A list (type enumList) is one checkbox per value, its enumHelp beside it.
 // PUT  /api/settings with only the changed keys ({group: {key: SI}}) →
 //      {values, changed, reloaded} or 400 {error, errors: {key: msg}}.
 // Inputs show values in the Signal K user's unit preferences;
 // conversion happens here, the server only ever sees SI.
 
-import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml } from './rp-core.js';
+import { oneOpenAtATime, API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml } from './rp-core.js';
 (function () {
   const form = document.getElementById('srvSettingsForm');
-  const saveBtn = document.getElementById('srvSettingsSave');
-  const revertBtn = document.getElementById('srvSettingsRevert');
+  const saveBtn = /** @type {HTMLButtonElement} */ (document.getElementById('srvSettingsSave'));
+  const revertBtn = /** @type {HTMLButtonElement} */ (document.getElementById('srvSettingsRevert'));
   const dirtyEl = document.getElementById('srvSettingsDirty');
   const statusEl = document.getElementById('srvSettingsStatus');
   if (!form || !saveBtn || !revertBtn || !statusEl) return;
+  oneOpenAtATime(form); // one group open at a time (the groups are rendered into the form later; the listener is on the form)
 
   let schema = null;      // {groups, settings}
   let values = null;      // last saved values (SI), nested
@@ -37,7 +42,17 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml
       if (c && c.inv) return { unit: c.unit, fn: c.fn, inv: c.inv, prec: Math.max(1, c.precision) + 1 };
       return { unit: UNIT_MISSING, fn: () => NaN, inv: () => NaN, prec: 0, missing: true };
     }
-    if (q === 'hours' || q === 'minutes' || q === 'seconds') {
+    // ======================================================================
+    // EXCEPTION TO THE UNITS RULE (the owner's decision, 2026-10-08).
+    // Everywhere else the display unit comes from the Signal K unit
+    // preferences and nothing else. Signal K has ONE time category, and a
+    // preference of "hour" shows a 30 s tacking penalty as "0.01 hour".
+    // Until a seconds category exists in Signal K (the owner is dealing with
+    // that separately), a setting declared in SECONDS is shown and typed in
+    // seconds, full stop. Remove this block when that category exists.
+    // ======================================================================
+    if (q === 'seconds') return lin('s', 1, 0);
+    if (q === 'hours' || q === 'minutes') {
       // Durations in the user's time unit. A duration-format preference
       // (e.g. "1d 2h") has no single unit to type a number in: no unit.
       const c = UI_UNITS.time;
@@ -65,17 +80,52 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml
   }
   function textFor(spec, si, conv) {
     if (spec.type === 'boolean') return si ? 'true' : 'false';
+    if (spec.type === 'enumList') return Array.isArray(si) ? si.join(',') : '';
     if (spec.type === 'string' || spec.type === 'enum') return si == null ? '' : String(si);
     return fmtNum(si == null ? null : conv.fn(si), conv.prec);
   }
   function currentText(r) {
-    return r.spec.type === 'boolean' ? (r.input.checked ? 'true' : 'false') : r.input.value.trim();
+    if (r.spec.type === 'boolean') return r.input.checked ? 'true' : 'false';
+    if (r.spec.type === 'enumList') return r.boxes.filter((b) => b.checked).map((b) => b.value).join(',');
+    if (r.noneEl && r.noneEl.checked) return '';
+    return r.input.value.trim();
+  }
+  // Slider bounds in the display unit. The step is the schema's (SI)
+  // converted, so in knots it is the step the help text promises and in
+  // another unit the same count of positions. A converted max that is not
+  // a whole number of steps from the min is simply not reachable (the
+  // browser snaps to the grid); the server's limit is never exceeded.
+  function sliderFor(spec, conv) {
+    if (conv.missing) return null;
+    const a = conv.fn(spec.min), b = conv.fn(spec.max);
+    const lo = Math.min(a, b), hi = Math.max(a, b);
+    const step = Math.abs(conv.fn(spec.step) - conv.fn(0));
+    return { lo, hi, step };
+  }
+  // Put a slider on the display value: bounds, step, position. A saved value
+  // off the step grid (typed in before the sliders) is shown as saved in the
+  // label; the thumb sits on the nearest position and the row is not dirty
+  // until the slider moves.
+  function placeSlider(r) {
+    const sl = sliderFor(r.spec, r.conv);
+    r.input.disabled = !sl || (r.noneEl ? r.noneEl.checked : false);
+    if (!sl) { r.input.min = 0; r.input.max = 1; r.input.step = 1; r.input.value = 0; return; }
+    r.input.min = String(sl.lo);
+    r.input.max = String(sl.hi);
+    r.input.step = String(sl.step);
+    r.input.value = r.initialText === '' ? String(sl.lo) : r.initialText;
+  }
+  function showValue(r, text) {
+    if (!r.valEl) return;
+    if (r.conv.missing) { r.valEl.textContent = UNIT_MISSING; return; }
+    r.valEl.textContent = text === '' ? 'none' : fmtNum(Number(text), r.conv.prec);
   }
   // Input text → SI value, or throws Error(message) for an inline error.
   function parseInput(r) {
     const s = r.spec, t = currentText(r);
     if (s.type === 'boolean') return t === 'true';
     if (s.type === 'enum') return t;
+    if (s.type === 'enumList') return t ? t.split(',') : [];
     if (s.type === 'string') {
       if (s.maxLength && t.length > s.maxLength) throw new Error('at most ' + s.maxLength + ' characters');
       return t;
@@ -114,7 +164,7 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml
     for (const g of schema.groups) {
       const specs = byGroup[g.id] || [];
       if (!specs.length) continue;
-      html += '<details class="subsection" open><summary>' + esc(g.label) + '</summary><div class="subsection-body">';
+      html += '<details class="subsection"><summary>' + esc(g.label) + '</summary><div class="subsection-body">';
       if (g.help) html += '<div class="ctl-hint">' + unitTextHtml(g.help) + '</div>';
       for (const s of specs) {
         const id = 'st_' + s.key.replace(/\./g, '_');
@@ -123,13 +173,25 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml
             + '<div class="ctl-hint">' + unitTextHtml(s.help) + '</div><div class="st-err"></div></div>';
           continue;
         }
-        html += '<div class="st-row" data-key="' + esc(s.key) + '"><label for="' + id + '"><span>' + esc(s.label) + '</span><span class="st-unit"></span></label>';
+        if (s.type === 'enumList') {
+          html += '<div class="st-row st-list" data-key="' + esc(s.key) + '" role="group" aria-label="' + esc(s.label) + '"><div class="st-head"><span>' + esc(s.label) + '</span></div>'
+            + s.enum.map((v) => '<label class="st-opt"><input type="checkbox" value="' + esc(v) + '"><span>' + esc(v)
+              + (s.enumHelp && s.enumHelp[v] ? ' <span class="st-opt-help">' + unitTextHtml(s.enumHelp[v]) + '</span>' : '') + '</span></label>').join('')
+            + '<div class="ctl-hint">' + unitTextHtml(s.help) + '</div><div class="st-err"></div></div>';
+          continue;
+        }
         if (s.type === 'enum') {
+          html += '<div class="st-row" data-key="' + esc(s.key) + '"><label for="' + id + '"><span>' + esc(s.label) + '</span><span class="st-unit"></span></label>';
           html += '<select id="' + id + '">' + s.enum.map((v) => '<option value="' + esc(v) + '">' + esc(v) + '</option>').join('') + '</select>';
         } else if (s.type === 'string') {
+          html += '<div class="st-row" data-key="' + esc(s.key) + '"><label for="' + id + '"><span>' + esc(s.label) + '</span><span class="st-unit"></span></label>';
           html += '<input type="text" id="' + id + '"' + (s.maxLength ? ' maxlength="' + s.maxLength + '"' : '') + '>';
         } else {
-          html += '<input type="text" inputmode="decimal" id="' + id + '"' + (s.nullable ? ' placeholder="none"' : '') + '>';
+          // Number: label with the value and unit beside it, slider under;
+          // a nullable number also gets a "no limit" box.
+          html += '<div class="st-row st-range" data-key="' + esc(s.key) + '"><div class="st-head"><label for="' + id + '"><span>' + esc(s.label) + ': <span class="st-val"></span> <span class="st-unit"></span></span></label>'
+            + (s.nullable ? '<label class="st-none"><input type="checkbox" id="' + id + '_none">no limit</label>' : '') + '</div>';
+          html += '<input type="range" id="' + id + '" aria-label="' + esc(s.label) + '">';
         }
         html += '<div class="ctl-hint">' + unitTextHtml(s.help) + '</div><div class="st-err"></div></div>';
       }
@@ -138,10 +200,17 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml
     form.innerHTML = html;
     rows = schema.settings.map((spec) => {
       const row = form.querySelector('.st-row[data-key="' + spec.key + '"]');
-      const input = row.querySelector('input, select');
-      const r = { spec, row, input, errEl: row.querySelector('.st-err'), unitEl: row.querySelector('.st-unit'), conv: convFor(spec), initialText: '' };
-      input.addEventListener('input', () => { validateRow(r); refreshDirty(); });
-      input.addEventListener('change', () => { validateRow(r); refreshDirty(); });
+      const list = spec.type === 'enumList';
+      const boxes = list ? [...row.querySelectorAll('.st-opt input[type="checkbox"]')] : [];
+      /** @type {HTMLInputElement | HTMLSelectElement} */
+      const input = list ? null : row.classList.contains('st-bool') ? row.querySelector('input[type="checkbox"]') : row.querySelector('select, input[type="range"], input[type="text"]');
+      const r = { spec, row, input, boxes, errEl: row.querySelector('.st-err'), unitEl: row.querySelector('.st-unit'), valEl: row.querySelector('.st-val'), noneEl: /** @type {HTMLInputElement} */ (row.querySelector('.st-none input')), conv: convFor(spec), initialText: '' };
+      const onEdit = () => { if (r.valEl) showValue(r, currentText(r)); validateRow(r); refreshDirty(); };
+      for (const el of list ? boxes : [input]) {
+        el.addEventListener('input', onEdit);
+        el.addEventListener('change', onEdit);
+      }
+      if (r.noneEl) r.noneEl.addEventListener('change', () => { r.input.disabled = r.noneEl.checked || r.conv.missing === true; onEdit(); });
       return r;
     });
     fillFromValues();
@@ -153,7 +222,17 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml
       r.conv = convFor(r.spec);
       r.initialText = textFor(r.spec, getVal(r.spec.key), r.conv);
       if (r.spec.type === 'boolean') r.input.checked = r.initialText === 'true';
-      else r.input.value = r.initialText;
+      else if (r.spec.type === 'enumList') {
+        const on = r.initialText ? r.initialText.split(',') : [];
+        for (const b of r.boxes) b.checked = on.includes(b.value);
+      } else if (r.input.type === 'range') {
+        if (r.noneEl) r.noneEl.checked = r.initialText === '';
+        placeSlider(r);
+        showValue(r, r.initialText);
+        // The thumb may have snapped to the step grid; what it holds now is
+        // the unedited state, so a reload does not look like an edit.
+        if (r.initialText !== '') r.initialText = r.input.value;
+      } else r.input.value = r.initialText;
       if (r.unitEl) r.unitEl.textContent = r.conv.unit || '';
       r.errEl.textContent = '';
       r.row.classList.remove('st-invalid');
@@ -194,7 +273,20 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml
       r.conv = convFor(r.spec);
       r.initialText = textFor(r.spec, getVal(r.spec.key), r.conv);
       if (r.unitEl) r.unitEl.textContent = r.conv.unit || '';
-      if (r.spec.type === 'boolean' || r.spec.type === 'enum' || r.spec.type === 'string') continue;
+      if (r.spec.type === 'boolean' || r.spec.type === 'enum' || r.spec.type === 'enumList' || r.spec.type === 'string') continue;
+      if (r.input.type === 'range') {
+        // Rebuild the slider in the new unit at the saved value, then put
+        // an edit back at its SI value. The unedited state is the thumb's
+        // snapped position, as in fillFromValues; an edit within one step
+        // of the saved value therefore reads as unedited after the change.
+        const savedText = r.initialText;
+        placeSlider(r);
+        if (savedText !== '') r.initialText = r.input.value;
+        if (dirty && ok && si !== null) r.input.value = textFor(r.spec, si, r.conv);
+        if (r.noneEl) { r.noneEl.checked = dirty ? si === null : savedText === ''; r.input.disabled = r.noneEl.checked || r.conv.missing === true; }
+        showValue(r, dirty ? currentText(r) : savedText);
+        continue;
+      }
       if (!dirty) r.input.value = r.initialText;
       else if (ok) r.input.value = textFor(r.spec, si, r.conv);
     }
@@ -284,6 +376,6 @@ import { API, escapeHtml, loadPluginStatus, UI_UNITS, UNIT_MISSING, unitTextHtml
   form.addEventListener('submit', (e) => { e.preventDefault(); save(); });
   // Reload from the server when the tab is opened with no unsaved edits
   // (another client may have changed them).
-  window.addEventListener('rp:tab', (e) => { if (e.detail === 'srvSettingsSection' && !loading && dirtyRows().length === 0) load(); });
+  window.addEventListener('rp:tab', (/** @type {CustomEvent} */ e) => { if (e.detail === 'srvSettingsSection' && !loading && dirtyRows().length === 0) load(); });
   load();
 })();

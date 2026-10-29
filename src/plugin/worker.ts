@@ -34,35 +34,70 @@ import * as path from 'node:path';
 import { ECMWF_MIRRORS, EcmwfClient } from '../data/ecmwf';
 import { DecodedRun } from '../data/decoded';
 import { OnDemandLand } from '../geo/landcache';
+import { CoastTiles } from '../geo/coasttiles';
 import { PolarDiagram } from '../vessel/polar';
 import { HarmonicCurrentSource } from '../currents/harmonic';
 import { CurrentStack } from '../currents/stack';
-import { RtofsClient } from '../currents/rtofs';
+import { RtofsCurrentSource, rtofsSetForConfig } from '../currents/rtofs';
 import { SmocCurrentSource } from '../currents/smoc';
 import { TideSource } from '../tides/sealevel';
 import { type MainToWorker, type WorkerRole, type WorkerToMain } from './protocol';
-import { requireInit } from './worker/state';
+import { rtofsLoadSame, smocLoadSame } from './config';
+import { setNetworkObserver } from '../data/http';
+import { noteNetwork, requireInit } from './worker/state';
 import { refreshForecast } from './worker/forecast';
 import { prepareWaterGrid } from './worker/landgrid';
-import { loadHarmonic, makeSmocClient, rebuildStack, refreshRtofs, refreshSmoc, sendCurrents, sendSmoc } from './worker/currents';
+import {
+  adoptCurrentsRef,
+  loadHarmonic,
+  makeSmocClient,
+  rebuildStack,
+  refreshRtofs,
+  refreshSmoc,
+  sendCurrents,
+  sendRtofs,
+  sendSmoc,
+} from './worker/currents';
 import { makeSeaLevelClient, refreshTides, tideSettings } from './worker/tides';
 import { refreshRegional } from './worker/regional';
 import { route } from './worker/route';
-import { dataStatus, query } from './worker/query';
+import { refreshQueue } from './worker/refreshqueue';
+import { buildTile, dataStatus, query } from './worker/query';
 import type { WorkerState } from './worker/state';
 
-if (!parentPort) throw new Error('worker.ts must run as a worker thread');
-const port = parentPort;
-const role: WorkerRole = workerData.role as WorkerRole;
+/**
+ * The parent: a worker thread's port (data, route), or the IPC channel of a
+ * child process (tiles: the prebuilder runs tile building in separate
+ * processes that exit when a walk is done, so their memory goes back to the
+ * system; see prebuild.ts). Same messages either way.
+ */
+interface ParentChannel {
+  postMessage(m: WorkerToMain): void;
+  on(event: 'message', fn: (m: MainToWorker) => void): void;
+}
+function childProcessChannel(): ParentChannel {
+  if (typeof process.send !== 'function') throw new Error('worker.ts must run as a worker thread or a forked child process');
+  // The parent is gone (plugin stopped, Signal K exited): nothing left to work for.
+  process.on('disconnect', () => process.exit(0));
+  return {
+    postMessage: m => {
+      if (process.connected) process.send!(m);
+    },
+    on: (_event, fn) => process.on('message', fn as (m: unknown) => void),
+  };
+}
+const port: ParentChannel = parentPort ?? childProcessChannel();
+const role: WorkerRole = parentPort ? (workerData.role as WorkerRole) : ((process.env.WRP_WORKER_ROLE as WorkerRole) ?? 'tiles');
 const send = (m: WorkerToMain): void => port.postMessage(m);
 const st: WorkerState = {
   role,
-  cancelFlag: new Int32Array(workerData.cancelFlag as SharedArrayBuffer),
+  // A child process has no shared memory with the parent; nothing cancels tile queries through the flag.
+  cancelFlag: new Int32Array(parentPort ? (workerData.cancelFlag as SharedArrayBuffer) : new SharedArrayBuffer(4)),
   send,
   log: (level, message) => send({ type: 'log', level, message: `[${role}] ${message}` }),
   config: null,
   client: null,
-  rtofsClient: null,
+  rtofsClients: new Map(),
   run: null,
   runInfo: null,
   forecastMemory: { heldBytes: 0, last: null },
@@ -73,7 +108,8 @@ const st: WorkerState = {
   polar: null,
   landCache: null,
   harmonic: [],
-  rtofs: null,
+  rtofs: [],
+  rtofsChoice: null,
   smocClient: null,
   smoc: null,
   vesselPos: null,
@@ -91,27 +127,56 @@ const st: WorkerState = {
   routeWindow: null,
   routeRegional: [],
   cancelledQueries: new Set<number>(),
+  checks: {},
+  connectivity: { online: null, since: null, lastOkAt: null, reason: null },
+  lastOfflineMs: 0,
+  internetHold: null,
+  backgroundRound: false,
+  harmonicErrors: [],
+  currentsUnread: [],
+  decodeAbort: null,
 };
+// The data worker's requests say whether there is a connection (status, and a refresh round stops asking servers).
+if (role === 'data') setNetworkObserver((state, reason) => noteNetwork(st, state, reason));
 
 /**
  * Refresh RTOFS (both roles) and, in the data worker, the forecast and
  * CMEMS SMOC. The route worker never decodes a forecast or loads the SMOC
  * resident area itself: it reads the data worker's decoded run from disk
- * (location relayed by the main thread) and adopts its SMOC memory.
+ * (location relayed by the main thread) and adopts its SMOC memory. Once a
+ * request of this round finds no connection, the sources after it are not
+ * asked (each uses what it has and reports "could not check" with the reason).
+ * `user`: the owner asked (Refresh, a route): the round downloads whatever
+ * the internet state. Any other round looks at the state (internet.ts, sent
+ * as 'internet-hold') before each source: while it holds, the sources
+ * answer from what is on disk, and it starting to hold stops the forecast
+ * decode under way.
  */
-export async function refresh(st: WorkerState, force: boolean): Promise<void> {
+export async function refresh(st: WorkerState, force: boolean, user = false): Promise<void> {
   const networkAllowed = st.role === 'data';
-  await refreshRtofs(st, networkAllowed);
-  sendCurrents(st);
-  if (st.role === 'data') {
-    await refreshForecast(st, force);
-    // After the forecast, so a first boot is not held up by the SMOC resident download.
-    await refreshSmoc(st);
+  const t0 = Date.now();
+  const held = (): string | null => (user ? null : st.internetHold);
+  const offline = (): string | null => {
+    const h = held();
+    if (h) return `skipped: ${h}`;
+    return st.lastOfflineMs >= t0 ? `skipped: ${st.connectivity.reason ?? 'no internet connection'}` : null;
+  };
+  st.backgroundRound = !user;
+  try {
+    await refreshRtofs(st, networkAllowed, offline());
     sendCurrents(st);
-    await refreshTides(st);
-    st.send({ type: 'tides-run', run: st.tides?.run ?? null });
-    // Last: optional finer wind from signalk-grib-downloader's runs.
-    await refreshRegional(st);
+    if (st.role === 'data') {
+      await refreshForecast(st, force, offline(), held);
+      // After the forecast, so a first boot is not held up by the SMOC resident download.
+      await refreshSmoc(st, offline());
+      sendCurrents(st);
+      await refreshTides(st, offline());
+      st.send({ type: 'tides-run', run: st.tides?.run ?? null });
+      // Last: optional finer wind from signalk-grib-downloader's runs (local files, no network).
+      await refreshRegional(st);
+    }
+  } finally {
+    st.backgroundRound = false;
   }
 }
 
@@ -125,13 +190,9 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
         cacheDir: path.join(msg.cacheDir, 'ecmwf'),
         log: m => st.log('debug', `ecmwf: ${m}`),
       });
-      st.rtofsClient = st.config.currents.rtofsEnabled
-        ? new RtofsClient({
-            cacheDir: path.join(msg.cacheDir, 'rtofs'),
-            region: st.config.currents.rtofsRegion,
-            log: m => st.log('debug', m),
-          })
-        : null;
+      st.rtofsClients = new Map();
+      st.rtofs = [];
+      st.rtofsChoice = null;
       st.polar = null;
       if (st.config.polarFile) {
         st.polar = PolarDiagram.load(st.config.polarFile);
@@ -143,7 +204,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       if (st.config.landShapefiles.length === 0) throw new Error('no land shapefile configured');
       st.overlayLand =
         st.role === 'data' || st.role === 'tiles'
-          ? new OnDemandLand(st.config.landShapefiles, {
+          ? new OnDemandLand(CoastTiles.open(st.config.landShapefiles, st.cacheRoot), {
               log: m => st.log('debug', m),
               // Rasters saved on disk: a map box seen once is never rasterised again.
               cacheDir: st.cacheRoot ? path.join(st.cacheRoot, 'overlay-land') : undefined,
@@ -174,7 +235,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
     }
     case 'refresh':
       if (msg.position !== undefined) st.vesselPos = msg.position;
-      await refresh(st, msg.force ?? false);
+      await refresh(st, msg.force ?? false, msg.user ?? false);
       st.send({ type: 'data-status', status: dataStatus(st) });
       return;
     case 'forecast': {
@@ -193,28 +254,34 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       const prev = requireInit(st).config;
       st.config = msg.config;
       if (msg.reload.currents) {
-        st.rtofsClient = st.config.currents.rtofsEnabled
-          ? new RtofsClient({
-              cacheDir: st.rtofsClient?.cacheDir ?? path.join(st.cacheRoot, 'rtofs'),
-              region: st.config.currents.rtofsRegion,
-              log: m => st.log('debug', m),
-            })
-          : null;
-        st.rtofs = null;
-        st.smocClient = makeSmocClient(st, st.config);
-        st.smoc = null;
+        // Only what the change concerns is loaded again: SMOC when a SMOC setting changed, every RTOFS product when
+        // the RTOFS horizon or step changed or it was turned on or off; extra products are added or dropped alone.
+        const smocSame = smocLoadSame(prev, st.config);
+        const rtofsSame = rtofsLoadSame(prev, st.config);
+        if (!rtofsSame) {
+          st.rtofsClients = new Map();
+          st.rtofs = [];
+        }
+        if (!smocSame) {
+          st.smocClient = makeSmocClient(st, st.config);
+          st.smoc = null;
+        }
         rebuildStack(st);
         if (msg.position !== undefined) st.vesselPos = msg.position;
         // Route worker: SMOC comes back from the data worker (relayed 'smoc').
-        if (st.role === 'data') {
+        if (st.role === 'data' && !smocSame) {
           sendSmoc(st);
           await refreshSmoc(st);
         }
-        await refreshRtofs(st, st.role === 'data');
+        const relayed = await refreshRtofs(st, st.role === 'data');
+        // The products may be the same under new extra products: the other workers check a set against the setting
+        // it was loaded under, so it is relayed again (once).
+        const extraSame = prev.currents.rtofsExtra.join(',') === st.config.currents.rtofsExtra.join(',');
+        if (!relayed && (!rtofsSame || !extraSame)) sendRtofs(st);
         sendCurrents(st);
         st.log(
           'info',
-          `currents reloaded for the new settings (SMOC ${st.config.currents.smocEnabled ? `${st.config.currents.smocStepS / HOUR_S} h steps, ${st.config.currents.smocHorizonS / HOUR_S} h, ±${st.config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${st.config.currents.rtofsEnabled ? st.config.currents.rtofsRegion : 'off'})`
+          `currents reloaded for the new settings (SMOC ${st.config.currents.smocEnabled ? `${st.config.currents.smocStepS / HOUR_S} h steps, ${st.config.currents.smocHorizonS / HOUR_S} h, ±${st.config.currents.smocHalfWidthDeg}°` : 'off'}; RTOFS ${st.config.currents.rtofsEnabled ? st.rtofs.map(r => r.product).join(', ') || 'no product' : 'off'})`
         );
       }
       if (msg.reload.tides && st.role === 'tiles') {
@@ -225,7 +292,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       if (msg.reload.tides && st.role === 'data') {
         if (msg.position !== undefined) st.vesselPos = msg.position;
         // A provisional run's cached chunks may predate its update: drop them with the old client.
-        if (st.tides && st.seaLevelClient && !st.tides.run.settled) st.seaLevelClient.dropRun(st.tides.run.key);
+        if (st.tides && st.seaLevelClient && !st.tides.run.settled) st.seaLevelClient.dropProvisionalRun(st.tides.run.key);
         st.seaLevelClient = makeSeaLevelClient(st, st.config);
         st.tides = null;
         st.tidesError = null;
@@ -240,7 +307,7 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       if (msg.reload.forecast && st.role === 'data') {
         st.log(
           'info',
-          `forecast settings changed (horizon ${prev.forecast.horizonS / HOUR_S} → ${st.config.forecast.horizonS / HOUR_S} h, extra fields ${prev.forecast.extraFields} → ${st.config.forecast.extraFields}); reloading`
+          `forecast settings changed (horizon ${prev.forecast.horizonS / HOUR_S} → ${st.config.forecast.horizonS / HOUR_S} h, extra fields ${prev.forecast.extraFields} → ${st.config.forecast.extraFields}, solar and radiation fields ${prev.forecast.energyFields} → ${st.config.forecast.energyFields}); reloading`
         );
         await refreshForecast(st, false);
       }
@@ -252,14 +319,21 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
         st.send({ type: 'error', id: msg.id, message: 'route sent to the data worker' });
         return;
       }
-      await route(st, msg.id, msg.request, msg.managedPolar);
+      await route(st, msg.id, msg.request, msg.avoid ?? [], msg.self, msg.managedPolar);
       sendCurrents(st);
       return;
     case 'query':
       await query(st, msg.id, msg.kind, msg.args);
       return;
+    case 'build-tile':
+      if (st.role !== 'tiles') {
+        st.send({ type: 'query-error', id: msg.id, message: 'build-tile sent to the data or route worker' });
+        return;
+      }
+      await buildTile(st, msg.id, msg.tile, msg.tmp);
+      return;
     case 'harmonic': {
-      // Route / tiles worker: the data worker's tidal-harmonic sources (shared constituent blocks).
+      // Route worker: the data worker's tidal-harmonic sources (shared constituent blocks; tiles workers: 'currents-ref').
       if (st.role === 'data') return;
       st.harmonic = msg.sources.map(s => new HarmonicCurrentSource(s));
       rebuildStack(st);
@@ -270,8 +344,18 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       );
       return;
     }
+    case 'rtofs': {
+      // Route worker: the data worker's RTOFS products (shared memory; tiles workers: 'currents-ref').
+      if (st.role === 'data') return;
+      const cur = requireInit(st).config.currents;
+      const set = rtofsSetForConfig(msg.rtofs, cur.rtofsEnabled, cur.rtofsExtra);
+      st.rtofs = set ? set.runs.map(r => RtofsCurrentSource.fromSerialized(r)) : [];
+      rebuildStack(st);
+      sendCurrents(st);
+      return;
+    }
     case 'smoc': {
-      // Route / tiles worker: the data worker's run and resident area (shared memory).
+      // Route worker: the data worker's run and resident area (shared memory; tiles workers: 'currents-ref').
       if (st.role === 'data') return;
       const s = msg.smoc;
       const cfgNow = requireInit(st).config;
@@ -293,6 +377,11 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
         );
       return;
     }
+    case 'currents-ref':
+      // Tiles worker: the data worker's currents, read from its disk caches (no shared memory across processes).
+      if (st.role !== 'tiles') return;
+      await adoptCurrentsRef(st, msg.ref);
+      return;
     case 'tides-run': {
       // Tiles worker: open the data worker's tide run (areas load on demand from the shared disk cache).
       if (st.role !== 'tiles') return;
@@ -303,10 +392,40 @@ export async function handle(st: WorkerState, msg: MainToWorker): Promise<void> 
       return;
     }
     case 'shutdown':
+      st.decodeAbort?.abort();
       if (st.gridBuilder) await st.gridBuilder.terminate();
       process.exit(0);
   }
 }
+
+const logFailure = (msg: MainToWorker, err: unknown): void => {
+  st.log('error', `worker: ${(err as Error).stack ?? (err as Error).message}`);
+  if (msg.type === 'route') st.send({ type: 'error', id: msg.id, message: (err as Error).message });
+  if (msg.type === 'refresh') st.send({ type: 'refresh-error', message: (err as Error).message });
+  if (msg.type === 'query' || msg.type === 'build-tile') st.send({ type: 'query-error', id: msg.id, message: (err as Error).message });
+};
+
+/**
+ * The data worker's network work (refresh rounds, the reloads of a settings
+ * change) runs one at a time in its own queue, beside the messages: map,
+ * conditions and Weather API queries are answered from the data in use
+ * while it runs, instead of waiting behind it (brain, 2026-10-19: an
+ * uncached map tile timed out at 120 s during a 172 s decode). A refresh
+ * asked for while one waits to start joins it (force if either asked); one
+ * asked for while one runs is done once after it.
+ */
+let background: Promise<void> = Promise.resolve();
+function inBackground(msg: MainToWorker, fn: () => Promise<void>): void {
+  background = background.then(fn).catch(err => logFailure(msg, err));
+}
+const queueRefresh = refreshQueue({
+  inBackground: fn => inBackground({ type: 'refresh' }, fn),
+  setPosition: pos => (st.vesselPos = pos),
+  run: async (force, user) => {
+    await refresh(st, force, user);
+    st.send({ type: 'data-status', status: dataStatus(st) });
+  },
+});
 
 let chain: Promise<void> = Promise.resolve();
 port.on('message', (msg: MainToWorker) => {
@@ -315,12 +434,21 @@ port.on('message', (msg: MainToWorker) => {
     st.cancelledQueries.add(msg.id);
     return;
   }
-  chain = chain
-    .then(() => handle(st, msg))
-    .catch(err => {
-      st.log('error', `worker: ${(err as Error).stack ?? (err as Error).message}`);
-      if (msg.type === 'route') st.send({ type: 'error', id: msg.id, message: (err as Error).message });
-      if (msg.type === 'refresh') st.send({ type: 'refresh-error', message: (err as Error).message });
-      if (msg.type === 'query') st.send({ type: 'query-error', id: msg.id, message: (err as Error).message });
-    });
+  // Not chained either: it must reach a refresh round that is under way.
+  if (msg.type === 'internet-hold') {
+    st.internetHold = msg.hold;
+    // A background round's decode stops, its download with it; the owner's round goes on.
+    if (msg.hold && st.backgroundRound) st.decodeAbort?.abort();
+    return;
+  }
+  // Initialised first (its own message chain); the rest of the data worker's network work beside the queries.
+  if (role === 'data' && msg.type === 'refresh') {
+    chain = chain.then(() => queueRefresh(msg));
+    return;
+  }
+  if (role === 'data' && msg.type === 'config') {
+    chain = chain.then(() => inBackground(msg, () => handle(st, msg)));
+    return;
+  }
+  chain = chain.then(() => handle(st, msg)).catch(err => logFailure(msg, err));
 });

@@ -5,13 +5,17 @@
  *   GET  /api/status                plugin, forecast, currents and queue status
  *   GET  /api/settings              web-app settings {values, schema} (SI)
  *   PUT  /api/settings              partial update → validated, saved, applied live
+ *   GET  /api/prefs                 the Setup choices every browser shares, with security off (405 with it on)
+ *   POST /api/prefs                 JSON Patch (add / remove) to them, as to Signal K's application data
  *   GET  /api/forecast              forecast metadata (+ series at ?lat=&lon=)
  *   POST /api/forecast/refresh      re-check ECMWF / NOMADS
+ *   POST /api/meshes/rough-cut      rebuild the chart meshes' rough cuts for the boat (background)
  *   GET  /api/polars                polar library (default polar, library, user polars)
  *   GET  /api/polar-angles?path=    no-go and best VMG angles per TWS
  *   GET  /api/polars/table?path=    polar table in m/s
  *   POST /api/polar-from-specs      generate a polar from boat specs (physics calculator) into the user polar directory
  *   GET  /api/legends               colour ramps (SI stops) for every layer
+ *   GET  /api/chart-groups          the chart-layer presets (charts with their data now, legend key)
  *   GET  /api/field?layer=&bbox=&time=&res=     JSON grid for a heatmap/streamline layer (layer=tide: tide_m)
  *   GET  /api/wind-points?bbox=&time=&res=      wind barb points (speed_ms, dir_deg FROM)
  *   GET  /api/currents?bbox=&time=&res=         current arrow points (dir_deg TO)
@@ -24,9 +28,15 @@
  *   GET  /api/routes/:id/result     GeoJSON FeatureCollection
  *   GET  /api/routes/:id/skeleton   coarse A* skeleton GeoJSON
  *   GET  /api/routes/:id/signalk    Signal K Route resource body
+ *   GET  /api/routes/:id/meteogram?step_s=   conditions where the boat is at each step of the passage
  *   POST /api/routes/:id/cancel
  *   POST /api/routes/:id/publish    save to the Resources API
  *   DELETE /api/routes/:id
+ *   POST /api/windows               departure window: the route for a series of departures → 202 {id, status, links}
+ *   GET  /api/windows               list departure windows
+ *   GET  /api/windows/:id           a window: each departure's status and metrics
+ *   POST /api/windows/:id/cancel
+ *   DELETE /api/windows/:id         a finished window and its route jobs
  *   GET  /api/openapi.json
  *
  * Reads are opened to readonly users and writes to readwrite users when
@@ -36,7 +46,7 @@
 
 import { ACTIVE_POLAR_TOKEN, managedDiagram, type ManagedPolar } from './managedpolar';
 import * as fs from 'node:fs';
-import { validateRouteRequest } from './request_schema';
+import { MAX_ROUTE_REQUEST_BYTES, validateRouteRequest } from './request_schema';
 import { NotStartedError } from './errors';
 import { FIELD_LAYERS, isFieldLayer } from './layers';
 import { HOUR_MS } from '../geo/units';
@@ -44,21 +54,32 @@ import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import type { IRouter, Request, Response } from 'express';
 import { type JobManager, type Job } from './jobs';
-import type { QueryArgs, QueryKind, RouteRequest } from './protocol';
+import { validateWindowRequest, WINDOW_LIMITS, type WindowManager, type WindowRequest } from './windows';
+import type { QueryArgs, QueryKind, RouteRequest, TrackConditions } from './protocol';
+import { meteogramRows, METEOGRAM_STEP_S, routePoints, sampleStep, trackSamples, type Meteogram } from './meteogram';
 import { openApiDocument } from './openapi';
 import { buildLegends } from './legends';
+import type { ChartGroup } from './charts';
+import type { FreshnessRow } from './freshness';
 import { listPolars, loadPolarCached, PolarNotFoundError, polarAngles, polarFromSpecs, polarTable, resolvePolarPath } from './polars';
 import type { BBox } from '../geo/geodesy';
+import { MESH_ACTIONS, type MeshAction } from './meshes';
 import { SettingsValidationError, type AppSettings, type SettingsGroup, type SettingSpec } from './settings';
+import { SharedPrefsError, type SharedPrefsStore } from './sharedprefs';
 import { checkTile, roundHour, TILE_LAYERS, type TileLayer, type TileService } from './tiles';
 import { joinField, joinLandMask, joinPoints, joinPressure, type TileGetter } from './tilejoin';
 import { isPngLayer, PNG_LAYERS, PngCache, renderTilePng } from './pngtiles';
 import { GLYPH_LAYERS, isGlyphLayer, renderGlyphTilePng } from './glyphtiles';
 
+/** Retry-After (s) on the answers given while the first forecast loads. */
+const FORECAST_RETRY_S = 10;
+
 export interface ApiDeps {
   pluginId: string;
   basePath: string;
   jobs: JobManager;
+  /** Departure windows (throws, like `jobs`, when the plugin is not started). */
+  windows: WindowManager;
   status: () => Record<string, unknown>;
   forecastInfo: (lat?: number, lon?: number) => Promise<Record<string, unknown>>;
   refreshForecast: (force: boolean) => void;
@@ -67,10 +88,29 @@ export interface ApiDeps {
   query: <K extends QueryKind>(kind: K, args: QueryArgs[K], signal?: AbortSignal) => Promise<unknown>;
   /** Map overlay tiles (null before the plugin has started). */
   tiles: () => TileService | null;
+  /** The regional wind runs the data worker last reported decoded, per source (yyyymmddHH, null: none). */
+  regionalRuns: () => { name: string; cycle: string | null }[];
+  /** The chart-layer presets a chartplotter panel offers (empty before the forecast is there). */
+  chartGroups: () => ChartGroup[];
+  /** The freshness rows each of those charts is drawn from, by chart id. */
+  chartRows: () => Record<string, FreshnessRow[]>;
   /** Why the plugin is not answering yet ("starting: downloading the coastline (40 %)"), for 503 answers. */
   notReady: () => string;
+  /**
+   * While the first forecast loads: the answer for map and point requests
+   * (they would only queue behind the decode), else null. Optional for tests.
+   */
+  forecastWait?: () => { error: string; loading: unknown } | null;
   /** Start (or retry now) the GSHHG coastline download; progress in /api/status `coastline`. */
   downloadCoastline: () => void;
+  /** The managed chart meshes: catalogue rows and their state on disk (plugin/meshes.ts). */
+  meshes: () => unknown;
+  /** Read the mesh catalogue now and reconcile the store (the panel's button); resolves when the catalogue is read. */
+  refreshMeshes: () => Promise<void>;
+  /** The panel's per-mesh action: changes the download list in the plugin's options, then runs a pass; answers the list as GET /api/meshes plus `downloads`. */
+  meshAction: (name: string, action: MeshAction) => Promise<unknown>;
+  /** The panel's Rebuild rough cuts button: rebuilds every mesh's rough cut for the boat in the background; answers its status. */
+  rebuildRoughCuts: () => unknown;
   /** The page asked for this tile (the prebuilder follows the view). */
   noteTileRequest: (z: number, x: number, y: number) => void;
   publicDir: string;
@@ -82,6 +122,10 @@ export interface ApiDeps {
     values: AppSettings;
     schema: { groups: { id: SettingsGroup; label: string; help: string }[]; settings: readonly SettingSpec[] };
   };
+  /** The Setup choices every browser shares while security is off (sharedprefs.ts). */
+  sharedPrefs: SharedPrefsStore;
+  /** True when Signal K runs with security off (no users, no application data). */
+  securityOff: () => boolean;
   /** Validate, persist and apply a partial settings update. */
   updateSettings: (partial: unknown) => {
     values: AppSettings;
@@ -135,11 +179,23 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       return null;
     }
   };
-  /** The job named in the URL, after the 503 / 404 answers; the handler runs only when it exists. */
+  /** The departure windows, or null after answering 503 when the plugin is not started. */
+  const windowsOr503 = (res: Response): WindowManager | null => {
+    try {
+      return deps.windows;
+    } catch (err) {
+      json(res, 503, { error: (err as Error).message });
+      return null;
+    }
+  };
+  /**
+   * The job named in the URL, with its route results (a departure window's are read from disk: JobManager.full),
+   * after the 503 / 404 answers; the handler runs only when it exists.
+   */
   const withJob = (req: Request, res: Response, fn: (jobs: JobManager, job: Job) => void | Promise<void>): void => {
     const jobs = jobsOr503(res);
     if (!jobs) return;
-    const job = jobs.get(String(req.params.id));
+    const job = jobs.full(String(req.params.id));
     if (!job) {
       json(res, 404, { error: 'job not found' });
       return;
@@ -239,6 +295,34 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     }
   });
 
+  // The Setup choices with security off: one set for every browser (README, Users). With security on they are the
+  // user's, in Signal K's application data, and these answer 405 as Signal K does with it off.
+  const sharedPrefsOr405 = (res: Response): SharedPrefsStore | null => {
+    if (deps.securityOff()) return deps.sharedPrefs;
+    json(res, 405, { error: "security is on: the choices are kept per user in Signal K's application data" });
+    return null;
+  };
+  ro.get('/api/prefs', (_req: Request, res: Response) => {
+    const store = sharedPrefsOr405(res);
+    if (!store) return;
+    try {
+      res.setHeader('Cache-Control', 'no-store');
+      json(res, 200, store.read());
+    } catch (err) {
+      fail(res, err, 500);
+    }
+  });
+  rw.post('/api/prefs', (req: Request, res: Response) => {
+    const store = sharedPrefsOr405(res);
+    if (!store) return;
+    try {
+      json(res, 200, store.patch(req.body));
+    } catch (err) {
+      if (err instanceof SharedPrefsError) json(res, err.status, { error: err.message });
+      else fail(res, err, 500);
+    }
+  });
+
   ro.get('/api/forecast', async (req: Request, res: Response) => {
     const lat = req.query.lat !== undefined ? Number(req.query.lat) : undefined;
     const lon = req.query.lon !== undefined ? Number(req.query.lon) : undefined;
@@ -250,6 +334,54 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       json(res, 200, await deps.forecastInfo(lat, lon));
     } catch (err) {
       fail(res, err);
+    }
+  });
+
+  ro.get('/api/meshes', (_req: Request, res: Response) => {
+    json(res, 200, deps.meshes());
+  });
+  // The config panel's "Read the catalogue now" button: the catalogue is read
+  // before the answer, so the body lists what it says. A read that failed
+  // (MeshManager keeps the previous catalogue and records the error) is a
+  // 502 whose body is still the list, with the error at the top.
+  rw.post('/api/meshes/refresh', async (_req: Request, res: Response) => {
+    try {
+      await deps.refreshMeshes();
+      const list = deps.meshes();
+      const readError = (list as { catalog_error?: string | null } | null)?.catalog_error ?? null;
+      if (readError) json(res, 502, { error: `catalogue not read: ${readError}`, ...(list as object) });
+      else json(res, 200, list);
+    } catch (err) {
+      fail(res, err, 500);
+    }
+  });
+
+  // The panel's Rebuild rough cuts button: every mesh's rough cut (corridor search) for the boat's Signal K draught
+  // and air draft, in the background; progress in GET /api/meshes `rough_cut`.
+  rw.post('/api/meshes/rough-cut', (_req: Request, res: Response) => {
+    try {
+      json(res, 202, deps.rebuildRoughCuts());
+    } catch (err) {
+      fail(res, err, 500);
+    }
+  });
+
+  // The panel's per-mesh buttons: download, update, redownload, remove, cancel.
+  rw.post('/api/meshes/:name/:action', async (req: Request, res: Response) => {
+    const name = String(req.params.name ?? '');
+    const action = String(req.params.action ?? '');
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
+      json(res, 400, { error: 'mesh name: letters, digits, - and _ only' });
+      return;
+    }
+    if (!(MESH_ACTIONS as readonly string[]).includes(action)) {
+      json(res, 400, { error: `action must be one of ${MESH_ACTIONS.join(', ')}` });
+      return;
+    }
+    try {
+      json(res, 200, await deps.meshAction(name, action as MeshAction));
+    } catch (err) {
+      fail(res, err, 500);
     }
   });
 
@@ -345,6 +477,9 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     res.setHeader('Cache-Control', 'public, max-age=3600');
     json(res, 200, buildLegends());
   });
+  ro.get('/api/chart-groups', (_req: Request, res: Response) =>
+    json(res, 200, { groups: deps.chartGroups(), chart_rows: deps.chartRows() })
+  );
 
   /** Aborts when the client goes away before the answer is sent (its query then leaves the worker's queue). */
   const clientGone = (res: Response): AbortSignal => {
@@ -355,10 +490,24 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     return ctrl.signal;
   };
 
-  /** The shared tile store, or null after answering 503 when the plugin is not started. */
-  const tilesOr503 = (res: Response): TileService | null => {
+  /**
+   * The shared tile store, or null after answering 503: the plugin is not
+   * started, or (forecast data) the first forecast is still loading, which
+   * is answered at once with its progress and Retry-After, not after the
+   * query timeout.
+   */
+  const tilesOr503 = (res: Response, needsForecast = true): TileService | null => {
     const t = deps.tiles();
-    if (!t) json(res, 503, { error: deps.notReady() });
+    if (!t) {
+      json(res, 503, { error: deps.notReady() });
+      return null;
+    }
+    const wait = needsForecast ? (deps.forecastWait?.() ?? null) : null;
+    if (wait) {
+      res.setHeader('Retry-After', String(FORECAST_RETRY_S));
+      json(res, 503, wait);
+      return null;
+    }
     return t;
   };
   /**
@@ -403,7 +552,7 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       const bbox = parseBBox(req.query.bbox);
       const w = Math.round(num(req.query.w, 1024, 16, 2048, 'w'));
       const h = Math.round(num(req.query.h, 1024, 16, 2048, 'h'));
-      const service = tilesOr503(res);
+      const service = tilesOr503(res, false);
       if (!service) return;
       const out = await joinLandMask(getter(service, clientGone(res)), bbox, w, h);
       const body = zlib.gzipSync(Buffer.from(out.buffer, out.byteOffset, out.byteLength));
@@ -459,14 +608,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   const pngCache = new PngCache(48e6);
   ro.get('/api/tile/:layer/:z/:x/:y.png', async (req: Request, res: Response) => {
     try {
-      const service = deps.tiles();
-      if (!service) {
-        json(res, 503, { error: deps.notReady() });
-        return;
-      }
       const layer = String(req.params.layer);
       if (!isPngLayer(layer) && !isGlyphLayer(layer))
         throw new Error(`layer must be one of ${[...PNG_LAYERS, ...GLYPH_LAYERS].join(', ')}`);
+      const service = tilesOr503(res);
+      if (!service) return;
       const z = Number(req.params.z);
       const x = Number(req.params.x);
       const y = Number(req.params.y);
@@ -494,13 +640,11 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
   // 0 north, rows evenly spaced in Web Mercator y.
   ro.get('/api/tile/:layer/:z/:x/:y', async (req: Request, res: Response) => {
     try {
-      const service = deps.tiles();
-      if (!service) {
-        json(res, 503, { error: deps.notReady() });
-        return;
-      }
       const layer = String(req.params.layer) as TileLayer;
       if (!(TILE_LAYERS as readonly string[]).includes(layer)) throw new Error(`layer must be one of ${TILE_LAYERS.join(', ')}`);
+      // The coastline does not wait for the forecast.
+      const service = tilesOr503(res, layer !== 'land');
+      if (!service) return;
       const z = Number(req.params.z);
       const x = Number(req.params.x);
       const y = Number(req.params.y);
@@ -559,6 +703,28 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     }
   });
 
+  // The request is kept with its job (a window's with each of its departures) and sent back in every job list;
+  // unknown fields pass the validation. Answered 413 when it is too large.
+  const tooLarge = (res: Response, body: unknown): boolean => {
+    // No body: JSON.stringify gives undefined; not too large, the request's own check refuses it.
+    const text = JSON.stringify(body) as string | undefined;
+    if (text === undefined || Buffer.byteLength(text, 'utf8') <= MAX_ROUTE_REQUEST_BYTES) return false;
+    json(res, 413, { error: `route request too large (over ${MAX_ROUTE_REQUEST_BYTES / 1024} KB)` });
+    return true;
+  };
+  // The polar is checked here, so a token not in the library is refused before a job is queued, not when it runs.
+  const badPolar = (res: Response, polar: string | undefined, field: string): boolean => {
+    if (!polar) return false;
+    try {
+      resolvePolarPath(polarLib(), polar);
+      return false;
+    } catch (e) {
+      if (e instanceof NotStartedError) json(res, 503, { error: e.message });
+      else json(res, 400, { error: `${field}: ${(e as Error).message}: ${polar} (a token from /api/polars)` });
+      return true;
+    }
+  };
+
   rw.post('/api/routes', (req: Request, res: Response) => {
     const jobs = jobsOr503(res);
     if (!jobs) return;
@@ -567,11 +733,13 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
       json(res, 400, { error: 'JSON body required: {start:{lat,lon}, end:{lat,lon}, ...}' });
       return;
     }
+    if (tooLarge(res, body)) return;
     const err = validateRouteRequest(body);
     if (err) {
       json(res, 400, { error: err });
       return;
     }
+    if (badPolar(res, body.vessel?.polar, 'vessel.polar')) return;
     if (jobs.queueLength >= 16) {
       json(res, 429, { error: 'job queue is full' });
       return;
@@ -640,16 +808,72 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
     });
   });
 
+  // The meteogram: the boat's position at each step of the passage and the
+  // conditions there and then, from the forecast loaded now (which may be a
+  // newer run than the one the route was computed with: both cycles are given),
+  // with the regional wind models the route used layered over it.
+  ro.get('/api/routes/:id/meteogram', (req: Request, res: Response) => {
+    withJob(req, res, async (_jobs, job) => {
+      if (job.status !== 'done' || !job.geojson) {
+        json(res, 409, { error: `job is ${job.status}`, status: job.status });
+        return;
+      }
+      try {
+        const asked = num(req.query.step_s, METEOGRAM_STEP_S.default, METEOGRAM_STEP_S.min, METEOGRAM_STEP_S.max, 'step_s');
+        const points = routePoints(job.geojson);
+        const durationS = (points[points.length - 1].tMs - points[0].tMs) / 1000;
+        const { stepS, raised } = sampleStep(durationS, asked);
+        const samples = trackSamples(points, stepS);
+        const service = tilesOr503(res);
+        if (!service) return;
+        // The regional wind models the route was computed with: the meteogram's wind is layered the same way. Each is
+        // named with its newest decoded run, so the saved answer is keyed by the runs too: a new run, a fresh answer.
+        const decoded = new Map(deps.regionalRuns().map(r => [r.name, r.cycle]));
+        const regional = (job.summary?.regional_wind ?? []).map(r => ({ name: r.name, cycle: decoded.get(r.name) ?? null }));
+        const answer = await service.pointWithStatus(
+          'track_conditions',
+          { points: samples.map(p => ({ lon: p.lon, lat: p.lat, tMs: p.tMs })), regional },
+          clientGone(res)
+        );
+        const tc = answer.result as TrackConditions;
+        const body: Meteogram & { route_forecast_cycle: string | null } = {
+          departure: samples[0].time,
+          arrival: samples[samples.length - 1].time,
+          step_s: stepS,
+          step_raised: raised,
+          forecast_cycle: tc.cycle,
+          forecast_valid_to: tc.validTo,
+          regional_wind: tc.regional,
+          regional_wind_missing: tc.regionalMissing,
+          route_forecast_cycle: job.summary?.forecast_cycle ?? null,
+          rows: meteogramRows(samples, tc.rows, Date.parse(tc.validTo)),
+          complete: answer.complete,
+        };
+        json(res, 200, body);
+      } catch (err) {
+        fail(res, err);
+      }
+    });
+  });
+
   ro.get('/api/routes/:id/events', (req: Request, res: Response) => {
     withJob(req, res, (jobs, job) => {
       res.status(200);
       res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
+      // no-transform: Signal K's compression layer leaves the stream alone.
+      // Gzipped, the lines sat in its buffer and reached the browser only
+      // when the job ended (2026-10-08: the Log tab empty for every running
+      // job, the whole log arriving at once on done or failed).
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
       res.setHeader('Connection', 'keep-alive');
       res.setHeader('X-Accel-Buffering', 'no');
       res.flushHeaders?.();
       const lastIdHeader = req.headers['last-event-id'];
-      const lastId = lastIdHeader ? Number(Array.isArray(lastIdHeader) ? lastIdHeader[0] : lastIdHeader) : 0;
+      // A header that is not decimal digits, or past a safe integer, replays everything (NaN compared false with every
+      // id: nothing was replayed; Number() also took "", " 5", "1e3" and "0x10").
+      const raw = String((Array.isArray(lastIdHeader) ? lastIdHeader[0] : lastIdHeader) ?? '');
+      const parsed = /^\d+$/.test(raw) ? Number(raw) : NaN;
+      const lastId = Number.isSafeInteger(parsed) ? parsed : 0;
       const write = (ev: { id: number; event: string; data: unknown }): void => {
         res.write(`id: ${ev.id}\nevent: ${ev.event}\ndata: ${JSON.stringify(ev.data)}\n\n`);
       };
@@ -706,7 +930,78 @@ export function registerApi(router: IRouter, deps: ApiDeps): void {
         json(res, 409, { error: 'cancel the running job before deleting it' });
         return;
       }
+      // Its window waits for it, and shows its route (PR #51 review): it goes with the window.
+      if (job.windowId) {
+        json(res, 409, { error: `a departure window's route: delete the window (DELETE ${deps.basePath}/api/windows/${job.windowId})` });
+        return;
+      }
       jobs.delete(job.id);
+      res.status(204).end();
+    });
+  });
+
+  // ── Departure windows (windows.ts) ──
+  rw.post('/api/windows', (req: Request, res: Response) => {
+    const windows = windowsOr503(res);
+    if (!windows) return;
+    if (tooLarge(res, req.body)) return;
+    const err = validateWindowRequest(req.body);
+    if (err) {
+      json(res, 400, { error: err });
+      return;
+    }
+    if (badPolar(res, (req.body as WindowRequest).route.vessel?.polar, 'route: vessel.polar')) return;
+    if (windows.running >= WINDOW_LIMITS.maxRunning) {
+      json(res, 429, { error: `${windows.running} departure windows are being computed; wait for one to finish, or cancel it` });
+      return;
+    }
+    const w = windows.create(req.body as WindowRequest);
+    res.setHeader('Location', windows.links(w.id).self);
+    json(res, 202, { id: w.id, status: w.status, departures: w.departures.length, links: windows.links(w.id) });
+  });
+
+  ro.get('/api/windows', (req: Request, res: Response) => {
+    const windows = windowsOr503(res);
+    if (!windows) return;
+    const limit = Math.min(WINDOW_LIMITS.keep + WINDOW_LIMITS.maxRunning, Math.max(1, Number(req.query.limit ?? 20) || 20));
+    json(
+      res,
+      200,
+      windows.list(limit).map(w => windows.toPublic(w))
+    );
+  });
+
+  const withWindow = (req: Request, res: Response, fn: (windows: WindowManager, id: string) => void): void => {
+    const windows = windowsOr503(res);
+    if (!windows) return;
+    const id = String(req.params.id);
+    if (!windows.get(id)) {
+      json(res, 404, { error: 'window not found' });
+      return;
+    }
+    fn(windows, id);
+  };
+
+  ro.get('/api/windows/:id', (req: Request, res: Response) => {
+    withWindow(req, res, (windows, id) => json(res, 200, windows.toPublic(windows.get(id)!)));
+  });
+
+  rw.post('/api/windows/:id/cancel', (req: Request, res: Response) => {
+    withWindow(req, res, (windows, id) => {
+      windows.cancel(id);
+      json(res, 202, { id, status: windows.get(id)!.status });
+    });
+  });
+
+  rw.delete('/api/windows/:id', (req: Request, res: Response) => {
+    withWindow(req, res, (windows, id) => {
+      if (!windows.delete(id)) {
+        const running = windows.get(id)!.status === 'running';
+        json(res, 409, {
+          error: running ? 'cancel the window before deleting it' : 'a cancelled departure is still stopping; try again in a moment',
+        });
+        return;
+      }
       res.status(204).end();
     });
   });

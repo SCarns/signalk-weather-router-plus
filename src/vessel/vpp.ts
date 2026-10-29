@@ -1,13 +1,13 @@
 /**
  * Velocity-prediction program (VPP) interface: a boat's specs (hull
  * dimensions, rig, sails) in, a polar diagram (TWA x TWS -> boat speed)
- * out. Port of the routing server's `routing/vessel/vpp.py`.
+ * out.
  *
  * `BoatSpecs` carries the fields sailboatdata.com exposes on a typical
- * boat page. `validateSpecs` throws `SpecsError` (the Python raises
- * ValueError) for values the VPP cannot use and returns warnings for
- * values outside the empirical model's validated range. Messages are
- * formatted exactly as the Python f-strings produce them.
+ * boat page. `validateSpecs` throws `SpecsError` for values the VPP
+ * cannot use and returns warnings for values outside the empirical
+ * model's validated range. Numbers in messages are formatted as Python
+ * prints them (pyFloatRepr, pyFixed).
  */
 
 export const RIG_TYPES = ['sloop', 'cutter', 'ketch', 'yawl', 'cat'] as const;
@@ -47,7 +47,7 @@ export interface SpecsErrorDetail {
   longer_than?: { field: string; value: number };
 }
 
-/** A spec value the VPP cannot work with (Python: ValueError from validate()). */
+/** A spec value the VPP cannot work with. */
 export class SpecsError extends Error {
   readonly detail?: SpecsErrorDetail;
   constructor(message: string, detail?: SpecsErrorDetail) {
@@ -122,8 +122,7 @@ export function pyFixed(x: number, d: number): string {
 
 /**
  * Warnings for specs outside the empirical VPP's validated range; throws
- * SpecsError for specs it cannot use. Same checks, order and messages as
- * `BoatSpecs.validate()`.
+ * SpecsError for specs it cannot use.
  */
 export function validateSpecs(specs: BoatSpecs, opts: { downwindDefault?: boolean } = {}): string[] {
   const downwindDefault = opts.downwindDefault ?? true;
@@ -175,7 +174,7 @@ export function validateSpecs(specs: BoatSpecs, opts: { downwindDefault?: boolea
   return warnings;
 }
 
-/** Python `_slugify` from routing/routers/vpp.py. */
+/** File-name slug: trimmed, lower-cased, spaces to `_`, only `a-z0-9_-` kept, leading/trailing `_`/`-` stripped. */
 export function slugifyPolarName(name: string): string {
   let s = name.trim().toLowerCase().replace(/ /g, '_');
   s = s.replace(/[^a-z0-9_-]+/g, '');

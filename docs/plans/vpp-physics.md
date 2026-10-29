@@ -1,16 +1,14 @@
 # Plan: a polar calculator that respects heel, side force and hull shape
 
-Status: **plugin done** 2026-09-29. Done: validation set, baseline, sources, the polar performance setting, and the physics calculator in the plugin (`src/vessel/vpp_physics.ts`, fit `tools/vpp_fit.ts`, held-out test `src/vessel/vpp_physics.test.ts`), used by the polar generator. Held-out median error 3.3% / 3.2% / 3.3% (upwind / reaching / running), boats over 30%: 3 / 1 / 0 of 441. Known artifacts: heavy boats +7–10% reaching in 4–6 kn; up to ~2% speed loss at tight angles from 20 to 24 kn. Open: port to the parent, regenerate saved polars, rerun the Skye 51 route. Covers both apps:
-the parent's `routePlanning/routing/vessel/vpp_empirical.py` and the
-plugin's port `src/vessel/vpp_empirical.ts`, which reproduces the Python
-bit for bit (`src/vessel/vpp.test.ts`).
+Status: **done** 2026-09-29. Done: validation set, baseline, sources, the polar performance setting, and the physics calculator in the plugin (`src/vessel/vpp_physics.ts`, fit `tools/vpp_fit.ts`, held-out test `src/vessel/vpp_physics.test.ts`), used by the polar generator. Held-out median error 3.3% / 3.2% / 3.3% (upwind / reaching / running), boats over 30%: 3 / 1 / 0 of 441. Known artifacts: heavy boats +7–10% reaching in 4–6 kn; up to ~2% speed loss at tight angles from 20 to 24 kn. Open: regenerate saved polars, rerun the Skye 51 route. Covers the
+empirical calculator `src/vessel/vpp_empirical.ts`, checked bit for bit
+by `src/vessel/vpp.test.ts`.
 
 Decided 2026-09-28 (user):
 - Hull coefficients the form doesn't collect use **published** typical
   values, shown to the user as assumptions.
 - **No spinnaker assumption.**
 - Multihulls are **out of scope** (still rejected).
-- **Plugin first**, parent after.
 
 - 30% worst-cell error is a warning threshold, not a blocker (see
   "Measuring accuracy").
@@ -58,10 +56,9 @@ Decided 2026-09-28 (user):
   minus the current along the course) matches the polar at that leg's
   wind within 0.72 kn. The 16 legs with SOG ≥ 70% of wind speed in a
   foul current match it within 0.14 kn; their foul current was
-  0.01–0.29 kn and was subtracted. Leg simulation, current addition,
-  mode choice, polar lookup and SOG all match the parent line for line.
-- The polar is the cause. `routePlanning/data/polars/user/skye_51_ketch.csv`
-  (2026-04-18) came from the parent's empirical calculator. Below about
+  0.01–0.29 kn and was subtracted.
+- The polar is the cause. `skye_51_ketch.csv` (2026-04-18) came from the
+  empirical calculator. Below about
   10 kn of wind its speed is a fixed fraction of wind speed: at TWA 70°
   it is 3.58 / 5.37 / 7.16 kn in 4 / 6 / 8 kn of wind (0.895 × TWS); at
   TWA 30° it is exactly 0.3225 × TWS from 4 to 10 kn.
@@ -80,7 +77,8 @@ Decided 2026-09-28 (user):
 
 ## Root cause (facts from the code)
 
-`_solve_boat_speed` balances one forward drive against one hull drag:
+The empirical calculator's speed solver balances one forward drive
+against one hull drag:
 
 1. **Speed is a fixed fraction of wind speed below hull speed.** Drive is
    `0.5·ρ_air·AWS²·SA·C(AWA)`; drag is `0.5·ρ_water·S·V²·(0.004 + 0.01)`
@@ -150,19 +148,16 @@ before any number goes into code.
 3. **Baseline.** Score today's calculator against the validation set:
    per cell and mean absolute error for TWS 6–20 kn, split into upwind,
    reaching and running.
-4. **Plugin first.** Implement the model in `src/vessel/` behind the
+4. **Implement.** Implement the model in `src/vessel/` behind the
    same `VPP` interface, with tests: the validation set within the
    target, speed never falls as TWS rises, upwind speed levels off,
-   zero below the no-go angle. The current bit-for-bit test against the
-   parent's Python (`src/vessel/vpp.test.ts`) stops applying; it is
-   replaced by the validation-set test.
-5. **Port to the parent.** Port to `routing/vessel/` with
-   `tests/test_vpp.py`, and make the parent's tables match the plugin's.
-6. **Regenerate saved polars.** Find the specs behind every generated
-   polar (parent `data/polars/user/`, plugin data directory). Regenerate
-   those whose specs are recorded; list the ones whose specs aren't, for
-   the user to re-enter.
-7. **Check a route.** Rerun job `100c4f7b…` on brain with the
+   zero below the no-go angle. The current bit-for-bit test
+   (`src/vessel/vpp.test.ts`) stops applying; it is replaced by the
+   validation-set test.
+5. **Regenerate saved polars.** Find the specs behind every generated
+   polar (the plugin data directory). Regenerate those whose specs are
+   recorded; list the ones whose specs aren't, for the user to re-enter.
+6. **Check a route.** Rerun job `100c4f7b…` on brain with the
    regenerated Skye 51 polar and report the per-leg speed-through-water
    check again.
 

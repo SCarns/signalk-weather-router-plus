@@ -20,7 +20,7 @@ import type { RtofsClient, RtofsCurrentSource } from '../../currents/rtofs';
 import type { SmocClient, SmocCurrentSource } from '../../currents/smoc';
 import type { SeaLevelClient, TideSource } from '../../tides/sealevel';
 import type { ResolvedConfig } from '../config';
-import type { DataStatus, ForecastMemory, ForecastRunInfo, VesselPosition, WorkerRole, WorkerToMain } from '../protocol';
+import type { Connectivity, DataStatus, ForecastMemory, ForecastRunInfo, VesselPosition, WorkerRole, WorkerToMain } from '../protocol';
 
 export interface WorkerState {
   readonly role: WorkerRole;
@@ -30,7 +30,8 @@ export interface WorkerState {
   readonly log: (level: 'debug' | 'info' | 'error', message: string) => void;
   config: ResolvedConfig | null;
   client: EcmwfClient | null;
-  rtofsClient: RtofsClient | null;
+  /** RTOFS clients by product (data worker; created as products are wanted). */
+  rtofsClients: Map<string, RtofsClient>;
   /** The decoded run in use (on disk; only its index is in memory). */
   run: DecodedRun | null;
   /** How it became current (status). */
@@ -48,7 +49,10 @@ export interface WorkerState {
   polar: PolarDiagram | null;
   landCache: { key: string; mask: LandMask } | null;
   harmonic: HarmonicCurrentSource[];
-  rtofs: RtofsCurrentSource | null;
+  /** The RTOFS products loaded (data worker) or adopted (route, tiles), finest first. */
+  rtofs: RtofsCurrentSource[];
+  /** The data worker's last RTOFS choice (status): the product the vessel is in, or why none, and the extents not known. */
+  rtofsChoice: { auto: string | null; autoReason: string | null; unknownExtents: string[] } | null;
   smocClient: SmocClient | null;
   smoc: SmocCurrentSource | null;
   /** Last vessel position from the main thread (SMOC resident area centre). */
@@ -79,6 +83,46 @@ export interface WorkerState {
   routeRegional: ForecastStore[];
   /** Queries the main thread cancelled before they started (its client went away). */
   readonly cancelledQueries: Set<number>;
+  /** The last check of each source (data worker). */
+  readonly checks: DataStatus['checks'];
+  /** What this thread's requests found about the connection (data worker). */
+  connectivity: Connectivity;
+  /** When a request last found no connection (ms; 0 = never): a refresh round stops asking servers after it. */
+  lastOfflineMs: number;
+  /** Why background downloads wait now (the main thread's 'internet-hold'), or null (data worker). */
+  internetHold: string | null;
+  /** A refresh round the owner did not ask for is under way: the internet state starting to hold stops its decode (data worker). */
+  backgroundRound: boolean;
+  /** Tidal-harmonic files that failed to load (data worker). */
+  harmonicErrors: string[];
+  /**
+   * Tiles worker: the current sources of the last currents reference that could not be read from the disk caches
+   * (adoptCurrentsRef). While any are, the current layers' tiles it builds are not kept (buildTile).
+   */
+  currentsUnread: string[];
+  /** Kills the forecast decode child process (plugin stopped). */
+  decodeAbort: AbortController | null;
+}
+
+/** A request's finding about the connection: a server answered ('ok'), or there was no connection ('offline', why). */
+export function noteNetwork(st: WorkerState, state: 'ok' | 'offline', reason: string | null): void {
+  const now = new Date();
+  const c = st.connectivity;
+  const online = state === 'ok';
+  if (c.online !== online) c.since = now.toISOString();
+  c.online = online;
+  if (online) {
+    c.lastOkAt = now.toISOString();
+    c.reason = null;
+  } else {
+    c.reason = reason;
+    st.lastOfflineMs = now.getTime();
+  }
+}
+
+/** Why a background refresh round (not the owner's) must not download now (the main thread's 'internet-hold'), or null. */
+export function backgroundHold(st: WorkerState): string | null {
+  return st.backgroundRound ? st.internetHold : null;
 }
 
 export function requireInit(st: WorkerState): { config: ResolvedConfig; client: EcmwfClient } {

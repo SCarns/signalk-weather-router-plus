@@ -14,6 +14,16 @@
  * changes that group's generation and the old directory is removed. The
  * whole store is kept under a byte cap, least recently used first.
  * All file access is asynchronous: this runs on Signal K's main thread.
+ *
+ * An answer belongs to the data it was computed from, and says so: every
+ * query answer carries a stamp naming the runs it read (DataStamp, sent by
+ * the workers). A run decode (or any other data change) while a request is
+ * being answered must never silently hand the caller an answer from the
+ * replaced data (issue #47): the main thread serves and saves an answer
+ * only when its stamp names the data the plugin holds now, and asks again
+ * until one does. The saved-answer read stays generation-checked: a file
+ * lives under the generation directory it was written with, so a
+ * generation swap while reading is exact, not inferred.
  */
 
 import * as crypto from 'node:crypto';
@@ -24,12 +34,13 @@ import * as path from 'node:path';
 import { promisify } from 'node:util';
 import * as zlib from 'node:zlib';
 import type { BBox } from '../geo/geodesy';
-import type { QueryArgs, QueryKind } from './protocol';
+import type { DataStamp, QueryArgs, QueryKind } from './protocol';
+import { rmtree, runChildTask, type RmtreeResult } from './childtask';
 
 export { FIELD_LAYERS as TILE_FIELD_LAYERS } from './layers';
 import { FIELD_LAYERS } from './layers';
 /** Every tile layer: colour layers, wind barbs, current arrows, coastline mask. */
-export const TILE_LAYERS = [...FIELD_LAYERS, 'barbs', 'arrows', 'land'] as const;
+export const TILE_LAYERS = [...FIELD_LAYERS, 'barbs', 'arrows', 'seas', 'land'] as const;
 export type TileLayer = (typeof TILE_LAYERS)[number];
 
 /** Which data a layer's answer depends on. */
@@ -54,6 +65,7 @@ export function tileGroup(layer: TileLayer): TileGroup {
     case 'current':
     case 'sea_state':
     case 'arrows':
+    case 'seas':
       return 'cur';
     case 'tide':
       return 'tide';
@@ -62,6 +74,68 @@ export function tileGroup(layer: TileLayer): TileGroup {
     default:
       return 'wx';
   }
+}
+
+/** What each group's tiles are made from (index.ts reads it from the data in use and the settings). */
+export interface GenerationInputs {
+  /** The coastline shapefiles in use. */
+  coast: string;
+  /** The decoded run: its cycle, fields and last step (a shorter horizon leaves hours with no forecast). */
+  forecast: { cycleTimeMs: number; params: readonly string[]; lastValidMs: number } | null;
+  /**
+   * The current sources (null before the data worker's first status): their names and runs, the SMOC run, the
+   * tidal-harmonic folder and its files as loaded (their names, sizes and modification times: currents/fromcache.ts
+   * harmonicSignature; the path alone kept tiles of files since replaced, the files alone those of another folder
+   * holding files of the same names, sizes and times), and the settings that change a value at a given hour:
+   * the SMOC and RTOFS steps (hours between steps are interpolated) and the RTOFS horizon (past it RTOFS has no data
+   * and a lower source answers).
+   */
+  currents: {
+    sources: string;
+    smoc: string;
+    harmonicDir: string;
+    harmonic: string;
+    smocStepS: number;
+    rtofsStepS: number;
+    rtofsHorizonS: number;
+  } | null;
+  /** The tide run, 'off', or null while none is loaded. */
+  tides: { run: string; settled: boolean } | 'off' | null;
+}
+
+/**
+ * SEA_STATE_REV: bumped when the sea-state index's formula changes (the `cur` group holds the sea_state and seas
+ * tiles), so tiles saved with the old index are not served (2: wave-period damping and SWELL_COEFF 10; 3: seas points
+ * carry wind and current).
+ */
+const SEA_STATE_REV = 3;
+/**
+ * POINT_ANSWER_REV: bumped when the answer's content changes for the same data (2: current_ms null where no current
+ * source has data; 3: the recalibrated sea-state index), so answers saved by an older version are not served.
+ */
+const POINT_ANSWER_REV = 3;
+
+/**
+ * Each group's generation key: only what its tiles are made from, so a new run of one source, or a setting that
+ * changes one source's values, replaces that group's tiles alone. Until 2026-10-22 every key also carried a counter
+ * bumped by any settings change that reloaded the forecast, currents or tides: ticking an RTOFS product replaced every
+ * wind, wave and tide tile too (brain: 30,800 wx and 14,988 tide tiles built again besides 15,378 current tiles).
+ * Point answers (conditions, Weather API) read forecast, currents and tides. A route's meteogram also reads the
+ * regional wind runs: its query names them (api.ts, protocol.ts track_conditions), so a new run is a new query and the
+ * other answers are kept.
+ */
+export function tileGenerationKeys(d: GenerationInputs): Record<TileGroup, string | null> {
+  const f = d.forecast;
+  const wx = f ? `${d.coast}|${f.cycleTimeMs}|${f.params.join(',')}|${f.lastValidMs}` : null;
+  const c = d.currents;
+  const cur =
+    wx && c
+      ? `${wx}|${c.sources}|${c.smoc}|${c.harmonicDir}|${c.harmonic}|${c.smocStepS}|${c.rtofsStepS}|${c.rtofsHorizonS}|ss${SEA_STATE_REV}`
+      : null;
+  const t = d.tides;
+  const tide = t === 'off' ? `${d.coast}|off` : t ? `${d.coast}|${t.run}|${t.settled}` : null;
+  const pt = cur && tide ? `${cur}|${tide}|rev${POINT_ANSWER_REV}` : null;
+  return { wx, cur, tide, land: d.coast, pt };
 }
 
 export const TILE_MIN_ZOOM = 0;
@@ -74,6 +148,8 @@ export const FIELD_SAMPLES_PER_TILE = 64;
 export const BARBS_PER_TILE = 7;
 /** Current arrows across a tile's width. */
 export const ARROWS_PER_TILE = 5;
+/** Sea-state glyphs per tile edge (the double-ended wave arrows). */
+export const SEAS_PER_TILE = 5;
 
 export interface TileId {
   layer: TileLayer;
@@ -153,6 +229,8 @@ export function tileQuery(t: TileId): { kind: QueryKind; args: QueryArgs[QueryKi
       return { kind: 'wind_points', args: { bbox, timeMs: t.hourMs, res: clamp(width / BARBS_PER_TILE, 0.02, 5) } };
     case 'arrows':
       return { kind: 'currents', args: { bbox, timeMs: t.hourMs, res: clamp(width / ARROWS_PER_TILE, 0.005, 5) } };
+    case 'seas':
+      return { kind: 'sea_points', args: { bbox, timeMs: t.hourMs, res: clamp(width / SEAS_PER_TILE, 0.02, 5) } };
     default: {
       const res = clamp(width / FIELD_SAMPLES_PER_TILE, 0.002, 2);
       const padded: BBox = {
@@ -175,6 +253,11 @@ export function trimPoints<P extends { lon: number; lat: number }>(points: P[], 
     if (lon < b.west - eps) lon += 360;
     return lon >= b.west - eps && lon < b.east - eps && p.lat >= b.south - eps && p.lat < b.north - eps;
   });
+}
+
+/** A temporary file beside `f` (renamed onto it once written). */
+function tempName(f: string): string {
+  return `${f}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
 }
 
 function hash(s: string): string {
@@ -203,13 +286,43 @@ export interface TileStoreStats {
   generations: Record<TileGroup, string | null>;
 }
 
-/** Tile answers on disk (see the file comment). */
+/** Where the store's running totals are kept between starts. */
+const TOTALS_FILE = '.totals.json';
+/** Saved totals older than this are used but checked by a background count. */
+const TOTALS_MAX_AGE_MS = 24 * HOUR_MS;
+/** How long changed totals wait before they are saved (one write per burst of tiles). */
+const TOTALS_SAVE_DELAY_MS = 5000;
+
+/**
+ * Tile answers on disk (see the file comment).
+ *
+ * Totals (files, bytes) are kept running and saved to TOTALS_FILE, so a
+ * start does not walk the store: brain (2026-10-06) held 950 k tiles and
+ * the walk built one entry per file on Signal K's main thread, 300 MB of
+ * heap after every plugin start and every retired generation, taken back
+ * only by a later major GC. When the totals are unknown they are counted
+ * without a list; the sorted list is built only when the store is over
+ * its cap, the one time it is needed (prune).
+ */
 export class TileStore {
   readonly root: string;
   private capBytes: number;
   private readonly log: (msg: string) => void;
   private gens: Record<TileGroup, string | null> = { wx: null, cur: null, tide: null, land: null, pt: null };
   private totals: { files: number; bytes: number } | null = null;
+  /** Saved totals were old: count once in the background to check them. */
+  private staleTotals = false;
+  private totalsDirty = false;
+  private saveTimer: NodeJS.Timeout | null = null;
+  private counting: Promise<void> | null = null;
+  /**
+   * Writes while a count-only walk runs. The walk may or may not have
+   * passed them, so they are added to its result; removals during the walk
+   * are not subtracted (the walk may already have skipped them). Either way
+   * the totals err on the high side, never low (the cap is enforced early,
+   * never late), until the next daily count sets them exactly.
+   */
+  private countDelta: { files: number; bytes: number } | null = null;
   private pruning: Promise<void> | null = null;
   private hits = 0;
   private misses = 0;
@@ -220,6 +333,69 @@ export class TileStore {
     this.root = opts.root;
     this.capBytes = opts.capBytes;
     this.log = opts.log ?? (() => undefined);
+    this.loadTotals();
+  }
+
+  private loadTotals(): void {
+    try {
+      const t = JSON.parse(fs.readFileSync(path.join(this.root, TOTALS_FILE), 'utf8')) as {
+        files?: unknown;
+        bytes?: unknown;
+        savedAt?: unknown;
+      };
+      if (!Number.isInteger(t.files) || (t.files as number) < 0 || !Number.isFinite(t.bytes) || (t.bytes as number) < 0) return;
+      this.totals = { files: t.files as number, bytes: t.bytes as number };
+      const age = Date.now() - Date.parse(String(t.savedAt ?? ''));
+      this.staleTotals = !(age >= 0 && age < TOTALS_MAX_AGE_MS);
+    } catch {
+      // none saved yet (first start, or an older version): counted on first use
+    }
+  }
+
+  private scheduleSave(): void {
+    this.totalsDirty = true;
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      void this.saveTotals();
+    }, TOTALS_SAVE_DELAY_MS);
+    this.saveTimer.unref?.();
+  }
+
+  /** Saves run one after another (a timer save and a stop flush may overlap). */
+  private saving: Promise<void> = Promise.resolve();
+
+  private saveTotals(): Promise<void> {
+    this.saving = this.saving.then(async () => {
+      if (!this.totals || !this.totalsDirty) return;
+      this.totalsDirty = false;
+      const f = path.join(this.root, TOTALS_FILE);
+      const tmp = `${f}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+      try {
+        await fs.promises.mkdir(this.root, { recursive: true });
+        await fs.promises.writeFile(tmp, JSON.stringify({ ...this.totals, savedAt: new Date().toISOString() }));
+        await fs.promises.rename(tmp, f);
+      } catch (err) {
+        this.totalsDirty = true; // tried again at the next save
+        this.log(`overlay tiles: could not save the totals: ${(err as Error).message}`);
+      }
+    });
+    return this.saving;
+  }
+
+  /** Save changed totals now (plugin stop). */
+  async flushTotals(): Promise<void> {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    await this.saveTotals();
+  }
+
+  /** A count-only walk is running or starts now when the totals are unknown or old. */
+  private ensureTotals(): void {
+    if (this.counting || this.pruning) return;
+    if (!this.totals || this.staleTotals) void this.recount();
   }
 
   setCap(bytes: number): void {
@@ -278,6 +454,11 @@ export class TileStore {
         this.corrupt++;
         this.misses++;
         fs.promises.rm(f, { force: true }).catch(() => undefined);
+        if (this.totals) {
+          this.totals.files = Math.max(0, this.totals.files - 1);
+          this.totals.bytes = Math.max(0, this.totals.bytes - buf.length);
+          this.scheduleSave();
+        }
         return null;
       }
       this.hits++;
@@ -312,52 +493,132 @@ export class TileStore {
     if (!f) return;
     try {
       await fs.promises.mkdir(path.dirname(f), { recursive: true });
-      const tmp = `${f}.tmp-${process.pid}-${Math.random().toString(36).slice(2)}`;
+      const tmp = tempName(f);
       await fs.promises.writeFile(tmp, gz);
-      await fs.promises.rename(tmp, f);
-      this.writes++;
-      if (this.totals) {
-        this.totals.files++;
-        this.totals.bytes += gz.length;
-        if (this.totals.bytes > this.capBytes) void this.prune();
-      } else void this.prune(); // totals unknown (startup, generation change): scan and enforce the cap
+      await this.place(f, tmp, gz.length);
     } catch (err) {
       this.log(`overlay tiles: could not save ${f}: ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * Where a builder process writes a tile before the store takes it (adopt): a temporary file beside the tile under
+   * the current generation, or null when its data is not loaded.
+   */
+  tmpFile(t: TileId | StoreKey): string | null {
+    const f = this.file(t);
+    return f ? tempName(f) : null;
+  }
+
+  /**
+   * A tile a builder process wrote to `tmp` (tmpFile, `bytes` long) moved into place, as `write` saves one; removed
+   * instead when the data changed meanwhile (`generation` is the one current when the build started).
+   */
+  async adopt(t: TileId | StoreKey, tmp: string, bytes: number, generation: string | null): Promise<void> {
+    const f = generation && generation === this.gens[storeKey(t).group] ? this.file(t) : null;
+    if (!f) {
+      await fs.promises.rm(tmp, { force: true }).catch(() => undefined);
+      return;
+    }
+    try {
+      await this.place(f, tmp, bytes);
+    } catch (err) {
+      await fs.promises.rm(tmp, { force: true }).catch(() => undefined);
+      this.log(`overlay tiles: could not save ${f}: ${(err as Error).message}`);
+    }
+  }
+
+  /** Move a written temporary file onto the tile's file and count it. */
+  private async place(f: string, tmp: string, bytes: number): Promise<void> {
+    // A tile written again (after a corrupt read, or built by the prebuilder
+    // and a page miss at once) replaces its file: the totals take the difference.
+    let replaced = -1;
+    if (this.totals || this.countDelta) {
+      try {
+        replaced = (await fs.promises.stat(f)).size;
+      } catch {
+        // new tile
+      }
+    }
+    await fs.promises.rename(tmp, f);
+    this.writes++;
+    if (this.totals) {
+      if (replaced < 0) this.totals.files++;
+      this.totals.bytes = Math.max(0, this.totals.bytes + bytes - Math.max(0, replaced));
+      this.scheduleSave();
+      if (this.totals.bytes > this.capBytes) void this.prune();
+    }
+    if (this.countDelta) {
+      // A replacement adds only its growth; a shrink is not subtracted (see countDelta).
+      if (replaced < 0) this.countDelta.files++;
+      this.countDelta.bytes += Math.max(0, bytes - Math.max(0, replaced));
+    }
+    this.ensureTotals(); // unknown or old totals: counted in the background (and the cap enforced after)
   }
 
   noteNotKept(): void {
     this.notKept++;
   }
 
-  /** Walk the store: every saved file with size and last use. */
-  private async scan(): Promise<{ f: string; size: number; t: number }[]> {
-    const out: { f: string; size: number; t: number }[] = [];
-    const walk = async (dir: string): Promise<void> => {
-      let ents: fs.Dirent[];
-      try {
-        ents = await fs.promises.readdir(dir, { withFileTypes: true });
-      } catch {
-        return;
-      }
-      for (const e of ents) {
-        const p = path.join(dir, e.name);
-        if (e.isDirectory()) await walk(p);
-        else if (e.name.endsWith('.gz')) {
-          try {
-            const st = await fs.promises.stat(p);
-            out.push({ f: p, size: st.size, t: st.mtimeMs });
-          } catch {
-            // gone since readdir
-          }
+  /** Walk a directory tree, visiting every saved tile (nothing is kept). */
+  private async walk(dir: string, visit: (f: string, size: number, mtimeMs: number) => void): Promise<void> {
+    let ents: fs.Dirent[];
+    try {
+      ents = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) await this.walk(p, visit);
+      else if (e.name.endsWith('.gz')) {
+        try {
+          const st = await fs.promises.stat(p);
+          visit(p, st.size, st.mtimeMs);
+        } catch {
+          // gone since readdir
         }
       }
-    };
-    await walk(this.root);
+    }
+  }
+
+  /** Files and bytes below `dir`, counted while walking (no list). */
+  private async count(dir: string): Promise<{ files: number; bytes: number }> {
+    const c = { files: 0, bytes: 0 };
+    await this.walk(dir, (_f, size) => {
+      c.files++;
+      c.bytes += size;
+    });
+    return c;
+  }
+
+  /** Every saved tile with size and last use: only for a prune over the cap. */
+  private async list(): Promise<{ f: string; size: number; t: number }[]> {
+    const out: { f: string; size: number; t: number }[] = [];
+    await this.walk(this.root, (f, size, t) => out.push({ f, size, t }));
     return out;
   }
 
-  /** Remove directories of generations no longer current. */
+  /** Learn the totals with a count-only walk (one at a time), then enforce the cap. */
+  private recount(): Promise<void> {
+    if (this.counting) return this.counting;
+    this.counting = (async () => {
+      this.countDelta = { files: 0, bytes: 0 };
+      const c = await this.count(this.root);
+      const d = this.countDelta;
+      this.countDelta = null;
+      this.totals = { files: Math.max(0, c.files + d.files), bytes: Math.max(0, c.bytes + d.bytes) };
+      this.staleTotals = false;
+      this.scheduleSave();
+      if (this.totals.bytes > this.capBytes) await this.prune();
+    })().finally(() => {
+      this.counting = null;
+      this.countDelta = null;
+    });
+    return this.counting;
+  }
+
+  /** Remove directories of generations no longer current (their files are subtracted from the totals). */
   private async removeStale(): Promise<void> {
     let names: string[];
     try {
@@ -373,20 +634,46 @@ export class TileStore {
       if (!TILE_GROUPS.some(g => n.startsWith(`${g}-`))) continue;
       const g = n.slice(0, n.indexOf('-')) as TileGroup;
       if (this.gens[g] === null) continue; // not known yet (startup): keep until it is
-      await fs.promises.rm(path.join(this.root, n), { recursive: true, force: true }).catch(() => undefined);
+      const dir = path.join(this.root, n);
+      // Counted and deleted in a child process: a superseded generation is
+      // hundreds of thousands of files, and walking and deleting them here,
+      // on Signal K's main thread, left 537 MB of malloc memory that was
+      // never handed back (brain, 2026-10-06). The child's memory goes back
+      // to the system when it exits. Subtracted only when the directory is
+      // really gone: a failed removal leaves its files in the store.
+      let gone: RmtreeResult | null;
+      try {
+        gone = await runChildTask({ task: 'rmtree', dir });
+      } catch (err) {
+        this.log(`overlay tiles: child process could not remove ${dir} (${(err as Error).message}); removing it here`);
+        gone = await rmtree(dir).catch((e: Error) => {
+          this.log(`overlay tiles: could not remove ${dir}: ${e.message}`);
+          return null;
+        });
+      }
+      if (!gone) continue;
+      if (this.totals) {
+        this.totals.files = Math.max(0, this.totals.files - gone.files);
+        this.totals.bytes = Math.max(0, this.totals.bytes - gone.bytes);
+        this.scheduleSave();
+      }
       removed++;
     }
-    if (removed) {
-      this.log(`overlay tiles: removed ${removed} superseded generation(s)`);
-      this.totals = null;
-    }
+    if (removed) this.log(`overlay tiles: removed ${removed} superseded generation(s)`);
   }
 
-  /** Remove least recently used tiles until under 90 % of the cap. */
+  /** Remove least recently used tiles until under 90 % of the cap (the file list is built only then). */
   prune(): Promise<void> {
     if (this.pruning) return this.pruning;
     this.pruning = (async () => {
-      const files = await this.scan();
+      const known = this.totals ?? (await this.count(this.root));
+      if (known.bytes <= this.capBytes) {
+        this.totals = known;
+        this.staleTotals = false;
+        this.scheduleSave();
+        return;
+      }
+      const files = await this.list();
       let total = files.reduce((a, x) => a + x.size, 0);
       let count = files.length;
       if (total > this.capBytes) {
@@ -401,15 +688,17 @@ export class TileStore {
         this.log(`overlay tiles: pruned to ${(total / 1e9).toFixed(2)} GB (cap ${(this.capBytes / 1e9).toFixed(2)} GB)`);
       }
       this.totals = { files: count, bytes: total };
+      this.staleTotals = false;
+      this.scheduleSave();
     })().finally(() => {
       this.pruning = null;
     });
     return this.pruning;
   }
 
-  /** Status; the first call starts a scan for the totals. */
+  /** Status; unknown (or old) totals start a background count. */
   stats(): TileStoreStats {
-    if (!this.totals && !this.pruning) void this.prune();
+    this.ensureTotals();
     return {
       dir: this.root,
       cap_bytes: this.capBytes,
@@ -450,7 +739,7 @@ export type TileQueryFn = (
   kind: QueryKind,
   args: QueryArgs[QueryKind],
   signal?: AbortSignal
-) => Promise<{ result: unknown; complete: boolean }>;
+) => Promise<{ result: unknown; complete: boolean; stamp: DataStamp }>;
 
 /** Encode a query answer as the tile's gzip body. */
 export async function encodeTile(t: TileId, result: unknown): Promise<Buffer> {
@@ -458,7 +747,10 @@ export async function encodeTile(t: TileId, result: unknown): Promise<Buffer> {
     const u = result as Uint8Array;
     return gzip(Buffer.from(u.buffer, u.byteOffset, u.byteLength));
   }
-  const body = t.layer === 'barbs' || t.layer === 'arrows' ? trimPoints(result as { lon: number; lat: number }[], t.z, t.x, t.y) : result;
+  const body =
+    t.layer === 'barbs' || t.layer === 'arrows' || t.layer === 'seas'
+      ? trimPoints(result as { lon: number; lat: number }[], t.z, t.x, t.y)
+      : result;
   return gzip(Buffer.from(JSON.stringify(body)));
 }
 
@@ -467,55 +759,191 @@ function tileKey(t: TileId): string {
 }
 
 /**
+ * An answer whose stamp names data the plugin no longer holds; the caller
+ * asks again — at once when the data moved after the query was sent
+ * (`changedSinceAsk`: the worker may already hold the new data), otherwise
+ * once the data the plugin holds moves past what the check saw (`held`):
+ * until then the worker answers from the same data and the same mismatch
+ * would come back.
+ */
+class StaleAnswer extends Error {
+  constructor(
+    readonly group: TileGroup,
+    readonly held: DataStamp,
+    /** dataChanged() fired after the query was sent: the worker may already hold the new data. */
+    readonly changedSinceAsk: boolean
+  ) {
+    super(`the ${group} data changed while answering; ask again`);
+  }
+}
+function staleAnswer(group: TileGroup, held: DataStamp, changedSinceAsk: boolean): Error {
+  return new StaleAnswer(group, held, changedSinceAsk);
+}
+
+/** Whether two stamps name the same data: the retry waits only while no change came since the ask and the held data is what the check saw. */
+const sameStamp = (a: DataStamp, b: DataStamp): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/** A one-shot promise that dataChanged resolves: the next change of the data the plugin holds. */
+function deferred(): { p: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const p = new Promise<void>(r => (resolve = r));
+  return { p, resolve };
+}
+
+/**
+ * Whether an answer's stamp names the data the plugin holds now, for the
+ * group the answer is for: a group is matched only against the sources it
+ * is computed from (the land group against none: its generation covers the
+ * coastline). The stamp's parts are matched exactly, including nulls: a
+ * source the worker did not have where the plugin has one (or the other
+ * way round) is replaced data too.
+ */
+export function stampMatches(group: TileGroup, expected: DataStamp, stamp: DataStamp): boolean {
+  const same = (want: unknown, got: unknown): boolean => JSON.stringify(want ?? null) === JSON.stringify(got ?? null);
+  // The forecast part is compared only when the answer read one: kinds that
+  // need no forecast (the current and arrows layers, the tide series) stamp
+  // null and are not held to the loaded run. A kind that needed the
+  // forecast either names it or errored, so a null never hides a replaced
+  // run. The other sources are compared strictly: null there means the
+  // worker had none, which is replaced (or missing) data wherever the
+  // group compares them.
+  if (stamp.forecast && !same(expected.forecast, stamp.forecast)) return false;
+  if (group === 'cur' || group === 'pt') {
+    if (!same(expected.smoc, stamp.smoc)) return false;
+    if (!same(expected.rtofs, stamp.rtofs)) return false;
+  }
+  if (group === 'tide' || group === 'pt') {
+    if (!same(expected.tide, stamp.tide)) return false;
+  }
+  return true;
+}
+
+/**
  * Tiles from the store, else computed by the data worker and saved.
- * Identical requests in flight share one query; the query is cancelled
- * (if it has not started) when every requester has gone.
+ * Identical requests share one query while the data is unchanged (the
+ * in-flight key carries the generation); the query is cancelled (if it
+ * has not started) when every requester has gone.
  */
 export class TileService {
-  private readonly inflight = new Map<string, { p: Promise<Buffer>; waiters: number; ctrl: AbortController }>();
+  /** `complete`: a point answer's status once its query has answered (pointWithStatus). */
+  private readonly inflight = new Map<string, { p: Promise<Buffer>; waiters: number; ctrl: AbortController; complete?: boolean }>();
+  /** Resolved by dataChanged: answers waiting out a stamp mismatch sleep on this. */
+  private change = deferred();
 
   constructor(
     readonly store: TileStore,
-    private readonly query: TileQueryFn
+    private readonly query: TileQueryFn,
+    /** The data the plugin holds now, to check an answer's stamp against. */
+    private readonly dataStamp: () => DataStamp
   ) {}
 
+  /**
+   * The data the plugin holds changed: wakes requests waiting out a stamp
+   * mismatch. index.ts calls this wherever an input of dataStamp() changes
+   * (a worker run message, applySettings) — either end of a mismatch: the
+   * worker ahead (handling its message moves dataStamp) or behind (its
+   * reload ends in a message that does).
+   */
+  dataChanged(): void {
+    const c = this.change;
+    this.change = deferred();
+    c.resolve();
+  }
+
+  /** The next data change, or a rejection when the requester goes. */
+  private nextChange(signal?: AbortSignal): Promise<void> {
+    const p = this.change.p;
+    if (!signal) return p;
+    if (signal.aborted) return Promise.reject(new Error('cancelled'));
+    return new Promise((resolve, reject) => {
+      const onAbort = (): void => reject(new Error('cancelled'));
+      signal.addEventListener('abort', onAbort, { once: true });
+      void p.then(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      });
+    });
+  }
+
   async get(t: TileId, signal?: AbortSignal): Promise<{ gz: Buffer; cached: boolean }> {
-    const saved = await this.store.read(t);
-    if (saved) return { gz: saved, cached: true };
-    if (signal?.aborted) throw new Error('cancelled'); // gone during the disk read: start nothing
-    const key = tileKey(t);
-    let f = this.inflight.get(key);
-    if (!f) {
-      const ctrl = new AbortController();
-      const generation = this.store.generation(tileGroup(t.layer));
-      const { kind, args } = tileQuery(t);
-      const p = this.query(kind, args, ctrl.signal)
-        .then(async ({ result, complete }) => {
-          const gz = await encodeTile(t, result);
-          if (complete) await this.store.write(t, gz, generation);
-          else this.store.noteNotKept();
-          return gz;
-        })
-        .finally(() => {
-          if (this.inflight.get(key) === f) this.inflight.delete(key);
-        });
-      f = { p, waiters: 0, ctrl };
-      this.inflight.set(key, f);
-    }
-    const entry = f;
-    entry.waiters++;
-    const onAbort = (): void => {
-      if (--entry.waiters > 0) return;
-      entry.ctrl.abort();
-      // A later request for the same tile starts afresh rather than joining a cancelled query.
-      if (this.inflight.get(key) === entry) this.inflight.delete(key);
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-    try {
-      return { gz: await entry.p, cached: false };
-    } finally {
-      if (!signal?.aborted) entry.waiters--;
-      signal?.removeEventListener('abort', onAbort);
+    const group = tileGroup(t.layer);
+    // The answer belongs to the data it was computed from, and says so
+    // (DataStamp): a mismatch is asked again until the worker answers from
+    // what the plugin holds now (issue #47). The in-flight key carries the
+    // generation, so a requester of newer data never joins a query of an
+    // older one.
+    for (;;) {
+      const generation = this.store.generation(group);
+      const key = `${group}/${generation}/${tileKey(t)}`;
+      const saved = await this.store.read(t);
+      if (saved) {
+        // The file lives under the generation it was saved with; if that
+        // generation is gone by the time the bytes arrive, the answer
+        // belongs to replaced data. Read again under the current one.
+        if (this.store.generation(group) === generation) return { gz: saved, cached: true };
+        continue;
+      }
+      if (signal?.aborted) throw new Error('cancelled'); // gone during the disk read: start nothing
+      let f = this.inflight.get(key);
+      if (!f) {
+        const ctrl = new AbortController();
+        const { kind, args } = tileQuery(t);
+        const asked = this.change;
+        const p = this.query(kind, args, ctrl.signal)
+          .then(async ({ result, complete, stamp }) => {
+            const gz = await encodeTile(t, result);
+            const held = this.dataStamp();
+            if (!stampMatches(group, held, stamp)) {
+              // The answer was computed from data the plugin has replaced
+              // meanwhile (or no longer holds): never served or saved. The
+              // stamp the check saw rides along, with whether the data moved
+              // since the query was sent: the retry asks again at once when
+              // it did, otherwise only once the data held moves past the check.
+              throw staleAnswer(group, held, this.change !== asked);
+            }
+            // Filed under the generation the attempt started under: the
+            // stamp vouches for the runs, not for the generation's other
+            // inputs (the coastline, the harmonics directory, the settings
+            // revision), so a generation that moved mid-query refuses the
+            // write and the request is answered once more under it.
+            if (complete) await this.store.write(t, gz, generation);
+            else this.store.noteNotKept();
+            return gz;
+          })
+          .finally(() => {
+            if (this.inflight.get(key) === f) this.inflight.delete(key);
+          });
+        f = { p, waiters: 0, ctrl };
+        this.inflight.set(key, f);
+      }
+      const entry = f;
+      entry.waiters++;
+      const onAbort = (): void => {
+        if (--entry.waiters > 0) return;
+        entry.ctrl.abort();
+        // A later request for the same tile starts afresh rather than joining a cancelled query.
+        if (this.inflight.get(key) === entry) this.inflight.delete(key);
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      try {
+        return { gz: await entry.p, cached: false };
+      } catch (err) {
+        // The answer named replaced data (checked once for every requester
+        // of the query): nothing was saved. Ask again under the data held —
+        // at once if the data changed after the query was sent (the worker may
+        // already hold the new data), otherwise only once it moves: until then
+        // the worker answers from the same data and the same mismatch comes
+        // back (a settings change reloads the worker behind any query in
+        // flight, which can take minutes).
+        if (err instanceof StaleAnswer) {
+          if (!err.changedSinceAsk && sameStamp(err.held, this.dataStamp())) await this.nextChange(signal);
+          continue;
+        }
+        throw err;
+      } finally {
+        if (!signal?.aborted) entry.waiters--;
+        signal?.removeEventListener('abort', onAbort);
+      }
     }
   }
 
@@ -529,50 +957,109 @@ export class TileService {
   /**
    * A point answer (conditions, Weather API point forecast or tide
    * series, forecast samples) from the store, else from the data worker
-   * and saved when complete. Keyed by the exact query.
+   * and saved when complete. Keyed by the exact query within one data
+   * generation; an answer whose stamp names replaced data (the forecast
+   * run changed while it was being answered — issue #47) is never served:
+   * the request asks again until the worker answers from the data the
+   * plugin holds now.
    */
   async point(kind: QueryKind, args: QueryArgs[QueryKind], signal?: AbortSignal): Promise<unknown> {
+    return (await this.pointWithStatus(kind, args, signal)).result;
+  }
+
+  /**
+   * A point answer, and whether it is complete: false when the data it was
+   * read from changed meanwhile (a new run, current or tide source, an
+   * evicted area), so it is not kept. A saved answer is complete.
+   */
+  async pointWithStatus(
+    kind: QueryKind,
+    args: QueryArgs[QueryKind],
+    signal?: AbortSignal
+  ): Promise<{ result: unknown; complete: boolean }> {
     const json = JSON.stringify(args);
     const k: StoreKey = { group: 'pt', rel: path.join(kind, `${hash(json)}.gz`) };
-    const saved = await this.store.read(k);
-    if (saved) return fromJson((await gunzip(saved)).toString());
-    if (signal?.aborted) throw new Error('cancelled');
-    const key = `pt/${kind}/${json}`;
-    let f = this.inflight.get(key);
-    if (!f) {
-      const ctrl = new AbortController();
+    for (;;) {
       const generation = this.store.generation('pt');
-      const p = this.query(kind, args, ctrl.signal)
-        .then(async ({ result, complete }) => {
-          const gz = await gzip(Buffer.from(toJson(result)));
-          if (complete) await this.store.write(k, gz, generation);
-          else this.store.noteNotKept();
-          return gz;
-        })
-        .finally(() => {
-          if (this.inflight.get(key) === f) this.inflight.delete(key);
-        });
-      f = { p, waiters: 0, ctrl };
-      this.inflight.set(key, f);
-    }
-    const entry = f;
-    entry.waiters++;
-    const onAbort = (): void => {
-      if (--entry.waiters > 0) return;
-      entry.ctrl.abort();
-      if (this.inflight.get(key) === entry) this.inflight.delete(key);
-    };
-    signal?.addEventListener('abort', onAbort, { once: true });
-    try {
-      return fromJson((await gunzip(await entry.p)).toString());
-    } finally {
-      if (!signal?.aborted) entry.waiters--;
-      signal?.removeEventListener('abort', onAbort);
+      const saved = await this.store.read(k);
+      if (saved) {
+        // The file lives under the generation it was saved with; if that
+        // generation is gone by the time the bytes arrive, the answer
+        // belongs to replaced data. Read again under the current one.
+        if (this.store.generation('pt') === generation) {
+          return { result: fromJson((await gunzip(saved)).toString()), complete: true };
+        }
+        continue;
+      }
+      if (signal?.aborted) throw new Error('cancelled');
+      const key = `pt/${generation}/${kind}/${json}`;
+      let f = this.inflight.get(key);
+      if (!f) {
+        const ctrl = new AbortController();
+        const asked = this.change;
+        const p = this.query(kind, args, ctrl.signal)
+          .then(async ({ result, complete, stamp }) => {
+            const gz = await gzip(Buffer.from(toJson(result)));
+            const held = this.dataStamp();
+            if (!stampMatches('pt', held, stamp)) {
+              // The answer was computed from data the plugin has replaced
+              // meanwhile (or no longer holds): never served or saved. The
+              // stamp the check saw rides along, with whether the data moved
+              // since the query was sent: the retry asks again at once when
+              // it did, otherwise only once the data held moves past the check.
+              throw staleAnswer('pt', held, this.change !== asked);
+            }
+            if (complete) await this.store.write(k, gz, generation);
+            else this.store.noteNotKept();
+            if (f) f.complete = complete;
+            return gz;
+          })
+          .finally(() => {
+            if (this.inflight.get(key) === f) this.inflight.delete(key);
+          });
+        f = { p, waiters: 0, ctrl };
+        this.inflight.set(key, f);
+      }
+      const entry = f;
+      entry.waiters++;
+      const onAbort = (): void => {
+        if (--entry.waiters > 0) return;
+        entry.ctrl.abort();
+        if (this.inflight.get(key) === entry) this.inflight.delete(key);
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      try {
+        const result = fromJson((await gunzip(await entry.p)).toString());
+        return { result, complete: entry.complete !== false };
+      } catch (err) {
+        // The answer named replaced data (checked once for every requester
+        // of the query): nothing was saved. Ask again under the data held —
+        // at once if the data changed after the query was sent (the worker may
+        // already hold the new data), otherwise only once it moves: until then
+        // the worker answers from the same data and the same mismatch comes
+        // back. A Weather API point passes no abort signal, so a wait here
+        // could hold it until the next tide run or forecast.
+        if (err instanceof StaleAnswer) {
+          if (!err.changedSinceAsk && sameStamp(err.held, this.dataStamp())) await this.nextChange(signal);
+          continue;
+        }
+        throw err;
+      } finally {
+        if (!signal?.aborted) entry.waiters--;
+        signal?.removeEventListener('abort', onAbort);
+      }
     }
   }
 
   /** Tile queries waiting or running. */
   get inflightCount(): number {
     return this.inflight.size;
+  }
+
+  /** Requesters waiting on a tile's in-flight query (0 when none is in flight; tests). */
+  waiters(t: TileId): number {
+    const suffix = `/${tileKey(t)}`;
+    for (const [k, v] of this.inflight) if (k.endsWith(suffix)) return v.waiters;
+    return 0;
   }
 }

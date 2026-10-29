@@ -292,7 +292,13 @@ export interface TideStatus {
   run: string;
   run_last_time: string;
   stac_updated: string | null;
+  /** When this run appeared in the store (timeChunked .zmetadata Last-Modified), ISO. */
+  metadata_modified: string | null;
   settled: boolean;
+  /** As SMOC's (currents/smoc.ts SmocStatus): a newer run Copernicus Marine is still writing, or null. */
+  pending: { run: string; appeared_at: string | null } | null;
+  /** As SMOC's: an update has started while the store still holds this run. */
+  updating: boolean;
   half_width_deg: number;
   horizon_hours: number;
   resident: {
@@ -333,6 +339,10 @@ export interface TideStatus {
 export class TideSource {
   readonly run: ArcoRun;
   readonly settings: TideSettings;
+  /** A newer run Copernicus Marine is still writing while this one serves (worker/tides.ts refreshTides), or null. */
+  pending: { key: string; appearedAt: string | null } | null = null;
+  /** An update has started but the store still holds this run (worker/tides.ts refreshTides). */
+  updating = false;
   private readonly client: ArcoClient | null;
   private readonly log: (m: string) => void;
   private readonly set: ArcoAreaSet<ArcoArea>;
@@ -528,7 +538,10 @@ export class TideSource {
       run: this.run.key,
       run_last_time: new Date(runLastMs(this.run)).toISOString(),
       stac_updated: this.run.stacUpdated,
+      metadata_modified: this.run.metadataModified,
       settled: this.run.settled,
+      pending: this.pending ? { run: this.pending.key, appeared_at: this.pending.appearedAt } : null,
+      updating: this.updating,
       half_width_deg: this.settings.halfWidthDeg,
       horizon_hours: this.settings.horizonS / HOUR_S,
       resident: parts.resident,
@@ -538,7 +551,7 @@ export class TideSource {
       last_download: this.set.lastDownload,
       last_point_query: this.lastPoint,
       downloaded_bytes_total: this.client?.totals.downloadedBytes ?? 0,
-      disk_cache_bytes: this.client ? this.client.cachedBytes(this.run.key) : null,
+      disk_cache_bytes: this.client ? this.client.cachedBytes(this.run) : null,
       layouts: (['time', 'geo', 'ds4'] as ArcoLayout[]).filter(l => this.run.levels[l]),
       mean_window_days: MEAN_WINDOW_DAYS,
     };
@@ -552,7 +565,7 @@ export async function loadTideResident(
   settings: TideSettings,
   pos: { lat: number; lon: number },
   steps: number[],
-  opts: { log?: (m: string) => void } = {}
+  opts: { log?: (m: string) => void; shouldCancel?: () => boolean } = {}
 ): Promise<{ area: ArcoArea; stats: DownloadStats } | null> {
   const region = regionForBBox(run.levels.time.grid, residentBBox(pos.lat, pos.lon, settings.halfWidthDeg), TIDE_MARGIN_CELLS);
   if (!region || steps.length === 0) return null;
@@ -560,6 +573,7 @@ export async function loadTideResident(
   return loadArcoArea(client, run, 'full', region, steps, TIDE_FIELD_VARS, {
     reason: `resident tide area around ${pos.lat.toFixed(2)},${pos.lon.toFixed(2)} ±${settings.halfWidthDeg}°`,
     log: opts.log,
+    shouldCancel: opts.shouldCancel,
     layout: chooseLayout(run, region, tIdx),
   });
 }

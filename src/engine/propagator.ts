@@ -1,7 +1,6 @@
 /**
- * Subsector isochrone propagator for open-water legs. Port of
- * routing/engine/ocean_propagator.py (Hagiwara 1989 / Chen & Mao 2024
- * IPO family) without the bathymetry gate.
+ * Subsector isochrone propagator for open-water legs (Hagiwara 1989 /
+ * Chen & Mao 2024 IPO family), with no bathymetry gate.
  *
  * Per stage:
  *  1. From each retained parent, project (2m+1) candidates at evenly
@@ -38,7 +37,7 @@
  * Automatic vias (Via.auto) work like user vias but are never reported as
  * route waypoints.
  *
- * INTO_CIRCLE_NOTE (deviation from the reference): a parent whose next
+ * INTO_CIRCLE_NOTE: a parent whose next
  * user via's circle is closer than one stage step also gets one candidate
  * on the straight line to the via, ending just inside its circle (the
  * same hop the approximate final leg uses). Without it a branch reaches a
@@ -54,7 +53,7 @@ import { runStages } from './search/stages';
 import { chooseTerminal } from './search/terminal';
 import { buildGuide } from './search/zones';
 import type { ComputeRouteArgs, PropagatorOptions } from './search/types';
-import type { LandMask } from '../geo/landmask';
+import type { LandTest } from '../geo/landmask';
 import type { Route } from './route';
 
 export {
@@ -70,7 +69,7 @@ export {
   type PropagatorOptions,
   type Via,
 } from './search/types';
-export { enrichWaypoints } from './search/enrich';
+export { enrichLegRanges, enrichWaypoints } from './search/enrich';
 
 export class OceanPropagator {
   readonly K: number;
@@ -81,7 +80,7 @@ export class OceanPropagator {
   readonly skeletonPaddingDeg: number;
 
   constructor(
-    readonly landMask: LandMask,
+    readonly landMask: LandTest,
     opts: PropagatorOptions = {}
   ) {
     this.K = Math.max(1, Math.floor(opts.stages ?? 20));

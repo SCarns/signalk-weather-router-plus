@@ -9,7 +9,7 @@
 
 import { haversineDistanceM, perpendicularOffsetM } from '../../geo/geodesy';
 import type { StageFront } from '../route';
-import { fmtUtc, forecastNote, resetTry, tryNote } from './context';
+import { fmtUtc, forecastNote, refuseDeadEnd, resetTry, tryNote } from './context';
 import { propose } from './propose';
 import { BEATING_SHARE, RouteError, STALL_STAGES, ViasNotCrossedError, type Candidate, type SearchContext } from './types';
 import type { SkeletonGuide } from './zones';
@@ -34,7 +34,7 @@ function traceBack(stages: Candidate[][], stageIdx: number, cand: Candidate): [n
 
 /** Run the stages from the start; returns every stage's retained candidates (stage 0 = the start). */
 export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[][] {
-  const { args, progress, checkCancel, sLon, sLat, eLon, eLat, goals, nVias, startViaCount, cruise, fronts, lastTry, limitNote } = ctx;
+  const { args, progress, checkCancel, sLon, sLat, eLon, eLat, goals, nVias, startViaCount, cruise, fronts, lastTry } = ctx;
   const { deltaD, candStepM } = ctx.budget;
   const { kEff, maxStages } = guide;
   const announced = new Set<number>();
@@ -54,6 +54,7 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
         lat: sLat,
         timeMs: args.departureTime.getTime(),
         elapsedS: 0,
+        costS: 0,
         parentIdx: -1,
         sogMs: 0,
         cogDeg: 0,
@@ -74,16 +75,16 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
     const tStage = Date.now();
     const parents = stages[stages.length - 1];
     if (parents.length === 0) {
-      throw new RouteError(
-        `stage ${stage} has no live waypoints: every candidate from the previous stage was blocked by land${limitNote} even after widening the heading sweep and halving the step (${tryNote(ctx)}).${forecastNote(ctx)}`
-      );
+      // Every move from the last front failed, even after the wider sweeps and the halved step (the ladder below).
+      progress(stage, kEff, `dead end at stage ${stage}: ${tryNote(ctx)}`);
+      throw refuseDeadEnd(ctx, stages[stages.length - 2] ?? stages[0], 'route', forecastNote(ctx));
     }
     resetTry(ctx, parents);
     let cands = propose(ctx, guide, parents, ctx.m, ctx.deltaC, 1);
-    // Fallback ladder, per parent (deviation from the reference, which
-    // widened only when the whole stage's sweep was empty): a parent whose
-    // primary sweep produced nothing (its headings in the polar's no-go
-    // angle, on land, or over a limit) gets the wider sweeps on its own,
+    // Fallback ladder, per parent (not only when the whole stage's sweep
+    // was empty): a parent whose primary sweep produced nothing (its
+    // headings in the polar's no-go angle, on land, or over a limit) gets
+    // the wider sweeps on its own,
     // while its siblings keep their primary candidates. A parent facing
     // dead upwind can then tack at every stage instead of only on the
     // stages where every other parent was stuck too (the eastern
@@ -97,9 +98,9 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
       const ladder: [number, number, number, string][] = [
         [ctx.m * 2, ctx.deltaC * 2, 1, `widening to ±${ctx.m * 2 * ctx.deltaC * 2}°`],
         [ctx.m * 3, ctx.deltaC * 2, 0.5, `trying ±${ctx.m * 3 * ctx.deltaC * 2}° with half step`],
-        // Beyond the reference: a full 360° sweep at a quarter step, for
-        // parents boxed in by a coast whose exits are shorter than half a
-        // stage step.
+        // Last rung: a full 360° sweep at a quarter step, for parents
+        // boxed in by a coast whose exits are shorter than half a stage
+        // step.
         [90, 2, 0.25, 'trying full 360° sweep with quarter step'],
       ];
       for (const [m, dc, sf, label] of ladder) {
@@ -139,7 +140,8 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
       const c = cands[i];
       const g = goals[c.viaCount];
       remaining[i] = haversineDistanceM(c.lon, c.lat, g.lon, g.lat);
-      cost[i] = c.elapsedS + remaining[i] / cruise;
+      // The cost so far (time plus any comfort cost) and the rest at cruise speed.
+      cost[i] = c.costS + remaining[i] / cruise;
       let key = guide.zoneKey(c);
       if (key === null) {
         const off = perpendicularOffsetM(sLon, sLat, eLon, eLat, c.lon, c.lat);
@@ -151,10 +153,9 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
       const cur = best.get(key);
       if (cur === undefined || cost[i] < cost[cur]) best.set(key, i);
     }
-    // The leader survives (deviation from the reference): for each goal
-    // the candidate nearest to it is kept whatever its bin. The bin cost
-    // prices the remaining distance at cruise speed, which is optimistic
-    // to windward, so a branch further back but earlier could take every
+    // The leader survives: for each goal the candidate nearest to it is
+    // kept whatever its bin. The bin cost prices the remaining distance at
+    // cruise speed, which is optimistic to windward, so a branch further back but earlier could take every
     // bin of the leading branch and the front fell back (job c14934c9:
     // best remaining 545 km → 762 km at stage 21). With the leader kept
     // the best remaining distance never increases.
@@ -259,10 +260,20 @@ export function runStages(ctx: SearchContext, guide: SkeletonGuide): Candidate[]
         bestEver <= candStepM
           ? ' The front reached the destination but no final leg to it was clear of land: the point is too close to the shore for the land raster.'
           : '';
-      throw new RouteError(
-        `the search is boxed in: for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(1)} km to the destination; ${tryNote(ctx)}.${atGoal}${forecastNote(ctx)}`,
-        'boxed_in'
-      );
+      const stalled = `the search is boxed in: for ${stagesWithoutGain} stages no candidate came closer than ${(bestEver / 1000).toFixed(1)} km to the destination`;
+      progress(stage + 1, Math.max(kEff, stage + 1), `${stalled}; ${tryNote(ctx)}`);
+      // Moves stopped by a limit, the coast, the wind or no boat speed: when they are at least half the moves tried, the
+      // user is told that reason, then the stall; fewer, and the stall is told on its own.
+      const stopped = lastTry.limited + lastTry.land + lastTry.noGo + lastTry.stuck;
+      if (lastTry.tried > 0 && 2 * stopped >= lastTry.tried)
+        // The parents: the candidates whose moves lastTry counted.
+        throw refuseDeadEnd(
+          ctx,
+          parents,
+          'boxed_in',
+          ` The front made no progress for ${stagesWithoutGain} stages.${atGoal}${forecastNote(ctx)}`
+        );
+      throw new RouteError(`${stalled}.${atGoal}${forecastNote(ctx)}`, 'boxed_in');
     }
     for (const c of retained) {
       for (const vi of c.viaIdxs) {

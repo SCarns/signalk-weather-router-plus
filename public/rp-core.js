@@ -4,7 +4,53 @@
 // picker and diagram, the plugin status line. rp-layers.js, rp-plan.js
 // and rp-settings.js import what they use from here.
 
-import { CATEGORY_PATH, fetchDisplayUnits, fetchPresetUnits, unitFromDisplayUnits } from './rp-units.js';
+import { prefs } from './rp-prefs.js';
+import { CATEGORY_PATH, DURATION_FORMATS, fetchDisplayUnits, fetchPresetUnits, unitFromDisplayUnits } from './rp-units.js';
+
+// The user's Setup choices come from the server before anything reads
+// them (rp-prefs.js): this await holds back the rest of this module and
+// every module that imports it, for one request (3 s at most).
+await prefs.load();
+
+// Setup choices this browser held before they were kept per user have no
+// owner: they stay in use here, and go to the user's record only when the
+// user says they are theirs. Discard drops them and reloads with the defaults.
+// With security off the record is every browser's (prefs.shared).
+(function legacyChoicesBanner() {
+  const choices = prefs.legacyChoices();
+  const head = document.getElementById('panelHead');
+  const tabs = document.getElementById('tabBar');
+  if (!choices.length || !prefs.user || !prefs.remote || !head || !tabs) return;
+  const polar = choices.find(([k]) => k === 'polarPath');
+  const polarText = polar ? 'the polar ' + polar[1].replace(/\.[^.]+$/, '').replace(/_/g, ' ') : null;
+  const rest = choices.length - (polar ? 1 : 0);
+  const what = [polarText, rest ? rest + (polar ? ' more' : ' route option' + (rest === 1 ? '' : 's')) : null].filter(Boolean).join(' and ');
+  const bar = document.createElement('div');
+  bar.id = 'legacyChoicesBanner';
+  bar.className = 'recompute-banner';
+  bar.setAttribute('role', 'status');
+  const text = document.createElement('span');
+  text.textContent = prefs.shared
+    ? 'This browser has Setup choices from before they were shared by every browser on this server (' + what + '). Keep them for everyone?'
+    : 'This browser has Setup choices from before they were kept per Signal K user (' + what + '). Keep them as ' + prefs.user + '’s?';
+  const actions = document.createElement('span');
+  actions.className = 'recompute-actions';
+  const keep = document.createElement('button');
+  keep.type = 'button';
+  keep.textContent = 'Keep';
+  keep.title = prefs.shared
+    ? 'Save them on the server: every browser starts with them'
+    : 'Save them for ' + prefs.user + ': every browser this user opens starts with them';
+  const drop = document.createElement('button');
+  drop.type = 'button';
+  drop.textContent = 'Discard';
+  drop.title = 'Drop them from this browser and start from the defaults (the page reloads)';
+  keep.addEventListener('click', () => { prefs.keepLegacy(); bar.remove(); });
+  drop.addEventListener('click', () => { prefs.discardLegacy(); window.location.reload(); });
+  actions.append(keep, drop);
+  bar.append(text, actions);
+  head.insertBefore(bar, tabs);
+})();
 
 // ─── Slider label wiring / display units ─────────────────────────────
 // Display units come from the Signal K user's unit preferences, never
@@ -81,7 +127,7 @@ function applyDisplayUnits() {
   refreshSliderLabels();
   fillUnitTokens();
   // Unit names next to inputs (.unitOf[data-q="<quantity>"]).
-  for (const u of document.querySelectorAll('.unitOf[data-q]')) {
+  for (const u of /** @type {NodeListOf<HTMLElement>} */ (document.querySelectorAll('.unitOf[data-q]'))) {
     const c = UI_UNITS[u.dataset.q];
     u.textContent = c ? c.unit : UNIT_MISSING;
   }
@@ -90,13 +136,27 @@ function applyDisplayUnits() {
 }
 
 // Format helpers — null-safe, return null if input is null.
+// Durations of a day or more are written as days, hours and minutes
+// (Signal K's own duration-compact format, "9d 7h 0m") whatever the user's
+// time unit: a passage of "223.0 hour" reads badly. A deliberate exception
+// to following the Signal K unit preference, for durations only; shorter
+// ones follow the preference as everything else does.
+export const LONG_DURATION_S = 86400;
+export function longDurationText(s) {
+  return Number.isFinite(s) && Math.abs(s) >= LONG_DURATION_S ? DURATION_FORMATS.formatDurationCompact(s) : null;
+}
 export function _fmt(siValue, key) {
   if (siValue == null) return null;
+  if (key === 'time') { const long = longDurationText(siValue); if (long) return long; }
   const c = UI_UNITS[key];
   if (!c) return UNIT_MISSING;
   if (c.text) return c.text(siValue);
   const t = c.fn(siValue).toFixed(c.precision);
-  return (t === '-0' ? '0' : t) + (c.unit ? ' ' + c.unit : '');
+  return (t === '-0' ? '0' : t) + unitSuffix(c.unit);
+}
+// The unit after the number: a space before "kn", "m", "hPa"; none before "°" and "%".
+export function unitSuffix(unit) {
+  return unit ? (unit === '°' || unit === '%' ? unit : ' ' + unit) : '';
 }
 export function fmtSpeed(ms)        { return _fmt(ms, 'speed'); }
 export function fmtDist(m)          { return _fmt(m, 'distance'); }
@@ -118,10 +178,11 @@ const TOKEN_QUANTITY = {
   dataSize: 'data_size', speed: 'speed', angle: 'angle', percentage: 'ratio',
 };
 export function unitQuantityText(cat, si) {
+  if (cat === 'time') { const long = longDurationText(si); if (long) return long; }
   const c = UI_UNITS[TOKEN_QUANTITY[cat]];
   if (!c || !Number.isFinite(si)) return UNIT_MISSING;
   if (c.text) return c.text(si);
-  return Number(c.fn(si).toPrecision(3)) + (c.unit ? ' ' + c.unit : '');
+  return Number(c.fn(si).toPrecision(3)) + unitSuffix(c.unit);
 }
 export function unitTextHtml(text) {
   return escapeHtml(text).replace(UNIT_TOKEN, (_, q, v) =>
@@ -132,11 +193,20 @@ export function unitText(text) {
   return String(text).replace(UNIT_TOKEN, (_, q, v) => unitQuantityText(q, Number(v)));
 }
 export function fillUnitTokens(root = document) {
-  for (const el of root.querySelectorAll('.uq')) el.textContent = unitQuantityText(el.dataset.q, Number(el.dataset.v));
+  for (const el of /** @type {NodeListOf<HTMLElement>} */ (root.querySelectorAll('.uq'))) el.textContent = unitQuantityText(el.dataset.q, Number(el.dataset.v));
 }
 
 /** An angle the plugin gives in degrees, in the user's angle unit. */
-export function fmtAngleDeg(deg)    { return deg == null ? null : _fmt(deg * Math.PI / 180, 'angle'); }
+// Headings and directions: whole degrees (a tenth of a degree says nothing a helm can use); another angle unit as the preferences format it.
+export function fmtAngleDeg(deg) {
+  if (deg == null) return null;
+  const c = UI_UNITS.angle;
+  if (c && !c.text && c.unit === '°') {
+    const v = Math.round(c.fn(deg * Math.PI / 180));
+    return (Object.is(v, -0) ? 0 : v) + '°';
+  }
+  return _fmt(deg * Math.PI / 180, 'angle');
+}
 // Display-unit descriptor for chart axes and legends: {fn, u, p};
 // fn converts SI → display (may be non-linear, e.g. Beaufort). When the
 // unit is unresolved, `missing` is set and fn gives NaN.
@@ -159,7 +229,7 @@ const SLIDER_DISPLAY = {
 };
 function refreshSliderLabels() {
   for (const id of Object.keys(SLIDER_DISPLAY)) {
-    const inp = document.getElementById(id), lbl = document.getElementById(id + 'Label');
+    const inp = /** @type {HTMLInputElement} */ (document.getElementById(id)), lbl = document.getElementById(id + 'Label');
     if (!inp || !lbl) continue;
     const d = SLIDER_DISPLAY[id], c = UI_UNITS[d.q];
     const u = document.querySelector('.unitOf[data-for="' + id + 'Label"]');
@@ -170,20 +240,18 @@ function refreshSliderLabels() {
     if (u) u.textContent = c.unit;
     inp.setAttribute('aria-valuetext', lbl.textContent + (c.unit ? ' ' + c.unit : ''));
   }
-  const st = document.getElementById('stages'), stl = document.getElementById('stagesLabel');
-  if (st && stl) stl.textContent = parseInt(st.value, 10) > 0 ? st.value : 'auto';
 }
 (function () {
   const SLIDER_IDS = [
-    'sailThresh', 'stages', 'arrivalRadiusM',
+    'sailThresh', 'arrivalRadiusM',
     'proximityRadiusM', 'xteThresholdM', 'xteSustainSec', 'simPushDeg',
   ];
   for (const id of SLIDER_IDS) {
-    const inp = document.getElementById(id);
+    const inp = /** @type {HTMLInputElement} */ (document.getElementById(id));
     const lbl = document.getElementById(id + 'Label');
     if (!inp || !lbl) continue;
     inp.addEventListener('input', () => {
-      if (SLIDER_DISPLAY[id] || id === 'stages') refreshSliderLabels(); else lbl.textContent = inp.value;
+      if (SLIDER_DISPLAY[id]) refreshSliderLabels(); else lbl.textContent = inp.value;
     });
   }
   refreshSliderLabels();
@@ -226,11 +294,11 @@ export const TACK_COLOR = { starboard: '#2E7D32', port: '#D32F2F' };
     'tideToggle',
   ];
   const inputs = HEATMAP_TOGGLE_IDS
-    .map((id) => document.getElementById(id))
+    .map((id) => /** @type {HTMLInputElement} */ (document.getElementById(id)))
     .filter(Boolean);
 
   inputs.forEach((inp) => {
-    inp.addEventListener('change', function () {
+    inp.addEventListener('change', /** @this {HTMLInputElement} */ function () {
       // We only need to enforce exclusivity when this toggle was
       // just TURNED ON. A user un-checking a heatmap just hides it;
       // siblings don't need to know.
@@ -368,9 +436,11 @@ export async function authFetch(url, opts, channel) {
     await _rateAcquire(ctrl.signal);
     if (AuthGate.tripped) throw new Error('auth-gate-tripped');
     const r = await fetch(url, opts);
-    _rateNote(r.ok || r.status === 400 || r.status === 404 || r.status === 409 || r.status === 422 || r.status === 403);
+    // 503 too: "still loading the forecast" is a prompt answer from a working server, not a failure to back off from.
+    _rateNote(r.ok || r.status === 400 || r.status === 404 || r.status === 409 || r.status === 422 || r.status === 403 || r.status === 503);
     if (r.status === 401) {
       AuthGate.trip(r.status);
+      /** @type {Error & { rateNoted?: boolean }} */
       const err = new Error('auth ' + r.status);
       err.rateNoted = true;
       throw err;
@@ -378,6 +448,7 @@ export async function authFetch(url, opts, channel) {
     if (r.status === 403) {
       // Logged in but lacking permission (readonly user hitting a
       // write route) — a real answer, not a dead session.
+      /** @type {Error & { scopeMiss?: boolean, rateNoted?: boolean }} */
       const err = new Error('permission denied (HTTP 403)');
       err.scopeMiss = true;
       err.rateNoted = true;
@@ -395,6 +466,20 @@ export async function authFetch(url, opts, channel) {
 }
 
 // Error text out of a plugin JSON error body ({error} or {message}).
+/**
+ * The Error for a failed API answer. A 503 that carries `loading` (the
+ * server is still getting its first forecast) is marked `waiting`: it is
+ * not a failure, and it tells the page to check the status now, since a
+ * map tile can get this answer before the page's first status check.
+ */
+export async function _apiError(r) {
+  let d = null;
+  try { d = await r.clone().json(); } catch (_) { /* not JSON */ }
+  /** @type {Error & { waiting?: boolean }} */
+  const err = new Error(d && (d.error || d.message) ? unitText(String(d.error || d.message)) : 'HTTP ' + r.status);
+  if (r.status === 503 && d && 'loading' in d) { err.waiting = true; _serverWaiting(); }
+  return err;
+}
 export async function _apiErrorText(r) {
   try {
     const d = await r.clone().json();
@@ -408,15 +493,16 @@ export async function _apiErrorText(r) {
 const now = new Date();
 now.setMinutes(0, 0, 0);
 const _pad = n => String(n).padStart(2, '0');
-document.getElementById('departure').value =
+/** @type {HTMLInputElement} */ (document.getElementById('departure')).value =
     `${now.getFullYear()}-${_pad(now.getMonth() + 1)}-${_pad(now.getDate())}` +
     `T${_pad(now.getHours())}:${_pad(now.getMinutes())}`;
+// (Rewritten in the ship's zone by loadShipTime once that is known.)
 
 // ─────────── Polar picker (GET /api/polars) ───────────
 let _polarItems = [];
 
 function _renderPolarOptions(filterText) {
-  const sel = document.getElementById('polarSelect');
+  const sel = /** @type {HTMLSelectElement} */ (document.getElementById('polarSelect'));
   const needle = (filterText || '').trim().toLowerCase();
   const filtered = needle
     ? _polarItems.filter(it => it.label.toLowerCase().includes(needle)
@@ -438,7 +524,7 @@ function _renderPolarOptions(filterText) {
 }
 
 function loadPolarList() {
-  const sel = document.getElementById('polarSelect');
+  const sel = /** @type {HTMLSelectElement} */ (document.getElementById('polarSelect'));
   return authFetch(API + '/polars', {}, null)
     .then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data.error || 'Cannot load polars'); return data; })
     .then(items => {
@@ -452,11 +538,11 @@ function loadPolarList() {
       document.getElementById('openVesselForm').hidden = false;
       document.getElementById('polarFilter').hidden = false;
       _polarItems = items;
-      _renderPolarOptions('');
+      _renderPolarOptions(/** @type {HTMLInputElement} */ (document.getElementById('polarFilter')).value);
       // Prefer the last-used selection if it's still in the list;
       // otherwise fall back to the vessel default (first item).
-      const stored = (() => { try { return localStorage.getItem('polarChoiceV2') || ''; } catch (_) { return ''; } })();
-      const paths = items.map(it => it.path);
+      const stored = prefs.get('polarPath') || '';
+      const paths = Array.from(sel.options).map(it => it.value);
       sel.value = paths.includes(stored) ? stored : paths[0];
       loadPolarAngles(sel.value);
       loadPolarTable(sel.value);
@@ -519,7 +605,7 @@ function loadPolarTable(polarPath) {
 }
 const _POLAR_TWS_COLORS = ['#90caf9', '#4fc3f7', '#00897b', '#43a047', '#f9a825', '#e64a19', '#c62828', '#8a0000', '#6a1b9a', '#ad1457', '#37474f', '#000'];
 export function drawPolarDiagram() {
-  const canvas = document.getElementById('polarDiagram');
+  const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('polarDiagram'));
   const info = document.getElementById('polarInfo');
   if (!canvas) return;
   // PLOT_H is the diagram; the strip below it holds the caption, clear of the 180° label.
@@ -614,7 +700,7 @@ export function drawPolarDiagram() {
   ctx.fillStyle = '#777'; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
   ctx.fillText('rings: boat speed (' + u.u + ') · dots: beat / run VMG angles', lx, H - 4);
   if (info) {
-    const sel = document.getElementById('polarSelect');
+    const sel = /** @type {HTMLSelectElement} */ (document.getElementById('polarSelect'));
     const it = _polarItems.find(p => p.path === (sel ? sel.value : ''));
     info.textContent = (it ? it.label + ' — ' : '') + T.twa_deg.length + ' angles × ' + nW + ' wind speeds' + (T.performance_factor != null ? ' · performance ' + Math.round(T.performance_factor * 100) + '%' : '');
   }
@@ -636,65 +722,56 @@ function _polarSpeedAt(T, twa, k) {
   return null;
 }
 
-document.getElementById('polarSelect').addEventListener('change', function() {
-  try { localStorage.setItem('polarChoiceV2', this.value); } catch (_) {}
+document.getElementById('polarSelect').addEventListener('change', /** @this {HTMLSelectElement} */ function() {
+  prefs.set('polarPath', this.value);
   loadPolarAngles(this.value);
   loadPolarTable(this.value);
 });
 
 // ─────────── Persist route-variable controls across reloads ───────────
 // All route params except `departure` (which should default to "now"
-// each session) are saved to localStorage on change and restored on
-// load. Ranges fire an 'input' event after restore so the paired
-// labels update to match.
+// each session) are saved on change (rp-prefs.js: this browser and the
+// Signal K user) and restored on load. Ranges fire an 'input' event
+// after restore so the paired labels update to match.
 (function() {
   const PERSIST_IDS = [
-    'mode', 'sailThresh', 'stages', 'arrivalRadiusM', 'precision',
-    'publishSel', 'proximityRadiusM', 'xteThresholdM', 'xteSustainSec',
+    'mode', 'sailThresh', 'arrivalRadiusM', 'precision',
+    'publishSel', 'smootherSel', 'proximityRadiusM', 'xteThresholdM', 'xteSustainSec',
   ];
-  const CHECK_IDS = ['noCurrents', 'noForecast', 'regionalWind'];
-  // The sail-speed slider held knots until 2026-10; it holds m/s now under a new key.
-  try {
-    const old = localStorage.getItem('routeVar:sailThresh');
-    if (old !== null) {
-      if (old !== '' && localStorage.getItem('routeVar:sailThreshMs') === null)
-        localStorage.setItem('routeVar:sailThreshMs', String(Math.round(parseFloat(old) * KT_MS * 10) / 10));
-      localStorage.removeItem('routeVar:sailThresh');
-    }
-  } catch (_) {}
+  const CHECK_IDS = ['noCurrents', 'noForecast', 'regionalWind', 'avoidAreas'];
+  // The sail-speed slider holds m/s under routeVar:sailThreshMs; prefs.load()
+  // converted the knots it held before 2026-10.
   const KEY = (id) => 'routeVar:' + (id === 'sailThresh' ? 'sailThreshMs' : id);
   for (const id of PERSIST_IDS) {
-    const el = document.getElementById(id);
+    const el = /** @type {HTMLInputElement} */ (document.getElementById(id));
     if (!el) continue;
-    let saved = null;
-    try { saved = localStorage.getItem(KEY(id)); } catch (_) {}
+    const saved = prefs.get(KEY(id));
     if (saved != null && saved !== '') {
       el.value = saved;
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
     el.addEventListener('change', function() {
-      try { localStorage.setItem(KEY(id), el.value); } catch (_) {}
+      prefs.set(KEY(id), el.value);
     });
     if (el.type === 'range') {
       el.addEventListener('input', function() {
-        try { localStorage.setItem(KEY(id), el.value); } catch (_) {}
+        prefs.set(KEY(id), el.value);
       });
     }
   }
   for (const id of CHECK_IDS) {
-    const el = document.getElementById(id);
+    const el = /** @type {HTMLInputElement} */ (document.getElementById(id));
     if (!el) continue;
-    let saved = null;
-    try { saved = localStorage.getItem(KEY(id)); } catch (_) {}
+    const saved = prefs.get(KEY(id));
     if (saved === 'true' || saved === 'false') el.checked = saved === 'true';
     el.addEventListener('change', function() {
-      try { localStorage.setItem(KEY(id), el.checked ? 'true' : 'false'); } catch (_) {}
+      prefs.set(KEY(id), el.checked ? 'true' : 'false');
     });
   }
 })();
 
-document.getElementById('polarFilter').addEventListener('input', function() {
+document.getElementById('polarFilter').addEventListener('input', /** @this {HTMLInputElement} */ function() {
   _renderPolarOptions(this.value);
 });
 loadPolarList();
@@ -711,8 +788,8 @@ setInterval(loadPolarList, 30000);
   const openBtn = document.getElementById('openVesselForm');
   const closeBtn = document.getElementById('vesselClose');
   const cancelBtn = document.getElementById('vf_cancel');
-  const generateBtn = document.getElementById('vf_generate');
-  const sbdLink = document.getElementById('sbdLink');
+  const generateBtn = /** @type {HTMLButtonElement} */ (document.getElementById('vf_generate'));
+  const sbdLink = /** @type {HTMLAnchorElement} */ (document.getElementById('sbdLink'));
   const resultDiv = document.getElementById('vf_result');
   const warnDiv = document.getElementById('vf_warnings');
 
@@ -730,7 +807,7 @@ setInterval(loadPolarList, 30000);
 
   // Update the sailboatdata link to use the current boat name as a
   // hint for the user's search.
-  document.getElementById('vf_name').addEventListener('input', function() {
+  document.getElementById('vf_name').addEventListener('input', /** @this {HTMLInputElement} */ function() {
     const name = this.value.trim();
     if (name) {
       sbdLink.href = 'https://sailboatdata.com/?s=' + encodeURIComponent(name);
@@ -761,7 +838,7 @@ setInterval(loadPolarList, 30000);
   const SPEC_UNIT_NAMES = { short_distance: 'length', mass: 'mass', area: 'area' };
   // A field without a unit can't be typed in: disabled, its label shows the missing mark.
   function syncSpecInputs() {
-    for (const f of SPEC_FIELDS) document.getElementById(f.id).disabled = !UI_UNITS[f.q];
+    for (const f of SPEC_FIELDS) /** @type {HTMLInputElement} */ (document.getElementById(f.id)).disabled = !UI_UNITS[f.q];
   }
   window.addEventListener('rp:units', syncSpecInputs);
   syncSpecInputs();
@@ -781,7 +858,7 @@ setInterval(loadPolarList, 30000);
     warnDiv.innerHTML = '';
     resultDiv.innerHTML = '';
 
-    const g = id => document.getElementById(id);
+    const g = id => /** @type {HTMLInputElement | HTMLSelectElement} */ (document.getElementById(id));
     const name = g('vf_name').value.trim();
     if (!name) {
       warnDiv.innerHTML = 'Boat name is required.';
@@ -846,11 +923,11 @@ setInterval(loadPolarList, 30000);
       // Refresh the polar dropdown so the new entry appears, and select it.
       // Stored first: loadPolarList() restores the stored path and loads
       // its angles and diagram. The filter is cleared so the entry shows.
-      try { localStorage.setItem('polarChoiceV2', data.path); } catch (_) {}
-      const filt = document.getElementById('polarFilter');
+      prefs.set('polarPath', data.path);
+      const filt = /** @type {HTMLInputElement} */ (document.getElementById('polarFilter'));
       if (filt) filt.value = '';
       await loadPolarList();
-      const sel = document.getElementById('polarSelect');
+      const sel = /** @type {HTMLSelectElement} */ (document.getElementById('polarSelect'));
       let found = false;
       for (let i = 0; i < sel.options.length; i++) {
         if (sel.options[i].value === data.path) {
@@ -876,9 +953,127 @@ setInterval(loadPolarList, 30000);
 })();
 
 // A time as "Thu 06:00 PM" in the browser's locale; '' when missing or invalid.
+// A clock time in the ship's zone: weekday and time, with the date too when
+// the time is a day or more away (on a long passage "Tue 21:58" could be
+// any Tuesday).
 export function fmtWhen(iso) {
   const d = iso ? new Date(iso) : null;
-  return d && !isNaN(d) ? d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+  if (!d || isNaN(d.getTime())) return '';
+  const far = Math.abs(d.getTime() - Date.now()) >= LONG_DURATION_S * 1000;
+  return fmtClock(d, far ? { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' } : { weekday: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
+// ─────────── Ship's time ───────────
+// Clock times are shown in the ship's time zone when the Signal K server
+// publishes one (environment.time.timezoneRegion, an IANA zone such as
+// "Pacific/Tongatapu", else environment.time.timezoneOffset, (-)hhmm east
+// of Greenwich), else in the browser's. The departure field is read and
+// written in the same zone, so what is typed is what is shown.
+let _shipZone = null;   // { tz } | { offsetMin } | null = the browser's zone
+export function shipZone() { return _shipZone; }
+function _skValue(n) { return n && typeof n === 'object' && 'value' in n ? n.value : n; }
+export function loadShipTime() {
+  // 404: the server publishes no ship's time, so the browser's zone. Any other
+  // failure (network, other HTTP status) keeps the zone already in use.
+  const KEEP = {};
+  return authFetch('/signalk/v1/api/vessels/self/environment/time', { cache: 'no-store' }, null)
+    .then(r => (r.ok ? r.json() : r.status === 404 ? null : KEEP))
+    .catch(() => KEEP)
+    .then(t => {
+      if (t === KEEP) return _shipZone;
+      let z = null;
+      const region = t ? _skValue(t.timezoneRegion) : null;
+      const offset = t ? _skValue(t.timezoneOffset) : null;
+      if (typeof region === 'string' && region) {
+        try { new Intl.DateTimeFormat([], { timeZone: region }); z = { tz: region }; } catch (_) { /* not a zone this browser knows */ }
+      }
+      // A whole signed hhmm with minutes under 60 (1260 is not 13:00); anything else: the browser's zone.
+      if (!z && typeof offset === 'number' && Number.isInteger(offset) && Math.abs(offset) <= 1400 && Math.abs(offset) % 100 < 60) {
+        const a = Math.abs(offset);
+        z = { offsetMin: Math.sign(offset) * (Math.floor(a / 100) * 60 + (a % 100)) };
+      }
+      const changed = JSON.stringify(z) !== JSON.stringify(_shipZone);
+      // The departure field keeps its moment: read in the old zone, written in the new.
+      const dep = /** @type {HTMLInputElement} */ (document.getElementById('departure'));
+      const at = changed && dep ? fromClockInput(dep.value) : null;
+      _shipZone = z;
+      if (at) dep.value = toClockInput(at);
+      if (changed) window.dispatchEvent(new Event('rp:units'));   // everything that shows times redraws
+      return z;
+    });
+}
+/** The zone in words, for a label: "Pacific/Tongatapu", "UTC+13:00", or null (the browser's zone). */
+export function shipZoneLabel() {
+  if (!_shipZone) return null;
+  if (_shipZone.tz) return _shipZone.tz;
+  const m = _shipZone.offsetMin, a = Math.abs(m);
+  return 'UTC' + (m < 0 ? '−' : '+') + String(Math.floor(a / 60)).padStart(2, '0') + ':' + String(a % 60).padStart(2, '0');
+}
+/** A time as text in the ship's zone (Intl options as for toLocaleString). */
+export function fmtClock(t, opts = {}) {
+  const d = t instanceof Date ? t : new Date(t);
+  if (isNaN(d.getTime())) return '';
+  const z = _shipZone;
+  if (z && z.tz) return d.toLocaleString([], { ...opts, timeZone: z.tz });
+  if (z && z.offsetMin != null) {
+    const { timeZoneName, ...rest } = opts;
+    const txt = new Date(d.getTime() + z.offsetMin * 60000).toLocaleString([], { ...rest, timeZone: 'UTC' });
+    return timeZoneName ? txt + ' ' + shipZoneLabel() : txt;
+  }
+  return d.toLocaleString([], opts);
+}
+/** Year, month (1–12), day, hour, minute and weekday (0 = Sunday) of a time in the ship's zone. */
+export function clockParts(t) {
+  const d = t instanceof Date ? t : new Date(t);
+  const z = _shipZone;
+  if (z && z.tz) {
+    const p = {};
+    for (const x of new Intl.DateTimeFormat('en-US', { timeZone: z.tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', weekday: 'short' }).formatToParts(d)) p[x.type] = x.value;
+    return { y: +p.year, mo: +p.month, d: +p.day, h: +p.hour % 24, mi: +p.minute, wd: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(p.weekday) };
+  }
+  if (z && z.offsetMin != null) {
+    const u = new Date(d.getTime() + z.offsetMin * 60000);
+    return { y: u.getUTCFullYear(), mo: u.getUTCMonth() + 1, d: u.getUTCDate(), h: u.getUTCHours(), mi: u.getUTCMinutes(), wd: u.getUTCDay() };
+  }
+  return { y: d.getFullYear(), mo: d.getMonth() + 1, d: d.getDate(), h: d.getHours(), mi: d.getMinutes(), wd: d.getDay() };
+}
+const _p2 = n => String(n).padStart(2, '0');
+/** A time as a datetime-local value ("YYYY-MM-DDTHH:MM") in the ship's zone. */
+export function toClockInput(t) {
+  const c = clockParts(t);
+  return c.y + '-' + _p2(c.mo) + '-' + _p2(c.d) + 'T' + _p2(c.h) + ':' + _p2(c.mi);
+}
+/** A datetime-local value read as the ship's zone wall time; null when not a time. */
+export function fromClockInput(v) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(v || '');
+  if (!m) return null;
+  const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  const z = _shipZone;
+  if (z && z.offsetMin != null) return new Date(wall - z.offsetMin * 60000);
+  if (z && z.tz) {
+    // The zone's offset at that wall time: guess, then correct once (a DST change in between).
+    const off = ms => { const c = clockParts(ms); return (Date.UTC(c.y, c.mo - 1, c.d, c.h, c.mi) - Math.floor(ms / 60000) * 60000) / 60000; };
+    let t = wall - off(wall) * 60000;
+    t = wall - off(t) * 60000;
+    // A wall time the clocks skip (spring forward) has no instant: the
+    // guess lands either side of the gap. Keep the one after it, as the
+    // browser does with its own zone (02:30 → 03:30).
+    const c = clockParts(t);
+    const shown = Date.UTC(c.y, c.mo - 1, c.d, c.h, c.mi);
+    if (shown < wall) t += wall - shown;
+    return new Date(t);
+  }
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+}
+// The departure field shows the time actually used: a skipped wall time
+// (fromClockInput) is rewritten to the moved one before anything reads it.
+const _depField = typeof document !== 'undefined' ? /** @type {HTMLInputElement} */ (document.getElementById('departure')) : null;
+if (_depField) {
+  _depField.addEventListener('change', () => {
+    const t = fromClockInput(_depField.value);
+    if (t) { const v = toClockInput(t); if (v !== _depField.value.slice(0, 16)) _depField.value = v; }
+  });
 }
 
 /** Text for innerHTML: escapes &, <, >, " and '. */
@@ -915,67 +1110,256 @@ function _area() {
   try { return _statusArea ? _statusArea() : null; } catch (_) { return null; }
 }
 
-// "2026-10-03T00:00Z" or "2026100300" → "03 Oct 00Z" (UTC), for the header.
+// "2026-10-03T00:00Z" or "2026100300" → "03 Oct 00Z" (UTC), for the header and the meteogram.
 const _MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-function _shortUtc(v) {
+export function _shortUtc(v) {
   const m = /^(\d{4})-?(\d{2})-?(\d{2})T?(\d{2})/.exec(String(v));
   return m ? m[3] + ' ' + _MON[+m[2] - 1] + ' ' + m[4] + 'Z' : escapeHtml(v);
 }
 // An ISO time as "Mon 20:00 EDT" in the browser's time zone, the UTC time as its tooltip.
 function _shortLocal(iso) {
   const d = iso ? new Date(iso) : null;
-  if (!d || isNaN(d)) return escapeHtml(iso || '');
-  const local = d.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
+  if (!d || isNaN(d.getTime())) return escapeHtml(iso || '');
+  const far = Math.abs(d.getTime() - Date.now()) >= LONG_DURATION_S * 1000;
+  const local = fmtClock(d, far ? { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' } : { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' });
   return '<span title="' + escapeHtml(d.toISOString().slice(0, 16).replace('T', ' ') + ' UTC') + '">' + escapeHtml(local) + '</span>';
 }
 
-// Regional wind models whose grid meets the route or the map view, as text for the wind line.
+// ─────────── Freshness (status `freshness`, plugin/freshness.ts) ───────────
+// Each source's run against its own cadence: green until 30 min before the
+// next run is due, orange until 60 min after, then red. A pill per source on
+// its row, with the run's age; the times are in the tooltip.
+let _fresh = new Map();   // source name → freshness entry of the last status
+function _clockText(iso) {
+  return iso ? fmtClock(new Date(iso), { weekday: 'short', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' }) : '';
+}
+// The pill's words: the run's age, "loaded" for a fixed table, "none" when nothing is loaded.
+function _freshText(f) {
+  const age = f.published_at ? Math.max(0, (Date.now() - Date.parse(f.published_at)) / 1000) : null;
+  return f.state === 'red' && !f.run ? 'none' : age === null ? 'loaded' : _fmt(age, 'time') + ' old';
+}
+// The header's sources list collapsed to one line of dots (remembered in this browser).
+let _statusCollapsed = (() => { try { return localStorage.getItem('statusCollapsed') !== 'false'; } catch (_) { return true; } })();
+(function () {
+  const el = document.getElementById('dataStatus');
+  if (!el) return;
+  el.addEventListener('click', e => {
+    if (!/** @type {Element} */ (e.target).closest('.ds-toggle')) return;
+    _statusCollapsed = !_statusCollapsed;
+    try { localStorage.setItem('statusCollapsed', String(_statusCollapsed)); } catch (_) { /* private window */ }
+    redrawStatusLine();
+  });
+})();
+function _freshPill(name) {
+  const f = _fresh.get(name);
+  if (!f) return '';
+  const text = _freshText(f);
+  const tip = [
+    f.source + (f.run ? ', run ' + f.run : ''),
+    f.published_at ? 'published ' + _clockText(f.published_at) : '',
+    f.next_due_at ? 'next run due ' + _clockText(f.next_due_at) : '',
+    f.pending_since ? 'a newer run appeared ' + _clockText(f.pending_since) + ', still being written' : '',
+    f.reason || '',
+  ].filter(Boolean).join(' · ');
+  return ' <span class="fresh fresh-' + f.state + '" title="' + escapeHtml(tip) + '">● ' + escapeHtml(text) + '</span>';
+}
+// Why a red source is late, in words: the run in use named by when it was published (CMEMS SMOC's own name is its
+// last data hour, which reads as a date days ahead), and a newer run Copernicus Marine is still writing, when there is one.
+function _lateText(f) {
+  if (f.reason) return f.reason;
+  const using = f.published_at ? 'still using the run published ' + _clockText(f.published_at) : 'still on ' + f.run;
+  return f.pending_since
+    ? 'a newer run appeared ' + _clockText(f.pending_since) + ', but Copernicus Marine has not finished writing it; ' + using
+    : 'next run was due ' + _clockText(f.next_due_at) + '; ' + using;
+}
+// One line naming whatever is late, red.
+function _lateLine() {
+  const late = [..._fresh.values()].filter(f => f.state === 'red');
+  if (!late.length) return '';
+  return '<br><span class="err">Late: ' + late.map(f => escapeHtml(f.source) + ' ' + escapeHtml(_lateText(f))).join('; ') + '</span>';
+}
+// The connection, separate from freshness: blue when the last request reached a server, grey when there was none.
+function _netLine(c) {
+  if (!c || c.online === null) return '';
+  return c.online
+    ? '<span class="net-on">● online</span>'
+    : '<span class="net-off" title="' + escapeHtml(c.reason || '') + '">● No internet connection since ' + escapeHtml(_clockText(c.since)) + '</span>';
+}
+// What a check could not do while online (a server that failed, a download that failed); offline says it on its own line.
+const _CHECK_NAMES = { ecmwf: 'ECMWF', smoc: 'SMOC', tides: 'sea level' };
+// RTOFS is checked per product (`rtofs:west_atl`), named as its current source.
+function _checkName(k) {
+  return k.startsWith('rtofs:') ? 'RTOFS-' + escapeHtml(k.slice(6)) : (_CHECK_NAMES[k] || escapeHtml(k));
+}
+function _checkLines(s) {
+  const online = s.connectivity && s.connectivity.online !== false;
+  return Object.entries(s.checks || {})
+    .filter(([, c]) => c.outcome === 'failed' || (c.outcome === 'could-not-check' && online))
+    .map(([k, c]) => '<br><span class="warn">' + _checkName(k) + (c.outcome === 'failed' ? ' update failed' : ' check failed')
+      + ' at ' + escapeHtml(_clockText(c.at)) + (c.reason ? ': ' + unitTextHtml(c.reason) : '') + '</span>')
+    .join('');
+}
+// New forecast data being processed while the run in use keeps serving.
+function _processingLine(s) {
+  const l = s.forecast_loading;
+  if (!s.forecast || !l || l.phase !== 'decoding') return '';
+  const cyc = l.cycle ? String(l.cycle).slice(11, 13) + 'Z' : '';
+  return '<br><span class="processing">Processing new forecast data' + (cyc ? ': ' + cyc : '') + (l.total ? ', step ' + l.done + ' of ' + l.total : '') + '</span>';
+}
+
+// Every usable regional wind model, one item each for the wind row; one whose grid does not meet the route or the
+// map view says so (it is listed all the same, so the list and the collapsed dots show the same sources).
+const _NOT_HERE = ' <span class="not-here">(not in this view)</span>';
 function _regionalWind(r, area) {
-  if (!r) return '';
-  const ok = (r.sources || []).filter(x => x.run && !x.problem && (!x.domain || _meets(x.domain, area)));
+  if (!r) return [];
+  const ok = (r.sources || []).filter(x => x.run && !x.problem);
   if (!ok.length) {
     // The downloader is there but has nothing usable: say why.
     return r.root && !(r.sources || []).some(x => x.run && !x.problem)
-      ? ' · regional: <span class="warn">' + escapeHtml(r.note || ((r.sources || [])[0] || {}).problem || 'no complete run') + '</span>'
-      : '';
+      ? ['regional: <span class="warn">' + escapeHtml(r.note || ((r.sources || [])[0] || {}).problem || 'no complete run') + '</span>']
+      : [];
   }
-  const rw = document.getElementById('regionalWind');
+  const rw = /** @type {HTMLInputElement} */ (document.getElementById('regionalWind'));
   const off = rw && !rw.checked ? ' <span class="warn">(off for routes: Regional wind unticked)</span>' : '';
-  return ' · ' + ok.map(x => {
+  return ok.map(x => {
     const d = x.decoded;
-    const state = d && d.error ? ' <span class="warn">' + unitTextHtml(d.error) + '</span>'
+    const state = d && d.skipped ? ' (not used: ' + escapeHtml(d.skipped) + ')'
+      : d && d.error ? ' <span class="warn">' + unitTextHtml(d.error) + '</span>'
       : d && d.cycle && x.run.slice(0, 13).replace(/[-T]/g, '') === d.cycle ? ' (decoded)'
       : ' (decoding)';
-    return escapeHtml(x.name) + ' ' + _shortUtc(x.run) + (x.validTo ? ', to ' + _shortLocal(x.validTo) : '') + state;
-  }).join(', ') + off;
+    const here = !x.domain || _meets(x.domain, area);
+    return escapeHtml(x.name) + ' ' + _shortUtc(x.run) + (x.validTo ? ', to ' + _shortLocal(x.validTo) : '') + state + _freshPill(x.name) + off + (here ? '' : _NOT_HERE);
+  });
 }
 
 function _statusLine(s) {
   const f = s.forecast;
+  _fresh = new Map((s.freshness || []).map(x => [x.source, x]));
   if (s.starting) return '<span class="warn">' + unitTextHtml(s.starting) + '</span>';
-  if (!f) return '<span class="warn">no forecast loaded</span>' + (s.forecast_error ? ': ' + unitTextHtml(s.forecast_error) : ' (loading)');
+  if (!f) return s.forecast_error && !s.forecast_loading
+    ? '<span class="warn">no forecast loaded</span>: ' + unitTextHtml(s.forecast_error)
+    : '<span class="warn">loading the forecast</span> (see below)';
   const area = _area();
-  const run = escapeHtml(f.model || 'forecast') + ' <span class="nowrap">' + _shortUtc(f.cycle) + ' → ' + _shortLocal(f.valid_to) + '</span>';
+  const run = escapeHtml(f.model || 'forecast') + ' <span class="nowrap">' + _shortUtc(f.cycle) + ' → ' + _shortLocal(f.valid_to) + '</span>' + _freshPill('ECMWF');
   // Only the current sources that apply to the route or the map view. SMOC
   // is worldwide (any area loads on demand), its box is only the standing
   // area around the boat; the others cover their own box.
+  // Every current source is listed (as the collapsed dots show them); one that does not cover the route or the view says so.
   const applies = c => /SMOC/i.test(c.name) || _meets(c.bbox, area);
-  const curList = Array.isArray(s.currents) ? s.currents.filter(applies) : [];
+  const curList = Array.isArray(s.currents) ? s.currents : [];
   const t = s.tides;
+  // The run by when it was published: its own name (t.run) is its last data hour, days ahead.
+  const tf = t ? _fresh.get(t.name) : null;
   const tides = s.tides_enabled === false ? 'off (Settings)'
     : s.tides_error ? '<span class="warn">' + unitTextHtml(s.tides_error) + '</span>'
-    : t ? escapeHtml(t.name.replace(/ hourly sea level \((\S+) tide\)/, ' ($1)')) + (t.run ? ', run ' + _shortUtc(t.run) : '')
+    : t ? escapeHtml(t.name.replace(/ hourly sea level \((\S+) tide\)/, ' ($1)')) + (tf && tf.published_at ? ', published ' + _shortLocal(tf.published_at) : '') + _freshPill(t.name)
     : 'loading';
-  const row = (k, v) => '<span class="statusKey">' + k + '</span> ' + v;
-  return row('wind', run + _regionalWind(s.regional, area))
-    + '<br>' + row('waves', f.has_waves ? escapeHtml(f.model || 'forecast') + ', same run' : '<span class="warn">none in this run</span>')
-    + '<br>' + row('currents', curList.length ? curList.map(c => escapeHtml(c.name)).join(', ') : 'none here')
-    + '<br>' + row('tides', tides)
-    + (s.jobs ? '<br>' + row('jobs', (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued') : '')
+  // Sources that are enabled but have nothing loaded have no row entry of their own: their red pill goes on the currents row.
+  const curNames = new Set(curList.map(c => c.name));
+  const missing = [..._fresh.values()].filter(x => x.rows.includes('currents') && !x.run && x.state === 'red' && !curNames.has(x.source));
+  // Each row's name on its own line, then one bulleted line per source.
+  const row = (k, items) =>
+    '<div class="statusKey">' + k + '</div><ul class="src-list">' + items.map(v => '<li>' + v + '</li>').join('') + '</ul>';
+  // RTOFS where no product covers the vessel: nothing is loaded for it, and that is not late (no pill).
+  const rtofsNone = s.rtofs && !s.rtofs.auto && s.rtofs.auto_reason ? ['RTOFS: ' + escapeHtml(s.rtofs.auto_reason)] : [];
+  const currents = curList
+    .map(c => escapeHtml(c.name) + _freshPill(c.name) + (applies(c) ? '' : _NOT_HERE))
+    .concat(missing.map(x => escapeHtml(x.source) + _freshPill(x.source)))
+    .concat(rtofsNone);
+  const toggle = '<button type="button" class="ds-toggle" aria-expanded="' + !_statusCollapsed + '" title="'
+    + (_statusCollapsed ? 'Show the data sources in full' : 'Collapse the data sources to one line') + '">'
+    + (_statusCollapsed ? 'Show ▾' : 'Hide ▴') + '</button>';
+  // Collapsed: each row's name and one dot per source in its colour (the details in the dot's tooltip), rows separated by pipes.
+  const dots = k => [..._fresh.values()].filter(x => x.rows.includes(k))
+    .map(x => '<span class="fresh fresh-' + x.state + ' fresh-dot" title="' + escapeHtml(x.source + ': ' + _freshText(x)) + '"></span>').join('');
+  const body = _statusCollapsed
+    ? '<div class="ds-head"><span class="ds-summary">'
+      + ['wind', 'waves', 'currents', 'tides'].map(k => '<span class="statusKey">' + k + '</span>' + dots(k)).join('<span class="ds-pipe">|</span>')
+      + '</span>' + toggle + '</div>'
+    : '<div class="ds-head"><span class="ds-title">Data sources</span>' + toggle + '</div>'
+      + row('wind', [run, ..._regionalWind(s.regional, area)])
+      + row('waves', [f.has_waves ? escapeHtml(f.model || 'forecast') + ', same run' + _freshPill('ECMWF') : '<span class="warn">none in this run</span>'])
+      + row('currents', currents.length ? currents : ['none here'])
+      + row('tides', [tides])
+      + (s.jobs ? '<span class="statusKey">jobs</span> ' + (s.jobs.running ? 'running' : 'idle') + ', ' + s.jobs.queued + ' queued' : '');
+  return body
+    + _processingLine(s)
+    + _lateLine()
+    + _checkLines(s)
     // A refused reload (e.g. the memory guard) while the previous forecast keeps serving.
     + (s.forecast_error ? '<br><span class="warn">' + unitTextHtml(s.forecast_error) + '</span>' : '');
 }
 let _statusSoon = null;
+
+// ─────────── Waiting for the server (first forecast, coastline) ───────────
+// While the server has no forecast yet (a first start, or a decode after
+// the forecast settings changed) every map layer and route waits on it:
+// one calm banner says what it is doing and how far it is, the layers stay
+// quiet instead of failing one by one, and everything reloads by itself
+// when it is ready ('rp:forecast-ready').
+let _waiting = false;
+let _loadRate = null;   // { cycle, t0, d0 }: the first progress seen, for a measured time left
+/** Is the server still getting its first forecast (or starting)? Layers keep quiet meanwhile. */
+export function forecastWaiting() { return _waiting; }
+function _waitText(s) {
+  if (s.starting) return unitText(s.starting);
+  const l = s.forecast_loading;
+  if (l && l.text) return unitText(l.text.charAt(0).toUpperCase() + l.text.slice(1));
+  return 'Loading the forecast';
+}
+function _showBanner(s) {
+  const el = document.getElementById('loadingBanner');
+  if (!el) return;
+  if (!_waiting) { el.hidden = true; _loadRate = null; return; }
+  const l = !s.starting ? s.forecast_loading : null;
+  let text = _waitText(s);
+  const bar = /** @type {HTMLElement} */ (el.querySelector('.lb-bar')), fill = /** @type {HTMLElement} */ (el.querySelector('.lb-fill'));
+  if (l && l.phase === 'decoding' && l.total) {
+    bar.hidden = false;
+    fill.style.width = Math.round((100 * l.done) / l.total) + '%';
+    // Time left from the rate measured here (not a guess): after 3 steps seen.
+    if (!_loadRate || _loadRate.cycle !== l.cycle || l.done < _loadRate.d0) _loadRate = { cycle: l.cycle, t0: Date.now(), d0: l.done };
+    const steps = l.done - _loadRate.d0;
+    // Shown only when it reads as something in the user's time unit (2 minutes is "0.0 hour").
+    const tu = UI_UNITS.time;
+    if (steps >= 3 && tu) {
+      const left = ((Date.now() - _loadRate.t0) / 1000 / steps) * (l.total - l.done);
+      if (tu.fn(left) >= 1) text += ' · about ' + _fmt(left, 'time') + ' left';
+    }
+  } else bar.hidden = true;
+  el.querySelector('.lb-text').textContent = text;
+  el.hidden = false;
+}
+// A "still loading" answer arrived before the status said so: wait now, check the status at once.
+let _waitCheck = null;
+function _serverWaiting() {
+  _waiting = true;
+  if (!_waitCheck) _waitCheck = setTimeout(() => { _waitCheck = null; loadPluginStatus(); }, 200);
+}
+function _noteWaiting(s) {
+  const was = _waiting;
+  _waiting = !!s.starting || (!s.forecast && (!s.forecast_error || !!s.forecast_loading));
+  _showBanner(s);
+  if (was && !_waiting) {
+    // Ready: units may have failed to load in the rush; then every layer afresh.
+    loadUnitPreferences();
+    window.dispatchEvent(new Event('rp:forecast-ready'));
+  }
+}
+// ─────────── One section open at a time ───────────
+// The <details> sections directly inside `container` behave as an
+// accordion: opening one closes the others. `toggle` does not bubble, so
+// it is caught in the capture phase on the container (works for sections
+// rendered later too).
+export function oneOpenAtATime(container) {
+  if (!container) return;
+  container.addEventListener('toggle', e => {
+    const d = e.target;
+    if (!d || d.tagName !== 'DETAILS' || !d.open || d.parentElement !== container) return;
+    for (const other of container.querySelectorAll(':scope > details[open]')) if (other !== d) other.open = false;
+  }, true);
+}
+
 // ─────────── Plugin status (header line + Forecast data section) ───────────
 export function loadPluginStatus() {
   const el = document.getElementById('dataStatus');
@@ -984,27 +1368,39 @@ export function loadPluginStatus() {
     .then(r => r.json())
     .then(s => {
       _lastStatus = s;
+      window.dispatchEvent(new CustomEvent('rp:status', { detail: s }));
       if (el) el.innerHTML = _statusLine(s);
+      const net = document.getElementById('netStatus');
+      if (net) net.innerHTML = _netLine(s.connectivity);
+      _noteWaiting(s);
       // First start (coastline, first forecast): check again soon, not in 30 s.
       clearTimeout(_statusSoon);
-      if (s.starting || !s.forecast) _statusSoon = setTimeout(loadPluginStatus, 5000);
+      if (_waiting) _statusSoon = setTimeout(loadPluginStatus, 5000);
       if (fi) {
         const f = s.forecast;
         fi.innerHTML = f
-          ? 'Cycle <b>' + f.cycle + '</b><br>valid ' + f.valid_from + ' → ' + f.valid_to + '<br>coverage ' + (f.coverage || 'global')
+          ? 'Cycle <b>' + escapeHtml(f.cycle) + '</b><br>valid ' + escapeHtml(f.valid_from) + ' → ' + escapeHtml(f.valid_to) + '<br>coverage ' + escapeHtml(f.coverage || 'global')
             + (typeof f.decoded_bytes === 'number' ? ', ' + _fmt(f.decoded_bytes, 'data_size') + ' decoded on disk' : '')
             + (f.memory ? ', ' + _fmt(f.memory.data_worker_held_bytes + f.memory.route_worker_held_bytes, 'data_size') + ' in memory now' : '')
-            + '<br>params: ' + (f.params || []).join(', ') + (s.extra_fields ? '' : '<br><span style="color:var(--warn)">extra fields (temperature, precipitation, SST, humidity) are off in Settings</span>')
-            + (s.rtofs_run ? '<br>RTOFS run ' + s.rtofs_run : '')
-            + (s.vessel ? '<br>vessel ' + (s.vessel.name || '—') + ', motor ' + (fmtSpeed(s.vessel.motorSpeedMs) || '—') : '')
+            + '<br>params: ' + escapeHtml((f.params || []).join(', ')) + (s.extra_fields ? '' : '<br><span style="color:var(--warn)">extra fields (temperature, precipitation, SST, humidity) are off in Settings</span>')
+            + (s.rtofs && s.rtofs.runs.length ? '<br>RTOFS ' + s.rtofs.runs.map(r => escapeHtml(r.product) + ' run ' + escapeHtml(r.run)).join(', ') : '')
+            + (s.vessel ? '<br>vessel ' + escapeHtml(s.vessel.name || '—') + ', motor ' + (fmtSpeed(s.vessel.motorSpeedMs) || '—') : '')
           : '<span style="color:var(--warn)">No forecast loaded' + (s.forecast_error ? ': ' + unitTextHtml(s.forecast_error) : '') + '</span>';
       }
       window.dispatchEvent(new Event('rp:status'));
     })
-    .catch(e => { if (el) el.innerHTML = '<span class="err">status unavailable</span>: ' + e.message; });
+    .catch(e => {
+      // A status request replaced by a newer one is not a failure.
+      if (e.name === 'AbortError' || e.message === 'auth-gate-tripped') return;
+      // While the server is busy getting its forecast a slow answer is expected: keep waiting.
+      if (_waiting) { clearTimeout(_statusSoon); _statusSoon = setTimeout(loadPluginStatus, 5000); return; }
+      if (el) el.innerHTML = '<span class="err">status unavailable</span>: ' + e.message;
+    });
 }
 loadPluginStatus();
 setInterval(loadPluginStatus, 30000);
+loadShipTime();
+setInterval(loadShipTime, 600000);
 document.getElementById('refreshForecast').addEventListener('click', function() {
   const st = document.getElementById('refreshForecastStatus');
   st.textContent = 'requesting…';

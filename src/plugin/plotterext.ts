@@ -50,7 +50,7 @@ export function makePlotterExtension(deps: PlotterExtensionDeps): { register: ()
       version,
       apiVersion: '1',
       requires: ['buttons', 'panels.iframe', 'routes'],
-      optional: ['map', 'units', 'signalk.stream', 'background.iframe', 'ui'],
+      optional: ['map', 'units', 'signalk.stream', 'background.iframe', 'ui', 'charts', 'charts.time'],
       buttons: [
         {
           id: 'open-weather-router',

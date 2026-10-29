@@ -179,8 +179,8 @@ export function bitUnshuffle(typesize: number, blocksize: number, src: Uint8Arra
   const E = typesize;
   const nbyteRow = size / 8;
   const nbyte = size * E;
-  // Transpose the bytes of the 8·E bit rows.
-  const tmp = new Uint8Array(nbyte);
+  // Transpose the bytes of the 8·E bit rows (scratch reused across calls).
+  const tmp = scratchBytes('bit', nbyte);
   for (let jj = 0; jj < E; jj++) {
     for (let ii = 0; ii < nbyteRow; ii++) {
       for (let kk = 0; kk < 8; kk++) tmp[ii * 8 * E + jj * 8 + kk] = src[sOff + (jj * 8 + kk) * nbyteRow + ii];
@@ -189,7 +189,7 @@ export function bitUnshuffle(typesize: number, blocksize: number, src: Uint8Arra
   // Transpose the bits of each 8×8 bit matrix (TRANS_BIT_8X8 on a
   // little-endian uint64: bit c of byte r ↔ bit r of byte c), writing
   // byte kk of the result to element kk.
-  const x = new Uint8Array(8);
+  const x = bitX;
   for (let jj = 0; jj < 8 * E; jj += 8) {
     for (let ii = 0; ii + 8 * E - 1 < nbyte; ii += 8 * E) {
       for (let c = 0; c < 8; c++) {
@@ -204,8 +204,31 @@ export function bitUnshuffle(typesize: number, blocksize: number, src: Uint8Arra
   for (let k = offset; k < blocksize; k++) dst[dOff + k] = src[sOff + k];
 }
 
-/** Decompress a whole Blosc1 chunk. */
-export function bloscDecompress(src: Uint8Array): Uint8Array {
+/**
+ * Scratch buffers reused across calls (one set per thread: each worker has
+ * its own module instance). Without them every chunk allocated and freed
+ * its own block buffer and bit-transpose buffer, and a tile worker decoding
+ * thousands of chunks churned that through the allocator, which keeps the
+ * freed space (brain, 2026-10-06: +375 MB of glibc arenas with the
+ * prebuilder on). A scratch grows when a larger size is needed and is then
+ * kept at that size.
+ */
+const scratch: Record<string, Uint8Array> = {};
+function scratchBytes(key: string, n: number): Uint8Array {
+  const b = scratch[key];
+  if (b && b.length >= n) return b;
+  const grown = new Uint8Array(n);
+  scratch[key] = grown;
+  return grown;
+}
+const bitX = new Uint8Array(8);
+
+/**
+ * Decompress a whole Blosc1 chunk. With `out` (at least `nbytes` long) the
+ * data are written there and the returned array is its first `nbytes` bytes;
+ * without it a new array is returned.
+ */
+export function bloscDecompress(src: Uint8Array, out?: Uint8Array): Uint8Array {
   const h = readBloscHeader(src);
   if (h.version === 0 || h.version > 2) {
     throw new BloscError(
@@ -216,7 +239,9 @@ export function bloscDecompress(src: Uint8Array): Uint8Array {
   const { nbytes, blocksize, cbytes, typesize } = h;
   if (cbytes > src.length) throw new BloscError(`blosc: header says ${cbytes} compressed bytes but only ${src.length} are present`);
   if (typesize <= 0) throw new BloscError('blosc: typesize 0');
-  const out = new Uint8Array(nbytes);
+  if (out !== undefined && out.length < nbytes)
+    throw new BloscError(`blosc: output buffer of ${out.length} bytes is shorter than ${nbytes}`);
+  out = out === undefined ? new Uint8Array(nbytes) : out.subarray(0, nbytes);
   if (nbytes === 0) return out;
   if (h.memcpyed) {
     if (nbytes + HEADER !== cbytes)
@@ -231,7 +256,7 @@ export function bloscDecompress(src: Uint8Array): Uint8Array {
   const nblocks = Math.floor(nbytes / blocksize) + (leftover > 0 ? 1 : 0);
   if (nblocks > (cbytes - HEADER) / 4) throw new BloscError('blosc: chunk too short for its block-start table');
   const doShuffle = (h.flags & BLOSC_DOSHUFFLE) !== 0 && typesize > 1;
-  const tmp = new Uint8Array(blocksize);
+  const tmp = scratchBytes('block', blocksize);
   for (let j = 0; j < nblocks; j++) {
     const isLeftover = j === nblocks - 1 && leftover > 0;
     const bsize = isLeftover ? leftover : blocksize;

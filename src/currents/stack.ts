@@ -1,8 +1,7 @@
 /**
  * Layered current sources: highest priority wins where it has coverage
  * and returns a non-zero value; exact (0, 0) from a source means "no
- * data" and the next source is consulted. Port of the reference
- * `CurrentStack`.
+ * data" and the next source is consulted.
  */
 
 import type { CurrentSource } from '../engine/environment';

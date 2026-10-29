@@ -1,8 +1,5 @@
 /**
  * Empirical VPP — simplified regression-based velocity prediction.
- * Port of the routing server's `routing/vessel/vpp_empirical.py`; the
- * arithmetic follows the Python line by line (same constants, same
- * operation order, same bisection) so the tables match to rounding.
  *
  * Not a full ORC-IMS/Hazen VPP. It uses:
  *  - simplified sail drive coefficient curves (upwind + downwind) keyed
@@ -135,7 +132,7 @@ export interface VppTable {
 
 /**
  * The polar table on the standard grid; throws UnsupportedHull for multihulls. `twsMs` evaluates at other wind
- * speeds (the parity tests pass the Python's, which used a rounded knot).
+ * speeds (the parity tests pass speeds from a rounded knot).
  */
 export function computePolarTable(specs: BoatSpecs, twsMs: readonly number[] = POLAR_TWS_KT.map(k => k * KTS_TO_MS)): VppTable {
   const hull = specs.hull_type ?? 'monohull';
@@ -165,17 +162,16 @@ export function computePolarTable(specs: BoatSpecs, twsMs: readonly number[] = P
   return { twa_deg: [...POLAR_TWA_DEG], tws_ms: [...twsMs], speeds_ms: speeds };
 }
 
-/** `EmpiricalVPP.compute_polar`. */
+/** The polar on the standard grid as a PolarDiagram; throws UnsupportedHull for multihulls. */
 export function computePolar(specs: BoatSpecs): PolarDiagram {
   const t = computePolarTable(specs);
   return new PolarDiagram(t.twa_deg, t.tws_ms, t.speeds_ms.flat());
 }
 
 /**
- * CSV text in the layout `PolarDiagram.save_csv` writes and
- * `PolarDiagram.load` reads: header `<label>,<tws kt .1f>...`, then one
- * row per TWA `<twa .0f>,<speed kt .2f>...`, CRLF line ends (Python
- * csv.writer default), knots on disk.
+ * CSV text in the layout `PolarDiagram.load` reads: header
+ * `<label>,<tws kt .1f>...`, then one row per TWA
+ * `<twa .0f>,<speed kt .2f>...`, CRLF line ends, knots on disk.
  */
 export function polarCsv(table: VppTable, headerLabel = 'twa/tws'): string {
   const lines: string[] = [];
@@ -186,7 +182,7 @@ export function polarCsv(table: VppTable, headerLabel = 'twa/tws'): string {
   return lines.map(l => l + '\r\n').join('');
 }
 
-/** Python csv.writer minimal quoting for one cell. */
+/** One CSV cell: wrapped in double quotes (inner quotes doubled) only when it holds a quote, comma, CR or LF. */
 function csvCell(s: string): string {
   return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }

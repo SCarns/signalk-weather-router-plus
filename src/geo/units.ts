@@ -5,11 +5,11 @@
  * user's preferences on the page, never from here.
  *
  * The knot factor is the exact definition (1 nautical mile = 1852 m per
- * hour), also where the code was ported from Python that used a rounded
- * value (docs/plans/structural-cleanup.md, decision F).
+ * hour), never a rounded value (docs/plans/structural-cleanup.md,
+ * decision F).
  */
 
-/** IUGG mean Earth radius, metres (the routing engine this is ported from uses the same). */
+/** IUGG mean Earth radius, metres. */
 export const R_EARTH_M = 6371008.8;
 export const DEG = Math.PI / 180;
 export const RAD = 180 / Math.PI;

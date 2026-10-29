@@ -6,7 +6,7 @@
  *    server / installation settings — file paths, the download mirror,
  *    Weather API registration and the map overlay cache;
  *  - the web-app settings (settings.ts, stored in the plugin data dir as
- *    settings.json, edited in the page's Settings tab): vessel, forecast
+ *    settings.json, edited in the page's Defaults tab): vessel, forecast
  *    horizon and extras, currents, routing engine and publishing.
  *
  * Older versions kept everything in the plugin config; those keys are
@@ -14,7 +14,10 @@
  * settings.json (settings.ts migrateLegacy). After that they are ignored.
  */
 
+import type { DrawbridgeChoice } from '../engine/mesh/route';
 import { makeVessel, type VesselParams } from '../vessel/vessel';
+import type { RouterKind } from '../engine/router';
+import { DEFAULT_MESH_CATALOG_URL } from './meshes';
 import { HOUR_S } from '../geo/units';
 import type { AppSettings } from './settings';
 import type { RouteRequest } from './protocol';
@@ -23,6 +26,19 @@ import type { RouteRequest } from './protocol';
 export interface PluginConfig {
   landShapefiles?: string;
   polarSource?: 'auto' | 'files' | 'signalk';
+  /** A chart navigation mesh folder you manage yourself (index.json and tiles); blank = none. */
+  meshDir?: string;
+  /** Managed meshes: the catalogue of published meshes and the names ticked for download (plugin/meshes.ts). */
+  mesh?: {
+    catalogUrl?: string;
+    downloads?: string[];
+    /** Downloaded meshes switched off for routing (kept on disk). */
+    disabled?: string[];
+    /** Names whose copy in `meshDir` is routed on even when a newer download exists (the panel's "my folder" choice). */
+    preferLocal?: string[];
+    /** Names whose downloaded copy is routed on even when the copy in `meshDir` is newer (the panel's "downloaded" choice). */
+    preferDownload?: string[];
+  };
   polarFile?: string;
   polarsDir?: string;
   forecast?: {
@@ -59,6 +75,7 @@ export interface LegacyPluginConfig {
     refreshMinutes?: number;
     keepCycles?: number;
     extraFields?: boolean;
+    energyFields?: boolean;
   };
   currents?: {
     rtofsEnabled?: boolean;
@@ -86,6 +103,10 @@ export interface LegacyPluginConfig {
 export interface ResolvedConfig {
   landShapefiles: string[];
   polarSource: 'auto' | 'files' | 'signalk';
+  /** A mesh folder managed by hand, or null. */
+  meshDir: string | null;
+  /** Managed meshes: catalogue URL, the names ticked, and the store directory the copies live in. */
+  mesh: { catalogUrl: string; downloads: string[]; disabled: string[]; preferLocal: string[]; preferDownload: string[]; storeDir: string };
   polarFile: string | null;
   polarsDir: string | null;
   /** Where user polars are kept and generated ones written (see polars.ts PolarLibraryConfig.userDir). */
@@ -98,8 +119,10 @@ export interface ResolvedConfig {
     refreshIntervalS: number;
     mirror: 'ecmwf' | 'aws' | 'google';
     keepCycles: number;
-    /** Also fetch 2t, tprate, skt, 2d, ptype (temperature, precipitation, SST, humidity, precip type). */
+    /** Also fetch 2t, tprate, skt, 2d, ptype, tcc, 10fg (temperature, precipitation, SST, humidity, precip type, cloud cover, gust). */
     extraFields: boolean;
+    /** Also fetch tp, ssrd, sf, strd, str, mucape (precipitation depth, solar and thermal radiation, snowfall, convective instability), for energy modelling. */
+    energyFields: boolean;
     /** Memory guard: bytes that must remain free after a forecast load. */
     memoryHeadroomBytes: number;
     /** signalk-grib-downloader's folder; empty = find it. */
@@ -112,7 +135,8 @@ export interface ResolvedConfig {
     smocStepS: number;
     smocHalfWidthDeg: number;
     rtofsEnabled: boolean;
-    rtofsRegion: string;
+    /** Products loaded wherever the vessel is, besides the one that contains it (RTOFS_REGIONS order). */
+    rtofsExtra: string[];
     rtofsHorizonS: number;
     rtofsStepS: number;
   };
@@ -128,10 +152,19 @@ export interface ResolvedConfig {
     headings: number;
     headingIncrementDeg: number;
     sailThreshMs: number;
+    /** Seconds lost per tack or gybe. */
+    tackPenaltyS: number;
+    /** Buffer from unusable water on mesh legs, metres (0 = none). */
+    navigableBufferM: number;
+    /** Buffer from the coastline, metres (0 = none). */
+    landBufferM: number;
+    drawbridges: DrawbridgeChoice;
+    bridgeWaitS: number;
     /** Polar rows closer to the wind than this many degrees are ignored (0 = as written). */
     noGoMinAngleDeg: number;
     maxWindMs: number | null;
     maxSwhM: number | null;
+    comfortWeight: number;
     simStepM: number;
     landRasterMaxCells: number;
     /** Open the known canals' edges in the global water grid. */
@@ -139,6 +172,8 @@ export interface ResolvedConfig {
     simplifyM: number;
     smoother: boolean;
     smootherTolerance: number;
+    /** Open-water router by default (engine/router.ts). */
+    router: RouterKind;
     keepJobs: number;
   };
   publish: {
@@ -179,14 +214,60 @@ export const CONFIG_SCHEMA = {
   type: 'object',
   description:
     'Server and installation settings only. Vessel, forecast horizon, currents, routing and publishing are set in the ' +
-    'web app (Weather Router Plus → Settings tab) and shared by every client.',
+    'web app (Weather Router Plus → Defaults tab) and shared by every client.',
   properties: {
     landShapefiles: {
       type: 'string',
       title: 'Coastline shapefile(s)',
       description:
-        'Absolute path(s) to polygon land shapefiles, comma-separated. Blank: GSHHG 2.3.7 full-resolution level 1 is downloaded once ' +
-        '(149 MB from www.soest.hawaii.edu) into the plugin data directory and used. Add GSHHS_f_L6.shp for Antarctica.',
+        'Absolute path(s) to polygon land shapefiles, comma-separated. Blank: GSHHG 2.3.7 full-resolution levels 1–4 are downloaded once ' +
+        '(149 MB from www.soest.hawaii.edu) into the plugin data directory and used. A GSHHS layer path requires all four sibling levels. Add GSHHS_f_L6.shp for Antarctica.',
+    },
+    mesh: {
+      type: 'object',
+      title: 'Chart meshes',
+      properties: {
+        catalogUrl: {
+          type: 'string',
+          title: 'Mesh catalogue URL',
+          description:
+            'The index.json listing the published meshes (the s57Work build writes charts/mesh/index.json). Blank = the US-ENC catalogue on R2.',
+        },
+        downloads: {
+          type: 'array',
+          title: 'Meshes to download',
+          description:
+            'Names from the catalogue (01CGD, 07CGD, …); each is mirrored into the plugin data directory and kept current. An unticked mesh is deleted.',
+          items: { type: 'string' },
+        },
+        disabled: {
+          type: 'array',
+          title: 'Downloaded meshes not used for routing',
+          description: 'Names of downloaded meshes switched off (kept on disk, not opened by the router).',
+          items: { type: 'string' },
+        },
+        preferLocal: {
+          type: 'array',
+          title: 'Meshes routed on from your own folder',
+          description:
+            'Names that exist both as a download and in your mesh folder, where the router uses your copy whatever the dates. Unlisted in both lists: the newer build.',
+          items: { type: 'string' },
+        },
+        preferDownload: {
+          type: 'array',
+          title: 'Meshes routed on from the download',
+          description:
+            'Names that exist both as a download and in your mesh folder, where the router uses the download whatever the dates.',
+          items: { type: 'string' },
+        },
+      },
+    },
+    meshDir: {
+      type: 'string',
+      title: 'Chart mesh directory (your own)',
+      description:
+        'A navigation mesh folder you manage yourself (index.json and its tiles), used beside the downloaded ones. Where a mesh covers a leg, and the vessel draught and air draft are set ' +
+        '(Signal K vessel base data), the leg is routed on the mesh: charted depths, bridge clearances, rocks, wrecks, marks and structures avoided. Blank = none.',
     },
     polarSource: {
       type: 'string',
@@ -323,12 +404,23 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
   return {
     polarSource: c.polarSource ?? 'auto',
     landShapefiles: land,
+    meshDir: c.meshDir && c.meshDir.trim() ? c.meshDir.trim() : null,
+    mesh: {
+      catalogUrl: c.mesh?.catalogUrl && c.mesh.catalogUrl.trim() ? c.mesh.catalogUrl.trim() : DEFAULT_MESH_CATALOG_URL,
+      downloads: Array.isArray(c.mesh?.downloads) ? c.mesh.downloads.map(s => String(s).trim()).filter(Boolean) : [],
+      disabled: Array.isArray(c.mesh?.disabled) ? c.mesh.disabled.map(s => String(s).trim()).filter(Boolean) : [],
+      preferLocal: Array.isArray(c.mesh?.preferLocal) ? c.mesh.preferLocal.map(s => String(s).trim()).filter(Boolean) : [],
+      preferDownload: Array.isArray(c.mesh?.preferDownload) ? c.mesh.preferDownload.map(s => String(s).trim()).filter(Boolean) : [],
+      storeDir: '', // set by the plugin (index.ts resolve) from its data directory
+    },
     polarFile: c.polarFile && c.polarFile.trim() ? c.polarFile.trim() : null,
     polarsDir: c.polarsDir && c.polarsDir.trim() ? c.polarsDir.trim() : null,
     polarUserDir: null,
     vessel: makeVessel({
       motorSpeedMs: v.motorSpeed,
       polarPerformance: v.polarPerformance,
+      underKeelClearanceM: v.underKeelClearance,
+      overheadClearanceM: v.overheadClearance,
     }),
     forecast: {
       horizonS: f.horizon,
@@ -336,24 +428,27 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       mirror,
       keepCycles: f.keepCycles,
       extraFields: f.extraFields,
+      energyFields: f.energyFields,
       memoryHeadroomBytes: f.memoryHeadroom,
       regionalGribs: f.regionalGribs ?? '',
     },
     currents: {
       harmonicDir: harmonicDir && harmonicDir.trim() ? harmonicDir.trim() : null,
       smocEnabled: cu.smocEnabled,
-      smocHorizonS: cu.smocHorizon,
+      // One horizon for every source (the owner's decision, 2026-10-22): each reaches the forecast's, or the end of
+      // its own data when that comes first (SMOC's run, RTOFS's last file, the tide run).
+      smocHorizonS: f.horizon,
       smocStepS: cu.smocStep,
       smocHalfWidthDeg: cu.smocHalfWidth,
       rtofsEnabled: cu.rtofsEnabled,
-      rtofsRegion: cu.rtofsRegion,
-      rtofsHorizonS: cu.rtofsHorizon,
+      rtofsExtra: [...cu.rtofsExtra],
+      rtofsHorizonS: f.horizon,
       rtofsStepS: cu.rtofsStep,
     },
     tides: {
       enabled: settings.tides.enabled,
       halfWidthDeg: settings.tides.halfWidth,
-      horizonS: settings.tides.horizon,
+      horizonS: f.horizon,
     },
     routing: {
       stages: r.stages,
@@ -361,15 +456,22 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
       headings: r.headings,
       headingIncrementDeg: r.headingIncrement,
       sailThreshMs: r.sailThreshold,
+      tackPenaltyS: r.tackPenalty ?? 30,
+      navigableBufferM: r.navigableBuffer ?? 0,
+      landBufferM: r.landBuffer ?? 0,
+      drawbridges: r.drawbridges ?? 'ask',
+      bridgeWaitS: r.bridgeWait ?? 0,
       noGoMinAngleDeg: r.noGoMinAngle ?? 0,
       maxWindMs: r.maxWind ?? null,
       maxSwhM: r.maxSwh ?? null,
+      comfortWeight: r.comfortWeight ?? 0,
       simStepM: r.simStep,
       landRasterMaxCells: r.landRasterMaxCells,
       allowCanals: r.allowCanals,
       simplifyM: r.simplify,
       smoother: r.smoother,
       smootherTolerance: r.smootherTolerance,
+      router: r.router,
       keepJobs: r.keepJobs,
     },
     publish: {
@@ -397,14 +499,62 @@ export function resolveConfig(raw: PluginConfig | undefined, settings: AppSettin
   };
 }
 
+/** Do two configs load the same CMEMS SMOC (on, step, horizon, area)? A currents reload then keeps it. */
+export function smocLoadSame(a: ResolvedConfig, b: ResolvedConfig): boolean {
+  const x = a.currents;
+  const y = b.currents;
+  return (
+    x.smocEnabled === y.smocEnabled &&
+    x.smocStepS === y.smocStepS &&
+    x.smocHorizonS === y.smocHorizonS &&
+    x.smocHalfWidthDeg === y.smocHalfWidthDeg
+  );
+}
+
+/**
+ * Do two configs load each RTOFS product the same way (on in both, same
+ * horizon and step)? A currents reload then keeps the products loaded; the
+ * refresh adds or drops products only.
+ */
+export function rtofsLoadSame(a: ResolvedConfig, b: ResolvedConfig): boolean {
+  const x = a.currents;
+  const y = b.currents;
+  return x.rtofsEnabled && y.rtofsEnabled && x.rtofsHorizonS === y.rtofsHorizonS && x.rtofsStepS === y.rtofsStepS;
+}
+
+/** Draught and air draft as Signal K's vessel base data has them (design.draft.maximum, design.airHeight), null when unset. */
+export interface SelfDesign {
+  draughtM: number | null;
+  airDraftM: number | null;
+}
+
+/**
+ * A vessel dimension from Signal K self-data (`design.draft.maximum`,
+ * `design.airHeight`): the raw value or its `{value}` wrapper, a `key`
+ * inside it when given, a finite number within `range`; anything else is
+ * null (unknown). The bounds are makeVessel's, so a value Signal K reports
+ * in the wrong unit disables the chart mesh instead of failing every route.
+ */
+export function selfDesignValue(raw: unknown, key: string | undefined, range: readonly [number, number]): number | null {
+  let v = raw && typeof raw === 'object' && 'value' in raw ? (raw as { value: unknown }).value : raw;
+  if (key && v && typeof v === 'object') v = (v as Record<string, unknown>)[key];
+  return typeof v === 'number' && Number.isFinite(v) && v >= range[0] && v <= range[1] ? v : null;
+}
+
 /**
  * The vessel for one route: values in the request take precedence; the
- * rest come from the vessel settings (never the built-in defaults).
+ * rest come from the vessel settings (never the built-in defaults), and
+ * the draught and air draft from Signal K's vessel base data (like the
+ * name: not plugin settings).
  */
-export function routeVessel(cfg: ResolvedConfig, rv: RouteRequest['vessel']): VesselParams {
+export function routeVessel(cfg: ResolvedConfig, rv: RouteRequest['vessel'], self?: SelfDesign): VesselParams {
   return makeVessel({
     ...cfg.vessel,
     motorSpeedMs: rv?.motor_speed_ms ?? cfg.vessel.motorSpeedMs,
     polarPerformance: rv?.polar_performance ?? cfg.vessel.polarPerformance,
+    draughtM: rv?.draught_m ?? self?.draughtM ?? null,
+    airDraftM: rv?.air_draft_m ?? self?.airDraftM ?? null,
+    underKeelClearanceM: rv?.under_keel_clearance_m ?? cfg.vessel.underKeelClearanceM,
+    overheadClearanceM: rv?.overhead_clearance_m ?? cfg.vessel.overheadClearanceM,
   });
 }

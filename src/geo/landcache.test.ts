@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { pointInShape, readShapefilePolygons, ShapefileIndex } from './shapefile';
+import { pointInShape, readShapefilePolygons, ShapefileIndex, type ShapePolygon } from './shapefile';
 import { LandMask } from './landmask';
 import { chooseOverlayResolution, OnDemandLand, snapBBox } from './landcache';
+import { CoastTiles, COAST_TILE_DEG, coastTilesDir, coastTilesReady } from './coasttiles';
+import { rasterFromTiles } from './rawraster';
 
 /** Write a minimal polygon shapefile (type 5); each polygon is a list of rings of [lon, lat]. */
 function writeShp(file: string, polys: number[][][][]): void {
@@ -62,6 +64,11 @@ const sq = (w: number, s: number, e: number, n: number): number[][] => [
   [w, s],
 ];
 
+/** The coastline's tiles (coasttiles.ts), cut into a folder of their own. */
+function coastOf(files: string[]): CoastTiles {
+  return CoastTiles.build(files, fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-tiles-')));
+}
+
 function fixture(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-land-'));
   const file = path.join(dir, 'land.shp');
@@ -114,7 +121,7 @@ test('streamed rasterisation equals rasterising all polygons at once', () => {
 
 test('OnDemandLand: raster per bbox matched to the spacing, LRU reuse, exact point test', () => {
   const file = fixture();
-  const land = new OnDemandLand([file], { maxEntries: 2, maxCells: 4_000_000 });
+  const land = new OnDemandLand(coastOf([file]), { maxEntries: 2, maxCells: 4_000_000 });
   const view = { west: -72, south: 40, east: -69, north: 43 };
   const m = land.forBBox(view, 0.05);
   assert.equal(m.resolutionDeg, 0.01); // quarter of 0.05 snapped down to the offered set
@@ -142,17 +149,31 @@ test('OnDemandLand: raster per bbox matched to the spacing, LRU reuse, exact poi
   assert.equal(land.isLandAt(0, 0), false);
 });
 
+test('OnDemandLand: a view whose north and east edges fall on the raster grid still reads its edge samples as water', () => {
+  const file = fixture();
+  const land = new OnDemandLand(coastOf([file]), { maxCells: 4_000_000 });
+  // At 0.01° the raster snaps to 2.56° blocks: this view's edges are exactly on block boundaries.
+  const view = { west: -28 * 2.56, south: 16 * 2.56, east: -27 * 2.56, north: 17 * 2.56 };
+  const m = land.forBBox(view, 0.05);
+  assert.equal(m.resolutionDeg, 0.01);
+  // The overlay lattice samples the edges themselves (overlays.ts lattice): open water there, not "outside the raster".
+  assert.equal(m.isLand(view.east, view.north), false, 'north-east corner');
+  assert.equal(m.isLand(-70.5, view.north), false, 'north edge');
+  assert.equal(m.isLand(view.east, 41.5), false, 'east edge');
+  assert.ok(m.isLand(-70.5, 41.5), 'the island inside is still land');
+});
+
 test('OnDemandLand: rasters saved on disk are reused by a new instance, identical to a fresh build', () => {
   const file = fixture();
   const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-landcache-'));
   const view = { west: -72, south: 40, east: -69, north: 43 };
-  const a = new OnDemandLand([file], { cacheDir });
+  const a = new OnDemandLand(coastOf([file]), { cacheDir });
   const built = a.forBBox(view, 0.05);
   assert.equal(a.stats().builds, 1);
   assert.equal(a.stats().disk_writes, 1);
   assert.equal(a.stats().disk.files, 1);
   // A new instance (as after a restart) reads it back instead of rasterising.
-  const b = new OnDemandLand([file], { cacheDir });
+  const b = new OnDemandLand(coastOf([file]), { cacheDir });
   const loaded = b.forBBox(view, 0.05);
   assert.equal(b.stats().builds, 0);
   assert.equal(b.stats().disk_hits, 1);
@@ -163,13 +184,13 @@ test('OnDemandLand: rasters saved on disk are reused by a new instance, identica
   fs.appendFileSync(file, Buffer.alloc(0));
   const later = new Date(Date.now() + 5000);
   fs.utimesSync(file, later, later);
-  const c = new OnDemandLand([file], { cacheDir });
+  const c = new OnDemandLand(coastOf([file]), { cacheDir });
   c.forBBox(view, 0.05);
   assert.equal(c.stats().builds, 1);
   assert.equal(c.stats().disk_hits, 0);
   // The disk budget prunes least recently used rasters.
   const pruneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-landcache-'));
-  const d = new OnDemandLand([file], { cacheDir: pruneDir, diskBudgetBytes: 1 });
+  const d = new OnDemandLand(coastOf([file]), { cacheDir: pruneDir, diskBudgetBytes: 1 });
   for (let i = 0; i < 15; i++) d.forBBox({ west: -170 + i * 20, south: 0, east: -165 + i * 20, north: 5 }, 0.05);
   assert.equal(d.stats().disk.files, 15, 'no prune before the 16th write');
   d.forBBox({ west: 150, south: 0, east: 155, north: 5 }, 0.05); // 16th write → prune to the 1-byte budget
@@ -231,3 +252,257 @@ test(
     );
   }
 );
+
+test('GSHHG L1 configuration expands all levels for indexed points, streamed rasters and exact masks', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-hierarchy-'));
+  try {
+    for (let level = 1; level <= 4; level++) {
+      const lo = level,
+        hi = 10 - level;
+      writeShp(path.join(dir, `GSHHS_f_L${level}.shp`), [
+        [
+          [
+            [lo, lo],
+            [hi, lo],
+            [hi, hi],
+            [lo, hi],
+            [lo, lo],
+          ],
+        ],
+      ]);
+    }
+    const files = [path.join(dir, 'GSHHS_f_L1.shp')];
+    const coast = coastOf(files);
+    const land = new OnDemandLand(coast);
+    const mask = LandMask.fromCoastline(coast, { west: 0, south: 0, east: 10, north: 10 }, { resolutionDeg: 0.1 });
+    const raster = land.forBBox({ west: 0, south: 0, east: 10, north: 10 }, 0.4);
+    const cachedMask = LandMask.fromCoastline(coast, { west: 0, south: 0, east: 10, north: 10 }, { resolutionDeg: 0.1 });
+    for (const [x, expected] of [
+      [1.5, true],
+      [2.5, false],
+      [3.5, true],
+      [5, false],
+    ] as const) {
+      assert.equal(land.isLandAt(x, x), expected);
+      assert.equal(mask.isLandExact(x, x), expected);
+      assert.equal(cachedMask.isLandPolygons(x, x), expected);
+      assert.equal(raster.isLand(x, x), expected);
+    }
+    fs.unlinkSync(path.join(dir, 'GSHHS_f_L2.shp'));
+    assert.throws(() => coastOf(files), /Incomplete GSHHG hierarchy/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * A coastline whose records cross tile borders everywhere: the fixture's squares (edges on tile borders, a lake, the
+ * antimeridian) plus an irregular star and a thin slanted sliver over several tiles, at levels 1–2 (an island in a
+ * lake in land).
+ */
+function crossingFixture(): string[] {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-crossing-'));
+  const star: number[][] = [];
+  for (let k = 0; k < 23; k++) {
+    const a = (k / 23) * 2 * Math.PI;
+    const r = k % 2 ? 0.61 + 0.07 * Math.sin(5 * k) : 1.73 + 0.11 * Math.cos(3 * k);
+    star.push([-70.13 + r * Math.cos(a), 41.27 + r * Math.sin(a)]);
+  }
+  star.push(star[0]);
+  const sliver = [
+    [5.01, 44.03],
+    [7.47, 45.98],
+    [7.49, 45.97],
+    [5.03, 44.01],
+    [5.01, 44.03],
+  ];
+  const l1 = path.join(dir, 'GSHHS_f_L1.shp');
+  writeShp(l1, [[star], [sliver], [sq(10, 50, 12, 52)], [sq(179.3, -10.2, 180, -8.9)], [sq(-180, -10.2, -179.4, -8.9)]]);
+  writeShp(path.join(dir, 'GSHHS_f_L2.shp'), [[sq(10.33, 50.27, 11.71, 51.62)]]);
+  writeShp(path.join(dir, 'GSHHS_f_L3.shp'), [[sq(10.8, 50.8, 11.2, 51.2)]]);
+  writeShp(path.join(dir, 'GSHHS_f_L4.shp'), [[sq(10.9, 50.9, 11.0, 51.0)]]);
+  return [l1];
+}
+
+/** Today's way: every record of every level whose box meets `b`, read whole. */
+function recordsIn(files: string[], b: { west: number; south: number; east: number; north: number }): ShapePolygon[] {
+  const dir = path.dirname(files[0]);
+  return [1, 2, 3, 4].flatMap(l => readShapefilePolygons(path.join(dir, `GSHHS_f_L${l}.shp`), b));
+}
+
+test('coastline tiles: rasters equal rasterising the whole records, conservative and centre-sampled', () => {
+  const files = crossingFixture();
+  const coast = coastOf(files);
+  for (const [b, res] of [
+    [{ west: -72.5, south: 39.0, east: -67.5, north: 43.5 }, 0.01],
+    [{ west: -71.23, south: 40.11, east: -69.07, north: 42.93 }, 0.005],
+    [{ west: 4.5, south: 43.5, east: 8.0, north: 46.5 }, 0.002],
+    [{ west: 9.5, south: 49.5, east: 12.5, north: 52.5 }, 0.01],
+    [{ west: 178.5, south: -11, east: -178.5, north: -8 }, 0.01],
+  ] as const) {
+    for (const edgeCells of [true, false]) {
+      const whole = LandMask.rasterStreamed(b, res, add => recordsIn(files, b).forEach(add), { edgeCells });
+      const tiled = LandMask.rasterStreamed(b, res, add => coast.forEach(b, add), { edgeCells });
+      assert.deepEqual(tiled.raster, whole.raster, `${JSON.stringify(b)} at ${res}, edge cells ${edgeCells}`);
+      assert.ok(whole.landFraction() > 0);
+    }
+  }
+});
+
+test('coastline tiles: the raster drawn from the bytes equals the one drawn from the decoded pieces', () => {
+  const files = crossingFixture();
+  const coast = coastOf(files);
+  for (const [b, res] of [
+    [{ west: -72.5, south: 39.0, east: -67.5, north: 43.5 }, 0.01],
+    [{ west: -71.23, south: 40.11, east: -69.07, north: 42.93 }, 0.005],
+    [{ west: 4.5, south: 43.5, east: 8.0, north: 46.5 }, 0.002],
+    [{ west: 9.5, south: 49.5, east: 12.5, north: 52.5 }, 0.01],
+    [{ west: 178.5, south: -11, east: -178.5, north: -8 }, 0.01],
+    [{ west: -180, south: -90, east: 180, north: 90 }, 0.25],
+  ] as const) {
+    for (const edgeCells of [true, false]) {
+      const decoded = LandMask.rasterStreamed(b, res, add => coast.forEach(b, add), { edgeCells });
+      const raw = rasterFromTiles(coast, b, res, { edgeCells });
+      assert.deepEqual(raw.mask.raster, decoded.raster, `${JSON.stringify(b)} at ${res}, edge cells ${edgeCells}`);
+      assert.equal(raw.mask.nx, decoded.nx);
+    }
+  }
+  // An explicit size, as the water grid build asks for.
+  const b = { west: 9.5, south: 49.5, east: 12.5, north: 52.5 };
+  const decoded = LandMask.rasterStreamed(b, 0.01, add => coast.forEach(b, add), { edgeCells: false, nx: 310, ny: 305 });
+  const raw = rasterFromTiles(coast, b, 0.01, { edgeCells: false, nx: 310, ny: 305 });
+  assert.deepEqual(raw.mask.raster, decoded.raster);
+  assert.deepEqual([raw.mask.nx, raw.mask.ny], [310, 305]);
+});
+
+test('coastline tiles: a piece with more crossing edges than the scratch holds draws as the decoded one', () => {
+  // A star of 40000 points inside one tile: most of its zig-zag edges cross a scanline at 0.005°, more than the
+  // 1 << 14 edges rasterFromTiles first allocates for, so the edge arrays grow while the piece is being drawn.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-bigpiece-'));
+  const file = path.join(dir, 'land.shp');
+  const star: number[][] = [];
+  const n = 40000;
+  for (let k = 0; k < n; k++) {
+    const a = (k / n) * 2 * Math.PI;
+    const r = k % 2 ? 0.1 : 0.2;
+    star.push([10.25 + r * Math.cos(a), 50.25 + r * Math.sin(a)]);
+  }
+  star.push(star[0]);
+  writeShp(file, [[star]]);
+  const coast = coastOf([file]);
+  const b = { west: 10, south: 50, east: 10.5, north: 50.5 };
+  for (const edgeCells of [true, false]) {
+    const decoded = LandMask.rasterStreamed(b, 0.005, add => coast.forEach(b, add), { edgeCells });
+    const raw = rasterFromTiles(coast, b, 0.005, { edgeCells });
+    let differ = 0;
+    for (let i = 0; i < decoded.raster.length; i++) if (raw.mask.raster[i] !== decoded.raster[i]) differ++;
+    assert.equal(differ, 0, `cells differing, edge cells ${edgeCells}`);
+    assert.ok(decoded.landFraction() > 0);
+  }
+});
+
+test('coastline tiles: exact tests equal the whole records, on tile borders too', () => {
+  const files = crossingFixture();
+  const coast = coastOf(files);
+  let seed = 11;
+  const rnd = (): number => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+  for (const [b, res] of [
+    [{ west: -72.5, south: 39.0, east: -67.5, north: 43.5 }, 0.01],
+    [{ west: 9.5, south: 49.5, east: 12.5, north: 52.5 }, 0.01],
+    [{ west: 4.5, south: 43.5, east: 8.0, north: 46.5 }, 0.005],
+  ] as const) {
+    const whole = LandMask.fromPolygons(recordsIn(files, b), b, res);
+    const tiled = LandMask.fromCoastline(coast, b, { resolutionDeg: res, bufferDeg: 0 });
+    const w = b.east - b.west;
+    const h = b.north - b.south;
+    // Random points, and points exactly on tile borders (columns and rows of the 0.5° grid).
+    const pts: [number, number][] = [];
+    for (let k = 0; k < 4000; k++) pts.push([b.west + rnd() * w, b.south + rnd() * h]);
+    for (let k = 0; k < 1500; k++) {
+      const x = Math.ceil(b.west / COAST_TILE_DEG) * COAST_TILE_DEG + Math.floor(rnd() * (w / COAST_TILE_DEG)) * COAST_TILE_DEG;
+      const y = Math.ceil(b.south / COAST_TILE_DEG) * COAST_TILE_DEG + Math.floor(rnd() * (h / COAST_TILE_DEG)) * COAST_TILE_DEG;
+      pts.push([x, b.south + rnd() * h], [b.west + rnd() * w, y], [x, y]);
+    }
+    for (const [lon, lat] of pts) {
+      assert.equal(tiled.isLandPolygons(lon, lat), whole.isLandPolygons(lon, lat), `isLandPolygons ${lon},${lat}`);
+      assert.equal(tiled.isLandExact(lon, lat), whole.isLandExact(lon, lat), `isLandExact ${lon},${lat}`);
+      assert.equal(coast.containsPoint(lon, lat), whole.isLandPolygons(lon, lat), `containsPoint ${lon},${lat}`);
+    }
+    // Legs of every length, many across tile borders; with and without a keep-off distance.
+    const wb = whole.withBuffer(300);
+    const tb = tiled.withBuffer(300);
+    for (let k = 0; k < 3000; k++) {
+      const a: [number, number] = [b.west + 0.05 + rnd() * (w - 0.1), b.south + 0.05 + rnd() * (h - 0.1)];
+      const len = rnd() < 0.5 ? 0.02 + rnd() * 0.1 : 0.3 + rnd() * 1.2;
+      const ang = rnd() * 2 * Math.PI;
+      const e: [number, number] = [
+        Math.min(b.east - 0.05, Math.max(b.west + 0.05, a[0] + len * Math.cos(ang))),
+        Math.min(b.north - 0.05, Math.max(b.south + 0.05, a[1] + len * Math.sin(ang))),
+      ];
+      assert.equal(tiled.legCrossesLandExact(...a, ...e), whole.legCrossesLandExact(...a, ...e), `leg ${a} → ${e}`);
+      assert.equal(tb.legCrossesLandExact(...a, ...e), wb.legCrossesLandExact(...a, ...e), `buffered leg ${a} → ${e}`);
+      assert.equal(tb.isLandExact(...a), wb.isLandExact(...a), `buffered point ${a}`);
+    }
+  }
+});
+
+test('coastline tiles: the point test matches the byte-level record test, antimeridian included', () => {
+  const file = fixture();
+  const coast = coastOf([file]);
+  const ix = ShapefileIndex.open(file);
+  for (const [lon, lat] of [
+    [-70.5, 41.5],
+    [-71.5, 41.5],
+    [10.2, 50.2],
+    [10.7, 50.7],
+    [179.5, -9.5],
+    [-179.5, -9.5],
+    [180, -9.5],
+    [-180, -9.5],
+    [0, 0],
+    [-70.5 + 360, 41.5],
+  ] as const) {
+    const l = ((((lon + 180) % 360) + 360) % 360) - 180;
+    assert.equal(coast.containsPoint(lon, lat), ix.containsPoint(l, lat), `${lon},${lat}`);
+  }
+  // Only the tiles near a box are read; a box out at sea reads none.
+  const before = coast.cacheStats().decodes;
+  assert.equal(coast.read({ west: -40, south: 10, east: -39, north: 11 }).length, 0);
+  assert.equal(coast.cacheStats().decodes, before);
+});
+
+test('shorelinePaths keeps the case of the .shp suffix when it adds levels 2–4', async () => {
+  const { shorelinePaths } = await import('./shapefile');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-gshhs-'));
+  for (let l = 1; l <= 4; l++) fs.writeFileSync(path.join(dir, `GSHHS_f_L${l}.SHP`), '');
+  const out = shorelinePaths([path.join(dir, 'GSHHS_f_L1.SHP')]);
+  assert.deepEqual(
+    out.map(f => path.basename(f)),
+    ['GSHHS_f_L1.SHP', 'GSHHS_f_L2.SHP', 'GSHHS_f_L3.SHP', 'GSHHS_f_L4.SHP']
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('coastTilesReady: an incomplete GSHHG hierarchy throws before any cut; a store of another version is not ready', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wrp-ready-'));
+  const root = path.join(dir, 'data');
+  try {
+    for (let l = 1; l <= 4; l++) writeShp(path.join(dir, `GSHHS_f_L${l}.shp`), [[sq(1, 1, 2, 2)]]);
+    const files = [path.join(dir, 'GSHHS_f_L1.shp')];
+    assert.equal(coastTilesReady(root, files), false, 'not cut yet');
+    CoastTiles.build(files, root);
+    assert.equal(coastTilesReady(root, files), true);
+    // A store from another version of the format: cut again.
+    const done = path.join(coastTilesDir(root, files), 'complete.json');
+    const marker = fs.readFileSync(done, 'utf8');
+    fs.writeFileSync(done, JSON.stringify({ ...JSON.parse(marker), version: 2 }));
+    assert.equal(coastTilesReady(root, files), false);
+    // A damaged marker that is valid JSON but no object: not ready, not a throw.
+    fs.writeFileSync(done, 'null');
+    assert.equal(coastTilesReady(root, files), false);
+    fs.unlinkSync(path.join(dir, 'GSHHS_f_L3.shp'));
+    assert.throws(() => coastTilesReady(root, files), /Incomplete GSHHG hierarchy/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

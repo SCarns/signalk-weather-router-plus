@@ -112,7 +112,7 @@ test('collapseRuns: approximate waypoints join their legs into one run with circ
   );
 });
 
-test('validateLegOptions follows the reference (approximate needs radius > 0, 0..5000)', () => {
+test('validateLegOptions: approximate needs radius > 0, radii 0..5000', () => {
   assert.equal(validateLegOptions(undefined, undefined, undefined), null);
   assert.equal(validateLegOptions('approximate', undefined, []), null); // default 200
   assert.match(validateLegOptions('approximate', 0, [])!, /> 0/);
@@ -328,4 +328,22 @@ test('snapToExact=false: without a candidate inside the circle the leg ends on t
   const e = prop.computeRoute({ start: [0, 0], end: [0.5, 0], departureTime: T0, vessel: VESSEL, modePolicy: 'motor' });
   const le = e.waypoints[e.waypoints.length - 1];
   assert.deepEqual([le.lon, le.lat], [0.5, 0]);
+});
+
+test('a stop the chart mesh moved is approximate in either mode, its circle the distance moved; a run collapses through it', () => {
+  const stops = [
+    { lon: 0, lat: 0 },
+    { lon: 0.5, lat: 0.1, radiusM: 192, snapped: true },
+    { lon: 1, lat: 0 },
+  ];
+  const plans = planLegs(stops, 'precise', 300);
+  assert.equal(plans[0].snapToExact, false);
+  assert.equal(plans[0].arrivalRadiusM, 192);
+  assert.equal(plans[1].snapToExact, true, 'the destination, not moved, stays exact');
+  const [run] = collapseRuns(plans);
+  assert.deepEqual(run.vias, [{ lon: 0.5, lat: 0.1, radiusM: 192 }]);
+  // A moved destination ends on its circle too.
+  const last = planLegs([stops[0], { lon: 1, lat: 0, radiusM: 684, snapped: true }], 'precise', 300)[0];
+  assert.equal(last.snapToExact, false);
+  assert.equal(last.arrivalRadiusM, 684);
 });

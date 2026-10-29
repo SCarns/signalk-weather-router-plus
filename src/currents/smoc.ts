@@ -179,7 +179,16 @@ export interface SmocStatus {
   run: string;
   run_last_time: string;
   stac_updated: string | null;
+  /** When this run appeared in the store (timeChunked .zmetadata Last-Modified), ISO. */
+  metadata_modified: string | null;
   settled: boolean;
+  /**
+   * A newer run in the store that Copernicus Marine has not finished writing (its key, and when it appeared: the
+   * .zmetadata Last-Modified), while this run stays in use; null when there is none.
+   */
+  pending: { run: string; appeared_at: string | null } | null;
+  /** Copernicus Marine has started an update while the store still holds this run (no newer run to name yet). */
+  updating: boolean;
   step_hours: number;
   horizon_hours: number;
   half_width_deg: number;
@@ -212,6 +221,10 @@ export class SmocCurrentSource implements CurrentSourceLike {
   readonly resolutionM = 9000;
   readonly run: SmocRun;
   readonly settings: SmocSettings;
+  /** A newer run Copernicus Marine is still writing while this one serves (worker/currents.ts refreshSmoc), or null. */
+  pending: { key: string; appearedAt: string | null } | null = null;
+  /** An update has started but the store still holds this run (worker/currents.ts refreshSmoc). */
+  updating = false;
   private client: ArcoClient | null;
   private readonly set: ArcoAreaSet<SmocArea>;
 
@@ -383,11 +396,23 @@ export class SmocCurrentSource implements CurrentSourceLike {
   ensure(
     bbox: BBox,
     steps: number[],
-    opts: { reason: string; deadlineMs?: number; shouldCancel?: () => boolean; coarseOk?: boolean; onIncomplete?: () => void } = {
+    opts: {
+      reason: string;
+      deadlineMs?: number;
+      shouldCancel?: () => boolean;
+      coarseOk?: boolean;
+      onIncomplete?: () => void;
+      as?: { res: ArcoResolution; layout: ArcoLayout };
+    } = {
       reason: 'on demand',
     }
   ): Promise<boolean> {
     return this.set.ensure(bbox, steps, AREA_MARGIN_CELLS, opts);
+  }
+
+  /** The resolution and layout of the area in memory that answers `bbox` × `steps` (ArcoAreaSet.answering), or null. */
+  answering(bbox: BBox, steps: number[]): { res: ArcoResolution; layout: ArcoLayout } | null {
+    return this.set.answering(bbox, steps, AREA_MARGIN_CELLS);
   }
 
   noteDownload(reason: string, s: DownloadStats): void {
@@ -405,7 +430,10 @@ export class SmocCurrentSource implements CurrentSourceLike {
       run: this.run.key,
       run_last_time: new Date(runLastMs(this.run)).toISOString(),
       stac_updated: this.run.stacUpdated,
+      metadata_modified: this.run.metadataModified,
       settled: this.run.settled,
+      pending: this.pending ? { run: this.pending.key, appeared_at: this.pending.appearedAt } : null,
+      updating: this.updating,
       step_hours: this.settings.stepS / HOUR_S,
       horizon_hours: this.settings.horizonS / HOUR_S,
       half_width_deg: this.settings.halfWidthDeg,
@@ -413,7 +441,7 @@ export class SmocCurrentSource implements CurrentSourceLike {
       shared_resident: !!r && r.u.buffer instanceof SharedArrayBuffer,
       last_download: this.set.lastDownload,
       downloaded_bytes_total: this.client?.totals.downloadedBytes ?? 0,
-      disk_cache_bytes: this.client ? this.client.cachedBytes(this.run.key) : null,
+      disk_cache_bytes: this.client ? this.client.cachedBytes(this.run) : null,
       layouts: (['time', 'geo', 'ds4'] as SmocLayout[]).filter(l => this.run.levels[l]),
     };
   }

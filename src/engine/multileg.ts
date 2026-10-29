@@ -1,6 +1,5 @@
 /**
- * Waypoints as legs: port of the reference's compute_multi_leg_route
- * (routePlanning routing/engine/hybrid.py, from line 850).
+ * Waypoints as legs.
  *
  * stops = [start, waypoint 1, …, end]. Each consecutive pair is routed as
  * its own route (its own corridor, search and retries), departing at the
@@ -9,28 +8,32 @@
  * distances and sail/motor times are summed, and the junction point of
  * each waypoint gets role "via".
  *
- * Precision (routes.py lines 95–135):
+ * Precision:
  *  - precise (default): every leg ends exactly on its waypoint (the
  *    propagator's straight final leg to the exact point);
  *  - approximate: an intermediate leg is done as soon as the route enters
- *    the waypoint's circle (arrival radius, ocean_propagator.py lines
- *    1037–1075, snap_to_exact=False); the next leg starts from that point.
- *    The final destination is always exact.
+ *    the waypoint's circle (arrival radius, snapToExact false); the next
+ *    leg starts from that point.
+ *    The final destination is always exact, unless the chart mesh moved
+ *    it (Stop.snapped).
+ *  - a stop the chart mesh moved (Stop.snapped) is approximate in either
+ *    mode, its circle the distance it was moved.
  *
- * Consecutive approximate legs are collapsed into one run (hybrid.py
- * lines 1336–1446): one search from the run's start to its end that must
- * pass through each intermediate waypoint's circle (propagator vias), so
+ * Consecutive approximate legs are collapsed into one run: one search
+ * from the run's start to its end that must pass through each
+ * intermediate waypoint's circle (propagator vias), so
  * the track carries through a waypoint instead of ending and restarting
  * there. Every plugin leg is an ocean-propagator leg, so every approximate
  * boundary collapses.
  *
- * Differences from the reference:
+ * Two choices of note:
  *  - a leg after a precise waypoint starts where the previous one ended
- *    (the reference restarts from the canonical waypoint and trims the
- *    stitch), so the stitched track is continuous;
+ *    (not from the waypoint itself with the stitch trimmed), so the
+ *    stitched track is continuous;
  *  - when a collapsed run finds no branch through every circle, its legs
  *    are routed one by one (approximate ends as above) instead of failing
- *    the route.
+ *    the route (on the coastline search; a run on the chart mesh follows
+ *    the mesh route through the circles instead, mesh/legrun.ts).
  */
 
 import { haversineDistanceM } from '../geo/geodesy';
@@ -40,7 +43,7 @@ import { recomputePerWaypointMetadata, type Route, type RouteWarning } from './r
 
 export type Precision = 'precise' | 'approximate';
 
-/** Reference defaults (routes.py): precision "precise", arrival_radius_m 200, range 0–5000. */
+/** Defaults: precision "precise", arrival_radius_m 200, range 0–5000. */
 export const DEFAULT_PRECISION: Precision = 'precise';
 export const DEFAULT_ARRIVAL_RADIUS_M = 200;
 export const MAX_ARRIVAL_RADIUS_M = 5000;
@@ -50,6 +53,13 @@ export interface Stop {
   lat: number;
   /** Per-waypoint arrival radius, metres; overrides the request's arrival radius (approximate mode). */
   radiusM?: number;
+  /**
+   * The chart mesh moved this stop to the nearest water the boat can use (part 2): its leg ends on entering the
+   * circle of `radiusM` (the distance moved) round it, whatever the precision, the destination included (the owner's
+   * choice, 2026-10-12: the moved point sits on the edge of unusable water, where a boat under sail alone may not
+   * reach it exactly).
+   */
+  snapped?: boolean;
 }
 
 export interface LegPlan {
@@ -70,8 +80,7 @@ export interface LegPlan {
 }
 
 /**
- * Validate precision / radii the way the reference does: approximate needs
- * a radius > 0 (routes.py `_approximate_requires_positive_radius`).
+ * Validate precision / radii: approximate needs a radius > 0.
  * Returns an error message or null.
  */
 export function validateLegOptions(
@@ -111,7 +120,7 @@ export function planLegs(stops: Stop[], precision: Precision = DEFAULT_PRECISION
     const to = stops[i + 1];
     const last = i === count - 1;
     const r = to.radiusM ?? arrivalRadiusM;
-    const approx = precision === 'approximate' && !last && r > 0;
+    const approx = (precision === 'approximate' && !last && r > 0) || (to.snapped === true && (to.radiusM ?? 0) > 0);
     out.push({
       index: i,
       lastIndex: i,
@@ -127,7 +136,7 @@ export function planLegs(stops: Stop[], precision: Precision = DEFAULT_PRECISION
 
 /**
  * Collapse maximal runs of legs joined by approximate waypoints into one
- * plan each (hybrid.py ~1336): the run ends where its last leg ends, and
+ * plan each: the run ends where its last leg ends, and
  * each inner waypoint becomes a via with its circle radius.
  */
 export function collapseRuns(plans: LegPlan[]): LegPlan[] {
@@ -163,12 +172,11 @@ function samePoint(a: { lon: number; lat: number }, b: { lon: number; lat: numbe
 }
 
 /**
- * Stitch leg routes into one route (hybrid.py lines ~1731–1790): the
- * first point of each following leg duplicates the previous leg's last
- * point and is dropped; distances and sail/motor times are summed; the
- * junction point of each waypoint gets role "via"; warnings keep their
- * position (leg_index re-based on the stitched polyline); automatic vias
- * and skeletons are concatenated.
+ * Stitch leg routes into one route: the first point of each following
+ * leg duplicates the previous leg's last point and is dropped; distances
+ * and sail/motor times are summed; the junction point of each waypoint
+ * gets role "via"; warnings keep their position (leg_index re-based on
+ * the stitched polyline); automatic vias and skeletons are concatenated.
  */
 export function stitchLegs(legs: Route[]): Route {
   if (legs.length === 0) throw new Error('no legs to stitch');
@@ -180,6 +188,7 @@ export function stitchLegs(legs: Route[]): Route {
   let sailingTimeS = legs[0].sailingTimeS;
   const warnings: RouteWarning[] = (legs[0].warnings ?? []).map(w => ({ ...w }));
   const autoVias = [...(legs[0].autoVias ?? [])];
+  const drawbridges = (legs[0].drawbridges ?? []).map(b => ({ ...b }));
   const skeleton = legs[0].skeleton ? [...legs[0].skeleton] : undefined;
   const fronts = legs.flatMap((leg, li) => (leg.fronts ?? []).map(f => ({ ...f, leg: li })));
   let validated = legs[0].validated;
@@ -188,6 +197,8 @@ export function stitchLegs(legs: Route[]): Route {
   let limitsBeyond = legs[0].limitsBeyondForecast ?? false;
   let drops = legs[0].smootherDrops ?? 0;
   let fallback = legs[0].corridorFallback ?? false;
+  let mesh = legs[0].meshLeg ?? false;
+  const legSources = [...(legs[0].legSources ?? [])];
   for (let li = 1; li < legs.length; li++) {
     const leg = legs[li];
     // The previous leg's end is this waypoint's junction.
@@ -210,6 +221,7 @@ export function stitchLegs(legs: Route[]): Route {
     motoringTimeS += leg.motoringTimeS;
     sailingTimeS += leg.sailingTimeS;
     autoVias.push(...(leg.autoVias ?? []));
+    for (const b of leg.drawbridges ?? []) drawbridges.push({ ...b, legIndex: b.legIndex + offset });
     if (skeleton && leg.skeleton)
       skeleton.push(...(samePoint(skeleton[skeleton.length - 1], leg.skeleton[0]) ? leg.skeleton.slice(1) : leg.skeleton));
     validated = validated && leg.validated;
@@ -218,6 +230,8 @@ export function stitchLegs(legs: Route[]): Route {
       validTo = validTo === undefined ? leg.forecastValidToMs : Math.min(validTo, leg.forecastValidToMs);
     limitsBeyond = limitsBeyond || (leg.limitsBeyondForecast ?? false);
     fallback = fallback || (leg.corridorFallback ?? false);
+    mesh = mesh || (leg.meshLeg ?? false);
+    legSources.push(...(leg.legSources ?? []));
     drops += leg.smootherDrops ?? 0;
   }
   const route: Route = {
@@ -230,6 +244,7 @@ export function stitchLegs(legs: Route[]): Route {
   };
   if (warnings.length) route.warnings = warnings;
   if (autoVias.length) route.autoVias = autoVias;
+  if (drawbridges.length) route.drawbridges = drawbridges;
   if (skeleton) route.skeleton = skeleton;
   if (fronts.length) route.fronts = fronts;
   if (horizon > 0) route.forecastHorizonExceededS = horizon;
@@ -237,6 +252,8 @@ export function stitchLegs(legs: Route[]): Route {
   if (limitsBeyond) route.limitsBeyondForecast = true;
   if (drops) route.smootherDrops = drops;
   if (fallback) route.corridorFallback = true;
+  if (mesh) route.meshLeg = true;
+  if (legSources.length) route.legSources = legSources;
   recomputePerWaypointMetadata(route);
   return route;
 }
@@ -281,6 +298,9 @@ export async function routeMultiLeg(args: MultiLegArgs): Promise<Route> {
     }
     const r = await args.runLeg(plan, start, departure);
     if (!r.waypoints.length) throw new Error(`${legLabel(plan)} returned no waypoints`);
+    // One source per leg the plan covers (a collapsed approximate run is several legs, all from one search).
+    const source = r.legSources?.[0] ?? (r.meshLeg ? 'mesh' : 'coastline');
+    r.legSources = Array.from({ length: plan.lastIndex - plan.index + 1 }, () => source);
     const last = r.waypoints[r.waypoints.length - 1];
     if (multi) {
       const miss = haversineDistanceM(last.lon, last.lat, plan.end[0], plan.end[1]);

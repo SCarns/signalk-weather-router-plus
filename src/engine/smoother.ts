@@ -1,34 +1,31 @@
 /**
  * Route simplification after the propagator: RDP thinning, then the
- * shortcut smoother. Port of routePlanning's `_rdp_simplify`
- * (routing/engine/hybrid.py) and `shortcut_smoother`
- * (routing/engine/smoother.py), run in the same order, per leg.
+ * shortcut smoother, per leg.
  *
  * Land checks are the plugin's own: the leg's land raster
  * (`legsCrossLandBulk`, every cell the leg crosses, as the propagator) and, for
  * the smoother, the exact polygons (`legCrossesLandExact`, as the final
- * validation). The plugin has no bathymetry or chart data, so the
- * parent's depth and S-57 passage checks have no counterpart.
+ * validation).
  *
- * Deviation from the parent: after smoothing, waypoints whose time moved
+ * After smoothing, waypoints whose time moved
  * get their wind, waves and current sampled again at the new time.
  */
 
 import { haversineDistanceM } from '../geo/geodesy';
 import { M_PER_DEG } from '../geo/units';
-import type { LandMask } from '../geo/landmask';
+import type { LandTest } from '../geo/landmask';
 import type { CurrentSource, WindSource } from './environment';
 import { simulateLegTime, type SimOptions } from './legsim';
 import type { Route, Waypoint } from './route';
 import type { PolarDiagram } from '../vessel/polar';
 import type { VesselParams } from '../vessel/vessel';
 
-/** Mode-preservation thresholds (smoother.py). */
+/** Mode-preservation thresholds. */
 const SAIL_PRESERVE_FLOOR_S = 60.0;
 const SAIL_PRESERVE_ORIG_FRAC = 0.5;
 const SAIL_PRESERVE_CANDIDATE_FRAC = 0.5;
 
-function legClear(land: LandMask, a: Waypoint, b: Waypoint): boolean {
+function legClear(land: LandTest, a: Waypoint, b: Waypoint): boolean {
   return !land.legsCrossLandBulk([a.lon], [a.lat], [b.lon], [b.lat])[0];
 }
 
@@ -38,7 +35,7 @@ function legClear(land: LandMask, a: Waypoint, b: Waypoint): boolean {
  * either side and that line is clear of land. Endpoints and user
  * waypoints (`role: 'via'`) are always kept. Returns the number dropped.
  */
-export function rdpSimplify(route: Route, land: LandMask, toleranceM: number): number {
+export function rdpSimplify(route: Route, land: LandTest, toleranceM: number): number {
   const wps = route.waypoints;
   if (wps.length <= 2 || !(toleranceM > 0)) return 0;
   const tolDeg = toleranceM / M_PER_DEG;
@@ -91,7 +88,7 @@ function chainSailingSeconds(wps: Waypoint[], lo: number, hi: number): number {
 }
 
 export interface SmootherArgs {
-  land: LandMask;
+  land: LandTest;
   vessel: VesselParams;
   polar: PolarDiagram | null;
   wind: WindSource;
@@ -102,7 +99,7 @@ export interface SmootherArgs {
 }
 
 /**
- * Greedy backward pass (smoother.py): anchored at the last waypoint, try
+ * Greedy backward pass: anchored at the last waypoint, try
  * to replace the waypoints between an earlier one and the anchor with one
  * straight leg; accept when the leg is clear of land, its simulated time
  * is within `tolerance` of the legs it replaces, and (sail_max) a
@@ -115,6 +112,24 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
   const tol = 1 + a.tolerance;
   let drops = 0;
   let anchor = wps.length - 1;
+  // With a comfort weight the shortcut is judged on time plus comfort cost,
+  // as the search chose the legs, so it never cuts back through the rough
+  // water the search went round. legPenalty[k]: the comfort cost of the leg
+  // into waypoint k.
+  const comfort = (a.sim.comfortWeight ?? 0) > 0;
+  const legPenalty = new Float64Array(wps.length);
+  if (comfort) {
+    for (let k = 1; k < wps.length; k++) {
+      const p = wps[k - 1];
+      const r = simulateLegTime(p.lon, p.lat, p.time, wps[k].lon, wps[k].lat, a.vessel, a.polar, a.wind, a.current, a.sim);
+      legPenalty[k] = Number.isFinite(r.penaltySeconds) ? r.penaltySeconds : 0;
+    }
+  }
+  const penaltyBetween = (i: number, j: number): number => {
+    let t = 0;
+    for (let k = i + 1; k <= j; k++) t += legPenalty[k];
+    return t;
+  };
   while (anchor > 0) {
     let examined = anchor - 2;
     let failedAt: number | null = null;
@@ -131,7 +146,11 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
       }
       const sim = simulateLegTime(A.lon, A.lat, A.time, C.lon, C.lat, a.vessel, a.polar, a.wind, a.current, a.sim);
       const origS = (C.time.getTime() - A.time.getTime()) / 1000;
-      if (!Number.isFinite(sim.seconds) || sim.seconds > tol * origS) {
+      // The time tolerance holds on elapsed time; with a comfort weight the
+      // shortcut must also not cost more in time plus comfort.
+      const tooSlow = sim.seconds > tol * origS;
+      const tooRough = comfort && sim.seconds + sim.penaltySeconds > tol * (origS + penaltyBetween(examined, anchor));
+      if (!Number.isFinite(sim.seconds) || tooSlow || tooRough) {
         failedAt = examined;
         break;
       }
@@ -149,6 +168,13 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
       C.mode = sim.dominantMode === 'sailing' ? 'sailing' : 'motoring';
       C.arrivingSplit = [sim.sailingSeconds, sim.motoringSeconds];
       drops += anchor - examined - 1;
+      if (comfort) {
+        // The new leg A→C carries the shortcut's comfort cost; the legs it replaced go.
+        const kept = Array.from(legPenalty);
+        kept.splice(examined + 1, anchor - examined, sim.penaltySeconds);
+        legPenalty.fill(0);
+        legPenalty.set(kept.slice(0, legPenalty.length));
+      }
       wps.splice(examined + 1, anchor - examined - 1);
       anchor = examined + 1;
       examined -= 1;
@@ -160,7 +186,7 @@ export function shortcutSmoother(route: Route, a: SmootherArgs): number {
   return drops;
 }
 
-/** Distance, time and per-mode totals from the waypoint list (validate._recompute_totals). */
+/** Distance, time and per-mode totals from the waypoint list. */
 export function recomputeTotals(route: Route): void {
   const wps = route.waypoints;
   let dist = 0;
@@ -190,10 +216,16 @@ export function recomputeTotals(route: Route): void {
   route.motoringTimeS = motor;
 }
 
-/** Exact-polygon land check of every leg (the propagator's final validation), after simplification. */
-export function revalidateLand(route: Route, land: LandMask): void {
+/**
+ * Exact-polygon land check of every leg (the propagator's final validation), after simplification. The land warnings
+ * are found afresh; a failed search's and a motored beat's (mesh/legrun.ts, experimental/propagator.ts) stay, placed
+ * by their from and to.
+ */
+export function revalidateLand(route: Route, land: LandTest): void {
   const wps = route.waypoints;
-  const warns: NonNullable<Route['warnings']> = [];
+  const warns: NonNullable<Route['warnings']> = (route.warnings ?? []).filter(
+    w => w.violation === 'search_failed' || w.violation === 'beat_motored'
+  );
   for (let i = 0; i + 1 < wps.length; i++) {
     const a = wps[i];
     const b = wps[i + 1];

@@ -104,6 +104,29 @@ export class LayeredWind implements WindSource {
   }
 
   atManyAt(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): { speed: Float64Array; dir: Float64Array } {
+    const { speed, dir } = this.blend(lons, lats, timesMs);
+    return { speed, dir };
+  }
+
+  /**
+   * As atManyAt, with the source that answered each sample: the regional
+   * source whose weight there is above one half (the finest when several
+   * are), else null for the base. Counted in the shares like atManyAt.
+   */
+  atManyAtWithSource(
+    lons: Float64Array,
+    lats: Float64Array,
+    timesMs: Float64Array
+  ): { speed: Float64Array; dir: Float64Array; source: (string | null)[] } {
+    const { speed, dir, bestIdx } = this.blend(lons, lats, timesMs);
+    return { speed, dir, source: Array.from(bestIdx, ri => (ri >= 0 ? this.regional[ri].name : null)) };
+  }
+
+  private blend(
+    lons: Float64Array,
+    lats: Float64Array,
+    timesMs: Float64Array
+  ): { speed: Float64Array; dir: Float64Array; bestIdx: Int16Array } {
     const n = lons.length;
     const b = sampleAt(this.base, lons, lats, timesMs);
     const u = new Float64Array(n);
@@ -162,7 +185,7 @@ export class LayeredWind implements WindSource {
       }
     }
     this.samples += n;
-    return { speed, dir };
+    return { speed, dir, bestIdx };
   }
 
   wavesAt(lon: number, lat: number, time: Date): WaveConditions | null {
@@ -174,10 +197,36 @@ export class LayeredWind implements WindSource {
     return Float64Array.from(lons, (lon, k) => this.base.wavesAt(lon, lats[k], time)?.swh ?? NaN);
   }
 
+  wavesFullAtManyAt(
+    lons: Float64Array,
+    lats: Float64Array,
+    timesMs: Float64Array
+  ): { swh: Float64Array; mwp: Float64Array; mwd: Float64Array } {
+    if (this.base.wavesFullAtManyAt) return this.base.wavesFullAtManyAt(lons, lats, timesMs);
+    return wavesFullFallback(this.base, lons, lats, timesMs);
+  }
+
   wavesAtManyAt(lons: Float64Array, lats: Float64Array, timesMs: Float64Array): Float64Array {
     if (this.base.wavesAtManyAt) return this.base.wavesAtManyAt(lons, lats, timesMs);
     return Float64Array.from(lons, (lon, k) => this.base.wavesAt(lon, lats[k], new Date(timesMs[k]))?.swh ?? NaN);
   }
+}
+
+function wavesFullFallback(
+  w: WindSource,
+  lons: Float64Array,
+  lats: Float64Array,
+  timesMs: Float64Array
+): { swh: Float64Array; mwp: Float64Array; mwd: Float64Array } {
+  const n = lons.length;
+  const swh = new Float64Array(n).fill(NaN);
+  const mwp = new Float64Array(n).fill(NaN);
+  const mwd = new Float64Array(n).fill(NaN);
+  for (let k = 0; k < n; k++) {
+    const v = w.wavesAt(lons[k], lats[k], new Date(timesMs[k]));
+    if (v) [swh[k], mwp[k], mwd[k]] = [v.swh, v.mwp, v.mwd];
+  }
+  return { swh, mwp, mwd };
 }
 
 function sampleAt(

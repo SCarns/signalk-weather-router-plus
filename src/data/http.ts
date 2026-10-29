@@ -6,9 +6,63 @@
  * and network errors; 404 / 403 and other answers are returned as they are.
  * With `readBody` the body is read while the timer is still armed, so a
  * stalled download is retried like a failed connection.
+ *
+ * No connection at all (no name resolves, no route to any network, the
+ * interface is down) is not retried: it throws an OfflineError at once,
+ * which the callers report as "could not check" rather than as a failed
+ * download. A refused connection, an unreachable host and a timeout are
+ * retried: one server's failure, or a slow link at sea, which looks the
+ * same as a dead one.
  */
 
 import { MINUTE_MS } from '../geo/units';
+
+/**
+ * Network error codes that mean there is no connection at all: no name resolves, no route to any network, the
+ * interface is down. Not ECONNREFUSED (a host answered) nor EHOSTUNREACH (usually one host or path): those are one
+ * server's failure, retried and failed over to the next mirror like any other, so one bad server does not make the
+ * whole round look offline.
+ */
+const OFFLINE_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'ENETDOWN']);
+
+export class OfflineError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OfflineError';
+  }
+}
+
+/** The offline code of a fetch failure (undici: TypeError with a `cause`, sometimes an AggregateError of attempts), or null. */
+export function offlineCode(err: unknown): string | null {
+  const seen = new Set<unknown>();
+  const walk = (e: unknown): string | null => {
+    if (!e || typeof e !== 'object' || seen.has(e)) return null;
+    seen.add(e);
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === 'string' && OFFLINE_CODES.has(code)) return code;
+    for (const sub of (e as { errors?: unknown[] }).errors ?? []) {
+      const c = walk(sub);
+      if (c) return c;
+    }
+    return walk((e as { cause?: unknown }).cause);
+  };
+  return walk(err);
+}
+
+/** Is this error (or one it wraps, such as a child process's) "no connection"? */
+export function isOffline(err: unknown): boolean {
+  return err instanceof OfflineError || (err as Error | null)?.name === 'OfflineError';
+}
+
+/**
+ * What the requests of this thread found about the connection: 'ok' when a
+ * server answered (any status), 'offline' with the reason when there was no
+ * connection. One listener per thread (the data worker's status).
+ */
+let networkObserver: ((state: 'ok' | 'offline', detail: string | null) => void) | null = null;
+export function setNetworkObserver(fn: ((state: 'ok' | 'offline', detail: string | null) => void) | null): void {
+  networkObserver = fn;
+}
 
 export interface RetryOptions {
   timeoutMs: number;
@@ -57,6 +111,7 @@ export async function fetchWithRetry(url: string, init: RequestInit, o: RetryOpt
     let retryAfterMs: number | null = null;
     try {
       const res = await fetchImpl(url, { ...init, signal: ctrl.signal });
+      networkObserver?.('ok', null);
       const retriable = res.status === 408 || res.status === 429 || res.status >= 500;
       if (!retriable) {
         const body = o.readBody ? new Uint8Array(await res.arrayBuffer()) : null;
@@ -67,6 +122,19 @@ export async function fetchWithRetry(url: string, init: RequestInit, o: RetryOpt
       await res.arrayBuffer().catch(() => undefined);
     } catch (err) {
       lastErr = err;
+      const code = offlineCode(err);
+      if (code) {
+        const host = (() => {
+          try {
+            return new URL(url).host;
+          } catch {
+            return url;
+          }
+        })();
+        const reason = `no internet connection (${code} for ${host})`;
+        networkObserver?.('offline', reason);
+        throw new OfflineError(reason);
+      }
     } finally {
       clearTimeout(timer);
     }

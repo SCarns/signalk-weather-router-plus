@@ -15,7 +15,17 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { iterateGrib2 } from '../grib/grib2';
 import { ForecastStore, GLOBAL_BBOX, sampleField, type FieldGrid, type ForecastStep } from './forecast';
-import { DecodedRunWriter, fieldFile, listDecodedRuns, openDecodedRun, pruneDecodedRuns, INDEX_FILE, type DecodedRun } from './decoded';
+import {
+  DecodedRun as DecodedRunClass,
+  DecodedRunWriter,
+  fieldFile,
+  listDecodedRuns,
+  openDecodedRun,
+  pruneDecodedRuns,
+  INDEX_FILE,
+  type DecodedIndex,
+  type DecodedRun,
+} from './decoded';
 import { decodeForecastToDisk, loadGlobalForecast } from './loader';
 import { cycleFor, type EcmwfClient } from './ecmwf';
 import { conditionsSeries, fieldGrid, pressureFeatures, windPoints, type OverlaySources } from '../plugin/overlays';
@@ -33,7 +43,7 @@ function rng(seed: number): () => number {
   };
 }
 
-const PARAMS = ['10u', '10v', 'msl', '2t', 'tprate', 'skt', '2d', 'ptype', 'swh', 'mwp', 'mwd'];
+const PARAMS = ['10u', '10v', 'msl', '2t', 'tprate', 'skt', '2d', 'ptype', 'tcc', '10fg', 'swh', 'mwp', 'mwd'];
 const T0 = Date.UTC(2026, 8, 28, 12);
 
 /**
@@ -41,14 +51,14 @@ const T0 = Date.UTC(2026, 8, 28, 12);
  * pole, the same geometry rules as ECMWF's 0.25°): smooth fields with
  * noise, NaN "land" blocks in the wave fields, -0 and integer codes.
  */
-function syntheticStore(nSteps = 5): ForecastStore {
+function syntheticStore(nSteps = 5, params: readonly string[] = PARAMS): ForecastStore {
   const nLon = 360;
   const nLat = 181;
   const rand = rng(7);
   const steps: ForecastStep[] = [];
   for (let k = 0; k < nSteps; k++) {
     const fields = new Map<string, FieldGrid>();
-    PARAMS.forEach((p, pi) => {
+    params.forEach((p, pi) => {
       const v = new Float32Array(nLon * nLat);
       for (let r = 0; r < nLat; r++) {
         for (let c = 0; c < nLon; c++) {
@@ -393,6 +403,9 @@ test('Weather API: an observation is one entry interpolated to its time, and sur
   const [ws, wd] = store.at(lon, lat, new Date(mid));
   assert.equal(obs.wind?.speedTrue, ws);
   assert.equal(obs.wind?.directionTrue, (wd * Math.PI) / 180);
+  // Cloud cover and gust map from the extra fields, sampled like every other field.
+  assert.equal(obs.outside?.cloudCover, store.paramAt('tcc', lon, lat, new Date(mid)));
+  assert.equal(obs.wind?.gust, store.paramAt('10fg', lon, lat, new Date(mid)));
   assert.equal(obs.water?.surfaceCurrentSpeed, undefined, 'no current source: no current fields');
   // A current source covering the point: u east 0.3, v north 0.4 → 0.5 m/s towards 036.87°.
   const currents = {
@@ -409,4 +422,52 @@ test('Weather API: an observation is one entry interpolated to its time, and sur
   assert.ok(Math.abs((steps[0].water?.surfaceCurrentSpeed ?? 0) - 0.5) < 1e-12);
   const far = pointForecasts(store, lon + 5, lat, s0, 1, { currents });
   assert.equal(far[0].water?.surfaceCurrentSpeed, undefined);
+});
+
+test('window geometry: a regional grid across 180° from the area reads the right columns, never a negative count', () => {
+  // A regional source around Tonga, 175°W to 150°W at 0.25° (101 columns), and a Tonga → New Zealand
+  // route area that starts at 170°E and crosses 180°. The columns were taken from 170 − (−175) = 345°
+  // (column 1380 of 101): a negative column count, "Invalid typed array length" in a user's route.
+  const grid = { lat0: -40, lon0: -175, dLat: 0.25, dLon: 0.25, nLat: 121, nLon: 101, wrapLon: false };
+  const run = new DecodedRunClass('/nowhere', {
+    grid,
+    steps: [{ validMs: 0, stepHours: 0, params: ['10u', '10v'] }],
+  } as unknown as DecodedIndex);
+  const geo = run.geometry({ west: 170, east: -168, south: -38, north: -15 }, 1);
+  // The area's 170°E is 15° west of the grid's 175°W: the grid from its first column to 168°W (+1 margin).
+  assert.equal(geo.c0, 0);
+  assert.equal(geo.nc, Math.ceil((-168 + 175) / 0.25) + 1 + 1);
+  assert.equal(geo.r0, Math.floor((-38 + 40) / 0.25) - 1);
+  assert.ok(geo.nr > 0 && geo.nc > 0);
+  // An area that misses the grid gives an empty window, not a negative one.
+  const off = run.geometry({ west: 10, east: 20, south: -38, north: -15 }, 1);
+  assert.equal(off.nc, 0);
+  assert.equal(run.windowBytes({ bbox: { west: 10, east: 20, south: -38, north: -15 }, params: ['10u', '10v'], marginCells: 1 }), 0);
+  // And the route area's window has a positive size: rows × columns × 2 fields × 4 bytes.
+  assert.equal(
+    run.windowBytes({ bbox: { west: 170, east: -168, south: -38, north: -15 }, params: ['10u', '10v'], marginCells: 1 }),
+    geo.nr * geo.nc * 2 * 4
+  );
+});
+
+test('Weather API: cloud cover and gust are extra fields; a run decoded without them leaves the fields out', async () => {
+  const withExtras = syntheticStore(2);
+  const lon = -71.3;
+  const lat = 41.4;
+  const s0 = withExtras.steps[0].validMs;
+  const [item] = pointForecasts(withExtras, lon, lat, s0, 1);
+  assert.equal(item.outside?.cloudCover, withExtras.paramAt('tcc', lon, lat, new Date(s0)));
+  assert.equal(item.wind?.gust, withExtras.paramAt('10fg', lon, lat, new Date(s0)));
+
+  // extraFields off: the decoded run holds none of the two, and the fields vanish
+  // while everything else keeps coming.
+  const base = syntheticStore(
+    2,
+    PARAMS.filter(p => p !== 'tcc' && p !== '10fg')
+  );
+  const [bare] = pointForecasts(base, lon, lat, s0, 1);
+  assert.equal(bare.outside?.cloudCover, undefined);
+  assert.equal(bare.wind?.gust, undefined);
+  assert.notEqual(bare.outside?.temperature, undefined);
+  assert.notEqual(bare.wind?.speedTrue, undefined);
 });
