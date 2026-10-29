@@ -440,7 +440,8 @@ export class ExperimentalPropagator {
 /**
  * The beats motored straight (layTacks marks the waypoint each arrives at) as `beat_motored` warnings on the route,
  * from the route as it is now (after the polish, which moves and copies waypoints), with the leg's motoring seconds;
- * the marks go. The log line stays: the route's warnings are what the web page and the chartplotter show.
+ * the marks go. A leg the final timing sails all the way (no motoring seconds) gets no warning. The log line stays:
+ * the route's warnings are what the web page and the chartplotter show.
  */
 function motoredBeatWarnings(route: Route): void {
   const wps = route.waypoints;
@@ -450,6 +451,7 @@ function motoredBeatWarnings(route: Route): void {
     delete b.motoredBeat;
     const a = wps[i - 1];
     const motoringS = b.arrivingSplit ? b.arrivingSplit[1] : b.mode === 'motoring' ? (b.time.getTime() - a.time.getTime()) / 1000 : 0;
+    if (!(motoringS > 0)) continue;
     (route.warnings ??= []).push({
       leg_index: i - 1,
       violation: 'beat_motored',

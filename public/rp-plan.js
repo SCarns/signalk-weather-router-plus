@@ -1691,7 +1691,7 @@ function renderResultStrip(p, navWarns) {
       const li = w.leg_index;
       const leg = li != null ? ' (leg ' + (li + 1) + ')' : '';
       const fixed = w.repaired ? ' · repaired' : '';
-      return '<div class="' + (w.violation === 'leg_crosses_land' ? 'land' : '') + '"' + _warningTip(w) + '>' + kind + leg + where + fixed + '</div>';
+      return '<div class="' + (w.violation === 'leg_crosses_land' ? 'land' : '') + '">' + kind + leg + where + fixed + _warningDetail(w) + '</div>';
     }).join('') + '</div>';
   }
   el.innerHTML = html;
@@ -1798,9 +1798,12 @@ function _warningKind(w) {
   }
   return escapeHtml(String(w.violation || 'warning').replace(/_/g, ' '));
 }
-// The search's own reason, as the row's tooltip (a long sentence, with quantities as unit tokens).
-function _warningTip(w) {
-  return w.violation === 'search_failed' && w.detail ? ' title="' + escapeHtml(unitText(String(w.detail))) + '"' : '';
+// The search's own reason, as a line under the row's text (a long sentence, with quantities as unit tokens): shown,
+// not a tooltip, so touch screens and screen readers get it too.
+function _warningDetail(w) {
+  return w.violation === 'search_failed' && w.detail
+    ? '<div class="warn-detail" style="font-size:11px;opacity:0.8;">' + escapeHtml(unitText(String(w.detail))) + '</div>'
+    : '';
 }
 function _warningText(w) {
   if (typeof w !== 'object' || w === null) return String(w);
@@ -2006,7 +2009,7 @@ function _itineraryWarnings(lonlats) {
     const ci = _warningCardIndex(w, lonlats);
     const land = w && w.violation === 'leg_crosses_land';
     if (ci >= 0) { const cur = cardWarn.get(ci) || { land: false, n: 0 }; cur.n += 1; cur.land = cur.land || land; cardWarn.set(ci, cur); }
-    return { wi, ci, land, tip: _warningTip(w), text: _warningText(w) + (ci >= 0 ? ' (leg ' + (ci + 1) + ')' : '') };
+    return { wi, ci, land, detail: _warningDetail(w), text: _warningText(w) + (ci >= 0 ? ' (leg ' + (ci + 1) + ')' : '') };
   });
   return { warnRows, cardWarn };
 }
@@ -2159,7 +2162,7 @@ function _itineraryWarnBlockHtml(warnRows) {
     const nLand = warnRows.filter(r => r.land).length;
     warnBlock = `<div id="itinWarnings" class="${nLand ? '' : 'warn-only'}">`
       + `<div class="iw-head">${nLand ? nLand + ' land crossing' + (nLand > 1 ? 's' : '') + ' · ' : ''}${warnRows.length} warning${warnRows.length > 1 ? 's' : ''} — click one to see it on the map</div>`
-      + warnRows.map(r => `<div class="iw-row${r.land ? ' land' : ''}" data-wi="${r.wi}" data-ci="${r.ci}"${r.tip}>${r.text}</div>`).join('')
+      + warnRows.map(r => `<div class="iw-row${r.land ? ' land' : ''}" data-wi="${r.wi}" data-ci="${r.ci}">${r.text}${r.detail}</div>`).join('')
       + `</div>`;
   }
   return warnBlock;
