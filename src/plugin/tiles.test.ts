@@ -301,6 +301,24 @@ test('tile service: a tile computed from replaced data is discarded and asked ag
   fs.rmSync(h.root, { recursive: true, force: true });
 });
 
+test('tile service: a data change that lands after the query was sent is asked again at once, not after the next change', async () => {
+  const h = handover();
+  h.store.setGenerations({ wx: 'gen-06z', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
+  const p = h.svc.get(T);
+  for (let i = 0; i < 500 && h.svc.inflightCount < 1; i++) await wait();
+  // The worker's 'forecast' message is handled before its answer, which names the replaced run.
+  h.store.setGenerations({ wx: 'gen-12z', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
+  h.held.stamp = STAMP_B;
+  h.svc.dataChanged();
+  h.answer([1, 2, 3], STAMP_A);
+  for (let i = 0; i < 500 && h.calls.n < 2; i++) await wait();
+  assert.equal(h.calls.n, 2, 'asked again without a second dataChanged()');
+  h.answer([4, 5, 6], STAMP_B);
+  const { gz } = await p;
+  assert.deepEqual(JSON.parse(zlib.gunzipSync(gz).toString()), [4, 5, 6]);
+  fs.rmSync(h.root, { recursive: true, force: true });
+});
+
 test('stamp: a group is matched against the sources it is computed from, and only those the answer read', () => {
   const off: DataStamp = { forecast: null, smoc: null, rtofs: [], tide: null };
   // The land group: matched against nothing.
@@ -369,6 +387,28 @@ test('point answers: a tide series is accepted while a forecast is loaded (it re
   h.answer({ waterLevel: [] }, { ...STAMP_A, forecast: null });
   assert.deepEqual(await p, { waterLevel: [] });
   assert.equal(h.calls.n, 1, 'answered once, no retries');
+  fs.rmSync(h.root, { recursive: true, force: true });
+});
+
+test('point answers: a data change that lands after the query was sent is asked again at once, not after the next change', async () => {
+  const h = handover();
+  h.store.setGenerations({ wx: 'a', cur: 'a', tide: 'tide-a', land: 'coast', pt: 'tide-a' });
+  const args = { lat: 1, lon: 2, fromMs: 0, hours: 12 };
+  const p = h.svc.point('tide_series', args as never);
+  for (let i = 0; i < 500 && h.svc.inflightCount < 1; i++) await wait();
+  // The worker adopts tide run B while answering: its 'tides-run' message is
+  // handled first (the generations move, dataChanged() fires), then its
+  // answer, stamped with run A, arrives. The worker already holds B, so the
+  // request must ask again at once: pointQuery passes no abort signal, and
+  // waiting for a further change could take until the next tide run.
+  h.store.setGenerations({ wx: 'a', cur: 'a', tide: 'tide-b', land: 'coast', pt: 'tide-b' });
+  h.held.stamp = { ...STAMP_A, tide: STAMP_B.tide };
+  h.svc.dataChanged();
+  h.answer({ run: 'A' }, { ...STAMP_A, forecast: null });
+  for (let i = 0; i < 500 && h.calls.n < 2; i++) await wait();
+  assert.equal(h.calls.n, 2, 'asked again without a second dataChanged()');
+  h.answer({ run: 'B' }, { ...h.held.stamp, forecast: null });
+  assert.deepEqual(await p, { run: 'B' });
   fs.rmSync(h.root, { recursive: true, force: true });
 });
 
