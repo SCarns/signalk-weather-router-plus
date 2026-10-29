@@ -16,6 +16,10 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Offer **Save a copy to Polar Management** after generating a polar from boat
+  specifications. Send a canonical, unscaled copy through the provider importer;
+  keep local generation and selection, and leave provider activation to the user.
+
 - Automatically use a valid active Polar Management resource as the sailing
   polar, including its shared performance factor, with the internal default
   as fallback. Internal library polars remain selectable as route overrides.

@@ -15,6 +15,7 @@
     "public/rp-units.js",
     "public/rp-live.js",
     "public/rp-prefs.js",
+    "public/rp-polar.js",
     "public/rp-settings.js",
     "public/rp-core.js",
     "public/rp-layers.js",

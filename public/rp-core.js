@@ -4,6 +4,7 @@
 // picker and diagram, the plugin status line. rp-layers.js, rp-plan.js
 // and rp-settings.js import what they use from here.
 
+import { offerPolarManagementSave } from './rp-polar.js';
 import { prefs } from './rp-prefs.js';
 import { CATEGORY_PATH, DURATION_FORMATS, fetchDisplayUnits, fetchPresetUnits, unitFromDisplayUnits } from './rp-units.js';
 
@@ -941,8 +942,9 @@ setInterval(loadPolarList, 30000);
         }
       }
       resultDiv.innerHTML += found
-        ? '<div style="color:#2a7;margin-top:4px;">Selected as active polar.</div>'
+        ? '<div style="color:#2a7;margin-top:4px;">Selected for this router.</div>'
         : '<div style="color:#c60;margin-top:4px;">Saved, but it is not in the polar list (check the plugin\'s polars directory).</div>';
+      if (data.canonical) offerPolarManagementSave(resultDiv, data.canonical, authFetch);
     } catch (e) {
       warnDiv.innerHTML = 'Request failed: ' + unitTextHtml(e.message);
     } finally {

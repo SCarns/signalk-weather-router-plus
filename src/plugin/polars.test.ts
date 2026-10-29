@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { listPolars, loadPolarCached, polarAngles, polarFromSpecs, polarTable, resolvePolarPath } from './polars';
+import { adaptManagedPolar, managedDiagram } from './managedpolar';
 import { PolarDiagram } from '../vessel/polar';
 
 const CSV =
@@ -204,4 +205,31 @@ test('a tab polar with an empty cell loads, the cell filled from the rows around
   const kn = (v: number): number => Math.round((v / 0.514444) * 100) / 100;
   assert.equal(kn(p.boatSpeed(90, 10 * 0.514444)), 6.5, 'halfway between 6.0 and 7.0');
   assert.throws(() => PolarDiagram.parse('TWA\\TWS\t6\t10\n60\t4.0\n', '\t', 'test'), /expected 2 boat-speed columns/);
+});
+
+test('generated canonical copy preserves the saved polar speeds and round-trips through Polar Management adaptation', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'generated-canonical-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const cfg = { polarFile: null, polarsDir: dir };
+  const result = polarFromSpecs(cfg, { name: 'Generated TBD', specs: SPECS });
+  assert.equal(result.status, 200);
+  const canonical = result.body.canonical as {
+    name: string;
+    source: string;
+    notes: string;
+    axes: { twa: number[]; tws: number[] };
+    values: { boatSpeedMatrix: number[][] };
+  };
+  assert.equal(canonical.name, 'Generated TBD');
+  assert.equal(canonical.source, 'signalk-weather-router-plus');
+  assert.match(canonical.notes, /estimate, not measured/);
+  assert.equal(canonical.axes.twa.at(-1), Math.PI);
+  const saved = loadPolarCached(resolvePolarPath(cfg, String(result.body.path))!);
+  assert.deepEqual(canonical.axes.tws, Array.from(saved.tws));
+  for (let k = 0; k < saved.tws.length; k++)
+    for (let i = 0; i < saved.twa.length; i++) assert.equal(canonical.values.boatSpeedMatrix[k][i], saved.speeds[i * saved.tws.length + k]);
+  const roundTrip = managedDiagram(adaptManagedPolar(canonical, 'saved-copy', 1));
+  assert.deepEqual(Array.from(roundTrip.speeds), Array.from(saved.speeds));
+  for (const angle of [50, 75, 110, 165, 180])
+    for (const wind of [3, 6, 11]) assert.ok(Math.abs(roundTrip.boatSpeed(angle, wind) - saved.boatSpeed(angle, wind)) < 1e-10);
 });

@@ -321,7 +321,29 @@ export function polarFromSpecs(cfg: PolarLibraryConfig, raw: unknown): PolarFrom
   const polar = PolarDiagram.load(file);
   return {
     status: 200,
-    body: { path: token, label: `user: ${label(token)}`, warnings, polar: { path: token, ...polarTable(polar) } },
+    body: {
+      path: token,
+      label: `user: ${label(token)}`,
+      warnings,
+      polar: { path: token, ...polarTable(polar) },
+      // Canonical SI copy of the saved table, without preview rounding or a performance multiplier.
+      // The provider owns importing, naming and storage; generation alone never writes to it.
+      canonical: {
+        kind: 'polarTable',
+        schemaVersion: '1.0.0',
+        name: req.name,
+        source: 'signalk-weather-router-plus',
+        notes:
+          'Generated from boat specifications by the Weather Router Plus physics calculator; an estimate, not measured performance.' +
+          (warnings.length ? ` ${warnings.join(' ')}` : ''),
+        units: { twa: 'rad', tws: 'm/s', boatSpeed: 'm/s' },
+        symmetry: { portStarboardSymmetric: true },
+        axes: { twa: Array.from(polar.twa, a => (a === 180 ? Math.PI : (a * Math.PI) / 180)), tws: Array.from(polar.tws) },
+        values: {
+          boatSpeedMatrix: Array.from(polar.tws, (_, k) => Array.from(polar.twa, (_, i) => polar.speeds[i * polar.tws.length + k])),
+        },
+      },
+    },
   };
 }
 

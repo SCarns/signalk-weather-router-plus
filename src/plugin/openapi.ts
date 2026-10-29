@@ -324,7 +324,7 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
           responses: {
             200: {
               description:
-                '{path: "user/<slug>.csv" (token for /api/polars and vessel.polar), label, warnings[], polar: {path, twa_deg[], tws_ms[], speeds_ms[][]}}',
+                '{path: "user/<slug>.csv" (token for /api/polars and vessel.polar), label, warnings[], polar: {path, twa_deg[], tws_ms[], speeds_ms[][]}, canonical: polarTable 1.0.0 (rad, m/s, [TWS][TWA], unscaled saved speeds)}',
             },
             400: {
               description:

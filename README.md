@@ -2965,7 +2965,7 @@ Body `{name, specs, overwrite?}`:
 
 | Status | Body |
 |---|---|
-| 200 | `{path, label, warnings, polar}`: `path` is `user/<slug>.csv`, a `vessel.polar` token; `label` is `"user: <name>"`; `warnings` lists specs outside typical ranges (displacement-length ratio outside 50–400, SA/D outside 8–30, an unused downwind sail area); `polar` is `{path, twa_deg[], tws_ms[], speeds_ms[][]}` as served by `/api/polars/table` |
+| 200 | `{path, label, warnings, polar, canonical}`: `path` is `user/<slug>.csv`, a `vessel.polar` token; `label` is `"user: <name>"`; `warnings` lists specs outside typical ranges (displacement-length ratio outside 50–400, SA/D outside 8–30, an unused downwind sail area); `polar` is `{path, twa_deg[], tws_ms[], speeds_ms[][]}` as served by `/api/polars/table` |
 | 400 | `{error}`: invalid specs or name, or no `polarsDir` configured |
 | 409 | `{error}`: the file exists and `overwrite` is not true |
 | 422 | `{error}`: a multihull, which the calculator does not model |
@@ -2976,6 +2976,25 @@ the calculator's median error is 3.3% upwind, 3.2% reaching and 3.3%
 running (6–20 kn). ORC's speeds are race predictions; use the polar
 performance setting for a cruising boat. In the webapp, use "Create
 polar from boat specs…" under the polar picker.
+
+After generation, **Save a copy to Polar Management** imports the generated
+polar into that provider's library. This is a separate, optional action:
+local generation still works when Polar Management is absent or stopped.
+The copy uses the saved table's unscaled speeds (without preview rounding),
+canonical radians and m/s, and `[TWS][TWA]` matrix order. Its metadata identifies
+it as a calculated estimate. The generation response's `canonical` member is
+this `polarTable` 1.0.0 document.
+
+The browser sends `{content: JSON.stringify(canonical)}` to Polar Management's
+`POST /plugins/signalk-polar-management/imports/text/canonical` using the current
+Signal K login. The provider validates it and assigns the new copy's id; the
+router does not write to provider files, supply an overwrite id, change
+`polars.activePolar`, or change the shared performance factor. Use **Open Polar
+Management** to choose the copy when ready. If import fails, the locally saved
+polar stays available, and the UI reports the error with a retry action.
+Requires Polar Management with its canonical JSON import endpoint; verified
+locally with version 1.4.0.
+
 
 ### Settings
 
