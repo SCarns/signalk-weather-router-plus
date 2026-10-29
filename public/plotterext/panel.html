@@ -486,7 +486,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
   var units = null;
   var vessel = null;        // {lat, lon}
   var job = null;           // {id, links, es, onDone}
-  var result = null;        // {routeId, created: bool, from?: drawn routeId, props, href?}
+  var result = null;        // {routeId, created: bool, props, href?}
   var course = null;        // Signal K navigation.course.activeRoute (href, pointIndex, pointTotal, reverse) or null
   var courseRoute = null;   // {href, first: [lon, lat], last: [lon, lat], n} of the active route, fetched once per href
   var visible = [];         // the host's visible routes: {routeId, name, pointCount, saved, dirty}
@@ -1662,8 +1662,8 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
 
   // ---- weather-route a route on the chart ---------------------------------
   // The drawn route is read, never written: its points as drawn are the request, and the result is a new route of
-  // its own, named after it. Pressed again (with points added in the chartplotter, say), the result shown for the
-  // same drawn route is replaced while it is not saved; a saved one stays.
+  // its own, named after it. Pressed again (with points added in the chartplotter, say), the result shown is
+  // replaced while it is not saved, whichever route it came from (the panel follows one result); a saved one stays.
   function routeIt() {
     var routeId = $('routeSelect').value;
     if (!routeId || job) return;
@@ -1678,9 +1678,9 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         if (out.points.length < 2) { finishJob('The result has no waypoints'); return; }
         var name = drawnName + ' · weather ' + fmtTime(out.props.departure || new Date().toISOString());
         host.call('route.create', { points: out.points, name: name }).then(function (c) {
-          // The previous unsaved result for this drawn route goes only once the new one exists; read before it is replaced.
-          var prev = result && result.created && !result.saved && result.from === routeId ? result.routeId : null;
-          result = { routeId: c.routeId, created: true, from: routeId, props: out.props, saved: false, n: out.points.length, points: out.points, hasDescription: false };
+          // The previous unsaved result goes only once the new one exists; read before it is replaced.
+          var prev = result && result.created && !result.saved ? result.routeId : null;
+          result = { routeId: c.routeId, created: true, props: out.props, saved: false, n: out.points.length, points: out.points, hasDescription: false };
           finishJob('');
           showResult(out.props, out.points.length);
           renderItinerary(out.feats, out.points);
@@ -1725,11 +1725,13 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       if (out.points.length < 2) { finishJob('The result has no waypoints'); return; }
       var name = 'Weather route, ' + fmtTime(out.props.departure || new Date().toISOString());
       host.call('route.create', { points: out.points, name: name }).then(function (r) {
+        var prev = result && result.created && !result.saved ? result.routeId : null;
         result = { routeId: r.routeId, created: true, props: out.props, saved: false, n: out.points.length, points: out.points, hasDescription: false };
         finishJob('');
         showResult(out.props, out.points.length);
         renderItinerary(out.feats, out.points);
         fitTo(out.points);
+        if (prev) host.call('route.hide', { routeId: prev }).catch(function (e) { $('progress').textContent = 'The previous unsaved result is still on the chart: ' + e.message; });
       }).catch(function (e) { finishJob('The chartplotter refused the route: ' + e.message); });
     });
   }
@@ -1872,7 +1874,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
         if (ev.saved && !ev.dirty) showWeatherRoute(ev.routeId);
       }
       else if (name === 'route.hidden') { removeVisible(ev.routeId); if (result && result.routeId === ev.routeId) clearResult(); }
-      else if (name === 'route.saved') { upsertVisible({ routeId: ev.routeId, name: ev.name, saved: true, dirty: false }); if (result && result.routeId === ev.routeId && ev.href) { result.href = ev.href; followCourse(); } }
+      else if (name === 'route.saved') { upsertVisible({ routeId: ev.routeId, name: ev.name, saved: true, dirty: false }); if (result && result.routeId === ev.routeId) { result.saved = true; if (ev.href) { result.href = ev.href; followCourse(); } } }
       else if (name === 'route.dirty') upsertVisible({ routeId: ev.routeId, dirty: true });
       renderRoutes();
     }).then(function () { return host.call('route.list'); }).then(function (r) {

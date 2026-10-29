@@ -1867,7 +1867,7 @@ function _legDescription(p, isArrival) {
   if (mode) parts.push(mode + (tack ? ' (' + tack + ')' : ''));
   if (isArrival ? p.beyond_forecast : p.next_beyond_forecast) parts.push('beyond the forecast (conditions held at its last step)');
   // Moved off the shore, or away from water the boat cannot use on the chart (a shoal, a rock, a mark): not always land.
-  if (p.snap_distance_m > 0) parts.push('moved ' + Math.round(p.snap_distance_m) + ' m to water the boat can use');
+  if (p.snap_distance_m > 0) parts.push('moved ' + _fmt(p.snap_distance_m, 'short_distance') + ' to water the boat can use');
   const add = (label, v) => { if (v != null && v !== '') parts.push(label + ' ' + v); };
   if (!isArrival) {
     add('Distance', p.leg_distance_m != null ? fmtDist(p.leg_distance_m) : null);
@@ -2132,7 +2132,7 @@ function _legCardHtml(f, i, cw) {
   const beyond = isArrival ? !!p.beyond_forecast : !!p.next_beyond_forecast;
   const beyondCls = beyond ? ' beyond-forecast' : '';
   const beyondChip = beyond ? '<span class="leg-beyond-chip" title="After the forecast\'s last step: conditions held at that step">beyond forecast</span>' : '';
-  const snapChip = p.snap_distance_m > 0 ? '<span class="leg-warn-chip" title="The drawn point was on land according to the coastline data; the route uses the nearest water">moved ' + Math.round(p.snap_distance_m) + ' m</span>' : '';
+  const snapChip = p.snap_distance_m > 0 ? '<span class="leg-warn-chip" title="The drawn point was on land or in water the boat cannot use; the route uses the nearest water it can">moved ' + escapeHtml(_fmt(p.snap_distance_m, 'short_distance')) + '</span>' : '';
   return `<div class="leg-card ${modeCls} ${tackCls}${warnCls}${beyondCls}" data-idx="${i}">`
     + `<div class="leg-head">`
     + `  <span><span class="leg-num">${i + 1}.</span> <span class="leg-time">${t}</span>${warnChip}${beyondChip}${snapChip}</span>`

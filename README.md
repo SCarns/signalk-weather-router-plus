@@ -473,8 +473,9 @@ computed with what that request says, not with the user's saved Setup.
   title, then each row (wind, waves, currents, tides) with one line per
   source: wind the ECMWF run and any regional model, waves the ECMWF run,
   currents each current source, tides the sea-level run (by when it was
-  published), then the job queue. A source that does not cover the route on the map (or the map
-  view when there is none) is listed all the same, marked *(not in this
+  published), then the job queue. A source that does not cover the
+  route on the map (or the map view when there is none) is listed all
+  the same, marked *(not in this
   view)*. Each source carries a pill with its run's age, coloured by its
   own publication cadence: **green** until 30 minutes before its next run
   is due, **orange** from then until an hour after, **red** after that
@@ -797,8 +798,7 @@ and the panel runs in a sandboxed iframe served from
 - **Save route…** opens Freeboard's Route Details dialog and stores the
   route in Signal K's Resources (the plugin does not publish it itself in
   this case, so there is one copy); for a saved route, **Save changes**
-  updates it. **Discard** removes a new draft or restores a rewritten
-  route.
+  updates it. **Discard** removes the new draft.
 - The panel keeps running while closed, so a long route finishes in the
   background. Routes started here are ordinary jobs: they appear in the
   web app's run log and in `GET /api/routes`.
