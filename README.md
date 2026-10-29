@@ -472,8 +472,8 @@ computed with what that request says, not with the user's saved Setup.
   folds it again; the choice is kept in the browser): a *Data sources*
   title, then each row (wind, waves, currents, tides) with one line per
   source: wind the ECMWF run and any regional model, waves the ECMWF run,
-  currents each current source, tides the sea-level run, then the job
-  queue. A source that does not cover the route on the map (or the map
+  currents each current source, tides the sea-level run (by when it was
+  published), then the job queue. A source that does not cover the route on the map (or the map
   view when there is none) is listed all the same, marked *(not in this
   view)*. Each source carries a pill with its run's age, coloured by its
   own publication cadence: **green** until 30 minutes before its next run
@@ -488,8 +488,14 @@ computed with what that request says, not with the user's saved Setup.
   signalk-grib-downloader schedules them; tidal harmonics are fixed tables,
   green when loaded. Under the rows, whatever needs saying, collapsed or
   not: *Processing new forecast data: 00Z, step 12 of 37* while a new run
-  decodes behind the one in use; a red *Late:* line naming each red source;
-  a line for a check that failed while online ("ECMWF check failed at …:
+  decodes behind the one in use; a red *Late:* line naming each red source
+  and the run still in use by when it was published ("next run was due Thu,
+  04:09 AM EDT; still using the run published Wed, 04:09 AM EDT"), or, for
+  SMOC and sea level, that a newer run has appeared which Copernicus Marine
+  has not finished writing ("a newer run appeared Thu, 04:40 AM EDT, but
+  Copernicus Marine has not finished writing it; still using …": the plugin
+  waits for the update to finish, so the source stays red meanwhile); a
+  line for a check that failed while online ("ECMWF check failed at …:
   HTTP 503").
   Under the title, the connection: blue **online** when the plugin's last
   request reached a server, grey **No internet connection since …** when
@@ -2507,13 +2513,13 @@ Plugin, forecast, currents, tides and queue status. Access: readonly.
 | `process_rss_bytes` | resident memory of the Signal K process, bytes |
 | `forecast_error` | last forecast refresh error, or null; cleared only by a check that reached ECMWF (the newest run in use, or a new one loaded) |
 | `checks` | what the last check of each source found: `{ecmwf, smoc, tides}` and `rtofs:<product>` per RTOFS product loaded, each `{outcome, at, reason}`; `outcome`: `newest`, `could-not-check` (the server could not be asked: no connection, or it failed; the run in use stays), `new-run` or `failed` (the server answered but the new run could not be loaded) |
-| `freshness` | per source in use: `{source, rows, run, published_at, next_due_at, state, reason}`; `rows`: the header rows it colours (`wind`, `waves`, `currents`, `tides`); `state`: `green` (more than 30 min before the next run is due), `orange` (from then until 60 min after), `red` (later, or nothing loaded; `reason` then says why when the times do not) |
+| `freshness` | per source in use: `{source, rows, run, published_at, next_due_at, state, reason, pending_since}`; `run`: as the source names it (`20261029 00z`, `2026-10-29`), for SMOC and sea level the day it was published (their store's own key is the last data hour); `rows`: the header rows it colours (`wind`, `waves`, `currents`, `tides`); `state`: `green` (more than 30 min before the next run is due), `orange` (from then until 60 min after), `red` (later, or nothing loaded; `reason` then says why when the times do not); `pending_since`: for SMOC and sea level, when a newer run appeared that Copernicus Marine is still writing (the run in use stays until it has finished), else null |
 | `connectivity` | `{online, since, lastOkAt, reason}`: whether the data worker's last request reached a server (`online` null before the first), since when, and why not; separate from freshness |
 | `forecast_loading` | while the data worker gets a forecast: `{phase, why, cycle, done, total, started_at, text}`. `phase`: `checking` (finding the newest ECMWF cycle) or `decoding` (step `done` of `total`, downloading what the GRIB cache lacks); `why`: `first` (no decoded run on disk yet), `redecode` (the runs on disk do not fit the forecast settings or are incomplete) or `update` (a newer cycle while the run in use keeps serving); `text`: the same as one line, e.g. `"loading the forecast: decoding the 06Z cycle, step 12 of 37 (first start)"`. Null when not loading |
-| `currents` | the data worker's current sources in priority order: `{name, priority, resolutionM, bbox, validFrom, validTo}`; the CMEMS SMOC entry adds `smoc` (run, resident and on-demand areas, memory, downloads) |
+| `currents` | the data worker's current sources in priority order: `{name, priority, resolutionM, bbox, validFrom, validTo}`; the CMEMS SMOC entry adds `smoc` (run, resident and on-demand areas, memory, downloads, and `pending`: `{run, appeared_at}` of a newer run Copernicus Marine is still writing, or null) |
 | `currents_route_worker` | the same for the route worker |
 | `rtofs` | null when RTOFS is off, else `{auto, auto_reason, extra, runs, unknown_extents}`: the product that contains the vessel (null, with `auto_reason`, when there is no position or no product covers it), the extra products set, each product loaded as `{product, run}` (its current source is `RTOFS-<product>`), and the products whose extent is not known yet |
-| `tides` | Copernicus Marine sea-level source status (run, resident and on-demand areas, point cache, memory, downloads), or null when off or not loaded |
+| `tides` | Copernicus Marine sea-level source status (run, resident and on-demand areas, point cache, memory, downloads, and `pending` as SMOC's), or null when off or not loaded |
 | `tides_enabled` | the tides setting, or null before start |
 | `tides_error` | last tide source error, or null |
 | `overlay_land` | overlay land-raster cache: `{entries, cells, bytes, index_bytes, builds, hits, last_build_ms, disk_hits, disk_writes, disk, polygons}`, or null; `polygons`: the data worker's cache of coastline tiles read (for the point test) `{entries, bytes, budget_bytes, hits, decodes, evictions}` |

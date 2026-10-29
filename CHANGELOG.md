@@ -9,6 +9,23 @@ uses [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - Point answers and overlay tiles are never served, or saved, from data that was replaced while they were being answered (issue #47). Every query answer and tile built by a worker now carries a stamp naming the data it was computed from: the forecast cycle and parameters actually read (a window whose run was pruned mid-read is retried against the run now current, and the stamp and the window's step indices name that one), the SMOC run and settled flag, the RTOFS products' runs, and the tide run and settled flag. The main thread serves and saves an answer only when its stamp names exactly the data it holds now; on a mismatch it asks the worker again, and the loop ends when they match — no attempt count. The stamp names only the sources the answer read, so answers that read no forecast (the current and arrows layers, the Weather API tide series) are accepted while one is loaded. An answer computed from the data now held is served even when its generation changed while the query ran (the worker's refresh runs beside its queries, so this is the common case, not the exception). The saved-answer read stays generation-checked: a file lives under the generation directory it was written with, so a swap while reading is exact. A tile built ahead of time is adopted only when its stamp names the data held (settings changes, and a tide run the builders learn through `tides-run`). Previously a query that straddled a run swap (a decode finishing mid-request) served and, before the swap's message landed, cached answers computed from the replaced run. A mismatch is asked again only once the data the plugin holds has moved since the check (`dataChanged`, called wherever that data changes): while the main thread's stamp has moved but the worker still answers from the old data — a settings change reloads it behind any query in flight — the request waits out the change instead of sending identical queries until the worker catches up.
+- **The Late line names the run in use by when it was published.** For
+  SMOC and sea level it said "still on 2026110623": the store's name for
+  a run is its last data hour, which reads as a date days ahead. It now
+  says "next run was due Thu, 04:09 AM EDT; still using the run published
+  Wed, 04:09 AM EDT", for every source, on the web page and in the
+  Freeboard panel; the header's tides row says when the sea-level run was
+  published instead of "run 07 Nov 23Z". `freshness[].run` is that date
+  for SMOC and sea level (yyyy-mm-dd, as RTOFS's); the store key stays in
+  `currents[].smoc.run` and `tides.run`.
+- **A newer SMOC or sea-level run that Copernicus Marine is still writing
+  is reported.** The plugin keeps the run in use until Copernicus marks
+  its update finished, but said nothing of the newer run: the check's
+  reason was built from the run kept, so it was empty. It now says "a
+  newer run appeared Thu, 04:40 AM EDT, but Copernicus Marine has not
+  finished writing it", and the run stays red past its due time. New in
+  `/api/status`: `freshness[].pending_since`, and `pending`
+  (`{run, appeared_at}`) in `currents[].smoc` and `tides`.
 
 ## [0.2.0] - 2026-10-28
 

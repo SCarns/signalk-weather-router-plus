@@ -110,8 +110,10 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             '`forecast_error` clears only on a check that reached ECMWF (the newest run in use, or a new one loaded). ' +
             '`checks`: what the last check of each source found, {ecmwf, smoc, tides, "rtofs:<product>" per RTOFS product loaded}, each {outcome: "newest" | "could-not-check" (the server could not be asked: ' +
             'no connection, or it failed; the run in use stays) | "new-run" | "failed" (the server answered but the new run could not be loaded), at, reason}. ' +
-            '`freshness`: per source in use [{source, rows: ["wind" | "waves" | "currents" | "tides"], run, published_at, next_due_at, state: "green" (more than 30 min ' +
-            'before the next run is due) | "orange" (from then until 60 min after) | "red" (later, or nothing loaded), reason}]. ' +
+            '`freshness`: per source in use [{source, rows: ["wind" | "waves" | "currents" | "tides"], run (as the source names it; CMEMS SMOC and sea level: the day it was published, yyyy-mm-dd), ' +
+            'published_at, next_due_at, state: "green" (more than 30 min ' +
+            'before the next run is due) | "orange" (from then until 60 min after) | "red" (later, or nothing loaded), reason, ' +
+            'pending_since (CMEMS SMOC and sea level: when a newer run appeared that Copernicus Marine is still writing, the run in use staying until it has finished; else null)}]. ' +
             "`connectivity`: {online (null before the first request), since, lastOkAt, reason}: whether the data worker's last request reached a server. " +
             '`forecast` (null until a run is ready): {cycle, model, valid_from, valid_to, steps, params, coverage, storage: "decoded-on-disk", loaded_at, has_waves, ' +
             'source: "disk" (a complete decoded run was already on disk, no decode) | "grib" (decoded from the GRIB cache / download), ready_ms, fields_downloaded, ' +
@@ -120,14 +122,15 @@ export function openApiDocument(basePath: string): Record<string, unknown> {
             'route_worker_held_bytes, route_worker_largest_recent_window, decoding_block_bytes}} — the decoded forecast is never resident; `memory` is what ' +
             "requests hold now (a route's corridor store while it runs, a query's window while it is answered). `process_rss_bytes`: the Signal K process RSS. " +
             "`currents` lists the data worker's current sources in priority order ({name, priority, resolutionM, bbox, validFrom, validTo}); " +
-            'the CMEMS-SMOC entry adds `smoc`: {run, run_last_time, stac_updated, metadata_modified (when the run appeared in the store), settled, step_hours, horizon_hours, half_width_deg, ' +
+            'the CMEMS-SMOC entry adds `smoc`: {run (the store key: its last data hour, yyyymmddHH), run_last_time, stac_updated, metadata_modified (when the run appeared in the store), settled, ' +
+            'pending: {run, appeared_at} (a newer run Copernicus Marine is still writing while this one stays in use) | null, step_hours, horizon_hours, half_width_deg, ' +
             'resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, memory_bytes, ' +
             'shared_resident, last_download: {at, reason, bytes, chunks, downloaded, from_disk, seconds, decode_ms} | null, downloaded_bytes_total, disk_cache_bytes, layouts}. ' +
             '`currents_route_worker` is the same for the route worker (its own on-demand SMOC areas). ' +
             '`rtofs` (null when RTOFS is off): {auto (the product that contains the vessel, the finest where two overlap) | null, auto_reason (why none: no vessel position, or no product covers it) | null, ' +
             'extra (the extra products set), runs: [{product, run (yyyy-mm-dd)}] (the products loaded, each a current source RTOFS-<product>), unknown_extents (products whose extent is not known yet)}. ' +
             '`tides` (null when off or not loaded; `tides_enabled`, `tides_error`): the Copernicus Marine sea-level source {name, doi, datum, run, run_last_time, ' +
-            'stac_updated, metadata_modified, settled, half_width_deg, horizon_hours, resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, ' +
+            "stac_updated, metadata_modified, settled, pending: {run, appeared_at} | null (as SMOC's), half_width_deg, horizon_hours, resident: {bbox, centre, steps, valid_from, valid_to, bytes, layout} | null, on_demand: {areas, bytes, budget_bytes, list}, " +
             'point_cache: {entries, bytes, queries, hits}, memory_bytes, last_download, last_point_query: {at, lat, lon, bytes, chunks, downloaded, from_disk, seconds, cached} | null, ' +
             'downloaded_bytes_total, disk_cache_bytes, layouts, mean_window_days}. ' +
             '`starting`: why the plugin is not answering yet (e.g. "starting: downloading the coastline (40 %)"), null once started; 503 answers carry the same text. ' +

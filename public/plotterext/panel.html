@@ -880,9 +880,19 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
       f.source + (f.run ? ', run ' + f.run : ''),
       f.published_at ? 'published ' + clockText(f.published_at) : '',
       f.next_due_at ? 'next run due ' + clockText(f.next_due_at) : '',
+      f.pending_since ? 'a newer run appeared ' + clockText(f.pending_since) + ', still being written' : '',
       f.reason || '',
     ].filter(Boolean).join(' · ');
     return '<span class="fresh fresh-' + esc(f.state) + '" title="' + esc(tip) + '">● ' + esc(f.source) + ' ' + esc(text) + '</span>';
+  }
+  // Why a red source is late, as the web page says it (rp-core.js _lateText): the run in use by when it was published,
+  // and a newer run Copernicus Marine is still writing, when there is one.
+  function lateText(f) {
+    if (f.reason) return f.reason;
+    var using = f.published_at ? 'still using the run published ' + clockText(f.published_at) : 'still on ' + f.run;
+    return f.pending_since
+      ? 'a newer run appeared ' + clockText(f.pending_since) + ', but Copernicus Marine has not finished writing it; ' + using
+      : 'next run was due ' + clockText(f.next_due_at) + '; ' + using;
   }
   function weatherStatus(s) {
     wx.status = s || {};
@@ -933,7 +943,7 @@ button.link { border: 0; background: none; color: var(--primary); padding: 2px 0
     var html = esc(f.model || 'Forecast') + ' · run ' + esc(run) + ' · until ' + esc(until);
     if (fresh.length) html += '<br>' + fresh.map(freshPill).join(' ');
     fresh.filter(function (x) { return x.state === 'red'; }).forEach(function (x) {
-      html += '<br><b>Late: ' + esc(x.source) + ' ' + esc(x.reason || 'next run was due ' + clockText(x.next_due_at) + ', still on ' + x.run) + '</b>';
+      html += '<br><b>Late: ' + esc(x.source) + ' ' + esc(lateText(x)) + '</b>';
     });
     // What a check could not do while online; offline, the connection line says it.
     var online = !(c && c.online === false);

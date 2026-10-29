@@ -1138,17 +1138,25 @@ function _freshPill(name) {
     f.source + (f.run ? ', run ' + f.run : ''),
     f.published_at ? 'published ' + _clockText(f.published_at) : '',
     f.next_due_at ? 'next run due ' + _clockText(f.next_due_at) : '',
+    f.pending_since ? 'a newer run appeared ' + _clockText(f.pending_since) + ', still being written' : '',
     f.reason || '',
   ].filter(Boolean).join(' · ');
   return ' <span class="fresh fresh-' + f.state + '" title="' + escapeHtml(tip) + '">● ' + escapeHtml(text) + '</span>';
+}
+// Why a red source is late, in words: the run in use named by when it was published (CMEMS SMOC's own name is its
+// last data hour, which reads as a date days ahead), and a newer run Copernicus Marine is still writing, when there is one.
+function _lateText(f) {
+  if (f.reason) return f.reason;
+  const using = f.published_at ? 'still using the run published ' + _clockText(f.published_at) : 'still on ' + f.run;
+  return f.pending_since
+    ? 'a newer run appeared ' + _clockText(f.pending_since) + ', but Copernicus Marine has not finished writing it; ' + using
+    : 'next run was due ' + _clockText(f.next_due_at) + '; ' + using;
 }
 // One line naming whatever is late, red.
 function _lateLine() {
   const late = [..._fresh.values()].filter(f => f.state === 'red');
   if (!late.length) return '';
-  return '<br><span class="err">Late: ' + late.map(f => escapeHtml(f.source) + ' ' + escapeHtml(
-    f.reason || ('next run was due ' + _clockText(f.next_due_at) + ', still on ' + f.run)
-  )).join('; ') + '</span>';
+  return '<br><span class="err">Late: ' + late.map(f => escapeHtml(f.source) + ' ' + escapeHtml(_lateText(f))).join('; ') + '</span>';
 }
 // The connection, separate from freshness: blue when the last request reached a server, grey when there was none.
 function _netLine(c) {
@@ -1220,9 +1228,11 @@ function _statusLine(s) {
   const applies = c => /SMOC/i.test(c.name) || _meets(c.bbox, area);
   const curList = Array.isArray(s.currents) ? s.currents : [];
   const t = s.tides;
+  // The run by when it was published: its own name (t.run) is its last data hour, days ahead.
+  const tf = t ? _fresh.get(t.name) : null;
   const tides = s.tides_enabled === false ? 'off (Settings)'
     : s.tides_error ? '<span class="warn">' + unitTextHtml(s.tides_error) + '</span>'
-    : t ? escapeHtml(t.name.replace(/ hourly sea level \((\S+) tide\)/, ' ($1)')) + (t.run ? ', run ' + _shortUtc(t.run) : '') + _freshPill(t.name)
+    : t ? escapeHtml(t.name.replace(/ hourly sea level \((\S+) tide\)/, ' ($1)')) + (tf && tf.published_at ? ', published ' + _shortLocal(tf.published_at) : '') + _freshPill(t.name)
     : 'loading';
   // Sources that are enabled but have nothing loaded have no row entry of their own: their red pill goes on the currents row.
   const curNames = new Set(curList.map(c => c.name));

@@ -295,6 +295,8 @@ export interface TideStatus {
   /** When this run appeared in the store (timeChunked .zmetadata Last-Modified), ISO. */
   metadata_modified: string | null;
   settled: boolean;
+  /** As SMOC's (currents/smoc.ts SmocStatus): a newer run Copernicus Marine is still writing, or null. */
+  pending: { run: string; appeared_at: string | null } | null;
   half_width_deg: number;
   horizon_hours: number;
   resident: {
@@ -335,6 +337,8 @@ export interface TideStatus {
 export class TideSource {
   readonly run: ArcoRun;
   readonly settings: TideSettings;
+  /** A newer run Copernicus Marine is still writing while this one serves (worker/tides.ts refreshTides), or null. */
+  pending: { key: string; appearedAt: string | null } | null = null;
   private readonly client: ArcoClient | null;
   private readonly log: (m: string) => void;
   private readonly set: ArcoAreaSet<ArcoArea>;
@@ -532,6 +536,7 @@ export class TideSource {
       stac_updated: this.run.stacUpdated,
       metadata_modified: this.run.metadataModified,
       settled: this.run.settled,
+      pending: this.pending ? { run: this.pending.key, appeared_at: this.pending.appearedAt } : null,
       half_width_deg: this.settings.halfWidthDeg,
       horizon_hours: this.settings.horizonS / HOUR_S,
       resident: parts.resident,
