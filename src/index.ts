@@ -59,6 +59,7 @@ import { registerWeatherProvider } from './plugin/weather';
 import { InternetState, type InternetApp } from './plugin/internet';
 import type {
   DataStatus,
+  DataStamp,
   ForecastLoading,
   ForecastMemory,
   ForecastRunInfo,
@@ -592,9 +593,29 @@ export = function plugin(app: SkApp): SignalKPlugin {
                 rtofsHorizonS: cfg.currents.rtofsHorizonS,
               }
             : null,
-        tides: !cfg.tides.enabled ? 'off' : dataStatus?.tides ? { run: dataStatus.tides.run, settled: dataStatus.tides.settled } : null,
+        tides: !cfg.tides.enabled ? 'off' : tidesRun ? { run: tidesRun.key, settled: tidesRun.settled } : null,
       })
     );
+  }
+
+  /**
+   * The data the plugin holds now, as an answer's stamp must name it
+   * (DataStamp): the decoded run in use, the SMOC run, the RTOFS products'
+   * runs, and the tide run. An answer is served and
+   * saved only when the worker read exactly this (tiles.ts TileService,
+   * prebuild.ts); on a mismatch the request is asked again, so a query
+   * that straddles a data change is answered from the new data, and an
+   * answer computed from data replaced while it was in flight is never
+   * served.
+   */
+  function dataStamp(): DataStamp {
+    const cfg = config;
+    return {
+      forecast: forecastRun ? { cycleMs: forecastRun.index.cycleTimeMs, params: forecastRun.index.request.params } : null,
+      smoc: smocShared ? { key: smocShared.run.key, settled: smocShared.run.settled } : null,
+      rtofs: cfg?.currents.rtofsEnabled && rtofsShared ? rtofsShared.runs.map(r => ({ product: r.product, runMs: r.runMs })) : [],
+      tide: tidesRun && cfg?.tides.enabled ? { key: tidesRun.key, settled: tidesRun.settled } : null,
+    };
   }
 
   /** Own-vessel position from Signal K (navigation.position), or null. */
@@ -896,6 +917,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         forecastRun = msg.run;
         void charts.publishGroups();
         updateTileGenerations();
+        tiles?.dataChanged();
         forecastError = null;
         if (failedRefreshTimer) {
           clearTimeout(failedRefreshTimer);
@@ -979,6 +1001,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           // Products loaded under settings that have since changed are dropped here (and by the workers).
           if (msg.rtofs && !(config && rtofsSetForConfig(msg.rtofs, config.currents.rtofsEnabled, config.currents.rtofsExtra))) return;
           rtofsShared = msg.rtofs;
+          tiles?.dataChanged();
           pool.post('route', { type: 'rtofs', rtofs: msg.rtofs });
           prebuilder?.broadcast(builderCurrentsRef());
         }
@@ -987,6 +1010,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         if (role === 'data') {
           // SharedArrayBuffer views: the route worker gets the same memory.
           smocShared = msg.smoc;
+          tiles?.dataChanged();
           pool.post('route', { type: 'smoc', smoc: msg.smoc });
           prebuilder?.broadcast(builderCurrentsRef());
           updateTileGenerations();
@@ -995,8 +1019,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
       case 'tides-run':
         if (role === 'data') {
           tidesRun = msg.run;
+          // The tide generation moves with the run (and its settledness), the same values the
+          // answers' stamps name: saved tide (and point) tiles of the old run stop being read at
+          // once, and a tile built ahead is adopted into the generation its stamp names. setGenerations
+          // rebuilds only the groups whose key changed. This runs before the builders are told of the run.
+          updateTileGenerations();
+          tiles?.dataChanged();
           prebuilder?.broadcast({ type: 'tides-run', run: msg.run });
-          // The tide group depends on a tide run; rewritten only when the group key changes.
           void charts.publishGroups();
         }
         return;
@@ -1045,7 +1074,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
         return;
       }
       case 'query-result':
-        pool.resolveQuery(msg.id, msg.result, msg.complete);
+        pool.resolveQuery(msg.id, msg.result, msg.complete, msg.stamp);
         return;
       case 'query-error':
         pool.rejectQuery(msg.id, msg.message);
@@ -1083,6 +1112,13 @@ export = function plugin(app: SkApp): SignalKPlugin {
       if (!rtofsLoadSame(prevConfig, config)) rtofsShared = null;
     }
     if (out.forecast || out.currents || out.tides) updateTileGenerations();
+    // dataStamp() moves here for currents (the shared blocks are cleared and
+    // the RTOFS products' runs are read from the new config) and tides (the
+    // enabled flag is read from it); the forecast part moves when the
+    // worker's reload lands, which wakes through the 'forecast' handler.
+    // Mismatched answers wait for exactly this instead of sending identical
+    // queries until the worker's background reload catches up.
+    if (out.currents || out.tides) tiles?.dataChanged();
     pool.post('data', {
       type: 'config',
       config,
@@ -1129,6 +1165,7 @@ export = function plugin(app: SkApp): SignalKPlugin {
           m.push({ type: 'refresh', force: false });
           return m;
         },
+        dataStamp,
         vesselPosition,
         // Every layer to the forecast horizon (the owner's decision, 2026-10-22: one horizon); tides also no further
         // than their run.
@@ -1265,7 +1302,8 @@ export = function plugin(app: SkApp): SignalKPlugin {
     meshes.run();
     tiles = new TileService(
       new TileStore({ root: path.join(dataDir, 'overlay-tiles'), capBytes: config.overlayCache.diskCapBytes, log }),
-      (kind, args, signal) => pool.queryFull(kind, args, signal)
+      (kind, args, signal) => pool.queryFull(kind, args, signal),
+      dataStamp
     );
     updateTileGenerations();
     startPrebuilder(dataDir);

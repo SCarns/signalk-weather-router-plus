@@ -10,7 +10,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { registerApi, type ApiDeps } from './api';
-import type { QueryArgs } from './protocol';
+import type { DataStamp, QueryArgs } from './protocol';
 import { TileService, TileStore } from './tiles';
 
 type Handler = (req: unknown, res: unknown) => unknown;
@@ -24,6 +24,7 @@ const point = (lon: number, h: number) => ({
   properties: { time: new Date(T0 + h * H).toISOString(), mode: 'sailing', sog_ms: 3 },
 });
 const JOB = { id: 'j1', status: 'done', geojson: { type: 'FeatureCollection', features: [point(-9, 0), point(-10, 2)] }, summary: {} };
+const STAMP: DataStamp = { forecast: null, smoc: null, rtofs: [], tide: null };
 
 const answer = (a: { points: unknown[] }) => ({
   cycle: '2026-11-01T12:00:00.000Z',
@@ -112,10 +113,14 @@ test("GET /api/routes/:id/meteogram: the query names the route's regional runs, 
     const store = new TileStore({ root, capBytes: 1e9 });
     store.setGenerations({ wx: 'a', cur: 'a', tide: 'a', land: 'coast', pt: 'a' });
     const asked: TrackArgs[] = [];
-    const service = new TileService(store, async (_kind, a) => {
-      asked.push(a as TrackArgs);
-      return { result: answer(a as TrackArgs), complete: true };
-    });
+    const service = new TileService(
+      store,
+      async (_kind, a) => {
+        asked.push(a as TrackArgs);
+        return { result: answer(a as TrackArgs), complete: true, stamp: STAMP };
+      },
+      () => STAMP
+    );
     const regional_wind = [
       { name: 'AROME', run: '2026-11-02T00:00:00.000Z', share: 0.4 },
       { name: 'ICON-EU', run: '2026-11-02T00:00:00.000Z', share: 0.1 },
