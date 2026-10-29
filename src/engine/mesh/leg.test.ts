@@ -491,6 +491,37 @@ test('pipeline: an open stretch whose search fails is not motored under sail_max
   assert.ok(!messages.some(m => /motor/.test(m) && !/route under motor/.test(m)), messages.join('\n'));
 });
 
+test('pipeline: an open stretch whose search fails and is followed along the mesh route carries a search_failed warning', async () => {
+  // Water only on the mesh route's own line: every move the search makes leaves it and is blocked, while the route's
+  // legs along it stay clear. Sail_max with no polar searches (and motors every move), so the stretch is searched.
+  const path: [number, number][] = [
+    [0, 0.5],
+    [0.5, 0.5],
+    [1, 0.5],
+  ];
+  const onLine = (lat: number): boolean => Math.abs(lat - 0.5) < 1e-9;
+  const land = fakeLand((_lonA, latA, _lonB, latB) => !(onLine(latA) && onLine(latB)));
+  const { mesh } = fakeMeshOk(path, undefined, { land });
+  const { inp, messages } = inputs(mesh, { sim: { modePolicy: 'sail_max', sailThreshMs: 2.5, simStepM: 200 } });
+  const r = await runLegPipeline(inp, PLAN, 0, [0, 0.5], T0);
+  assert.ok(
+    messages.some(m =>
+      /^WARNING: chart mesh segment 1\/1: open water, but the isochrone search failed \(.+\); following the mesh route/.test(m)
+    ),
+    messages.join('\n')
+  );
+  // On the route, not only in the log: the stretch's ends and the search's reason.
+  assert.equal(r.warnings?.length, 1, JSON.stringify(r.warnings));
+  const w = r.warnings![0];
+  assert.equal(w.violation, 'search_failed');
+  assert.deepEqual([w.from, w.to, w.repaired], [[0, 0.5], [1, 0.5], false]);
+  assert.ok(w.detail && w.detail.length > 0, 'the reason');
+  assert.deepEqual(
+    r.waypoints.map(p => [p.lon, p.lat]),
+    path
+  );
+});
+
 test("pipeline: a mesh leg's searched stretch is simplified and smoothed as a coastline leg is, with the mesh as land", async () => {
   // Open water the whole way, searched (sail_max with no polar motors every move but still searches): the search's
   // collinear waypoints along the straight mesh route are removed by the simplification, and the shortcut smoother
@@ -515,6 +546,7 @@ test("pipeline: a mesh leg's searched stretch is simplified and smoothed as a co
   );
   assert.ok(r.waypoints.length < plain.waypoints.length, `${r.waypoints.length} waypoints after, ${plain.waypoints.length} before`);
   assert.equal(r.validated, true);
+  assert.equal(r.warnings, undefined, 'a search that succeeded: no warning');
   const last = r.waypoints[r.waypoints.length - 1];
   assert.ok(Math.abs(last.lon - 1) < 1e-6 && Math.abs(last.lat - 0.5) < 1e-6);
   assert.ok(Math.abs(r.totalTimeS - plain.totalTimeS) / plain.totalTimeS < 0.06, `${r.totalTimeS} s vs ${plain.totalTimeS} s`);

@@ -1013,7 +1013,10 @@ settings; a request can override them with
   whose search fails is followed along the mesh route under the request's
   own mode: sailed under sail_max (tacks where needed, motor only below a
   positive threshold), walked under fastest; when it cannot be sailed the
-  route fails naming the segment rather than motoring it.
+  route fails naming the segment rather than motoring it. A stretch
+  followed this way carries a `search_failed` warning (its ends and the
+  search's reason), so the page and the chartplotter show it: it can be
+  slower than a searched stretch, with many short tacks.
 - **Across the limits of the charts.** The mesh decides wherever it has
   triangles; the coastline data only where it has none. A leg whose area a
   mesh meets, and that one mesh does not hold, is planned through the waters
@@ -1172,7 +1175,9 @@ both ways and compared (the Route tab's *Router*: Standard / Refined):
    land or that the real polar cannot sail is tried on the other side,
    then shorter. Where no tack fits (the tacks lead into a pocket the
    water closes round), with a sail threshold above 0 the leg is motored
-   straight, as the standard router times it, with a WARNING naming it;
+   straight, as the standard router times it, with a WARNING naming it in
+   the log and a `beat_motored` warning on the route (the leg's ends and
+   its motoring time);
    with a threshold of 0 the route fails with a message naming the leg,
    never an invented time. Tack points carry `tack: true` in the GeoJSON.
 3. **Cross-track polish.** Each interior waypoint is tried a little to
@@ -2151,7 +2156,7 @@ LineString `properties`:
 | `stop_count` | number | count | start + waypoints + destination; present with `snaps` |
 | `start_original`, `start_anchor`, `start_snap_distance_m` | `[lon, lat]`, `[lon, lat]`, number | degrees, m | present when the start was moved: the drawn point, where the route starts, and the distance between them |
 | `end_original`, `end_anchor`, `end_snap_distance_m` | as above | | present when the destination was moved |
-| `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired, detail?}`, `violation` `"leg_crosses_land"`, `"wind_over_limit"`, `"waves_over_limit"` or `"detour_motored"` (a depth-check detour that motored on a sailing route; `detail` its motoring time, seconds), `from`/`to` `[lon, lat]` |
+| `warnings` | array | | present when any; items `{leg_index, violation, from, to, repaired, detail?}`, `violation` `"leg_crosses_land"`, `"wind_over_limit"`, `"waves_over_limit"`, `"detour_motored"` (a depth-check detour that motored on a sailing route; `detail` its motoring time, seconds), `"search_failed"` (the search on an open stretch of a chart-mesh leg failed and the stretch follows the mesh route instead; `from`/`to` the stretch's ends, `detail` the search's reason) or `"beat_motored"` (the refined router found no room to tack and motored the leg straight; `detail` its motoring time, seconds), `from`/`to` `[lon, lat]` |
 | `land_crossings` | number | count | present when a warning is `leg_crosses_land` |
 | `has_land_crossing` | boolean | | `true` when `land_crossings` is present |
 | `max_swh_m` | number | m | highest significant wave height at a route point; present when wave data was sampled |

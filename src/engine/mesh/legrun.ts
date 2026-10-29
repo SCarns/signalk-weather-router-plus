@@ -188,6 +188,8 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
     const lenM = pathLengthM(pts);
     const label = `${tag}chart mesh segment ${si + 1}/${segs.length}`;
     let part: Route | null = null;
+    /** Why this open stretch's search failed, when it did: the stretch along the mesh route then carries a warning. */
+    let searchFailed: string | null = null;
     if (seg.type === 'open' && lenM >= MIN_OPEN_SEGMENT_M && !motor) {
       const last = seg.end === res.path.length - 1;
       const prop = makeRouter(inp.router ?? DEFAULT_ROUTER, land, { ...inp.propagator, stages });
@@ -258,11 +260,23 @@ export function runMeshLeg(inp: MeshLegInputs): Route | MeshRefusal {
           `WARNING: ${label}: open water, but the isochrone search failed (${(err as Error).message}); following the mesh route instead under ${inp.sim.modePolicy}`
         );
         part = null;
+        searchFailed = (err as Error).message;
       }
     }
     if (!part) {
       part = alongMesh(seg, pts, at, label, lenM);
       if (!part) return { refused: `segment ${si + 1}/${segs.length} of the mesh route cannot be made against the current` };
+      // On the route too, not only in the log: the stretch along the mesh route can be slower and a run of short tacks
+      // (brain, 2026-10-29: 64 points instead of 7), and the page and the chartplotter show the route's warnings.
+      if (searchFailed !== null)
+        (part.warnings ??= []).push({
+          leg_index: 0,
+          violation: 'search_failed',
+          from: pts[0],
+          to: pts[pts.length - 1],
+          repaired: false,
+          detail: searchFailed,
+        });
     }
     parts.push(part);
     at = part.waypoints[part.waypoints.length - 1].time;

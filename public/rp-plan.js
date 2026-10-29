@@ -1686,12 +1686,12 @@ function renderResultStrip(p, navWarns) {
   if (warns.length) {
     html += '<div class="rs-warnlist" id="rsWarnList" hidden>' + warns.map(w => {
       if (typeof w !== 'object' || w === null) return '<div>' + String(w) + '</div>';
-      const kind = String(w.violation || 'warning').replace(/_/g, ' ');
+      const kind = _warningKind(w);
       const where = Array.isArray(w.to) ? ' at ' + w.to[1].toFixed(4) + ', ' + w.to[0].toFixed(4) : '';
       const li = w.leg_index;
       const leg = li != null ? ' (leg ' + (li + 1) + ')' : '';
       const fixed = w.repaired ? ' · repaired' : '';
-      return '<div class="' + (w.violation === 'leg_crosses_land' ? 'land' : '') + '">' + kind + leg + where + fixed + '</div>';
+      return '<div class="' + (w.violation === 'leg_crosses_land' ? 'land' : '') + '"' + _warningTip(w) + '>' + kind + leg + where + fixed + '</div>';
     }).join('') + '</div>';
   }
   el.innerHTML = html;
@@ -1787,9 +1787,24 @@ function _warningCardIndex(w, lonlats) {
   });
   return Math.sqrt(bestD) * 111000 < 300 ? best : -1;   // within 300 m
 }
+// A warning's kind in words. The two the router reports about its own work say what they mean: a stretch whose
+// search failed and that follows the chart's route instead, and a beat with no room to tack, motored.
+function _warningKind(w) {
+  if (w.violation === 'search_failed')
+    return "search failed: this stretch follows the chart's route instead, so it may be slower, with many short tacks";
+  if (w.violation === 'beat_motored') {
+    const s = Number(w.detail);
+    return 'motored a beat: no room to tack there' + (s > 0 && fmtTime(s) ? ', ' + fmtTime(s) + ' under motor' : '');
+  }
+  return escapeHtml(String(w.violation || 'warning').replace(/_/g, ' '));
+}
+// The search's own reason, as the row's tooltip (a long sentence, with quantities as unit tokens).
+function _warningTip(w) {
+  return w.violation === 'search_failed' && w.detail ? ' title="' + escapeHtml(unitText(String(w.detail))) + '"' : '';
+}
 function _warningText(w) {
   if (typeof w !== 'object' || w === null) return String(w);
-  const kind = String(w.violation || 'warning').replace(/_/g, ' ');
+  const kind = _warningKind(w);
   const at = Array.isArray(w.to) ? ' at ' + w.to[1].toFixed(4) + ', ' + w.to[0].toFixed(4) : '';
   return kind + at + (w.repaired ? ' · repaired' : '');
 }
@@ -1991,7 +2006,7 @@ function _itineraryWarnings(lonlats) {
     const ci = _warningCardIndex(w, lonlats);
     const land = w && w.violation === 'leg_crosses_land';
     if (ci >= 0) { const cur = cardWarn.get(ci) || { land: false, n: 0 }; cur.n += 1; cur.land = cur.land || land; cardWarn.set(ci, cur); }
-    return { wi, ci, land, text: _warningText(w) + (ci >= 0 ? ' (leg ' + (ci + 1) + ')' : '') };
+    return { wi, ci, land, tip: _warningTip(w), text: _warningText(w) + (ci >= 0 ? ' (leg ' + (ci + 1) + ')' : '') };
   });
   return { warnRows, cardWarn };
 }
@@ -2144,7 +2159,7 @@ function _itineraryWarnBlockHtml(warnRows) {
     const nLand = warnRows.filter(r => r.land).length;
     warnBlock = `<div id="itinWarnings" class="${nLand ? '' : 'warn-only'}">`
       + `<div class="iw-head">${nLand ? nLand + ' land crossing' + (nLand > 1 ? 's' : '') + ' · ' : ''}${warnRows.length} warning${warnRows.length > 1 ? 's' : ''} — click one to see it on the map</div>`
-      + warnRows.map(r => `<div class="iw-row${r.land ? ' land' : ''}" data-wi="${r.wi}" data-ci="${r.ci}">${r.text}</div>`).join('')
+      + warnRows.map(r => `<div class="iw-row${r.land ? ' land' : ''}" data-wi="${r.wi}" data-ci="${r.ci}"${r.tip}>${r.text}</div>`).join('')
       + `</div>`;
   }
   return warnBlock;

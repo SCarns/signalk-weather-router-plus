@@ -85,6 +85,7 @@ test('sailPolyline under sail_max: a course dead into the wind is tacked, not mo
     'tacked'
   );
   assert.equal(r.motoringTimeS, 0, 'nothing motored');
+  assert.equal(r.warnings, undefined, 'no warning for a beat laid out as tacks');
 });
 
 test('sailPolyline under sail only: a beat up a channel narrower than any fixed tack is laid out in short tacks inside it', () => {
@@ -238,6 +239,14 @@ test('sailPolyline under sail_max: a beat whose tacks lead into a pocket is moto
     [[0, 0], B]
   );
   assert.ok(r.motoringTimeS > 0 && r.sailingTimeS === 0, 'motored');
+  // On the route as a warning, not only in the log: the leg's ends and its motoring seconds; the mark is gone.
+  assert.deepEqual(r.warnings, [
+    { leg_index: 0, violation: 'beat_motored', from: [0, 0], to: B, repaired: false, detail: String(Math.round(r.motoringTimeS)) },
+  ]);
+  assert.ok(
+    r.waypoints.every(w => w.motoredBeat === undefined),
+    'no mark left on the waypoints'
+  );
   // Sail only (threshold 0): no motoring allowed, so it fails as before.
   assert.throws(() => run(0), /cannot be tacked/);
 });

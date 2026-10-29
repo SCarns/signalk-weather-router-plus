@@ -55,6 +55,19 @@ uses [Semantic Versioning](https://semver.org/).
   that position. The point descriptions say "moved N m to water the boat
   can use" instead of "the drawn point was on land", which was wrong for
   a shoal.
+- **A stretch the router could not search, and a beat it had to motor,
+  are warnings on the route.** Both were only a WARNING line in the job
+  log: the route showed 0 warnings and "validated", while a chart-mesh
+  stretch whose search failed fell back to the chart's own route (brain:
+  64 points of short tacks instead of 7, 16 minutes slower), and the
+  refined router motored a beat it found no room to tack in. The route
+  now carries `search_failed` (the stretch's ends and the search's
+  reason) and `beat_motored` (the leg's ends and its motoring seconds):
+  the web page's badge counts them and its list says what each means
+  ("search failed: this stretch follows the chart's route instead, so it
+  may be slower, with many short tacks"; "motored a beat: no room to tack
+  there, 12 min under motor"), and the Freeboard panel counts them. The
+  re-check for land after simplification no longer drops them.
 
 ## [0.2.0] - 2026-10-28
 
